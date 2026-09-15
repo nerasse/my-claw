@@ -1,4 +1,4 @@
-import type { MyClawAppServerFrame } from "./types.ts";
+import type { MyClawAppRunStopping, MyClawAppServerFrame } from "./types.ts";
 
 /**
  * The turn in flight, kept replayable for as long as it is in flight -- docs/live-turn-replay.md.
@@ -97,6 +97,13 @@ interface Journal {
   approvals: Map<string, MyClawAppServerFrame>;
   /** Pending question sheets, by frame id: the run is waiting on the owner. */
   questions: Map<string, MyClawAppServerFrame>;
+  /**
+   * The run this journal was opened for, named the way `chat.run.start` named it.
+   *
+   * Kept because a stop claim arrives on a socket, outside any run context: without it the
+   * `chat.run.stopping` frame could not say which run it holds, and its siblings do.
+   */
+  run?: string;
 }
 
 export class LiveTurnJournal {
@@ -120,6 +127,19 @@ export class LiveTurnJournal {
    */
   private queued = new Map<string, Map<string, MyClawAppServerFrame[]>>();
 
+  /**
+   * A stop claimed on this thread: the work it aborts has not departed yet.
+   *
+   * Held like the compaction and not like a turn's frames, and for the same reason: a claim can
+   * land on a thread with no journal at all -- `/stop` during a compaction aborts the hold, and a
+   * hold opens no journal -- so a slot that only exists inside one would lose exactly the state
+   * this class exists for. The frame is the state here: there is nothing to coalesce, nothing a
+   * delta adds, and `replay` carries it whole to whoever syncs while it is still true. Dropped
+   * where the cycle it described ends: `close` for a run, `clearCompacting` for a hold -- both of
+   * which fire exactly when the work has departed.
+   */
+  private stopping = new Map<string, MyClawAppRunStopping>();
+
   private key(owner: string, threadId: string): string {
     return `${owner}\u0000${threadId}`;
   }
@@ -134,16 +154,21 @@ export class LiveTurnJournal {
    * same run announced twice, and honouring it would throw away everything a reloading window
    * still needs replayed.
    */
-  open(owner: string, threadId: string): boolean {
+  open(owner: string, threadId: string, run?: string): boolean {
     const key = this.key(owner, threadId);
     if (this.journals.has(key)) return false;
     this.queued.delete(key);
+    // A new cycle opens here. Whatever stop was in flight named the one that is over -- the
+    // controller `startRoot` just replaced -- and a stop claimed now lands on this run instead,
+    // so the old state is not this cycle's truth and must not be replayed as if it were.
+    this.stopping.delete(key);
     this.journals.set(key, {
       frames: [],
       outputBytes: 0,
       clipped: new Set(),
       approvals: new Map(),
       questions: new Map(),
+      ...(run ? { run } : {}),
     });
     return true;
   }
@@ -162,9 +187,28 @@ export class LiveTurnJournal {
    * The run ended: its content is in the session now, and the store is the one truth for anything
    * settled. Keeping the journal past the end would give the same turn two writers. Returns
    * whether there was one to close.
+   *
+   * The stop in flight, if any, was about this run's cycle: its work has just departed, so the
+   * state goes with the journal it described (docs/stop.md).
    */
   close(owner: string, threadId: string): boolean {
-    return this.journals.delete(this.key(owner, threadId));
+    const key = this.key(owner, threadId);
+    this.stopping.delete(key);
+    return this.journals.delete(key);
+  }
+
+  /** The run in flight on this thread, named the way `chat.run.start` named it. */
+  currentRun(owner: string, threadId: string): string | undefined {
+    return this.journals.get(this.key(owner, threadId))?.run;
+  }
+
+  /**
+   * A stop was claimed on this thread: held until the cycle it named is over, and carried to a
+   * window that syncs in between. One frame per cycle -- the claim itself is what is replayed,
+   * not a summary of it.
+   */
+  markStopping(owner: string, threadId: string, frame: MyClawAppRunStopping): void {
+    this.stopping.set(this.key(owner, threadId), frame);
   }
 
   /**
@@ -289,7 +333,11 @@ export class LiveTurnJournal {
 
   /** Settled, whatever the outcome: a replay of it would show an operation that is over. */
   clearCompacting(owner: string, threadId: string): void {
-    this.compactions.delete(this.key(owner, threadId));
+    const key = this.key(owner, threadId);
+    // The hold was the cycle a stop can name (the one case with no run behind it): it is over,
+    // the work it aborted has departed, and the state goes with the operation that raised it.
+    this.stopping.delete(key);
+    this.compactions.delete(key);
   }
 
   /**
@@ -327,8 +375,12 @@ export class LiveTurnJournal {
     // every sync either way -- see `compactionState`.
     const parked = [...(this.queued.get(key)?.values() ?? [])].flat();
     const tail = [...parked];
+    // The stop in flight, on the other hand, is the frame a window missed: it was broadcast once,
+    // when the claim was taken, and it stays true until the work departs. Said here so it travels
+    // even when no run is open -- a `/stop` against a compaction is exactly that case.
+    const stopping = this.stopping.get(key);
     const journal = this.journals.get(key);
-    if (!journal) return tail;
+    if (!journal) return stopping ? [...tail, stopping] : tail;
 
     // One delta per subject, carrying everything held for it and flagged `replay` so the client
     // replaces rather than appends. It sits where the first chunk sat, so the order the window
@@ -352,7 +404,7 @@ export class LiveTurnJournal {
       frames[at] = mergeDelta(frames[at] as AnyDelta, marked);
     }
 
-    return [...frames, ...tail, ...journal.approvals.values(), ...journal.questions.values()];
+    return [...frames, ...tail, ...(stopping ? [stopping] : []), ...journal.approvals.values(), ...journal.questions.values()];
   }
 
   /** Test seam: how many frames a thread is holding. */

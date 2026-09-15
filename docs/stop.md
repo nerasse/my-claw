@@ -76,10 +76,67 @@ and the only thing another answer can add is another bubble -- three `/stop` use
 So the two surfaces that report a stop, the app's Stop button and a typed `/stop`, stay
 completely silent on `stopping`: no frame, no text, no journal line.
 
-The state is lifted exactly where the cycle ends, and nowhere earlier: a run's `end()` (the
-closure `startRoot` returns) and a compaction hold's `release()`. This is the trap the shape of
-the flag invites: a `stopping` that outlived its cycle would swallow the next cycle's first stop
--- one failed compaction would make every later stop answer `stopping` forever.
+### The state is derived, never stored
+
+One rule lives in `src/core/stop.ts`:
+
+```ts
+type StopOutcome = "stopped" | "stopping" | "idle";
+stopOutcomeOf(controllers: readonly AbortController[]): StopOutcome;
+```
+
+No controllers: `idle`. Every controller already aborted: `stopping`. Otherwise each one that is
+not aborted is aborted, once, and the answer is `stopped`.
+
+Both authorities hold their controllers and answer through that one function -- the registry
+(roots and compaction holds) and the runner (the `activeRuns` of the children the spawn/send tools
+drive) -- because the channel calls both and compares the answers. `src/index.ts` returns the root
+authority's answer unless it is `idle`, and only then asks the runner; the union travels whole
+instead of being flattened into a boolean.
+
+Why derived and not a flag: "a stop is in flight" is a fact about the work -- true exactly as long
+as aborted work has not departed -- and `signal.aborted` cannot desynchronise from it. The
+transition to "no stop anymore" is not a call: it is the entry leaving the map when the work is
+over (a run's `end()`, a hold's `release()`), which is also what makes a new cycle's first stop
+anew `stopped`, including when `startRoot` replaces the controller before the old run unwinds.
+
+### The state travels with the turn in flight
+
+One writer, one door: `MyClawAppAdapter.claimStop(sessionId, owner, threadId)`. Both the
+`chat.stop` frame and a typed `/stop` claim through it (the command resolves it through the
+dependency `index.ts` wires to that same method), so a stop taken by one surface is visible to
+the other.
+
+A claim answered `stopped` emits **one** `chat.run.stopping` frame
+(`{ type, threadId, run? }`), broadcast to every socket of the owner; `stopping` and `idle` emit
+nothing. The frame is recorded in the live turn journal (`LiveTurnJournal`, docs/live-turn-replay.md)
+and replayed to a window that syncs while the abort travels -- including a stop against a
+compaction, which open no journal at all, so the slot lives beside the journal and not inside it.
+The run it names is the one `chat.run.start` announced, kept on the journal when that run opened.
+
+It is dropped where the cycle it described ends: the journal's `close` (the run's end) or
+`clearCompacting` (the compaction held and settled). Same rule as the derivation: it is over when
+the work is over, never when someone remembers to clear it.
+
+### A stopped compaction leaves a trace
+
+Before this, a compaction the owner aborted left nothing behind: a boundary (`compaction`) is
+written only when the summary lands, so minutes of work left no mark and a thread reopened
+elsewhere could not tell the operation had been interrupted. `compaction_stopped` is that mark,
+appended on the branch where the pass stopped (`src/sessions/compaction.ts`, in the catch that
+sees the abort, before the rethrow):
+
+```ts
+{ type: "compaction_stopped", prompt: false, kept: number, compactionMs?: number }
+```
+
+`kept` is the count a boundary would have carried for the same plan -- the entries the summary
+stood for -- and every one of them is still on the branch, since nothing was folded. The type is
+distinct and `prompt: false` exactly for that: the projection (`src/sessions/projection.ts`) finds
+its floor by reading `entry.type === "compaction"`, so an entry of its own type cannot be mistaken
+for a ceiling and can never move the prompt. `display.ts` maps it as the boundary's sibling -- a
+rule with the count, an empty body, `summaryOf: kept`, `compactionStopped: true` -- hoisted out of
+any run group: at the moment it is written there is no run open at all.
 
 ### Reply
 

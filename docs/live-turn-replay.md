@@ -171,6 +171,17 @@ nothing could open one without lying about a lifecycle. `live.compactionState` i
 that slot, and `replay` deliberately leaves it out -- an event list is the wrong shape for a state,
 and a frame that says "not compacting" is not a replay of anything.
 
+The stop in flight is the other state a window can come back into, and it *is* replayed -- the
+same slot, the other way round (docs/stop.md). A claim is answered once, when the abort is taken
+(`chat.run.stopping`, broadcast to every socket of the owner), and the work it describes stays in
+flight until it unwinds: exactly the window a reload falls into. There is nothing to coalesce here
+and no counter to correct -- the frame **is** the state, one per cycle -- so repeating it is not
+replaying the events that built something, it is saying the one sentence again, and a sync after
+the work has departed hears nothing of it. It lives beside the journals for the compaction's own
+reason: a `/stop` against a compaction aborts a hold, and a hold opens no run for a journal to
+hang on. Dropped where its cycle ends -- the journal's close for a run's, `clearCompacting` for a
+hold's -- never by a caller remembering to.
+
 ## Bounds
 
 A journal is memory, so it is capped, and the cap is a design decision rather than a guard:

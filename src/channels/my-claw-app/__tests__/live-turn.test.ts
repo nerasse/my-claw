@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { LiveTurnJournal } from "../live-turn.ts";
-import type { MyClawAppServerFrame } from "../types.ts";
+import type { MyClawAppRunStopping, MyClawAppServerFrame } from "../types.ts";
 
 const OWNER = "owner-1";
 const THREAD = "thread-1";
@@ -233,6 +233,69 @@ describe("live turn journal: sends no run has consumed yet", () => {
   test("keeps one thread's parked sends out of another's", () => {
     const live = new LiveTurnJournal();
     live.holdQueued(OWNER, THREAD, "m1", [bubble("m1"), mark("m1")]);
+    expect(live.replay(OWNER, "thread-2")).toEqual([]);
+  });
+});
+
+describe("live turn journal: the stop claimed on the thread", () => {
+  const stopping = (run?: string): MyClawAppRunStopping => ({
+    type: "chat.run.stopping",
+    threadId: THREAD,
+    ...(run === undefined ? {} : { run }),
+  });
+
+  test("a window that syncs mid-stop is told the work is being taken, and only while it is", () => {
+    // The claim is broadcast once, to the sockets that were there. A window that reloads while the
+    // abort travels is the case the broadcast cannot serve, and it is exactly the window whose
+    // Stop button came back unpressed.
+    const live = new LiveTurnJournal();
+    live.open(OWNER, THREAD, "run-7");
+    live.record(OWNER, THREAD, toolStart("t1"));
+    live.markStopping(OWNER, THREAD, { type: "chat.run.stopping", threadId: THREAD, run: "run-7" });
+
+    const replay = live.replay(OWNER, THREAD);
+    expect(types(replay)).toEqual(["chat.tool.start", "chat.run.stopping"]);
+    expect(replay[1]).toMatchObject({ run: "run-7" });
+
+    // The work departed: the run's end closes the journal, and the state goes with the cycle.
+    live.close(OWNER, THREAD);
+    expect(live.replay(OWNER, THREAD)).toEqual([]);
+  });
+
+  test("a stop with no run behind it is still replayed: the compaction case", () => {
+    // A compaction hold opens no journal, and a `/stop` against one aborts the hold -- so a slot
+    // living inside a journal would drop precisely the state it exists to carry.
+    const live = new LiveTurnJournal();
+    live.markStopping(OWNER, THREAD, stopping());
+    expect(types(live.replay(OWNER, THREAD))).toEqual(["chat.run.stopping"]);
+
+    // The operation that raised it is over, so the state is over too.
+    live.clearCompacting(OWNER, THREAD);
+    expect(live.replay(OWNER, THREAD)).toEqual([]);
+  });
+
+  test("a new run on the thread is a new cycle, and the old stop stops describing it", () => {
+    const live = new LiveTurnJournal();
+    live.open(OWNER, THREAD, "run-1");
+    live.markStopping(OWNER, THREAD, stopping("run-1"));
+
+    live.close(OWNER, THREAD);
+    live.open(OWNER, THREAD, "run-2");
+    expect(live.replay(OWNER, THREAD)).toEqual([]);
+  });
+
+  test("the run a journal was opened for is the one a stop can name", () => {
+    const live = new LiveTurnJournal();
+    expect(live.currentRun(OWNER, THREAD)).toBeUndefined();
+    live.open(OWNER, THREAD, "run-42");
+    expect(live.currentRun(OWNER, THREAD)).toBe("run-42");
+    live.close(OWNER, THREAD);
+    expect(live.currentRun(OWNER, THREAD)).toBeUndefined();
+  });
+
+  test("keeps one thread's stop out of another's", () => {
+    const live = new LiveTurnJournal();
+    live.markStopping(OWNER, THREAD, stopping());
     expect(live.replay(OWNER, "thread-2")).toEqual([]);
   });
 });

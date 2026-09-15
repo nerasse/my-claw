@@ -423,6 +423,42 @@ describe("displayOf: what is shown and never sent", () => {
     ]);
     expect(show(entries)[0]).not.toHaveProperty("compactionMs");
   });
+
+  test("a stopped compaction draws the same rule, holding what it left instead of a summary", () => {
+    const entries = chain([
+      { type: "compaction_stopped", prompt: false, kept: 12 },
+    ]);
+    const drawn = show(entries)[0];
+    // The same shape as the boundary -- a rule across the thread, one count, no body, because
+    // there is no summary to show: the turns are all still underneath it.
+    expect(drawn).toMatchObject({ role: "user", text: "", summaryOf: 12, compactionStopped: true });
+    expect(drawn).not.toHaveProperty("compactionMs");
+  });
+
+  test("a stopped pass that was timed travels with its span, like the boundary it never became", () => {
+    const entries = chain([
+      { type: "compaction_stopped", prompt: false, kept: 4, compactionMs: 2_100 },
+    ]);
+    expect(show(entries)[0]).toMatchObject({ role: "user", summaryOf: 4, compactionMs: 2_100 });
+  });
+
+  test("the trace is never folded into the run it interrupted", () => {
+    // A mid-conversation compaction runs while a root run is open, so the trace lands inside the
+    // run's markers. Folding it away would hide it behind a header about tool calls.
+    const path = chain([
+      user("q"),
+      runStart(),
+      ...Array.from({ length: 10 }, (_, i) => tool(`c${i}`)),
+      { type: "compaction_stopped", prompt: false, kept: 6 },
+      runEnd(),
+    ]);
+    const runs = runFold(path);
+    const plan = runFoldPlan(path, path, runs);
+    const trace = path[path.length - 2]!;
+    expect(plan.folded.has(trace.id)).toBe(false);
+    const shown = displayOf(path, resolvers, 1000, undefined, [], runs, plan);
+    expect(shown.some((e) => "compactionStopped" in e && e.compactionStopped === true)).toBe(true);
+  });
 });
 
 describe("pageOf", () => {

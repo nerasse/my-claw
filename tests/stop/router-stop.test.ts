@@ -34,12 +34,12 @@ test("router.stop aborts the in-flight run; route resolves to undefined (no deli
   const p = router.route(createMessage("stop-user"));
   await handlerListening;
 
-  assert.equal(router.stop(sessionId), true);
+  assert.equal(router.stop(sessionId), "stopped");
   const res = await p;
   assert.equal(res, undefined);
 
   // run cleared from registry -> second stop is a no-op
-  assert.equal(router.stop(sessionId), false);
+  assert.equal(router.stop(sessionId), "idle");
   runRegistry.clear();
 });
 
@@ -50,7 +50,7 @@ test("router.stop on an idle session returns false", async () => {
     async handleMessageStreaming() { throw new Error("unused"); },
     getResponseAttachments() { return []; },
   } as never);
-  assert.equal(router.stop("my-claw-app/dm/nobody"), false);
+  assert.equal(router.stop("my-claw-app/dm/nobody"), "idle");
   runRegistry.clear();
 });
 
@@ -81,7 +81,10 @@ test("router.stop targets only the requested session", async () => {
   const pB = router.route(createMessage("user-b"));
   await bothListening;
 
-  assert.equal(router.stop("my-claw-app/dm/user-a"), true);
+  assert.equal(router.stop("my-claw-app/dm/user-a"), "stopped");
+  // The abort of that cycle is in flight: the union is what the registry names, not a boolean,
+  // and a second request says so without aborting anything a second time.
+  assert.equal(router.stop("my-claw-app/dm/user-a"), "stopping");
   const [rA, rB] = await Promise.all([pA, pB]);
   assert.equal(rA, undefined);          // A aborted
   assert.equal(rB?.text, "ok");         // B untouched

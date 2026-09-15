@@ -14,7 +14,8 @@ import type {
 } from "../types.ts";
 import type { MyClawAppChannelConfig } from "../../core/config.ts";
 import { readAppVersion } from "../../core/diagnostics.ts";
-import { runRegistry, type StopOutcome } from "../../core/run-registry.ts";
+import { runRegistry } from "../../core/run-registry.ts";
+import type { StopOutcome } from "../../core/stop.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import { ALWAYS_PER_INVOCATION } from "../../agent/approvals.ts";
 import { approvalStats, listApprovals, recordApproval, serializeArgs, type ApprovalOutcome } from "../../approvals/store.ts";
@@ -98,6 +99,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppChatSend,
   MyClawAppHistoryAttachment,
   MyClawAppChatStop,
+  MyClawAppRunStopping,
   MyClawAppClientFrame,
   MyClawAppError,
   MyClawAppErrorScope,
@@ -794,6 +796,32 @@ export class MyClawAppAdapter implements ChannelAdapter {
     this.stopRun = stop;
   }
 
+  /**
+   * The one door a stop takes on this channel, whatever carried it: the `chat.stop` frame of a
+   * device, or a `/stop` typed in a thread. Both doors used to resolve the claim themselves, so a
+   * stop was invisible to the window that did not press it -- and neither left anything for a
+   * window that reloaded while the abort was still travelling.
+   *
+   * A claim that answers "stopped" is the cycle's first, so it is said exactly once: the frame
+   * goes to every socket of the owner and is held with the turn in flight, where a reload finds
+   * it for as long as the work it named has not departed (docs/stop.md, docs/live-turn-replay.md).
+   * "stopping" and "idle" say nothing: a second answer for the same stop could only draw a
+   * second bubble, and a stop with nothing to stop has nothing to report.
+   */
+  claimStop(sessionId: string, owner: string, threadId: string): StopOutcome {
+    const outcome = this.stopRun ? this.stopRun(sessionId) : "idle";
+    if (outcome !== "stopped") return outcome;
+    const run = this.live.currentRun(owner, threadId);
+    const frame: MyClawAppRunStopping = {
+      type: "chat.run.stopping",
+      threadId,
+      ...(run ? { run } : {}),
+    };
+    this.live.markStopping(owner, threadId, frame);
+    this.broadcast(owner, frame);
+    return outcome;
+  }
+
   /** Whether a session has a run in flight; injected because the adapter never reaches into core. */
   onRunActive(check: (sessionId: string) => boolean): void {
     this.runActive = check;
@@ -892,11 +920,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
       if (triggerId && this.live.isQueued(owner, threadId, triggerId)) {
         this.broadcast(owner, { type: "chat.send.acked", threadId, replyToId: triggerId });
       }
-      if (!this.live.open(owner, threadId)) return;
+      const run = currentRunId();
+      // Named to the journal, not only to the frame: a stop claim arrives on a socket long after
+      // this call returned, and the "stopping" frame it emits has to say which run it holds.
+      if (!this.live.open(owner, threadId, run)) return;
       this.broadcast(owner, {
         type: "chat.run.start",
         threadId,
-        ...(currentRunId() ? { run: currentRunId() } : {}),
+        ...(run ? { run } : {}),
       });
       return;
     }
@@ -2521,8 +2552,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
     // One stop per cycle: while the abort is in flight a second press answers nothing at all --
     // another "Stopped." would be a second bubble for the one stop. "stopped" and "idle" keep
-    // the same words as the /stop command, so the app and the chat agree on what happened.
-    switch (this.stopRun(sessionId)) {
+    // the same words as the /stop command, so the app and the chat agree on what happened. The
+    // claim itself goes through the channel's one door, which is also what emits the stop frame.
+    switch (this.claimStop(sessionId, ws.data.owner, threadId)) {
       case "stopped":
         this.sendFrame(ws, { type: "chat.command.result", threadId, text: "Stopped." });
         return;

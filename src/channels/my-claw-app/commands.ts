@@ -24,6 +24,7 @@ import { chatModel } from "../../llm/chat-model.ts";
 import type { ContextOverride } from "../../llm/context-window.ts";
 import { parseEffortArg, formatEffort } from "../model-picker.ts";
 import { runRegistry } from "../../core/run-registry.ts";
+import type { StopOutcome } from "../../core/stop.ts";
 import { loadJobs } from "../../cron/store.ts";
 import { hooks } from "../../hooks/index.ts";
 import { log } from "../../utils/logger.ts";
@@ -75,6 +76,14 @@ export interface MyClawAppCommandDeps {
     diff: Array<{ root: string; additions: number; deletions: number }>;
     turnPreview: string;
   }) => Promise<UndoMode | null>;
+  /**
+   * The channel's one stop door, injected by the adapter: the typed `/stop` and the app's Stop
+   * button must claim through the same function, or a stop claimed by one door is invisible to
+   * the other and the channel's stop frame has two writers (docs/stop.md). Absent on a test or a
+   * host that did not wire the adapter: the command then claims from the registry alone, without
+   * the frame -- a stop still lands, it just leaves nothing for a reloading window.
+   */
+  stop?: (sessionId: string, owner: string, threadId: string) => StopOutcome;
 }
 
 /**
@@ -281,7 +290,11 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
       }
 
       case "stop": {
-        switch (runRegistry.stop(sessionId)) {
+        // The same door as the app's Stop button: one writer for the stop frame, whatever
+        // carried the claim. Both authorities answer the same union, so the cases below are the
+        // same words the `chat.stop` frame answers with.
+        const outcome = deps.stop ? deps.stop(sessionId, owner, threadId) : runRegistry.stop(sessionId);
+        switch (outcome) {
           case "stopped":
             return "Stopped.";
           case "idle":

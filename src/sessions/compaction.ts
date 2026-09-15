@@ -13,7 +13,7 @@ import { hooks } from "../hooks/index.ts";
 import { usageModelOf } from "../llm/model-ref.ts";
 import { sessionLogOf } from "./log-access.ts";
 import { contextEntries } from "./projection.ts";
-import type { Entry, PhaseEntry, ToolEntry, UserEntry, CompactionEntry } from "./log.ts";
+import type { Entry, PhaseEntry, ToolEntry, UserEntry, CompactionEntry, CompactionStoppedEntry } from "./log.ts";
 import { estimateMessagesTokens } from "../llm/tokens.ts";
 import { cutByOutputCeiling } from "../llm/truncation.ts";
 import { messagesOf, promptOf } from "./projection.ts";
@@ -21,7 +21,7 @@ import { normalizeUntrusted } from "../agent/prompt/normalize-untrusted.ts";
 import { firstSummaryPrompt, updateSummaryPrompt, SUMMARIZER_SYSTEM } from "./compaction-prompts.ts";
 import { fileAnchorOf } from "./compaction-files.ts";
 import type { SessionLog } from "./log.ts";
-import { rethrowIfAborted } from "../core/aborted.ts";
+import { isAbort, rethrowIfAborted } from "../core/aborted.ts";
 
 const MIN_MESSAGES_TO_COMPACT = 10;
 
@@ -458,6 +458,31 @@ export async function commitCompaction(
 }
 
 /**
+ * The trace a stopped compaction leaves -- docs/stop.md.
+ *
+ * `kept` is the count a boundary would have carried for the same plan (`plan.middle`, the slice
+ * the summary stood for), and every one of those entries is still on the branch: nothing was
+ * folded, so the stopped rule speaks about the same turns as the boundary it never became, under
+ * the other label. `prompt: false` is what keeps it out of the prompt: the projection reads
+ * `entry.type === "compaction"` for its floor, and an entry of its own type cannot be mistaken
+ * for a ceiling, so a stopped pass can never move the boundary.
+ */
+export async function commitCompactionStopped(
+  log: SessionLog,
+  plan: CompactionPlan,
+  compactionMs?: number,
+): Promise<CompactionStoppedEntry> {
+  const entry = log.append<CompactionStoppedEntry>({
+    type: "compaction_stopped",
+    prompt: false,
+    kept: plan.middle.length,
+    ...(compactionMs !== undefined ? { compactionMs } : {}),
+  });
+  await log.flush();
+  return entry;
+}
+
+/**
  * The verbatim tail this session may keep, scaled to the window it actually runs in.
  *
  * Resolved from the session rather than handed down by the caller so `/compact` and the automatic
@@ -500,6 +525,7 @@ export async function compactSession(
     const plan = planned.plan;
     const beforeCount = plan.entries.length;
 
+    const passStartedAt = now();
     try {
       const summarized = await summarizeForCompaction(config, session, plan, instructions, signal, "compaction", now);
       if (!summarized.ok) {
@@ -523,7 +549,11 @@ export async function compactSession(
       };
     } catch (err) {
       // An abort is the owner stopping the run, not a compaction that failed on its own terms.
-      rethrowIfAborted(err);
+      // It is also the one outcome that used to leave no trace at all -- a boundary speaks only
+      // for a summary that landed -- so the trace is written here, before the rethrow: this catch
+      // is the last place the plan is still in hand (docs/stop.md).
+      if (isAbort(err, signal)) await commitCompactionStopped(log, plan, now() - passStartedAt);
+      rethrowIfAborted(err, signal);
       const errorMsg = err instanceof Error ? err.message : String(err);
       hooks.emit("session:compact:error", { sessionId: session.id, reason: errorMsg });
       return { ok: false, reason: `Compaction error: ${errorMsg}`, beforeCount, afterCount: beforeCount };

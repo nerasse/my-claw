@@ -287,6 +287,7 @@ type EntryType =
   | "command"       // une slash command et sa réponse
   | "failure"       // un run mort et l'erreur montrée
   | "compaction"    // un résumé et la borne qu'il pose
+  | "compaction_stopped" // une compaction arrêtée : ce qu'elle laisse intact (docs/stop.md)
   | "model_change"  // /model, /effort
   | "note"          // affichage seul, jamais envoyé au modèle
   | "spawn_state"   // un pas dans la vie d'un sous-agent, sur la carte qui l'a lancé (§3.5)
@@ -304,6 +305,7 @@ seul. C'est la distinction `CustomEntry` / `CustomMessageEntry` de pi, général
 | `command` | `false` | `/status` n'est pas un tour |
 | `failure` | `false` | |
 | `compaction` | `true` | porte le résumé |
+| `compaction_stopped` | `false` | une passe arrêtée : la règle et le compte de ce qu'elle laisse, jamais une borne (docs/stop.md) |
 | `model_change` | `false` | |
 | `note` | `false` | le `note` du hand-back sous-agent |
 | `spawn_state` | `false` | le spinner du sous-agent ; le modèle lit son résultat dans `tool` |

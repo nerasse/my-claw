@@ -1262,6 +1262,14 @@ export type MyClawAppHistoryEntry =
        */
       summaryOf?: number;
       /**
+       * The rule stands for a compaction that was stopped: nothing was folded, the summary never
+       * landed, and `summaryOf` counts the turns the plan was about to cover -- all of them still
+       * on the thread, in full. Drawn like the boundary, with "kept" where a summary landed; the
+       * `summaryOf` is also what keeps it hoisted out of a run group, so the rule never becomes a
+       * bubble.
+       */
+      compactionStopped?: boolean;
+      /**
        * How long the summary took to write, in milliseconds. Carried to the replayed boundary for
        * the same reason the thinking span is: the duration is a fact about the turn, and a thread
        * reopened an hour later cannot re-measure it -- docs/reasoning-visibility.md.
@@ -1451,6 +1459,22 @@ export interface MyClawAppRunEnd {
   type: "chat.run.end";
   threadId: string;
   reason: "done" | "aborted" | "error";
+  run?: string;
+}
+
+/**
+ * A stop was claimed on this thread: the work it aborts has not departed yet.
+ *
+ * One frame per cycle, and only for the claim that answered "stopped" -- a second stop of the
+ * same cycle answers "stopping" and draws nothing. The work departing is what takes it down:
+ * the matching `chat.run.end` (a stopped run ends `aborted`) or the end of a compaction hold,
+ * and a window that syncs before then is replayed it (docs/live-turn-replay.md). The run id is
+ * the one `chat.run.start` announced, absent when the stop hit a cycle with no run of its own
+ * (a compaction).
+ */
+export interface MyClawAppRunStopping {
+  type: "chat.run.stopping";
+  threadId: string;
   run?: string;
 }
 
@@ -3523,6 +3547,7 @@ export type MyClawAppServerFrame =
   | MyClawAppChatLocation
   | MyClawAppRunStart
   | MyClawAppRunEnd
+  | MyClawAppRunStopping
   | MyClawAppStreamStart
   | MyClawAppStreamDelta
   | MyClawAppReasoningDelta

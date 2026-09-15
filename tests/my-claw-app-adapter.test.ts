@@ -13,6 +13,7 @@ import { FsWatchRegistry } from "../src/channels/my-claw-app/fs-ops.ts";
 import type { MyClawAppAgentsConfigResult, MyClawAppJobEntry, MyClawAppMcpEntry, MyClawAppSessionInstructionPatch, MyClawAppToolEntry } from "../src/channels/my-claw-app/types.ts";
 import type { MyClawAppChannelConfig } from "../src/core/config.ts";
 import { runRegistry } from "../src/core/run-registry.ts";
+import { withRunContext } from "../src/utils/run-context.ts";
 import { MY_CLAW_DIR } from "../src/core/config.ts";
 import type { ToolApprovalRequest, UnifiedMessage } from "../src/channels/types.ts";
 import { createJob, loadJobs, removeJob, saveJobs, updateJob } from "../src/cron/store.ts";
@@ -780,6 +781,90 @@ describe("MyClawAppAdapter", () => {
 
     reloaded.ws.close();
     after.ws.close();
+  });
+
+  test("the stop in flight travels with the turn, and is over when the work departs", async () => {
+    // The claim is answered once, but a window that reloads while the abort travels is the one
+    // whose Stop button came back unpressed: it has to be told, with the same frame the windows
+    // watching got -- docs/stop.md, docs/live-turn-replay.md.
+    adapter.onStop((sessionId) => runRegistry.stop(sessionId));
+    const sessionId = store.resolveSessionId(DEVICE_ID, "default");
+    const { end } = runRegistry.startRoot(sessionId);
+    try {
+      await withRunContext({ runId: "run-live" }, async () => {
+        adapter.notifyRun(DEVICE_ID, "default", true);
+      });
+      assert.equal((await nextFrame(client)).type, "chat.run.start");
+
+      client.ws.send(JSON.stringify({ type: "chat.stop", threadId: "default" }));
+      const stopping = await nextFrame(client);
+      assert.equal(stopping["type"], "chat.run.stopping");
+      assert.equal(stopping["threadId"], "default");
+      // Named like its siblings: the run `chat.run.start` announced, held by the journal.
+      assert.equal(stopping["run"], "run-live");
+      assert.equal((await nextFrame(client))["type"], "chat.command.result");
+
+      // A second press while the abort travels draws nothing: one stop, one frame.
+      client.ws.send(JSON.stringify({ type: "chat.stop", threadId: "default" }));
+      await new Promise((r) => setTimeout(r, 150));
+      assert.equal(client.frames.length, 0, `the second stop must draw nothing: ${JSON.stringify(client.frames)}`);
+
+      // The reload: the frame comes after the page, with the turn in flight.
+      const reloaded = await connectClient(adapter.port);
+      reloaded.ws.send(JSON.stringify({ type: "session.sync", threadId: "default" }));
+      assert.equal((await nextFrame(reloaded)).type, "session.sync.result");
+      const replay = await nextFrame(reloaded);
+      assert.equal(replay["type"], "chat.run.stopping");
+      assert.equal(replay["run"], "run-live");
+
+      // The work departed: the cycle is over, and the state goes with it.
+      adapter.notifyRun(DEVICE_ID, "default", false, "aborted");
+      assert.equal((await nextFrame(client)).type, "chat.run.end");
+      const after = await connectClient(adapter.port);
+      after.ws.send(JSON.stringify({ type: "session.sync", threadId: "default" }));
+      assert.equal((await nextFrame(after)).type, "session.sync.result");
+      await assert.rejects(() => nextFrame(after, 300));
+
+      reloaded.ws.close();
+      after.ws.close();
+    } finally {
+      end();
+      runRegistry.clear();
+    }
+  });
+
+  test("a stop against a compaction is replayed too, though no run was ever open", async () => {
+    // A compaction hold opens no journal and shows no turn: the frames a window missed live in
+    // the journal, so this is the case a slot living inside one would have lost entirely.
+    adapter.onStop((sessionId) => runRegistry.stop(sessionId));
+    const sessionId = store.resolveSessionId(DEVICE_ID, "default");
+    const held = runRegistry.beginCompaction(sessionId);
+    assert.notEqual(held, null);
+    try {
+      client.ws.send(JSON.stringify({ type: "chat.stop", threadId: "default" }));
+      const stopping = await nextFrame(client);
+      assert.equal(stopping["type"], "chat.run.stopping");
+      assert.equal(stopping["run"], undefined, "a hold has no run to name");
+      assert.equal((await nextFrame(client))["type"], "chat.command.result");
+
+      const reloaded = await connectClient(adapter.port);
+      reloaded.ws.send(JSON.stringify({ type: "session.sync", threadId: "default" }));
+      assert.equal((await nextFrame(reloaded)).type, "session.sync.result");
+      assert.equal((await nextFrame(reloaded))["type"], "chat.run.stopping");
+
+      // The compaction settles -- the operation that raised the stop is over.
+      held!.release();
+      adapter.notifyCompacting(sessionId, undefined);
+      const after = await connectClient(adapter.port);
+      after.ws.send(JSON.stringify({ type: "session.sync", threadId: "default" }));
+      assert.equal((await nextFrame(after)).type, "session.sync.result");
+      await assert.rejects(() => nextFrame(after, 300));
+
+      reloaded.ws.close();
+      after.ws.close();
+    } finally {
+      runRegistry.clear();
+    }
   });
 
   test("every send is receipted to the socket that sent it, and the same id sent again is taken once", async () => {
@@ -4077,6 +4162,11 @@ describe("command frames", () => {
 
   test("chat.stop resolves the session and answers like /stop", async () => {
     client.ws.send(JSON.stringify({ type: "chat.stop", threadId: "t9" }));
+    // The stop is said to every window of the owner the moment the claim is taken -- the stub
+    // answers "stopped", so the frame is the claim's own, emitted once.
+    const stopping = await nextFrame(client);
+    assert.equal(stopping["type"], "chat.run.stopping");
+    assert.equal(stopping["threadId"], "t9");
     const frame = await nextFrame(client);
     assert.equal(frame["type"], "chat.command.result");
   });
@@ -4094,8 +4184,11 @@ describe("command frames", () => {
     try {
       client.ws.send(JSON.stringify({ type: "chat.stop", threadId: "t-one-stop" }));
       const first = await nextFrame(client);
-      assert.equal(first["type"], "chat.command.result");
-      assert.equal(first["text"], "Stopped.");
+      assert.equal(first["type"], "chat.run.stopping");
+      assert.equal(first["threadId"], "t-one-stop");
+      const answer = await nextFrame(client);
+      assert.equal(answer["type"], "chat.command.result");
+      assert.equal(answer["text"], "Stopped.");
 
       client.ws.send(JSON.stringify({ type: "chat.stop", threadId: "t-one-stop" }));
       await new Promise((r) => setTimeout(r, 150));
@@ -4107,6 +4200,9 @@ describe("command frames", () => {
       const idle = await nextFrame(client);
       assert.equal(idle["type"], "chat.command.result");
       assert.equal(idle["text"], "Nothing running.");
+      // And an idle stop says nothing about a stop: no frame, nothing held for a reload.
+      await new Promise((r) => setTimeout(r, 150));
+      assert.equal(client.frames.length, 0, "an idle stop must not announce one");
     } finally {
       end();
       runRegistry.clear();

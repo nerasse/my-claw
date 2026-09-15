@@ -64,6 +64,30 @@ test("/stop answers nothing while the abort of the same cycle is in flight", asy
   runRegistry.clear();
 });
 
+test("/stop claims through the channel's door when one is wired", async () => {
+  // The typed command and the Stop button have to pass the same way: the door is what emits the
+  // stop frame and holds it for a reloading window, so a `/stop` that resolved the claim by
+  // itself would be the invisible half of the bug again (docs/stop.md).
+  runRegistry.clear();
+  const claimed: Array<{ sessionId: string; owner: string; threadId: string }> = [];
+  const sessionId = SessionManager.resolveSessionId("my-claw-app", "dm", "u1", "u1", { threadId: "t1" });
+  const run = createMyClawAppCommandHandler({
+    config,
+    sessionManager: new SessionManager(),
+    modelPicker: {} as ModelPicker,
+    stop: (session, owner, threadId) => {
+      claimed.push({ sessionId: session, owner, threadId });
+      return "stopping";
+    },
+  });
+
+  // The door's answer is the command's answer, whatever it is: a "stopping" cycle is silent, and
+  // the registry -- which has nothing running -- is never consulted behind the door's back.
+  assert.equal(await run("u1", "t1", "stop", ""), undefined);
+  assert.deepEqual(claimed, [{ sessionId, owner: "u1", threadId: "t1" }]);
+  runRegistry.clear();
+});
+
 test("/status shows the live run tree (main + sub-agents)", async () => {
   runRegistry.clear();
   const run = handler();

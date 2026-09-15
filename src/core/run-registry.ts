@@ -1,8 +1,8 @@
 /**
  * Tracks in-flight agent runs. Three jobs:
  *  - stop target: one AbortController per top-level session (`/stop`). One stop per cycle:
- *    while the abort travels, a second request answers `stopping`, never a second `stopped`
- *    (docs/stop.md).
+ *    the answer is derived from the work -- every controller already aborting means
+ *    `stopping`, never a second `stopped` (docs/stop.md, `core/stop.ts`).
  *  - live view: every run (main + sub-agents at any depth) is a node, grouped by the
  *    root AbortSignal it shares. The shared signal is the cross-level link, so no
  *    parent->child map is maintained and the bookkeeping can never diverge from the
@@ -17,6 +17,7 @@
 
 import type { UnifiedMessage } from "../channels/types.ts";
 import { isAbort } from "./aborted.ts";
+import { stopOutcomeOf, type StopOutcome } from "./stop.ts";
 
 export interface RunNode {
   label: string;
@@ -73,25 +74,11 @@ interface Compaction {
   finish: () => void;
 }
 
-/**
- * What a stop found on a session, named rather than flattened into a boolean:
- *  - "stopped": this call issued the abort of the current cycle (a run, or a compaction hold);
- *  - "stopping": the abort of the same cycle is already in flight, nothing left to do;
- *  - "idle": no cycle to stop.
- * The response surfaces answer "stopped" and "idle" and stay silent on "stopping": one stop
- * per cycle (docs/stop.md), because a second answer stops nothing more than the first.
- */
-export type StopOutcome = "stopped" | "stopping" | "idle";
-
 class RunRegistry {
   private controllers = new Map<string, AbortController>();
   private runs = new Map<AbortSignal, RunNode[]>();
   private mailboxes = new Map<string, Mailbox>();
   private compactions = new Map<string, Compaction>();
-  /** Sessions whose current cycle already carries a stop. Set by the first abort, lifted exactly
-   *  when the cycle ends -- `end()` for a run, `release()` for a compaction hold. A flag that
-   *  outlived its cycle would swallow the next cycle's stop as a "stopping". */
-  private stopping = new Set<string>();
 
   /** Called by the router when a top-level run starts. */
   startRoot(sessionId: string): { signal: AbortSignal; end: () => void } {
@@ -104,8 +91,6 @@ class RunRegistry {
       end: () => {
         if (this.controllers.get(sessionId) === controller) {
           this.controllers.delete(sessionId);
-          // The cycle is over: the next stop is a first stop again, on whatever comes next.
-          this.stopping.delete(sessionId);
         }
         this.runs.delete(controller.signal);
         this.mailboxes.delete(sessionId);
@@ -128,23 +113,18 @@ class RunRegistry {
   }
 
   /**
-   * Abort the whole subtree of a session's run, or its compaction. One stop per cycle: a second
-   * request while the abort travels is "stopping" and changes nothing, so no caller can answer
-   * twice for the same stop. The flag lifts where the cycle itself ends, and only there.
+   * Abort the whole subtree of a session's run, or its compaction. One stop per cycle, and the
+   * answer is derived, not remembered: a second request while the abort travels finds every
+   * controller already aborted (`stopping`) and changes nothing, and the next cycle gets a first
+   * stop of its own because its controller is a new, un-aborted one. Nothing here has to be
+   * lifted when the cycle ends -- the entry leaving the map is the whole transition.
    */
   stop(sessionId: string): StopOutcome {
-    if (this.stopping.has(sessionId)) return "stopping";
     const compaction = this.compactions.get(sessionId);
-    if (compaction) {
-      this.stopping.add(sessionId);
-      compaction.controller.abort();
-      return "stopped";
-    }
+    if (compaction) return stopOutcomeOf([compaction.controller]);
     const controller = this.controllers.get(sessionId);
     if (!controller) return "idle";
-    this.stopping.add(sessionId);
-    controller.abort();
-    return "stopped";
+    return stopOutcomeOf([controller]);
   }
 
   isRunning(sessionId: string): boolean {
@@ -172,8 +152,6 @@ class RunRegistry {
       release: () => {
         if (this.compactions.get(sessionId) === entry) {
           this.compactions.delete(sessionId);
-          // Same lift as a run's `end()`: the hold is the compaction's cycle, and it just ended.
-          this.stopping.delete(sessionId);
         }
         finish();
       },
@@ -304,7 +282,6 @@ class RunRegistry {
     this.controllers.clear();
     this.runs.clear();
     this.mailboxes.clear();
-    this.stopping.clear();
   }
 }
 

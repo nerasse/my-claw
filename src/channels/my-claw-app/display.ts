@@ -384,6 +384,10 @@ function isHoisted(entry: Entry): boolean {
     entry.type === "user" ||
     entry.type === "command" ||
     entry.type === "compaction" ||
+    // A stopped compaction's trace is the boundary's sibling: a rule across the thread, in the
+    // place the pass gave up, and never something to fold under a run's header -- at the moment
+    // it is written there is no run open at all.
+    entry.type === "compaction_stopped" ||
     entry.type === "model_change"
   );
 }
@@ -654,6 +658,22 @@ export function displayOf(
         text: entry.summary,
         ts,
         summaryOf: entry.count,
+        ...(entry.compactionMs !== undefined ? { compactionMs: entry.compactionMs } : {}),
+      }));
+      continue;
+    }
+
+    if (entry.type === "compaction_stopped") {
+      // The boundary's stopped sibling: same rule, same count of turns it speaks about, empty
+      // body -- there is no summary, because none was ever written, and the turns it names are
+      // all still there. `compactionStopped` is what labels it "kept" instead of "summarized".
+      out.push(withRun({
+        id: entry.id,
+        role: "user",
+        text: "",
+        ts,
+        summaryOf: entry.kept,
+        compactionStopped: true,
         ...(entry.compactionMs !== undefined ? { compactionMs: entry.compactionMs } : {}),
       }));
       continue;

@@ -98,7 +98,7 @@ test("aborting a run rejects a pending injected message", async () => {
   await waitUntil(injected.seen, "m2 to be injected into run #1");
   injected.dispose();
 
-  assert.equal(router.stop(SESSION_ID), true);
+  assert.equal(router.stop(SESSION_ID), "stopped");
   assert.equal(await p1, undefined);
   await assert.rejects(p2, (e: unknown) => e instanceof AbortedError);
   runRegistry.clear();

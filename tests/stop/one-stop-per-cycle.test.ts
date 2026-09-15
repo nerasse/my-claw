@@ -1,13 +1,57 @@
 /**
- * One stop per cycle (docs/stop.md): the registry answers `stopped` on the first stop, `stopping`
- * while that abort is still in flight, `idle` when there is nothing to stop. The `stopping` state
- * has to be lifted exactly where the cycle ends -- the run's `end()`, the hold's `release()` --
- * because a flag that outlived its cycle would swallow the next cycle's first stop.
+ * One stop per cycle (docs/stop.md): the registry derives the answer from the work -- `stopped`
+ * on the first stop of a cycle, `stopping` while that abort is in flight, `idle` when there is
+ * nothing to stop. There is no flag to lift: the controller leaving the map at the end of the
+ * cycle is the whole transition, so a state can neither outlive its cycle nor be forgotten.
  */
 
 import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { runRegistry } from "../../src/core/run-registry.ts";
+import { stopOutcomeOf } from "../../src/core/stop.ts";
+
+test("stopOutcomeOf: nothing to stop is idle, everything aborting is stopping, the rest is stopped", () => {
+  assert.equal(stopOutcomeOf([]), "idle");
+
+  const already = new AbortController();
+  already.abort();
+  assert.equal(stopOutcomeOf([already]), "stopping");
+
+  const fresh = new AbortController();
+  assert.equal(stopOutcomeOf([fresh]), "stopped");
+  assert.equal(fresh.signal.aborted, true);
+});
+
+test("stopOutcomeOf aborts each pending controller exactly once", () => {
+  const pending = new AbortController();
+  const alsoPending = new AbortController();
+  const aborted = new AbortController();
+  aborted.abort();
+
+  // One abort per pending controller is what makes "this call issued the abort" true; the one
+  // already aborting is left alone, and counting the calls proves neither is aborted twice.
+  let calls = 0;
+  const counting = (controller: AbortController): AbortController => {
+    const original = controller.abort.bind(controller);
+    controller.abort = () => {
+      calls += 1;
+      original();
+    };
+    return controller;
+  };
+  counting(pending);
+  counting(alsoPending);
+  counting(aborted);
+
+  assert.equal(stopOutcomeOf([pending, alsoPending, aborted]), "stopped");
+  assert.equal(pending.signal.aborted, true);
+  assert.equal(alsoPending.signal.aborted, true);
+  assert.equal(calls, 2, "the already-aborted controller is not aborted again");
+
+  // And a second derivation has nothing left to take: it is the same cycle, still travelling.
+  assert.equal(stopOutcomeOf([pending, alsoPending, aborted]), "stopping");
+  assert.equal(calls, 2, "a stopping cycle aborts nothing");
+});
 
 test("a run: first stop is stopped, a second is stopping, and the next run stops fresh", () => {
   runRegistry.clear();
@@ -28,6 +72,28 @@ test("a run: first stop is stopped, a second is stopping, and the next run stops
   const second = runRegistry.startRoot("s-run");
   assert.equal(runRegistry.stop("s-run"), "stopped");
   second.end();
+  runRegistry.clear();
+});
+
+test("a new cycle on the same session is seen for what it is, even before the old one unwinds", () => {
+  runRegistry.clear();
+  const first = runRegistry.startRoot("s-replaced");
+  assert.equal(runRegistry.stop("s-replaced"), "stopped");
+  assert.equal(runRegistry.stop("s-replaced"), "stopping");
+
+  // The router's lock releases only after the run's `end()`, but nothing enforces that for every
+  // caller: `startRoot` replaces the controller, and the derivation must see the new one -- a
+  // stored flag would have answered "stopping" for a cycle it never described.
+  const second = runRegistry.startRoot("s-replaced");
+  assert.equal(runRegistry.stop("s-replaced"), "stopped", "the new controller is not the old cycle");
+  assert.equal(second.signal.aborted, true);
+
+  // The old run's `end()` still carries its identity guard: it must not forget the new cycle.
+  first.end();
+  assert.equal(runRegistry.isRunning("s-replaced"), true);
+  assert.equal(runRegistry.stop("s-replaced"), "stopping");
+  second.end();
+  assert.equal(runRegistry.stop("s-replaced"), "idle");
   runRegistry.clear();
 });
 

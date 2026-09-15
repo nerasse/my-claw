@@ -32,6 +32,7 @@ export type EntryType =
   | "command"
   | "failure"
   | "compaction"
+  | "compaction_stopped"
   | "model_change"
   | "note"
   | "spawn_state"
@@ -150,6 +151,28 @@ export interface CompactionEntry extends EntryBase {
   compactionMs?: number;
 }
 
+/**
+ * A compaction that was stopped, and what it left untouched -- docs/stop.md.
+ *
+ * A boundary is only written when the summary lands, so an aborted pass used to leave nothing at
+ * all: the work spent on it left no mark and a thread reopened elsewhere had no way to know an
+ * operation had been interrupted. This is the boundary's stopped sibling, appended on the branch
+ * where the pass stopped.
+ *
+ * `kept` counts the entries the plan was about to cover, all of which are still there: nothing
+ * was folded, so the rule speaks about the same entries a boundary would have stood for. The
+ * type is deliberately distinct and `prompt` is false -- the projection finds its floor by
+ * reading `entry.type === "compaction"`, so an entry of its own type cannot be mistaken for a
+ * ceiling and can never move the prompt.
+ */
+export interface CompactionStoppedEntry extends EntryBase {
+  type: "compaction_stopped";
+  prompt: false;
+  kept: number;
+  /** How long the pass ran before the stop. Absent when the caller did not measure it. */
+  compactionMs?: number;
+}
+
 export interface ModelChangeEntry extends EntryBase {
   type: "model_change";
   prompt: false;
@@ -234,6 +257,7 @@ export type Entry =
   | CommandEntry
   | FailureEntry
   | CompactionEntry
+  | CompactionStoppedEntry
   | ModelChangeEntry
   | NoteEntry
   | SpawnStateEntry

@@ -250,7 +250,9 @@ describe("cron scheduler", () => {
       scheduler.adapters.set("my-claw-app", adapterMock);
 
       const stopCalls: string[] = [];
-      router.stop = (sessionId: string) => { stopCalls.push(sessionId); return true; };
+      // The union the registry answers with now; the stub stands in for it, and the scheduler
+      // ignores the value -- it only wants the abort to land.
+      router.stop = (sessionId: string) => { stopCalls.push(sessionId); return "stopped"; };
       router.routeCron = async () => {
         await new Promise((r) => setTimeout(r, 60));
         return { text: "too late" };

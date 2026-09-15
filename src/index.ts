@@ -88,6 +88,7 @@ import { effectiveEffort, EFFORT_LEVELS, leafModelId } from "./llm/resolver.ts";
 import { SessionManager } from "./sessions/manager.ts";
 import { MessageRouter, type RouteResult } from "./core/router.ts";
 import { FoldedRunError, RerouteSignal, runRegistry } from "./core/run-registry.ts";
+import type { StopOutcome } from "./core/stop.ts";
 import { isAbort } from "./core/aborted.ts";
 import { runErrorBubble, setRunBubbles, withRunContext } from "./utils/run-context.ts";
 import type { UnifiedMessage } from "./channels/types.ts";
@@ -2141,17 +2142,21 @@ async function main() {
       listSubAgents: (sessionId) => subAgentRunner.list(subAgentRegistry, sessionId),
       pricing,
       undoPrompt: askUndoMode,
+      // The typed `/stop` claims through the channel's one door, like the app's Stop button:
+      // the stop frame is written by the adapter alone, so neither door can answer without the
+      // other hearing (docs/stop.md).
+      stop: (sessionId, owner, threadId) => myClawApp.claimStop(sessionId, owner, threadId),
     }));
 
     // A run is either a root the registry holds a controller for, or a child the runner tracks: a
     // sub-agent spawned by the spawn tool has a mailbox in the registry and nothing else, so asking
     // the registry alone read its thread as idle -- and the app sealed and folded a run in flight.
-    myClawApp.onStop((sessionId) => {
-      // The registry answers the three named cases; only "idle" lets the sub-agent runner have
-      // its turn (a spawned child has a mailbox in the registry and a run in the runner).
-      const outcome = runRegistry.stop(sessionId);
-      if (outcome !== "idle") return outcome;
-      return subAgentRunner.stopSession(sessionId) ? "stopped" : "idle";
+    // Both authorities answer the same union, derived from their own work, so the callback returns
+    // one outcome and nothing here has to be flattened.
+    myClawApp.onStop((sessionId): StopOutcome => {
+      const root = runRegistry.stop(sessionId);
+      if (root !== "idle") return root;
+      return subAgentRunner.stopSession(sessionId);
     });
     myClawApp.onRunActive((sessionId) => runRegistry.isRunning(sessionId) || subAgentRunner.isRunningSession(sessionId));
 

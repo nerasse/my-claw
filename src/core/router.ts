@@ -8,6 +8,7 @@ import { errorLogData } from "../utils/errors.ts";
 import { hooks } from "../hooks/index.ts";
 import { isAbort } from "./aborted.ts";
 import { runRegistry } from "./run-registry.ts";
+import type { StopOutcome } from "./stop.ts";
 import { withRunContext, setRunSession } from "../utils/run-context.ts";
 import { cleanupGeneratedTempFiles } from "../utils/media.ts";
 import { archiveAssistantMessage, archiveChannelMessage } from "../conversations/store.ts";
@@ -92,11 +93,11 @@ export class MessageRouter {
     this.agent.setApprovalHandler(handler);
   }
 
-  /** True when the stop found something to stop -- an abort just issued, or one already in
-   *  flight. "idle" is the only false; the callers (a cron timeout, the tests) only ask whether
-   *  a stop happened, and the response surfaces read the three cases from the registry directly. */
-  stop(sessionId: string): boolean {
-    return runRegistry.stop(sessionId) !== "idle";
+  /** What the stop found, passed through rather than flattened: the registry names the three
+   *  cases of a cycle, and a caller that shows something needs to tell a first stop from one
+   *  already in flight. The cron timeout ignores the answer; it only wants the abort to land. */
+  stop(sessionId: string): StopOutcome {
+    return runRegistry.stop(sessionId);
   }
 
   // Cron bypass gate:message:incoming and rate limits -- internal messages, not user-originated

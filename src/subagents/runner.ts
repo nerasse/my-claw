@@ -22,6 +22,7 @@ import type { SessionManager } from "../sessions/manager.ts";
 import { hooks } from "../hooks/index.ts";
 import { isAbort } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
+import { stopOutcomeOf, type StopOutcome } from "../core/stop.ts";
 import { indexSessionEntries } from "../conversations/store.ts";
 import type { SubAgentType, SubAgentMeta, SubAgentInfo, SubAgentCallerInfo } from "./types.ts";
 import { sanitizeDisplayName } from "./registry.ts";
@@ -181,11 +182,25 @@ export class SubAgentRunner {
     return (this.activeRuns.get(sessionId)?.size ?? 0) > 0;
   }
 
-  /** Stops the runs of this sub-agent, if any. True when there was one to stop. */
-  stopSession(sessionId: string): boolean {
-    if (!this.isRunningSession(sessionId)) return false;
-    void this.stopTracked(sessionId);
-    return true;
+  /**
+   * Stops the runs of this sub-agent, if any, and names what the stop found.
+   *
+   * The answer is derived from the runs themselves: a run of this sub-agent is active exactly
+   * while its entry sits in `activeRuns`, and a stopped one carries an aborted controller until
+   * it departs. A second stop during that wind-down therefore finds every controller already
+   * aborted and answers "stopping" -- never a second "stopped" -- and a later run of the same
+   * sub-agent gets a first stop of its own, because its controller is a new, un-aborted one.
+   *
+   * "stopped" is the claim that took the cycle, so the tracked sweep follows the work out:
+   * `stopTracked` re-aborts in a loop, which is what catches a run added while the current ones
+   * settle. A derivation run between two of its passes reads that new run honestly -- un-aborted
+   * means there is still something to take.
+   */
+  stopSession(sessionId: string): StopOutcome {
+    const runs = this.activeRuns.get(sessionId);
+    const outcome = stopOutcomeOf([...(runs ?? [])].map((run) => run.controller));
+    if (outcome === "stopped") void this.stopTracked(sessionId);
+    return outcome;
   }
 
   /** Makes this conversation searchable from its log, which is where its turns actually are. */

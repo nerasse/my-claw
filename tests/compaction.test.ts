@@ -1,14 +1,14 @@
 import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
-import { compactSession, summaryBodyOf } from "../src/sessions/compaction.ts";
+import { compactSession, planCompaction, summaryBodyOf, tailBudgetFor } from "../src/sessions/compaction.ts";
 import { type LegacySessionData, type SessionMessage } from "../src/sessions/store.ts";
 import { deleteSession } from "../src/sessions/store.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
 import { sseFromCompletion } from "./helpers/sse.ts";
 import { setupSessionLog, appendMessages, writeLegacySessionFile } from "./helpers/session-log.ts";
-import type { SessionLog, CompactionEntry } from "../src/sessions/log.ts";
-import { contextEntries } from "../src/sessions/projection.ts";
+import type { SessionLog, CompactionEntry, CompactionStoppedEntry } from "../src/sessions/log.ts";
+import { contextEntries, promptOf } from "../src/sessions/projection.ts";
 import { hooks } from "../src/hooks/index.ts";
 import { sessionAffinityHeaders } from "../src/llm/session-headers.ts";
 
@@ -547,4 +547,114 @@ test("a compaction that thinks nothing says nothing", async () => {
     fetchMock.restore();
     hooks.off("session:compact:reasoning", onReasoning);
   }
+});
+
+/**
+ * A stopped compaction leaves a trace -- docs/stop.md.
+ *
+ * A boundary speaks only for a summary that landed, so a pass the owner aborted left nothing at
+ * all: minutes of work, no mark, and a thread reopened elsewhere could not tell the operation had
+ * been interrupted. The trace is written where the pass stopped, carrying the count a boundary
+ * would have carried for the same plan -- every one of those entries still on the branch.
+ */
+test("a stopped compaction leaves its trace, and no boundary", async () => {
+  appendMessages(log, makeMessages(30));
+  await log.flush();
+
+  // The plan the pass will be holding when it is aborted: same log, so same middle.
+  const planned = planCompaction(log, tailBudgetFor(makeConfig(), session));
+  assert.equal(planned.ok, true);
+  const expectedKept = planned.ok ? planned.plan.middle.length : -1;
+
+  const controller = new AbortController();
+  const fetchMock = mockFetch(async () => {
+    controller.abort();
+    throw Object.assign(new Error("The operation was aborted."), { name: "AbortError" });
+  });
+  try {
+    let clock = 1_000;
+    const now = (): number => {
+      const value = clock;
+      clock += 4_250;
+      return value;
+    };
+    await assert.rejects(() => compactSession(makeConfig(), session, undefined, controller.signal, now));
+    await log.flush();
+
+    const entries = log.entries();
+    const trace = entries.find((candidate): candidate is CompactionStoppedEntry => candidate.type === "compaction_stopped");
+    assert.ok(trace, "the stopped pass must leave a trace");
+    assert.equal(trace.kept, expectedKept);
+    assert.equal(trace.prompt, false);
+    assert.equal(trace.compactionMs, 8_500);
+    assert.equal(entries.some((candidate) => candidate.type === "compaction"), false, "nothing folded, so no boundary");
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+test("a failing compaction writes no trace: it is still running, and it failed", async () => {
+  appendMessages(log, makeMessages(12));
+  await log.flush();
+
+  const fetchMock = mockFetch(async () =>
+    new Response(JSON.stringify({ error: { message: "model overloaded" } }), {
+      status: 503,
+      headers: { "Content-Type": "application/json" },
+    }) as never,
+  );
+  try {
+    const result = await compactSession(makeConfig(), session);
+    assert.equal(result.ok, false);
+    await log.flush();
+    assert.equal(log.entries().some((candidate) => candidate.type === "compaction_stopped"), false);
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+test("a stopped pass never moves the boundary: the prompt is exactly what it was", async () => {
+  // A first compaction lands, so there is a floor to protect, then the log grows past it.
+  appendMessages(log, makeMessages(12));
+  await log.flush();
+  const okMock = mockFetch(async () =>
+    sseFromCompletion({ choices: [{ message: { content: "Summary of earlier context. The user was working on a multi-step task involving code changes." } }] }) as never,
+  );
+  let boundaryId = "";
+  try {
+    const result = await compactSession(makeConfig(), session);
+    if (!result.ok) assert.fail(`the first compaction must land: ${result.reason}`);
+    boundaryId = result.boundary?.entryId ?? "";
+  } finally {
+    okMock.restore();
+  }
+  appendMessages(log, makeMessages(20).map((message) => ({ ...message, content: `${message.content} again` })));
+  await log.flush();
+
+  const planned = planCompaction(log, tailBudgetFor(makeConfig(), session));
+  assert.equal(planned.ok, true, "the second pass has something to fold");
+  const promptBefore = promptOf(log.entries(), log.leaf());
+
+  const controller = new AbortController();
+  const abortMock = mockFetch(async () => {
+    controller.abort();
+    throw Object.assign(new Error("The operation was aborted."), { name: "AbortError" });
+  });
+  try {
+    await assert.rejects(() => compactSession(makeConfig(), session, undefined, controller.signal));
+    await log.flush();
+  } finally {
+    abortMock.restore();
+  }
+
+  const entries = log.entries();
+  assert.ok(entries.some((candidate) => candidate.type === "compaction_stopped"), "the trace is there");
+
+  // The trace is not a ceiling: the floor is still the boundary, entry for entry.
+  const context = contextEntries(entries, log.leaf());
+  assert.equal(context[0]?.type, "compaction");
+  assert.equal(context[0]?.id, boundaryId);
+  assert.equal(context.some((candidate) => candidate.type === "compaction_stopped"), false);
+  // And the prompt the model would get is unchanged, message for message.
+  assert.deepEqual(promptOf(entries, log.leaf()), promptBefore);
 });
