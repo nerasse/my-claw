@@ -802,6 +802,35 @@ export class AgentBridge implements AgentBackend {
           ...(response.incomplete ? { incomplete: response.incomplete } : {}),
         });
 
+        // A card is settled the moment its own tool is done, not when the slowest sibling of the
+        // batch is. One assistant message can carry a five-minute sub-agent beside three
+        // one-second searches, and a batch-wide flush left those three spinning: their timer
+        // measured the wait rather than the work, and their output arrived when the sub-agent
+        // finally returned (2026-09-16). The recording below still runs in call order -- the
+        // prompt has to, and a replay reads better for it.
+        const settle = async (
+          tc: typeof response.toolCalls[number],
+          result: { content: string; success: boolean },
+          durationMs: number,
+        ) => {
+          let transformedResult = (await hooks.transform("transform:tool:result", {
+            toolName: tc.name,
+            result: result.content,
+            sessionId: session.id,
+            toolCallId: tc.id,
+          })).result;
+          if (producesRemoteContent(tc.name)) {
+            transformedResult = normalizeUntrusted(transformedResult, `tool-result:${tc.name}`);
+          }
+          if (onToolUse) {
+            await onToolUse(
+              [{ id: tc.id, name: tc.name, arguments: tc.arguments, durationMs, output: transformedResult, ok: result.success }],
+              session.verbose !== false,
+            );
+          }
+          return { tc, result, durationMs, transformedResult };
+        };
+
         const executeOne = async (tc: typeof response.toolCalls[number]) => {
           if (truncatedCalls) {
             void log("warn", "refused a tool call from a truncated turn", {
@@ -809,14 +838,10 @@ export class AgentBridge implements AgentBackend {
               tool: tc.name,
               toolCallId: tc.id,
             });
-            return {
-              tc,
-              result: {
-                content: "Error: the model's turn was cut off by the output limit, so this call's arguments are incomplete. It was not executed. Reissue it, and split the work if the arguments were long.",
-                success: false,
-              },
-              durationMs: 0,
-            };
+            return await settle(tc, {
+              content: "Error: the model's turn was cut off by the output limit, so this call's arguments are incomplete. It was not executed. Reissue it, and split the work if the arguments were long.",
+              success: false,
+            }, 0);
           }
           const toolGate = await hooks.check("gate:tool:before", {
             toolName: tc.name,
@@ -832,7 +857,7 @@ export class AgentBridge implements AgentBackend {
               outputChars: 0,
               durationMs: 0,
             });
-            return { tc, result: { content: `Error: tool blocked by gate: ${toolGate.reason ?? "no reason"}`, success: false }, durationMs: 0 };
+            return await settle(tc, { content: `Error: tool blocked by gate: ${toolGate.reason ?? "no reason"}`, success: false }, 0);
           }
 
           const toolStartedAt = Date.now();
@@ -902,30 +927,20 @@ export class AgentBridge implements AgentBackend {
             durationMs,
           });
 
-          return { tc, result, durationMs };
+          return await settle(tc, result, durationMs);
         };
 
         const settled = response.toolCalls.length > 1
           ? await Promise.all(response.toolCalls.map(executeOne))
           : [await executeOne(response.toolCalls[0]!)];
 
-        const toolResults: ToolCallResult[] = [];
-        for (const { tc, result, durationMs } of settled) {
+        for (const { tc, result, durationMs, transformedResult } of settled) {
           toolExecutions += 1;
-          let transformedResult = (await hooks.transform("transform:tool:result", {
-            toolName: tc.name,
-            result: result.content,
-            sessionId: session.id,
-            toolCallId: tc.id,
-          })).result;
-          if (producesRemoteContent(tc.name)) {
-            transformedResult = normalizeUntrusted(transformedResult, `tool-result:${tc.name}`);
-          }
-          // Captured before the nested AGENTS.md injection: that text is prompt plumbing, not
-          // something a tool card should show.
-          toolResults.push({ id: tc.id, name: tc.name, arguments: tc.arguments, durationMs, output: transformedResult, ok: result.success });
+          // The card took the transformed output before the nested AGENTS.md injection: that text
+          // is prompt plumbing, not something a tool card should show.
+          let recordedOutput = transformedResult;
           if (nestedAgents) {
-            transformedResult += nestedAgents.collect(tc.name, tc.arguments);
+            recordedOutput += nestedAgents.collect(tc.name, tc.arguments);
           }
           // Recorded before the message is built, and the message comes back from the recording:
           // the whole output is archived first, then the two views are cut from it. The other order
@@ -934,16 +949,12 @@ export class AgentBridge implements AgentBackend {
             callId: tc.id,
             name: tc.name,
             arguments: JSON.stringify(tc.arguments),
-            output: transformedResult,
+            output: recordedOutput,
             ok: result.success,
             ...(durationMs !== undefined ? { durationMs } : {}),
           });
           stagnation.observe(recorded.message);
           chatMessages.push({ role: "tool", tool_call_id: tc.id, content: recorded.message });
-        }
-
-        if (onToolUse) {
-          await onToolUse(toolResults, session.verbose !== false);
         }
       }
 

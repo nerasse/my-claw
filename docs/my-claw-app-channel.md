@@ -1059,6 +1059,16 @@ looked done while it was still going -- the sub-agent panel, which asks for stat
 distinction is a `has` rather than a `?? ""`, and the flag is only ever set by the history path;
 live cards get their spinner from `chat.tool.start` as before.
 
+A card is settled the moment its own tool is done, not when the slowest sibling of the batch is.
+The tools of one assistant turn run in parallel, and the cards used to be flushed as a batch after
+`Promise.all`: a five-minute browser sub-agent beside three one-second searches left those three
+spinning, output empty, with a timer that measured the wait rather than the work -- all four
+settled together when the sub-agent returned. The recording (the log entry, and the prompt
+message built from it) still runs in call order after the batch, because the prompt has to and a
+replay reads better for it; only the display left the barrier. Settling therefore matches the
+card by id, through `toolIdsByModelId`: results now arrive in the order the work ended, and the
+start queue's `shift()` would have handed the first card to whichever tool spoke first.
+
 A card carries its output clipped to `TOOL_OUTPUT_LIMIT` (4000 chars), with `truncated: true`
 when anything was cut. Lifting the limit was the obvious fix and the wrong one: every reconnect
 replays a whole page of history, so the bytes of every tool that ever ran would be paid for by

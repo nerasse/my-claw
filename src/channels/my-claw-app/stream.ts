@@ -100,8 +100,7 @@ export class MyClawAppStreamer {
   }
 
   /** Live output from a running tool (bash). Appends to the card the start frame opened; the
-   *  matching `chat.tool` frame settles it. Throttled upstream (the tool batches), so this does
-   *  not coalesce. */
+   *  matching `chat.tool` frame settles it. Throttled by the caller, so this does not coalesce. */
   async appendToolProgress(toolCallId: string, chunk: { stdout?: string; stderr?: string }): Promise<void> {
     const stdout = chunk.stdout ?? "";
     const stderr = chunk.stderr ?? "";
@@ -348,7 +347,16 @@ export class MyClawAppStreamer {
       // turn-scoped counter.
       // `toolCardId`, not the raw `tool.id`: the fallback has to mint the id the start frame and
       // the history builder would have, or the card it lands on is a third one again.
-      const startId = this.pendingToolIds.shift()?.id ?? toolCardId(tool.id) ?? (() => { this.toolCount += 1; return `${this.opts.id}:tool:${this.toolCount}`; })();
+      // By id first: tools are flushed as they finish, so the order results arrive in is the order
+      // the work ended, not the order it was asked for -- `shift()` would settle the first card
+      // with whichever tool spoke first, and leave the card of a finished tool spinning
+      // (2026-09-16). The shift stays for a provider that sends no tool_use id at all.
+      const wanted = tool.id ? this.toolIdsByModelId.get(tool.id) : undefined;
+      const at = wanted ? this.pendingToolIds.findIndex((pending) => pending.id === wanted) : -1;
+      const startId = (at !== -1 ? this.pendingToolIds.splice(at, 1)[0]!.id : undefined)
+        ?? this.pendingToolIds.shift()?.id
+        ?? toolCardId(tool.id)
+        ?? (() => { this.toolCount += 1; return `${this.opts.id}:tool:${this.toolCount}`; })();
       const id = startId;
       const output = tool.output ?? "";
       const truncated = output.length > TOOL_OUTPUT_LIMIT;

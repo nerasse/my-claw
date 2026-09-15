@@ -66,6 +66,35 @@ describe("MyClawAppStreamer media refs", () => {
     expect(text).toBe("a\n\n\n fin");
   });
 
+  test("a result settles its own card, not the first one asked for", async () => {
+    // Tools are flushed as they finish, so results arrive in the order the work ended. Settling by
+    // the start queue's order gave the first card the second tool's output, and left the card of
+    // the tool that had actually answered spinning until the run ended (2026-09-16).
+    const { streamer, frames } = collect();
+    await streamer.appendToolStart([
+      { id: "tu_browser", name: "browser", arguments: { mission: "tiktok" } },
+      { id: "tu_search", name: "web_search", arguments: { q: "bars" } },
+    ]);
+    await streamer.appendToolUse(
+      [{ id: "tu_search", name: "web_search", arguments: { q: "bars" }, durationMs: 1000, output: "results", ok: true }],
+      true,
+    );
+
+    const starts = frames.filter((f): f is typeof f & { type: "chat.tool.start"; id: string; name: string } => f.type === "chat.tool.start");
+    const idOf = (name: string) => starts.find((f) => f.name === name)!.id;
+    const settled = frames.filter((f): f is typeof f & { type: "chat.tool"; id: string; output: string } => f.type === "chat.tool");
+    expect(settled).toHaveLength(1);
+    expect(settled[0]!.id).toBe(idOf("web_search"));
+    expect(settled[0]!.output).toBe("results");
+
+    // The tool still running is the one a stop has to settle, with its own id.
+    await streamer.finish();
+    const after = frames.filter((f): f is typeof f & { type: "chat.tool"; id: string; output: string } => f.type === "chat.tool");
+    expect(after).toHaveLength(2);
+    expect(after[1]!.id).toBe(idOf("browser"));
+    expect(after[1]!.output).toBe("interrupted");
+  });
+
   test("a ref split across a tool boundary never leaks into the next segment", async () => {
     const { streamer, frames } = collect();
     await streamer.push("intro");
