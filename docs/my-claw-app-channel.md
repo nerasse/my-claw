@@ -431,18 +431,6 @@ provider request URLs.
   unarchiving hands the conversation back exactly as it was. Both answer with the refreshed
   `session.list.result`. Archiving a thread that was never opened is refused rather than
   creating one.
-- `session.pin` pins a conversation at the **end** of the owner's pinned list, or unpins it;
-  `session.pin.order` rewrites that list in the order the owner dragged it to. The rank lives on
-  the session as `pinRank` (dense, from 0) and is reported as `pinRank` on every summary, so one
-  field carries both facts: pinned, and where. Both answer with `session.list.result`, and that
-  listing is **broadcast to every socket of the owner**, not just to the device that asked: a pin
-  is about finding a conversation again, and the owner reaches the same conversations from the
-  phone and from the browser. Pins used to be a per-device preference, which meant each client
-  had its own private idea of what was pinned and in what order.
-  A reorder only moves the ids it names: a conversation pinned from another device while the
-  list was on screen keeps its pin and lands after the dragged ones. An archived conversation
-  keeps its rank, so unarchiving brings it back where it was. Pinning a thread that was never
-  opened is refused rather than creating one.
 - `session.delete` hard-deletes the session file and every archive snapshot. There is no way
   to merely empty a conversation: archiving files it away reversibly and deleting destroys it,
   which leaves nothing for a third verb to do.
@@ -696,7 +684,7 @@ runs fresh like any other message.
 { "type": "chat.stream.abort", "id": "uuid", "threadId": "projet", "error": "..." }
 { "type": "chat.tool", "id": "uuid:tool:1", "threadId": "projet", "turnId": "uuid", "name": "bash", "args": {...}, "durationMs": 4, "ok": true, "output": "...", "truncated": false, "ts": "iso" }
 { "type": "chat.history", "threadId": "projet", "before": 50, "hasMore": true, "nextBefore": 100, "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso", "transcript": "...", "run": { "id": "r-...", "status": "running|done|aborted|error", "startTs": "iso", "endTs": "iso" }, "attachments": [{ "id": "uuid", "type": "image", "filename": "photo.png", "mimeType": "image/png", "sizeBytes": 5120, "durationMs": 3100, "deleted": false }] }] }
-{ "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "...", "archived": true, "pinRank": 0, "activeRun": true, "workspace": "default", "hasDraft": true }] }
+{ "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "...", "archived": true, "activeRun": true, "workspace": "default", "hasDraft": true }] }
 { "type": "draft.changed", "threadId": "projet", "text": "ce qui est tape ailleurs", "ts": 1755690000000 }
 { "type": "session.workspace.set.result", "threadId": "projet", "workspace": "sofa" }
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }

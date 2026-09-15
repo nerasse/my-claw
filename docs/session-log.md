@@ -96,7 +96,7 @@ Trois conclusions :
 | Nature | Champs | Ce que ça veut |
 |---|---|---|
 | Conversation | `messages`, `commands`, `failures` | immuable, append, jamais réécrit |
-| Réglages | `title`, `pinRank`, `archivedAt`, `modelOverride`, `effortOverride`, `workspace`, `skillsOff`, `promptLayersOff`, `nestedDisabled`, `contextOverride`, `verbose`, `approvedTools`, `memoryRecallOff` | mutable, écrasable, minuscule |
+| Réglages | `title`, `archivedAt`, `modelOverride`, `effortOverride`, `workspace`, `skillsOff`, `promptLayersOff`, `nestedDisabled`, `contextOverride`, `verbose`, `approvedTools`, `memoryRecallOff` | mutable, écrasable, minuscule |
 | État de run | `scopeOverride`, `scopeEffort`, `invokedBy`, `lastPrompt`, `lastFixedTokens` | éphémère, ne devrait pas survivre au process |
 | Projections | `tokenUsage`, `nestedAgents`, `callers`, `promptBase` | dérivable |
 
@@ -406,7 +406,6 @@ interface SessionMeta {
   leafId: string | null;       // le curseur de branche
   title?: string;
   archivedAt?: string;
-  pinRank?: number;
   modelOverride?: string;
   effortOverride?: EffortLevel;
   contextOverride?: ContextOverride;
