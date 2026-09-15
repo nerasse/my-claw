@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { displayOf, pageOf, pageBefore, runFold, runFoldPlan, withSpawnCards, type DisplayResolvers } from "../../../src/channels/my-claw-app/display.ts";
+import { displayOf, mediaRefsOf, pageOf, pageBefore, runFold, runFoldPlan, windowNeedsFiles, withSpawnCards, type DisplayResolvers } from "../../../src/channels/my-claw-app/display.ts";
 import type { Entry, Provisioned } from "../../../src/sessions/log.ts";
 import type { SessionFile } from "../../../src/channels/my-claw-app/files.ts";
 
@@ -885,5 +885,43 @@ describe("pageBefore: a folded run as the cursor", () => {
     const path = chain([user("q"), runStart(), ...Array.from({ length: 9 }, (_, i) => tool(`c${i}`)), runEnd()]);
     const { window } = pageBefore(path, "run-nope", 5, 0);
     expect(window.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * The gate, not the resolver: whether a served window reads the thread's file store at all.
+ *
+ * The resolver had tests from the day the pictures landed on the end marker (2026-09-14); the
+ * question *before* it -- does this window need the store -- was a proxy, copied in three places,
+ * and nothing held any of them. That is how an incomplete fix stayed green. Measured on the
+ * owner's phone (2026-09-15): the pictures of a run showed as an empty stage under a bare filename
+ * while it was live, and were fine on reopening the thread, because the delta that updated the
+ * screen held neither a question nor a `MEDIA:` ref.
+ */
+describe("windowNeedsFiles: what a served window owes its pictures", () => {
+  test("a window whose pictures ride the end marker asks for the store", () => {
+    // The delta's shape exactly: the run's own entries, no question (it predates the cursor), and
+    // no ref anywhere in the prose.
+    const delta = chain([tool("c1"), phase(""), runEnd("done", ["/tmp/browser-shot.png"])]);
+    expect(windowNeedsFiles(delta)).toBe(true);
+    expect(mediaRefsOf(delta)).toEqual(["/tmp/browser-shot.png"]);
+  });
+
+  test("a question in the window still needs it, for the attachments it names", () => {
+    expect(windowNeedsFiles(chain([user("regarde")]))).toBe(true);
+  });
+
+  test("prose refs are read by the same parser the resolver uses", () => {
+    // Not a substring hunt: what counts is what `extractMediaRefs` finds, so the gate and the
+    // resolver can never disagree about which window has something to resolve.
+    expect(windowNeedsFiles(chain([phase("voici\nMEDIA:/tmp/a.png")]))).toBe(true);
+    const quiet = chain([phase("j'ai lu docs/MEDIA: c'est un marqueur")]);
+    expect(windowNeedsFiles(quiet)).toBe(false);
+  });
+
+  test("a window with nothing to resolve never reads the store", () => {
+    // The economy the gate exists for: every reconnect would otherwise read the directory.
+    expect(windowNeedsFiles(chain([tool("c1"), phase("etape"), runEnd()]))).toBe(false);
+    expect(windowNeedsFiles([])).toBe(false);
   });
 });

@@ -663,6 +663,66 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(missing!.deleted, true);
   });
 
+  /**
+   * Measured on the owner's phone (2026-09-15): the pictures a run's tools produced drew as an
+   * empty stage under a bare filename while the run was live, and were fine on reopening the
+   * thread. The delta is why. It is everything written since the client's cursor, so it carries
+   * the run's entries and never the question that opened it -- and the gate that decides whether
+   * to read the thread's file store looked for a question or for `MEDIA:` in the prose, neither of
+   * which a tool's pictures have. Every ref replayed as deleted, with an id nothing can serve.
+   */
+  test("a delta resolves a run's pictures, though it holds no question to recognise them by", async () => {
+    const files = new SessionFileStore();
+    const stored = await files.save(DEVICE, THREAD, "browser-shot.png", new Uint8Array([1, 2, 3]));
+
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "tour precedent", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    logSetup.log.append({ type: "user", prompt: true, text: "va me chercher ca" });
+    const start = logSetup.log.append({ type: "run_start", prompt: false });
+    const call = logSetup.log.append({
+      type: "tool", prompt: true, callId: "call-shot", name: "bash",
+      args: { command: "ls" }, output: "ok", truncated: false, ok: true, runId: start.id,
+    });
+    logSetup.log.append({ type: "phase", prompt: true, text: "", runId: start.id });
+    logSetup.log.append({ type: "run_end", prompt: false, reason: "done", media: ["/tmp/browser-shot.png"] });
+
+    // The delta a device asks for on reconnect: the cursor sits on the tool call, so the window is
+    // the run's last entries -- no question above it, and no ref in any prose.
+    const delta = await store.sync(DEVICE, THREAD, call.id);
+    const answer = delta.entries.find((e) => e.role === "assistant");
+    assert.ok(answer, "the run's answer is in the delta");
+    if (answer.role !== "assistant") throw new Error("expected an assistant entry");
+    assert.equal(answer.attachments?.length, 1);
+    // The id is the store's, so the app can fetch it; a minted one is a 404 and a blank stage.
+    assert.equal(answer.attachments![0]!.id, stored.id);
+    assert.equal(answer.attachments![0]!.filename, "browser-shot.png");
+    assert.equal(answer.attachments![0]!.deleted, undefined);
+  });
+
+  /** The same window, the other way a turn carries media: a ref the agent wrote itself. */
+  test("a delta still resolves the refs an agent wrote in its prose", async () => {
+    const files = new SessionFileStore();
+    const stored = await files.save(DEVICE, THREAD, "output.png", new Uint8Array([9]));
+
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "tour precedent", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    logSetup.log.append({ type: "user", prompt: true, text: "fais un dessin" });
+    const start = logSetup.log.append({ type: "run_start", prompt: false });
+    const call = logSetup.log.append({
+      type: "tool", prompt: true, callId: "call-draw", name: "bash",
+      args: { command: "ls" }, output: "ok", truncated: false, ok: true, runId: start.id,
+    });
+    logSetup.log.append({ type: "phase", prompt: true, text: "voila\nMEDIA:/tmp/output.png", runId: start.id });
+
+    const delta = await store.sync(DEVICE, THREAD, call.id);
+    const answer = delta.entries.find((e) => e.role === "assistant");
+    if (answer?.role !== "assistant") throw new Error("expected an assistant entry");
+    assert.equal(answer.attachments?.[0]?.id, stored.id);
+    assert.equal(answer.text, "voila");
+  });
+
   test("a replayed voice note carries its duration and its transcript, not the [Audio] marker", async () => {
     const files = new SessionFileStore();
     const saved = await files.save(DEVICE, THREAD, "voice-note.m4a", new Uint8Array([1, 2, 3, 4]));

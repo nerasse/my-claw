@@ -472,6 +472,34 @@ function transcriptsById(
 }
 
 /**
+ * Every path a window's display will try to resolve, whatever carried it: the refs an agent wrote
+ * in its prose, and what each run's tools put on their end marker.
+ */
+export function mediaRefsOf(entries: readonly Entry[]): string[] {
+  const refs: string[] = [];
+  for (const entry of entries) {
+    if (entry.type === "phase") refs.push(...extractMediaRefs(entry.text).map((ref) => ref.path));
+    else if (entry.type === "run_end" && entry.media?.length) refs.push(...entry.media);
+  }
+  return refs;
+}
+
+/**
+ * Whether serving this window needs the thread's file list -- the bytes a media ref resolves to.
+ *
+ * Asked with the refs themselves, never with a proxy for them. "Does this window contain `MEDIA:`"
+ * was that proxy, and it knows two of the three ways a turn carries media: a tool's pictures ride
+ * the run's end marker with no ref anywhere in the prose, so a delta that delivered one resolved
+ * nothing and drew an empty stage under a bare filename (2026-09-15).
+ *
+ * A delta is where it showed: the window is everything written since the client's cursor, so it
+ * carries the run's entries and never the question that opened it.
+ */
+export function windowNeedsFiles(entries: readonly Entry[]): boolean {
+  return entries.some((entry) => entry.type === "user") || mediaRefsOf(entries).length > 0;
+}
+
+/**
  * Entries in, bubbles out.
  *
  * `outputLimit` clips a tool card: a thread would otherwise carry every byte every tool ever

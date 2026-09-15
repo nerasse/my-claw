@@ -6,7 +6,7 @@ import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
 import { readMeta } from "../../sessions/meta.ts";
 import { pathOf, UnknownCursorError, type Provisioned, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
-import { pageOf, pageBefore, displayOf, runFold, runFoldPlan, withSpawnCards, type DisplayResolvers } from "./display.ts";
+import { pageOf, pageBefore, displayOf, runFold, runFoldPlan, withSpawnCards, windowNeedsFiles, type DisplayResolvers } from "./display.ts";
 import { spawnStates } from "../../sessions/spawn-state.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/tools/display.ts";
@@ -420,9 +420,10 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       ? pageBefore(path, beforeId, limit, before)
       : pageOf(path, limit, before);
 
-    // List thread files for attachment resolution
-    const needsFiles = window.some((e: Entry) => e.type === "user" || (e.type === "phase" && (e as PhaseEntry).text.includes("MEDIA:")));
-    const stored = needsFiles ? await this.files.list(owner, threadId) : [];
+    // List thread files for attachment resolution: what a media ref resolves to, asked of the
+    // refs themselves -- a tool's pictures ride the run's end marker, with no `MEDIA:` anywhere
+    // (2026-09-15).
+    const stored = windowNeedsFiles(window) ? await this.files.list(owner, threadId) : [];
     const resolvers = makeResolvers(stored);
 
     // Folded over the whole log, not over the page: a child spawned on page 3 settles on page 1,
@@ -519,10 +520,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     delta = withSpawnCards(delta, allEntries);
 
     // Resolve attachments for display
-    const needsFiles = delta.some(
-      (e) => e.type === "user" || (e.type === "phase" && (e as PhaseEntry).text.includes("MEDIA:")),
-    );
-    const stored = needsFiles ? await this.files.list(owner, threadId) : [];
+    const stored = windowNeedsFiles(delta) ? await this.files.list(owner, threadId) : [];
     const resolvers = makeResolvers(stored);
     // The run fold covers the whole current branch, so entries of a delta that starts mid-run
     // still carry their run: the client folds them under the right header even when the
@@ -585,8 +583,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     if (end - start + 1 > RUN_ITEMS_LIMIT) return { entries: [], found: false };
 
     const window = path.slice(start, end + 1);
-    const needsFiles = window.some((e: Entry) => e.type === "user" || (e.type === "phase" && (e as PhaseEntry).text.includes("MEDIA:")));
-    const stored = needsFiles ? await this.files.list(owner, threadId) : [];
+    const stored = windowNeedsFiles(window) ? await this.files.list(owner, threadId) : [];
     const resolvers = makeResolvers(stored);
     // Folded over the whole branch for the same reasons a page is: a child spawned inside this run
     // may have settled long after it, and the run meta must be the one the header already shows.
