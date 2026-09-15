@@ -86,3 +86,31 @@ they all passed a file list in by hand, which is exactly how an incomplete fix s
 A delta the client asks for *after* the owner's next message exists comes back resolved: the
 window then holds that question. The break is mid-run, and it repairs itself on the next sync or
 reopen -- which is why it read as intermittent.
+
+## The id a marker carries (2026-09-15)
+
+A media ref is a path, and a path is what the run wrote; the device, though, fetches an **id**, and
+the store finds an id from any thread of its owner. `run_end.mediaIds` records that id, in the same
+order as `media`, read in parallel with it -- never instead of it, so a server rolled back to
+`prev` still knows only the paths and still works. A `null` hole is a picture whose copy is nowhere:
+the display resolves it by filename when it can, and names it without a picture when it cannot.
+
+`src/sessions/migrate-media-ids.ts` fills the ids for the markers written before they existed, one
+pass at boot, before any reader opens a session. The ids are derivable: a stored file is
+`<id>__<name>`, so one readdir pairs every name with its copies, and the copy a marker wants is the
+one written closest to the moment its run ended. A session's own thread is tried first -- exactly
+the scope the old filename match used -- and only a name that is nowhere there falls back to the
+owner's whole tree, which is what a sub-agent's marker needs: its pictures were copied into the
+thread of the run that asked for it, and nothing of its own.
+
+The rewrite is line by line, backed up as `entries.jsonl.mediaids-<stamp>.bak` beside the file, and
+written through `writeFileAtomically`. A line this pass has nothing to pair keeps its exact bytes,
+including one that does not parse. `scripts/migrate-media-ids.ts` reports what the sweep would do
+(dry run by default: 16 sessions, 18 markers, 74 pictures paired, 4 holes on this install) and
+applies it by hand with `--apply`, refusing while the server holds the logs.
+
+The whole tree is swept once: a `.media-ids-swept` stamp at the root of `~/.my-claw` retires the
+pass, because re-reading 211 MB of logs at every boot to find nothing is not a price worth paying.
+A marker written *after* the sweep still names its pictures by path and still resolves through the
+filename match, which is what the writer half of this change -- markers born with their ids --
+comes to retire.

@@ -6,7 +6,7 @@ import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
 import { readMeta } from "../../sessions/meta.ts";
 import { pathOf, UnknownCursorError, type Provisioned, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
-import { pageOf, pageBefore, displayOf, runFold, runFoldPlan, withSpawnCards, windowNeedsFiles, type DisplayResolvers } from "./display.ts";
+import { pageOf, pageBefore, displayOf, runFold, runFoldPlan, withSpawnCards, windowNeedsFiles, type DisplayResolvers, type MediaRef } from "./display.ts";
 import { spawnStates } from "../../sessions/spawn-state.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/tools/display.ts";
@@ -223,11 +223,19 @@ interface HistoryPhase {
   content: string;
 }
 
-function mediaRefAttachments(refs: Array<{ path: string }>, files: SessionFile[]): MyClawAppHistoryAttachment[] {
+function mediaRefAttachments(refs: MediaRef[], files: SessionFile[]): MyClawAppHistoryAttachment[] {
   const used = new Set<string>();
   const out: MyClawAppHistoryAttachment[] = [];
   for (const ref of refs) {
     const name = basename(ref.path);
+    // The log paired this ref with the copy the run made: the id is what the device fetches, and
+    // the type and the name ride the path itself, so no directory is read at all. It also resolves
+    // from any thread of the owner, which is the half a filename match in one directory misses.
+    if (ref.id) {
+      out.push({ id: ref.id, type: mediaTypeForPath(ref.path), filename: name });
+      used.add(ref.id);
+      continue;
+    }
     // listInThread sorts newest first: a regenerated file replaces the previous copy.
     const file = files.find((f) => f.filename === name && !used.has(f.id));
     if (file) {

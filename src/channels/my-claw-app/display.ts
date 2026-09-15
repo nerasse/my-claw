@@ -39,7 +39,7 @@ export interface DisplayResolvers {
   /** Files read back out of the `[Attachments]` block the stored turn keeps. */
   attachmentsOfBlock(entries: AttachmentBlockEntry[]): MyClawAppHistoryAttachment[];
   /** Files the agent named with a `MEDIA:` ref in its own text. */
-  mediaOf(refs: Array<{ path: string }>): MyClawAppHistoryAttachment[];
+  mediaOf(refs: MediaRef[]): MyClawAppHistoryAttachment[];
 }
 
 /**
@@ -472,14 +472,24 @@ function transcriptsById(
 }
 
 /**
- * Every path a window's display will try to resolve, whatever carried it: the refs an agent wrote
- * in its prose, and what each run's tools put on their end marker.
+ * Every path a window's display will try to resolve, whatever carried it, paired with the store id
+ * when the log already knows one.
  */
-export function mediaRefsOf(entries: readonly Entry[]): string[] {
-  const refs: string[] = [];
+export interface MediaRef {
+  path: string;
+  id?: string;
+}
+
+export function mediaRefsOf(entries: readonly Entry[]): MediaRef[] {
+  const refs: MediaRef[] = [];
   for (const entry of entries) {
-    if (entry.type === "phase") refs.push(...extractMediaRefs(entry.text).map((ref) => ref.path));
-    else if (entry.type === "run_end" && entry.media?.length) refs.push(...entry.media);
+    if (entry.type === "phase") refs.push(...extractMediaRefs(entry.text).map((ref) => ({ path: ref.path })));
+    else if (entry.type === "run_end" && entry.media?.length) {
+      refs.push(...entry.media.map((path, i) => {
+        const id = entry.mediaIds?.[i];
+        return id ? { path, id } : { path };
+      }));
+    }
   }
   return refs;
 }
@@ -494,9 +504,14 @@ export function mediaRefsOf(entries: readonly Entry[]): string[] {
  *
  * A delta is where it showed: the window is everything written since the client's cursor, so it
  * carries the run's entries and never the question that opened it.
+ *
+ * A ref the log already paired with a store id needs no listing: the device fetches that id, and
+ * the store finds it from any thread of its owner. The listing is for what is left -- prose refs,
+ * and markers written before the ids existed.
  */
 export function windowNeedsFiles(entries: readonly Entry[]): boolean {
-  return entries.some((entry) => entry.type === "user") || mediaRefsOf(entries).length > 0;
+  if (entries.some((entry) => entry.type === "user")) return true;
+  return mediaRefsOf(entries).some((ref) => !ref.id);
 }
 
 /**
@@ -524,13 +539,17 @@ export function displayOf(
    * pair them: the last phase of a run is the answer the live bubble hung its pictures on, and a
    * reload that lost them showed the prose alone (2026-09-14).
    */
-  const mediaByPhase = new Map<string, string[]>();
+  const mediaByPhase = new Map<string, MediaRef[]>();
   {
     let lastPhase: string | undefined;
     for (const entry of entries) {
       if (entry.type === "phase") lastPhase = entry.id;
       else if (entry.type === "run_end" && entry.media?.length && lastPhase) {
-        mediaByPhase.set(lastPhase, [...(mediaByPhase.get(lastPhase) ?? []), ...entry.media]);
+        const refs = entry.media.map((path, i) => {
+          const id = entry.mediaIds?.[i];
+          return id ? { path, id } : { path };
+        });
+        mediaByPhase.set(lastPhase, [...(mediaByPhase.get(lastPhase) ?? []), ...refs]);
       }
     }
   }
@@ -588,10 +607,10 @@ export function displayOf(
 
     if (entry.type === "phase") {
       // The agent names its files with `MEDIA:` refs; a replayed turn must show real attachments.
-      const refs: Array<{ path: string }> = extractMediaRefs(entry.text);
+      const refs: MediaRef[] = extractMediaRefs(entry.text);
       const text = stripMediaRefs(entry.text).trim();
       // Its own refs first, then what its tools attached: the order the live frame is built in.
-      for (const path of mediaByPhase.get(entry.id) ?? []) refs.push({ path });
+      refs.push(...(mediaByPhase.get(entry.id) ?? []));
       const media = refs.length > 0 ? resolvers.mediaOf(refs) : [];
       // A phase that only thought before calling a tool wrote no prose, and the bubble the reader
       // saw was that thought: dropping it is what made a reopened thread jump from the question

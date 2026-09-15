@@ -700,6 +700,37 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(answer.attachments![0]!.deleted, undefined);
   });
 
+  /**
+   * The point of the id: a marker that names one needs no directory listing at all, and the store
+   * finds the copy from any thread of its owner -- which a filename match inside one thread cannot.
+   * Nothing is in this thread's store, so only the id can answer.
+   */
+  test("a marker that names its pictures by id resolves without reading a directory", async () => {
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "tour precedent", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    logSetup.log.append({ type: "user", prompt: true, text: "montre moi" });
+    const start = logSetup.log.append({ type: "run_start", prompt: false });
+    const call = logSetup.log.append({
+      type: "tool", prompt: true, callId: "call-paired", name: "bash",
+      args: { command: "ls" }, output: "ok", truncated: false, ok: true, runId: start.id,
+    });
+    logSetup.log.append({ type: "phase", prompt: true, text: "", runId: start.id });
+    logSetup.log.append({
+      type: "run_end", prompt: false, reason: "done",
+      media: ["/tmp/browser-shot.png"],
+      mediaIds: ["0c17e81a-28ee-429d-82d7-52c5d0a99616"],
+    });
+
+    const delta = await store.sync(DEVICE, THREAD, call.id);
+    const answer = delta.entries.find((e) => e.role === "assistant");
+    if (answer?.role !== "assistant") throw new Error("expected an assistant entry");
+    assert.equal(answer.attachments?.[0]?.id, "0c17e81a-28ee-429d-82d7-52c5d0a99616");
+    assert.equal(answer.attachments?.[0]?.filename, "browser-shot.png");
+    assert.equal(answer.attachments?.[0]?.type, "image");
+    assert.equal(answer.attachments?.[0]?.deleted, undefined);
+  });
+
   /** The same window, the other way a turn carries media: a ref the agent wrote itself. */
   test("a delta still resolves the refs an agent wrote in its prose", async () => {
     const files = new SessionFileStore();

@@ -38,6 +38,8 @@ const show = (entries: readonly Entry[], limit = 1000, files: SessionFile[] = []
 const runStart = (extra: Record<string, unknown> = {}) => ({ type: "run_start", prompt: false, ...extra }) as Provisioned<Entry>;
 const runEnd = (reason: "done" | "aborted" | "error" = "done", media?: string[]) =>
   ({ type: "run_end", prompt: false, reason, ...(media ? { media } : {}) }) as Provisioned<Entry>;
+const runEndWithIds = (media: string[], mediaIds: Array<string | null>) =>
+  ({ type: "run_end", prompt: false, reason: "done", media, mediaIds }) as Provisioned<Entry>;
 
 describe("displayOf: one entry, one bubble", () => {
   test("an exchange draws in the order it happened", () => {
@@ -904,7 +906,20 @@ describe("windowNeedsFiles: what a served window owes its pictures", () => {
     // no ref anywhere in the prose.
     const delta = chain([tool("c1"), phase(""), runEnd("done", ["/tmp/browser-shot.png"])]);
     expect(windowNeedsFiles(delta)).toBe(true);
-    expect(mediaRefsOf(delta)).toEqual(["/tmp/browser-shot.png"]);
+    expect(mediaRefsOf(delta)).toEqual([{ path: "/tmp/browser-shot.png" }]);
+  });
+
+  test("a marker that already names its store id asks for nothing", () => {
+    // What the id is for: the device fetches it, the store finds it from any thread of its owner,
+    // and no directory is listed for a window that only holds already-paired pictures.
+    const paired = chain([tool("c1"), phase(""), runEndWithIds(["/tmp/shot.png"], ["f9929fee-16d2"])]);
+    expect(windowNeedsFiles(paired)).toBe(false);
+    expect(mediaRefsOf(paired)).toEqual([{ path: "/tmp/shot.png", id: "f9929fee-16d2" }]);
+  });
+
+  test("a half-paired marker still asks, for the holes", () => {
+    const mixed = chain([tool("c1"), phase(""), runEndWithIds(["/tmp/a.png", "/tmp/b.png"], ["id-a", null])]);
+    expect(windowNeedsFiles(mixed)).toBe(true);
   });
 
   test("a question in the window still needs it, for the attachments it names", () => {

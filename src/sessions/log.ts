@@ -248,6 +248,17 @@ export interface RunEndEntry extends EntryBase {
    * tool ran. Resolved by filename, exactly like a `MEDIA:` ref (2026-09-14).
    */
   media?: string[];
+  /**
+   * The store id of each `media` entry, same order, when the bytes were stored before the marker
+   * was written. A device fetches by id, so an id here needs no directory listing at all -- and
+   * it is found from any thread of the owner, which a filename match in one thread directory
+   * cannot do (2026-09-15).
+   *
+   * A null hole means "no copy found": that entry still resolves by filename, or not at all.
+   * Read in parallel with `media`, never instead of it: a server on `prev` still knows only the
+   * paths, and the rollback has to keep working.
+   */
+  mediaIds?: Array<string | null>;
 }
 
 export type Entry =

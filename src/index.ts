@@ -7,6 +7,7 @@ import { promptOf } from "./sessions/projection.ts";
 import { gcShadows } from "./snapshots/store.ts";
 import { migrateSessions } from "./sessions/migrate.ts";
 import { migrateRunMarkers } from "./sessions/migrate-run-markers.ts";
+import { migrateMediaIds } from "./sessions/migrate-media-ids.ts";
 import type { CommandEntry } from "./sessions/log.ts";
 import { setSessionLogResolver } from "./sessions/log-access.ts";
 import { recordSpawnLifecycle } from "./sessions/spawn-state.ts";
@@ -668,6 +669,13 @@ async function main() {
   // before any reader opens it, so no code ever meets a half-migrated file. One-off as well -- a
   // session that already carries a marker is skipped.
   await migrateRunMarkers();
+
+  // And the ids of the pictures those markers name. A ref is a path and a device fetches an id, so
+  // a marker written before this pass resolves by filename inside one thread directory -- which
+  // misses the copy a sub-agent's run left in its parent's thread, and lists nothing at all for a
+  // window that never read one. Stamped: the sweep costs a read of every log, and a marker written
+  // after it carries its ids by construction.
+  await migrateMediaIds();
 
   const sessionManager = new SessionManager();
   sessionManager.startAutosave();
