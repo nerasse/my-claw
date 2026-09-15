@@ -119,6 +119,11 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppSessionUnarchive,
   MyClawAppDraftSet,
   MyClawAppSessionDelete,
+  MyClawAppFolderCreate,
+  MyClawAppFolderRename,
+  MyClawAppFolderRemove,
+  MyClawAppFolderOrder,
+  MyClawAppSessionFolder,
   MyClawAppSessionHistory,
   MyClawAppSessionSync,
   MyClawAppSessionSyncResult,
@@ -1796,6 +1801,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "session.unarchive":
         this.detach(this.handleSessionArchive(ws, frame), "handleSessionArchive");
         break;
+      case "folder.create":
+      case "folder.rename":
+      case "folder.remove":
+      case "folder.order":
+      case "session.folder":
+        this.detach(this.handleFolder(ws, frame), "handleFolder");
+        break;
       case "session.delete":
         this.detach(this.handleSessionDelete(ws, frame), "handleSessionDelete");
         break;
@@ -2633,7 +2645,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     const withRuns = this.runActive
       ? sessions.map((session) => ({ ...session, activeRun: this.runActive!(this.store.resolveSessionId(owner, session.threadId)) }))
       : sessions;
-    return { type: "session.list.result", sessions: withRuns };
+    return { type: "session.list.result", sessions: withRuns, folders: await this.store.folders(owner) };
   }
 
   private async handleSessionList(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppSessionList): Promise<void> {
@@ -2792,6 +2804,42 @@ export class MyClawAppAdapter implements ChannelAdapter {
     } catch (err) {
       const action = archiving ? "archive" : "unarchive";
       await this.refuse(ws, "session", `${action} failed`, { threadId, error: String(err) });
+    }
+  }
+
+  /**
+   * A folder belongs to the owner, not to the device that made it: the refreshed listing goes to
+   * every socket of that owner, so a second client open on the drawer files the conversation where
+   * the first one did, instead of showing a cabinet that disagrees with itself.
+   */
+  private async handleFolder(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppFolderCreate | MyClawAppFolderRename | MyClawAppFolderRemove | MyClawAppFolderOrder | MyClawAppSessionFolder,
+  ): Promise<void> {
+    const owner = ws.data.owner;
+    try {
+      if (frame.type === "folder.order") {
+        await this.store.reorderFolders(owner, frame.folderIds);
+      } else if (frame.type === "folder.create") {
+        await this.store.createFolder(owner, frame.name, frame.workspace);
+      } else if (frame.type === "folder.rename") {
+        await this.store.renameFolder(owner, frame.folderId, frame.name);
+      } else if (frame.type === "folder.remove") {
+        await this.store.removeFolder(owner, frame.folderId);
+      } else {
+        const threadId = sanitizeThreadId(frame.threadId);
+        if (!threadId) {
+          await this.refuse(ws, "session", "invalid threadId", { threadId: frame.threadId });
+          return;
+        }
+        await this.store.setFolder(owner, threadId, frame.folderId);
+      }
+      this.broadcast(owner, await this.sessionListFrame(owner));
+    } catch (err) {
+      // The reason is forwarded where it is worth reading: a folder name that is taken, or empty,
+      // is something the owner typed and can fix, and "folder failed" says none of that.
+      const reason = err instanceof Error ? err.message : String(err);
+      await this.refuse(ws, "session", reason, { scope: "folder" });
     }
   }
 

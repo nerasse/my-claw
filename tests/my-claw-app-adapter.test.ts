@@ -173,7 +173,7 @@ function approvalRequest(): ToolApprovalRequest {
 }
 
 class FakeSessionStore {
-  summaries: Array<{ threadId: string; title: string; messageCount: number; createdAt: string; lastActiveAt: string; archived?: boolean }> = [];
+  summaries: Array<{ threadId: string; title: string; messageCount: number; createdAt: string; lastActiveAt: string; archived?: boolean; folderId?: string }> = [];
   historyMap = new Map<string, Array<{ id: string; role: "user" | "assistant"; text: string; ts: string }>>();
   archived: string[] = [];
   unarchived: string[] = [];
@@ -289,6 +289,64 @@ class FakeSessionStore {
     const entry = this.summaries.find((summary) => summary.threadId === threadId);
     if (!entry) throw new Error("conversation not found");
     entry.title = title.trim() || "(new conversation)";
+  }
+
+  folderList: Array<{ id: string; name: string; rank: number; workspace?: string }> = [];
+  private folderSeq = 0;
+
+  async folders(_owner: string): Promise<Array<{ id: string; name: string; rank: number; workspace?: string }>> {
+    return [...this.folderList];
+  }
+
+  /**
+   * The real store's two rules that the frames can be refused for, kept here so the adapter's
+   * error path is exercised against the same reasons the owner would read.
+   */
+  async createFolder(_owner: string, name: string, workspace?: string): Promise<{ id: string; name: string; rank: number; workspace?: string }> {
+    const clean = name.trim();
+    if (!clean) throw new Error("a folder needs a name");
+    if (this.folderList.some((folder) => folder.name.toLowerCase() === clean.toLowerCase())) {
+      throw new Error(`a folder named "${clean}" already exists`);
+    }
+    const folder = { id: `folder-${++this.folderSeq}`, name: clean, rank: this.folderList.length, ...(workspace ? { workspace } : {}) };
+    this.folderList.push(folder);
+    return folder;
+  }
+
+  async renameFolder(_owner: string, folderId: string, name: string): Promise<void> {
+    const folder = this.folderList.find((entry) => entry.id === folderId);
+    if (!folder) throw new Error("folder not found");
+    folder.name = name.trim();
+  }
+
+  async removeFolder(_owner: string, folderId: string): Promise<number> {
+    const before = this.folderList.length;
+    this.folderList = this.folderList.filter((folder) => folder.id !== folderId).map((folder, rank) => ({ ...folder, rank }));
+    if (this.folderList.length === before) return 0;
+    let unfiled = 0;
+    for (const summary of this.summaries) {
+      if (summary.folderId !== folderId) continue;
+      delete summary.folderId;
+      unfiled += 1;
+    }
+    return unfiled;
+  }
+
+  async reorderFolders(_owner: string, folderIds: string[]): Promise<void> {
+    const head = folderIds.map((id) => this.folderList.find((folder) => folder.id === id)).filter((folder) => folder !== undefined);
+    const tail = this.folderList.filter((folder) => !head.includes(folder));
+    this.folderList = [...head, ...tail].map((folder, rank) => ({ ...folder, rank }));
+  }
+
+  async setFolder(_owner: string, threadId: string, folderId: string | null): Promise<void> {
+    const entry = this.summaries.find((summary) => summary.threadId === threadId);
+    if (!entry) throw new Error("conversation not found");
+    if (folderId === null) {
+      delete entry.folderId;
+      return;
+    }
+    if (!this.folderList.some((folder) => folder.id === folderId)) throw new Error("folder not found");
+    entry.folderId = folderId;
   }
 
   drafts = new Map<string, string>();
@@ -1831,6 +1889,95 @@ describe("MyClawAppAdapter", () => {
     client.ws.send(JSON.stringify({ type: "session.unarchive", threadId: "../x" }));
     const frame = (await nextFrame(client)) as { type: string };
     assert.equal(frame.type, "error");
+  });
+
+  test("folder.create names a folder, and every device of the owner is told", async () => {
+    store.summaries = [
+      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l" },
+    ];
+    // Two devices, one owner: a filing cabinet filed on one that the other cannot see is a cache.
+    const other = await connectClient(adapter.port);
+
+    client.ws.send(JSON.stringify({ type: "folder.create", name: "CubeFlow", workspace: "cf" }));
+    const mine = (await nextFrame(client)) as { type: string; folders: Array<{ name: string; workspace?: string }> };
+    assert.equal(mine.type, "session.list.result");
+    assert.equal(mine.folders.length, 1);
+    assert.equal(mine.folders[0]!.name, "CubeFlow");
+    assert.equal(mine.folders[0]!.workspace, "cf");
+
+    const theirs = (await nextFrame(other)) as { type: string; folders: unknown[] };
+    assert.equal(theirs.type, "session.list.result");
+    assert.equal(theirs.folders.length, 1);
+
+    other.ws.close();
+  });
+
+  test("a folder name that is taken is refused with the reason, not with a shrug", async () => {
+    client.ws.send(JSON.stringify({ type: "folder.create", name: "CubeFlow" }));
+    await nextFrame(client);
+
+    client.ws.send(JSON.stringify({ type: "folder.create", name: "cubeflow" }));
+    const frame = (await nextFrame(client)) as { type: string; message: string };
+
+    assert.equal(frame.type, "error");
+    // The reason is the owner's to act on: a name he typed, not a scope that failed.
+    assert.match(frame.message, /already exists/);
+    assert.equal(store.folderList.length, 1);
+  });
+
+  test("session.folder files a conversation, and the listing says where it sits", async () => {
+    store.summaries = [
+      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l" },
+    ];
+    client.ws.send(JSON.stringify({ type: "folder.create", name: "CubeFlow" }));
+    const created = (await nextFrame(client)) as { folders: Array<{ id: string }> };
+    const folderId = created.folders[0]!.id;
+
+    client.ws.send(JSON.stringify({ type: "session.folder", threadId: "a", folderId }));
+    const listed = (await nextFrame(client)) as { sessions: Array<{ threadId: string; folderId?: string }> };
+
+    assert.equal(listed.sessions[0]!.folderId, folderId);
+
+    // And out of it again: null is a place the wire can name, unlike an absent field.
+    client.ws.send(JSON.stringify({ type: "session.folder", threadId: "a", folderId: null }));
+    const unfiled = (await nextFrame(client)) as { sessions: Array<{ folderId?: string }> };
+    assert.equal(unfiled.sessions[0]!.folderId, undefined);
+  });
+
+  test("filing into a folder that does not exist is refused, not stored", async () => {
+    store.summaries = [
+      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l" },
+    ];
+
+    client.ws.send(JSON.stringify({ type: "session.folder", threadId: "a", folderId: "jamais-cree" }));
+    const frame = (await nextFrame(client)) as { type: string; message: string };
+
+    assert.equal(frame.type, "error");
+    assert.match(frame.message, /folder not found/);
+    assert.equal(store.summaries[0]!.folderId, undefined);
+  });
+
+  test("folder.remove unfiles what it held instead of losing it", async () => {
+    store.summaries = [
+      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l" },
+      { threadId: "b", title: "Courses", messageCount: 1, createdAt: "c", lastActiveAt: "l" },
+    ];
+    client.ws.send(JSON.stringify({ type: "folder.create", name: "CubeFlow" }));
+    const created = (await nextFrame(client)) as { folders: Array<{ id: string }> };
+    const folderId = created.folders[0]!.id;
+    client.ws.send(JSON.stringify({ type: "session.folder", threadId: "a", folderId }));
+    await nextFrame(client);
+    client.ws.send(JSON.stringify({ type: "session.folder", threadId: "b", folderId }));
+    await nextFrame(client);
+
+    client.ws.send(JSON.stringify({ type: "folder.remove", folderId }));
+    const after = (await nextFrame(client)) as { folders: unknown[]; sessions: Array<{ threadId: string; folderId?: string }> };
+
+    assert.deepEqual(after.folders, []);
+    // The conversations are still there, and no longer filed: deleting a folder never deletes one.
+    assert.deepEqual(after.sessions.map((session) => session.threadId), ["a", "b"]);
+    assert.equal(after.sessions[0]!.folderId, undefined);
+    assert.equal(after.sessions[1]!.folderId, undefined);
   });
 
   test("session.delete removes the thread", async () => {

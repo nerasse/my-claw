@@ -11,6 +11,7 @@ import { SessionFileStore, filePathFor, filesDirFor } from "../src/channels/my-c
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { DraftStore } from "../src/channels/my-claw-app/drafts.ts";
+import { FolderStore } from "../src/channels/my-claw-app/folders.ts";
 import { join } from "node:path";
 import { saveSessionWithLog, type SessionLogSetup, writeLegacySessionFile } from "./helpers/session-log.ts";
 import type { FailureEntry, CommandEntry, ToolEntry } from "../src/sessions/log.ts";
@@ -1109,6 +1110,104 @@ describe("MyClawAppSessionStoreImpl.remove cascade", () => {
     await writeLegacySessionFile(sessionId, session(sessionId, []));
     await store.remove(DEVICE, THREAD);
     assert.equal(await loadSession(sessionId), null);
+  });
+});
+
+describe("MyClawAppSessionStoreImpl folders", () => {
+  let store: MyClawAppSessionStoreImpl;
+  // A file of its own per test: the default one is shared by the whole run, and two folders named
+  // "CubeFlow" in the same cabinet is exactly what the store refuses.
+  let folderPath: string;
+  const threads = ["dossier-a", "dossier-b"];
+
+  const folderIds = async (): Promise<Record<string, string | undefined>> => {
+    const listed = await store.list(DEVICE);
+    return Object.fromEntries(listed.map((entry) => [entry.threadId, entry.folderId]));
+  };
+
+  beforeEach(async () => {
+    folderPath = join(await mkdtemp(join(tmpdir(), "folders-sessions-")), "folders.json");
+    store = new MyClawAppSessionStoreImpl(
+      new SessionManager(),
+      new SessionFileStore(),
+      undefined,
+      (key) => key === "default" || key === "sofa",
+      undefined,
+      new FolderStore(folderPath),
+    );
+    for (const threadId of threads) {
+      const sessionId = store.resolveSessionId(DEVICE, threadId);
+      await deleteSession(sessionId);
+      await writeLegacySessionFile(sessionId, session(sessionId, [
+        { role: "user", content: threadId, timestamp: "2026-01-01T00:00:01.000Z" },
+      ]));
+    }
+  });
+
+  test("a conversation carries the folder it is filed in, and loses it when unfiled", async () => {
+    const folder = await store.createFolder(DEVICE, "CubeFlow", "sofa");
+
+    await store.setFolder(DEVICE, "dossier-a", folder.id);
+    assert.deepEqual(await folderIds(), { "dossier-a": folder.id, "dossier-b": undefined });
+
+    await store.setFolder(DEVICE, "dossier-a", null);
+    assert.deepEqual(await folderIds(), { "dossier-a": undefined, "dossier-b": undefined });
+  });
+
+  test("the folder list survives a store built on the same file", async () => {
+    const folder = await store.createFolder(DEVICE, "CubeFlow");
+
+    const reopened = new MyClawAppSessionStoreImpl(
+      new SessionManager(),
+      new SessionFileStore(),
+      undefined,
+      () => true,
+      undefined,
+      new FolderStore(folderPath),
+    );
+    const folders = await reopened.folders(DEVICE);
+    assert.equal(folders.length, 1);
+    assert.equal(folders[0]?.id, folder.id);
+    assert.equal(folders[0]?.name, "CubeFlow");
+  });
+
+  test("filing into a folder that does not exist is refused, and nothing is written", async () => {
+    await assert.rejects(() => store.setFolder(DEVICE, "dossier-a", "jamais-cree"), /folder not found/);
+    assert.deepEqual(await folderIds(), { "dossier-a": undefined, "dossier-b": undefined });
+  });
+
+  test("filing a conversation that was never opened is refused, not invented", async () => {
+    const folder = await store.createFolder(DEVICE, "CubeFlow");
+
+    await assert.rejects(() => store.setFolder(DEVICE, "jamais-ouvert", folder.id), /conversation not found/);
+    const listed = await store.list(DEVICE);
+    assert.equal(listed.some((entry) => entry.threadId === "jamais-ouvert"), false);
+  });
+
+  test("removing a folder unfiles its children and leaves the others filed", async () => {
+    const kept = await store.createFolder(DEVICE, "CubeFlow");
+    const doomed = await store.createFolder(DEVICE, "Carrière");
+    await store.setFolder(DEVICE, "dossier-a", doomed.id);
+    await store.setFolder(DEVICE, "dossier-b", kept.id);
+
+    assert.equal(await store.removeFolder(DEVICE, doomed.id), 1);
+    // The conversation is still there: a folder holds a place, it does not hold the thread.
+    assert.deepEqual(await folderIds(), { "dossier-a": undefined, "dossier-b": kept.id });
+    assert.deepEqual((await store.folders(DEVICE)).map((folder) => folder.name), ["CubeFlow"]);
+  });
+
+  test("removing a folder that is not there unfiles nothing and says so", async () => {
+    await store.setFolder(DEVICE, "dossier-a", (await store.createFolder(DEVICE, "CubeFlow")).id);
+
+    assert.equal(await store.removeFolder(DEVICE, "jamais-cree"), 0);
+    assert.equal((await store.folders(DEVICE)).length, 1);
+  });
+
+  test("a folder is born in a workspace the server knows, or in none", async () => {
+    assert.equal((await store.createFolder(DEVICE, "CubeFlow", "sofa")).workspace, "sofa");
+    assert.equal((await store.createFolder(DEVICE, "Sans workspace")).workspace, undefined);
+
+    await assert.rejects(() => store.createFolder(DEVICE, "Inconnu", "jamais-declare"), /unknown workspace/);
   });
 });
 

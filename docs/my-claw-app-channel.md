@@ -332,6 +332,11 @@ the first answer wins.
 { "type": "session.archive", "threadId": "projet" }
 { "type": "session.unarchive", "threadId": "projet" }
 { "type": "session.delete", "threadId": "projet" }
+{ "type": "folder.create", "name": "CubeFlow", "workspace": "cf" }
+{ "type": "folder.rename", "folderId": "uuid", "name": "Infra" }
+{ "type": "folder.remove", "folderId": "uuid" }
+{ "type": "folder.order", "folderIds": ["uuid", "uuid"] }
+{ "type": "session.folder", "threadId": "projet", "folderId": "uuid|null" }
 { "type": "draft.set", "threadId": "projet", "text": "ce qui est tape et pas envoye" }
 { "type": "session.rename", "threadId": "projet", "title": "Infra maison" }
 { "type": "session.workspace.set", "threadId": "projet", "workspace": "default|sofa" }
@@ -431,6 +436,12 @@ provider request URLs.
   unarchiving hands the conversation back exactly as it was. Both answer with the refreshed
   `session.list.result`. Archiving a thread that was never opened is refused rather than
   creating one.
+- `folder.create` / `folder.rename` / `folder.remove` / `folder.order`, and `session.folder` to
+  file one conversation or take it out of every folder (`folderId: null`). A folder is a place: the
+  conversation carries its `folderId` and lives in exactly one, which is why a move is a write on
+  one session and deleting a folder only unfiles what it held. All five answer with the refreshed
+  `session.list.result`, **broadcast to every socket of the owner**, and the listing carries the
+  folders alongside the sessions -- docs/session-folders.md.
 - `session.delete` hard-deletes the session file and every archive snapshot. There is no way
   to merely empty a conversation: archiving files it away reversibly and deleting destroys it,
   which leaves nothing for a third verb to do.
@@ -684,7 +695,7 @@ runs fresh like any other message.
 { "type": "chat.stream.abort", "id": "uuid", "threadId": "projet", "error": "..." }
 { "type": "chat.tool", "id": "uuid:tool:1", "threadId": "projet", "turnId": "uuid", "name": "bash", "args": {...}, "durationMs": 4, "ok": true, "output": "...", "truncated": false, "ts": "iso" }
 { "type": "chat.history", "threadId": "projet", "before": 50, "hasMore": true, "nextBefore": 100, "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso", "transcript": "...", "run": { "id": "r-...", "status": "running|done|aborted|error", "startTs": "iso", "endTs": "iso" }, "attachments": [{ "id": "uuid", "type": "image", "filename": "photo.png", "mimeType": "image/png", "sizeBytes": 5120, "durationMs": 3100, "deleted": false }] }] }
-{ "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "...", "archived": true, "activeRun": true, "workspace": "default", "hasDraft": true }] }
+{ "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "...", "archived": true, "folderId": "uuid", "activeRun": true, "workspace": "default", "hasDraft": true }], "folders": [{ "id": "uuid", "name": "CubeFlow", "rank": 0, "workspace": "cf" }] }
 { "type": "draft.changed", "threadId": "projet", "text": "ce qui est tape ailleurs", "ts": 1755690000000 }
 { "type": "session.workspace.set.result", "threadId": "projet", "workspace": "sofa" }
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }

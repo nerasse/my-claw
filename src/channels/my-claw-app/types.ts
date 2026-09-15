@@ -185,7 +185,48 @@ export interface MyClawAppSessionDelete {
   threadId: string;
 }
 
-/** Pins the conversation at the end of the pinned list, or unpins it. */
+/**
+ * Creates a folder at the end of the owner's list.
+ *
+ * `workspace` is the one the drawer was filtered by when it was made, and it defaults what a
+ * conversation created from inside the folder runs in. It is not a scope: a folder holds
+ * conversations from anywhere -- docs/session-folders.md.
+ */
+export interface MyClawAppFolderCreate {
+  type: "folder.create";
+  name: string;
+  workspace?: string;
+}
+
+export interface MyClawAppFolderRename {
+  type: "folder.rename";
+  folderId: string;
+  name: string;
+}
+
+/** Drops the folder and unfiles its conversations. Nothing is deleted along with it. */
+export interface MyClawAppFolderRemove {
+  type: "folder.remove";
+  folderId: string;
+}
+
+/**
+ * The folder list as the owner just dropped it. Ids the owner cannot see are not touched: a folder
+ * created on another device while this list was on screen keeps its place and lands after the
+ * dragged ones, because a drop is a statement about what was dragged and nothing about the rest.
+ */
+export interface MyClawAppFolderOrder {
+  type: "folder.order";
+  folderIds: string[];
+}
+
+/** Files a conversation into a folder, or out of every folder when `folderId` is null. */
+export interface MyClawAppSessionFolder {
+  type: "session.folder";
+  threadId: string;
+  folderId: string | null;
+}
+
 /**
  * Asks the server to re-run provider discovery now, instead of waiting for the six-hour cycle.
  * Answered by a fresh `model.list.result` plus one `model.refresh.result` saying what happened.
@@ -953,6 +994,11 @@ export type MyClawAppClientFrame =
   | MyClawAppSessionArchive
   | MyClawAppSessionUnarchive
   | MyClawAppSessionDelete
+  | MyClawAppFolderCreate
+  | MyClawAppFolderRename
+  | MyClawAppFolderRemove
+  | MyClawAppFolderOrder
+  | MyClawAppSessionFolder
   | MyClawAppDraftSet
   | MyClawAppModelRefresh
   | MyClawAppApprovalResponse
@@ -1287,6 +1333,8 @@ export interface MyClawAppSessionSummary {
    * its two lists from one round-trip, and show the archived count without asking again.
    */
   archived?: boolean;
+  /** The folder this conversation is filed in, absent when it is not filed. */
+  folderId?: string;
   /** A run is answering on this thread right now: the app keeps the Stop button visible. */
   activeRun?: boolean;
   /** Workspace key the conversation runs in: "default" or a config.workspaces key. */
@@ -1592,6 +1640,16 @@ export interface MyClawAppApprovalHistoryResult {
 export interface MyClawAppSessionListResult {
   type: "session.list.result";
   sessions: MyClawAppSessionSummary[];
+  /** The owner's folders, in rank order. They ride the listing: a section is drawn with its rows. */
+  folders: MyClawAppFolderSummary[];
+}
+
+/** One folder as the drawer draws it: a name, a rank, and the workspace it was born in. */
+export interface MyClawAppFolderSummary {
+  id: string;
+  name: string;
+  rank: number;
+  workspace?: string;
 }
 
 export interface MyClawAppSessionWorkspaceSetResult {

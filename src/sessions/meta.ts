@@ -82,6 +82,12 @@ export interface SessionMeta {
   promptCount?: number;
   firstUserText?: string;
   archivedAt?: string;
+  /**
+   * The folder this conversation is filed in, absent when it is not filed. One field for the one
+   * place it lives: the folder store holds names and ranks, and moving a conversation is a write
+   * on its own meta. Server-side, so the phone and the browser agree on the filing.
+   */
+  folderId?: string;
   modelOverride?: string;
   effortOverride?: SessionData["effortOverride"];
   contextOverride?: SessionData["contextOverride"];
@@ -138,6 +144,7 @@ const META_KEYS: Record<keyof SessionMeta, "session" | "carried"> = {
   leafId: "session",
   title: "session",
   archivedAt: "session",
+  folderId: "session",
   modelOverride: "session",
   effortOverride: "session",
   contextOverride: "session",
@@ -202,6 +209,7 @@ export function metaOf(
     leafId,
     title: session.title,
     archivedAt: session.archivedAt,
+    folderId: session.folderId,
     modelOverride: session.modelOverride,
     effortOverride: session.effortOverride,
     contextOverride: session.contextOverride,

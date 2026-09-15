@@ -304,6 +304,12 @@ export interface SessionData {
    * and clearing the flag brings it back untouched. Only the my-claw-app channel sets this.
    */
   archivedAt?: string;
+  /**
+   * The folder this conversation is filed in, absent when it is not filed. A folder is a place and
+   * not a property: the conversation carries the id, the folder store holds names and ranks, and
+   * deleting a folder clears this field on each of its children rather than losing anything.
+   */
+  folderId?: string;
   modelOverride?: string;
   effortOverride?: import("../core/config.ts").EffortLevel;
   /**

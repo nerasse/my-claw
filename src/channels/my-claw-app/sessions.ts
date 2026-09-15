@@ -12,6 +12,7 @@ import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess
 import { toolDisplayName } from "../../agent/tools/display.ts";
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
 import { DraftStore, type DraftWrite } from "./drafts.ts";
+import { FolderStore, type Folder } from "./folders.ts";
 import { parseStoredName, type SessionFile, type SessionFileStore } from "./files.ts";
 import { TOOL_OUTPUT_LIMIT } from "./stream.ts";
 import { toolCardId } from "./types.ts";
@@ -60,7 +61,6 @@ export interface MyClawAppSessionStore {
   runItems(owner: string, threadId: string, fromId: string, untilId: string): Promise<MyClawAppRunItemsPage>;
   /** One tool card's output in full; null when the session no longer holds the call. */
   toolOutput(owner: string, threadId: string, cardId: string): Promise<string | null>;
-  /** Files the thread away, reversibly: no message is moved, deleted or snapshotted. */
   /**
    * Journals a slash command and the bubble it produced, so a reopened thread still shows it.
    * No-op on a thread that has no session yet: there is no history to put it in.
@@ -71,6 +71,7 @@ export interface MyClawAppSessionStore {
    * why the question got no answer. No-op on a thread that has no session yet.
    */
   recordFailure(owner: string, threadId: string, error: string, bubbleId?: string): Promise<void>;
+  /** Files the thread away, reversibly: no message is moved, deleted or snapshotted. */
   archive(owner: string, threadId: string): Promise<void>;
   unarchive(owner: string, threadId: string): Promise<void>;
   remove(owner: string, threadId: string): Promise<void>;
@@ -88,6 +89,16 @@ export interface MyClawAppSessionStore {
    * session if it does not exist yet. Throws on an unknown key.
    */
   setWorkspace(owner: string, threadId: string, workspace: string): Promise<void>;
+  /** The owner's folders, in rank order. */
+  folders(owner: string): Promise<Folder[]>;
+  createFolder(owner: string, name: string, workspace?: string): Promise<Folder>;
+  renameFolder(owner: string, folderId: string, name: string): Promise<void>;
+  /** Removes the folder and unfiles its conversations. Answers how many lost their place. */
+  removeFolder(owner: string, folderId: string): Promise<number>;
+  /** Rewrites the folder order. Ids the owner cannot see keep their place, after the named ones. */
+  reorderFolders(owner: string, folderIds: string[]): Promise<void>;
+  /** Files a conversation into a folder, or out of every folder when `folderId` is null. */
+  setFolder(owner: string, threadId: string, folderId: string | null): Promise<void>;
   /**
    * Applies one per-session instruction control: nested AGENTS.md toggle/unload, prompt layer
    * toggle, skill toggle, memory recall toggle. The session is peeked, mutated, persisted. Throws
@@ -285,6 +296,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     /** Injected from the entry point: the adapter must not read the global config itself. */
     private isWorkspaceKey: (key: string) => boolean = () => true,
     private drafts: DraftStore = new DraftStore(),
+    private folderStore: FolderStore = new FolderStore(),
   ) {}
 
   async setDraft(owner: string, threadId: string, text: string): Promise<DraftWrite> {
@@ -369,6 +381,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         createdAt: session.createdAt,
         lastActiveAt: session.lastActiveAt,
         ...(session.archivedAt ? { archived: true } : {}),
+        ...(session.folderId ? { folderId: session.folderId } : {}),
         workspace: session.workspace ?? "default",
         ...(drafted.has(sessionId) ? { hasDraft: true } : {}),
       });
@@ -717,6 +730,63 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     if (key) session.workspace = key;
     else delete session.workspace;
     await this.sessionManager.persist(sessionId);
+  }
+
+  async folders(owner: string): Promise<Folder[]> {
+    return this.folderStore.list(owner);
+  }
+
+  async createFolder(owner: string, name: string, workspace?: string): Promise<Folder> {
+    if (workspace !== undefined && !this.isWorkspaceKey(workspace)) throw new Error(`unknown workspace: ${workspace}`);
+    return this.folderStore.create(owner, name, workspace);
+  }
+
+  async renameFolder(owner: string, folderId: string, name: string): Promise<void> {
+    return this.folderStore.rename(owner, folderId, name);
+  }
+
+  /**
+   * Drops the folder, then unfiles what it held.
+   *
+   * The order is the point: the folder leaves the list first, so a crash in the middle leaves
+   * conversations pointing at a folder nobody can see -- repaired by deleting it again, since the
+   * sweep is idempotent -- instead of a folder whose children silently point elsewhere.
+   */
+  async removeFolder(owner: string, folderId: string): Promise<number> {
+    if (!(await this.folderStore.remove(owner, folderId))) return 0;
+    let unfiled = 0;
+    for (const sessionId of await this.ownerSessionIds(owner)) {
+      const session = await this.sessionManager.peek(sessionId);
+      if (session?.folderId !== folderId) continue;
+      delete session.folderId;
+      await this.sessionManager.persist(sessionId);
+      unfiled += 1;
+    }
+    return unfiled;
+  }
+
+  async reorderFolders(owner: string, folderIds: string[]): Promise<void> {
+    return this.folderStore.reorder(owner, folderIds);
+  }
+
+  async setFolder(owner: string, threadId: string, folderId: string | null): Promise<void> {
+    const sessionId = this.resolveSessionId(owner, threadId);
+    // Filing a thread that was never opened would create an empty one, the way pinning refused to.
+    const session = await this.sessionManager.peek(sessionId);
+    if (!session) throw new Error("conversation not found");
+    if (folderId === null) {
+      delete session.folderId;
+    } else {
+      const known = (await this.folderStore.list(owner)).some((folder) => folder.id === folderId);
+      if (!known) throw new Error("folder not found");
+      session.folderId = folderId;
+    }
+    await this.sessionManager.persist(sessionId);
+  }
+
+  /** Every conversation of this owner. The sweep on a deleted folder walks them all. */
+  private ownerSessionIds(owner: string): Promise<string[]> {
+    return this.sessionManager.listSessions(`my-claw-app/thread/${owner}/`, Number.MAX_SAFE_INTEGER);
   }
 
   async setInstructionPatch(owner: string, threadId: string, patch: MyClawAppSessionInstructionPatch): Promise<void> {
