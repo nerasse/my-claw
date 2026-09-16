@@ -108,23 +108,33 @@ export function trimToContextWindow(
   const rest = messages.slice(1);
   const minHead = Math.min(HEAD_KEEP, rest.length);
 
-  // Find a safe head boundary (don't split tool pairs)
+  // Find a safe head boundary (don't split tool pairs). The first three messages can land in the
+  // middle of a multi-tool turn: [user, assistant(call a,b), tool(a), tool(b)]. Extending only
+  // when the last head message was the assistant left tool(b) in the droppable candidates, so a
+  // trim kept the call and dropped its result. The provider then rejected the whole request.
   let headEnd = minHead;
-  while (headEnd < rest.length) {
-    const msg = rest[headEnd - 1];
-    if (msg && isAssistantWithToolCalls(msg)) {
-      const ids = getToolCallIds(msg);
+  if (headEnd > 0 && headEnd < rest.length) {
+    let blockStart = headEnd;
+    while (blockStart > 0 && rest[blockStart - 1]?.role === "tool") blockStart--;
+    const owner = rest[blockStart - 1];
+    if (owner && isAssistantWithToolCalls(owner)) {
+      const ids = getToolCallIds(owner);
       while (headEnd < rest.length && rest[headEnd]?.role === "tool") {
         const toolMsg = rest[headEnd] as { role: "tool"; tool_call_id: string; content: string };
-        if (ids.has(toolMsg.tool_call_id)) {
+        if (!ids.has(toolMsg.tool_call_id)) break;
+        headEnd++;
+      }
+    } else {
+      const msg = rest[headEnd - 1];
+      if (msg && isAssistantWithToolCalls(msg)) {
+        const ids = getToolCallIds(msg);
+        while (headEnd < rest.length && rest[headEnd]?.role === "tool") {
+          const toolMsg = rest[headEnd] as { role: "tool"; tool_call_id: string; content: string };
+          if (!ids.has(toolMsg.tool_call_id)) break;
           headEnd++;
-        } else {
-          break;
         }
       }
-      continue;
     }
-    break;
   }
 
   // Binary-search from the middle to find how many to drop
