@@ -1,4 +1,6 @@
+import { existsSync } from "node:fs";
 import { basename } from "node:path";
+import { myClawAppLog } from "../../utils/logger.ts";
 import { SessionManager } from "../../sessions/manager.ts";
 import { FAILURE_TEXT_LIMIT, attributionParent } from "../../sessions/store.ts";
 import { summaryBodyOf } from "../../sessions/compaction.ts";
@@ -6,11 +8,11 @@ import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
 import { readMeta } from "../../sessions/meta.ts";
 import { pathOf, UnknownCursorError, type Provisioned, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
-import { pageOf, pageBefore, displayOf, runFold, runFoldPlan, withSpawnCards, windowNeedsFiles, type DisplayResolvers, type MediaRef } from "./display.ts";
+import { pageOf, pageBefore, displayOf, mediaRefsOf, runFold, runFoldPlan, withSpawnCards, windowNeedsFiles, type DisplayResolvers, type MediaRef } from "./display.ts";
 import { spawnStates } from "../../sessions/spawn-state.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/tools/display.ts";
-import { extractMediaRefs, stripMediaRefs, mediaTypeForPath } from "../../utils/media.ts";
+import { extractMediaRefs, stripMediaRefs, mediaTypeForPath, refBasename, refsWithoutCopy, trimRefPath } from "../../utils/media.ts";
 import { DraftStore, type DraftWrite } from "./drafts.ts";
 import { FolderStore, type Folder } from "./folders.ts";
 import { parseStoredName, type SessionFile, type SessionFileStore } from "./files.ts";
@@ -232,7 +234,7 @@ function mediaRefAttachments(refs: MediaRef[], files: SessionFile[]): MyClawAppH
   const used = new Set<string>();
   const out: MyClawAppHistoryAttachment[] = [];
   for (const ref of refs) {
-    const name = basename(ref.path);
+    const name = refBasename(ref.path);
     // The log paired this ref with the copy the run made: the id is what the device fetches, and
     // the type and the name ride the path itself, so no directory is read at all. It also resolves
     // from any thread of the owner, which is the half a filename match in one directory misses.
@@ -424,6 +426,45 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     return summaries;
   }
 
+  /**
+   * The refs of a window whose bytes still want a copy in the store, and the copies that make
+   * them resolvable.
+   *
+   * A ref is resolved by file name on every replay, and its copy is made once, when the turn is
+   * sent. A copy that failed -- a path wrongly read, a file that came back -- left the thread
+   * saying "deleted" about bytes nobody lost, for good. While the file is still where the agent
+   * wrote it, one stat and one copy put that right (2026-09-16).
+   */
+  private async recoverRefs(
+    owner: string,
+    threadId: string,
+    window: readonly Entry[],
+    stored: readonly SessionFile[],
+  ): Promise<SessionFile[]> {
+    const names = new Set(stored.map((file) => file.filename));
+    const refs = refsWithoutCopy(mediaRefsOf(window), names);
+    if (refs.length === 0) return [];
+    const recovered: SessionFile[] = [];
+    for (const ref of refs) {
+      const path = trimRefPath(ref.path);
+      if (!existsSync(path)) continue;
+      try {
+        const file = await this.files.saveFromPath(owner, threadId, path);
+        names.add(file.filename);
+        recovered.push(file);
+        await myClawAppLog("info", "attachment recovered from the path the agent wrote", {
+          owner,
+          threadId,
+          path,
+          id: file.id,
+        });
+      } catch {
+        // Still unreadable: the next replay tries again, and the ref keeps saying it is missing.
+      }
+    }
+    return recovered;
+  }
+
   async history(
     owner: string,
     threadId: string,
@@ -459,7 +500,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // refs themselves -- a tool's pictures ride the run's end marker, with no `MEDIA:` anywhere
     // (2026-09-15).
     const stored = windowNeedsFiles(window) ? await this.files.list(owner, threadId) : [];
-    const resolvers = makeResolvers(stored);
+    const healed = stored.length > 0 ? await this.recoverRefs(owner, threadId, window, stored) : [];
+    const files = healed.length > 0 ? [...stored, ...healed] : stored;
+    const resolvers = makeResolvers(files);
 
     // Folded over the whole log, not over the page: a child spawned on page 3 settles on page 1,
     // and a card whose state entry fell outside the window would replay as a spinner for good.
@@ -470,7 +513,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // The plan is computed against the whole branch and not against the window, because the rule
     // is containment: a run the page boundary cut keeps its items.
     const plan = fold ? runFoldPlan(path, window, runs) : undefined;
-    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(log.entries()), stored, runs, plan);
+    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(log.entries()), files, runs, plan);
     return { entries, hasMore, nextBefore, ...(draft ? { draft } : {}) };
   }
 
@@ -556,7 +599,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
 
     // Resolve attachments for display
     const stored = windowNeedsFiles(delta) ? await this.files.list(owner, threadId) : [];
-    const resolvers = makeResolvers(stored);
+    const healed = stored.length > 0 ? await this.recoverRefs(owner, threadId, delta, stored) : [];
+    const files = healed.length > 0 ? [...stored, ...healed] : stored;
+    const resolvers = makeResolvers(files);
     // The run fold covers the whole current branch, so entries of a delta that starts mid-run
     // still carry their run: the client folds them under the right header even when the
     // `run_start` marker itself predates the cursor.
@@ -567,7 +612,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // never fold anyway. Folding a delta would also have to reason about what the client already
     // holds, since the run it continues is half on screen.
     const plan = fold && freshWindow ? runFoldPlan(path, foldWindow, runs) : undefined;
-    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(allEntries), stored, runs, plan);
+    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(allEntries), files, runs, plan);
 
     const branchLength = path.length;
     return {
@@ -619,11 +664,13 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
 
     const window = path.slice(start, end + 1);
     const stored = windowNeedsFiles(window) ? await this.files.list(owner, threadId) : [];
-    const resolvers = makeResolvers(stored);
+    const healed = stored.length > 0 ? await this.recoverRefs(owner, threadId, window, stored) : [];
+    const files = healed.length > 0 ? [...stored, ...healed] : stored;
+    const resolvers = makeResolvers(files);
     // Folded over the whole branch for the same reasons a page is: a child spawned inside this run
     // may have settled long after it, and the run meta must be the one the header already shows.
     const runs = runFold(path);
-    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(log.entries()), stored, runs);
+    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(log.entries()), files, runs);
     return { entries, found: true };
   }
 

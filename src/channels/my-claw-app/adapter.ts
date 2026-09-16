@@ -572,7 +572,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       }, file.id);
     } catch (err) {
       const reason = err instanceof Error ? err.message : "cannot read";
-      await myClawAppLog("warn", "attachment skipped: not copied", { owner, threadId, path, reason });
+      // The agent named a file and the thread will show it as deleted: an error, not a warning
+      // nobody reads. A picture that never arrives looks like the app lost it (2026-09-16).
+      await myClawAppLog("error", "attachment skipped: not copied", { owner, threadId, path, reason });
       return undefined;
     }
   }

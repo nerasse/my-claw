@@ -113,6 +113,79 @@ function codeRanges(text: string): Array<{ start: number; end: number }> {
   return ranges;
 }
 
+/**
+ * A path with the prose taken off its tail.
+ *
+ * `MEDIA:/a/b.png` in a sentence collects whatever follows it: the emphasis the agent wrapped it
+ * in, and the punctuation of the sentence it sits in. None of that can be part of a file name on
+ * disk, and read whole the ref names a file that never existed -- the copy fails and the thread
+ * replays the picture as deleted (2026-09-16). Shared with the history, which resolves refs
+ * written before this existed.
+ */
+const TRAILING_EMPHASIS = /[*_~]+$/;
+const CLOSERS: Record<string, string> = { ")": "(", "]": "[", "}": "{", ">": "<" };
+
+export function trimRefPath(raw: string): string {
+  let path = raw;
+  for (;;) {
+    const emphatic = path.replace(TRAILING_EMPHASIS, "");
+    if (emphatic !== path) {
+      path = emphatic;
+      continue;
+    }
+    const last = path.slice(-1);
+    if (",;:.".includes(last)) {
+      path = path.slice(0, -1);
+      continue;
+    }
+    const opener = CLOSERS[last];
+    if (opener && path.split(last).length > path.split(opener).length) {
+      path = path.slice(0, -1);
+      continue;
+    }
+    return path;
+  }
+}
+
+/**
+ * The name a ref resolves by, in the store.
+ *
+ * Both ends read it: the copy made when the ref is sent, and the history that resolves the ref
+ * again on every reload. One reader trimming and the other not is what left a thread showing a
+ * deleted picture whose bytes were on disk the whole time (2026-09-16).
+ */
+export function refBasename(path: string): string {
+  return basename(trimRefPath(path));
+}
+
+/**
+ * The refs whose name no store file carries: what the read path tries to copy back.
+ *
+ * A ref the log already paired with an id needs nothing -- the device fetches that id. The rest
+ * resolve by name, so a name the store does not hold is a picture the thread will call deleted.
+ * Read it against the names after `refBasename`, or the asterisks decide (2026-09-16).
+ */
+export function refsWithoutCopy(
+  refs: readonly { path: string; id?: string }[],
+  names: ReadonlySet<string>,
+): Array<{ path: string }> {
+  return refs.filter((ref) => !ref.id && !names.has(refBasename(ref.path)));
+}
+
+/** `**MEDIA:/a.png**`: the ref is the whole point, the emphasis around it is decoration. */
+function emphasisBounds(text: string, from: number, to: number): { from: number; to: number } {
+  for (const marker of ["**", "__", "*", "_"]) {
+    const at = from - marker.length;
+    if (at < 0) continue;
+    if (text.slice(at, from) !== marker) continue;
+    // The closer rides the ref's own tail when the path capture swallowed it, and sits just after
+    // otherwise.
+    if (!text.slice(from, to).endsWith(marker) && text.slice(to, to + marker.length) !== marker) continue;
+    return { from: at, to };
+  }
+  return { from, to };
+}
+
 /** Every `MEDIA:` ref of the prose, with the bounds of the text it occupies. */
 function proseRefs(text: string): Array<{ path: string; from: number; to: number }> {
   const code = codeRanges(text);
@@ -122,7 +195,9 @@ function proseRefs(text: string): Array<{ path: string; from: number; to: number
   while ((match = MEDIA_PATTERN.exec(text)) !== null) {
     const from = match.index;
     if (code.some((range) => from >= range.start && from < range.end)) continue;
-    refs.push({ path: match[1]!, from, to: from + match[0]!.length });
+    const path = trimRefPath(match[1]!);
+    if (!path) continue;
+    refs.push({ path, ...emphasisBounds(text, from, from + match[0]!.length) });
   }
   return refs;
 }
