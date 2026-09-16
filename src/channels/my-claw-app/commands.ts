@@ -353,6 +353,9 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
           mcpStatus: deps.mcpStatus ?? (() => []),
           listSubAgents: deps.listSubAgents ? () => deps.listSubAgents!(sessionId) : (async () => []),
           platform: "my-claw-app",
+          // The session this command was typed in: its workspace decides which skill layer the
+          // next run loads, and the command has to describe that run.
+          ...(existing?.workspace ? { workspace: existing.workspace } : {}),
         };
         if (command === "skills") return handleSkillsCommand(params);
         if (command === "agents") return handleAgentsCommand(params);

@@ -39,6 +39,11 @@ export interface IntrospectParams {
   agentRegistry: AgentRegistry;
   /** The channel the command came from, so the platform-hint layer of a dump matches reality. */
   platform: string;
+  /** Workspace key of the session the command was typed in, when there is one. A run loads that
+   *  workspace's skill layer (`bridge.ts` asks the registry for `session.workspace`), so a listing
+   *  taken from the agent's own pin would name skills the session can never load and hide the ones
+   *  it will -- which is what a career session saw after dropping a skill in its workspace. */
+  workspace?: string;
 }
 
 /** Built from the registry rather than written out: the accepted set changes with the files. */
@@ -119,9 +124,10 @@ export async function handleSkillsCommand(p: IntrospectParams): Promise<string> 
 
   const definition = resolveAgentDefinition(p.config, p.agentRegistry, agent.toolType);
   const scope = definition.skills;
-  // An agent pinned to a workspace reads that workspace's layer, so the listing has to be taken
-  // from there too: the default view would name skills this agent can never load.
-  const inScope = p.skillRegistry.list(scope, definition.workspace);
+  // The session's workspace first, the agent's pin only when it has none (a cron run): the listing
+  // has to match the layer the next run loads, or it names skills this session can never load and
+  // hides the ones it will.
+  const inScope = p.skillRegistry.list(scope, p.workspace ?? definition.workspace);
   const total = p.skillRegistry.names().length;
 
   const lines = [`Skills de ${agent.label} — ${inScope.length} sur ${total}`, ""];
@@ -239,7 +245,9 @@ export async function handleInstructionsCommand(p: IntrospectParams): Promise<Ou
   if (typeof agent === "string") return agent;
 
   const definition = resolveAgentDefinition(p.config, p.agentRegistry, agent.toolType);
-  const skills = p.skillRegistry.list(definition.skills, definition.workspace);
+  // Same ladder as the run, and as `/skills`: the command describes what this session will load.
+  const workspaceKey = p.workspace ?? definition.workspace;
+  const skills = p.skillRegistry.list(definition.skills, workspaceKey);
   const tools = toolsOf(p, agent.toolType);
   const model = modelFor(p.config, agent.toolType);
   const backend = backendFor(p.config, agent.toolType);
@@ -259,9 +267,9 @@ export async function handleInstructionsCommand(p: IntrospectParams): Promise<Ou
     instructions: definition.instructions,
     // And without these the dump would always read the default workspace, even for an agent pinned
     // to a named one: the whole point of the command is to show what that agent actually gets.
-    workspaceDir: resolveWorkspaceKey(p.config, definition.workspace),
+    workspaceDir: resolveWorkspaceKey(p.config, workspaceKey),
     defaultWorkspaceDir: p.config.workspace,
-    workspaceKey: definition.workspace,
+    workspaceKey,
     workspaces: p.config.workspaces,
     workspacePrompts: p.config.workspacePrompts,
   });

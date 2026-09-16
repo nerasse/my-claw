@@ -28,6 +28,11 @@ function skill(name: string): Skill {
   return { meta: { name, description: `${name} does things` }, content: `# ${name}`, path: `/s/${name}/SKILL.md`, source: "custom" };
 }
 
+/** A skill of a named workspace's layer, keyed the way the loader keys it. */
+function workspaceSkill(name: string, workspace: string): Skill {
+  return { ...skill(name), source: "workspace", workspace };
+}
+
 function agent(name: string, base: "general" | "research", extra: Partial<FileAgent["meta"]> = {}): FileAgent {
   return {
     name,
@@ -180,6 +185,43 @@ describe("/agents", () => {
   test("says none when no sub-agent is alive", async () => {
     const out = await handleAgentsCommand(params({}, "", { listSubAgents: async () => [] }));
     expect(out).toContain("- (aucun)");
+  });
+});
+
+describe("/skills in a session's workspace", () => {
+  const registry = () => new SkillRegistry(new Map([
+    ["alpha", skill("alpha")],
+    ["sofa/sofa-only", workspaceSkill("sofa-only", "sofa")],
+  ]));
+
+  test("lists the layer the next run loads, not the agent pin's", async () => {
+    // A session in a workspace loads that workspace's skill layer (bridge.ts asks for
+    // `session.workspace`); taking the listing from the agent's pin showed the default layer
+    // instead, hiding the skill the session would actually load (2026-09-16).
+    const out = await handleSkillsCommand(params({ orchestrator: { skills: ["*"] } }, "", { skillRegistry: registry(), workspace: "sofa" }));
+    expect(out).toContain("- sofa-only:");
+    expect(out).toContain("2 sur 2");
+  });
+
+  test("a run with no session of its own keeps reading the agent's pin", async () => {
+    const pinned = new AgentRegistry(new Map([["pinned", agent("pinned", "general", { workspace: "sofa" })]]));
+    const out = await handleSkillsCommand(params({ pinned: { skills: ["*"] } }, "pinned", { skillRegistry: registry(), agentRegistry: pinned }));
+    expect(out).toContain("- sofa-only:");
+  });
+});
+
+describe("/instructions in a session's workspace", () => {
+  test("the dump composes the session's workspace layer", async () => {
+    const registry = new SkillRegistry(new Map([
+      ["alpha", skill("alpha")],
+      ["sofa/sofa-only", workspaceSkill("sofa-only", "sofa")],
+    ]));
+    const res = await handleInstructionsCommand(params({ orchestrator: { skills: ["*"] } }, "", { skillRegistry: registry, workspace: "sofa" }));
+    expect(typeof res).not.toBe("string");
+    const msg = res as OutgoingMessage;
+    const att = msg.attachments?.[0];
+    tempDirs.push(dirname(att!.path!));
+    expect(await readFile(att!.path!, "utf-8")).toContain("- sofa-only:");
   });
 });
 
