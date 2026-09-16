@@ -8,6 +8,7 @@ import { AgentRegistry } from "../src/agents/registry.ts";
 import { SkillRegistry } from "../src/skills/registry.ts";
 import { ToolRegistry } from "../src/tools/registry.ts";
 import { resetPromptFileCache } from "../src/agent/prompt/loader.ts";
+import type { Skill } from "../src/skills/types.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import type { LegacySessionData } from "../src/sessions/store.ts";
 
@@ -62,6 +63,35 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await rm(base, { recursive: true, force: true });
+});
+
+test("the page lists the skills of the session's workspace, like the run that follows it", async () => {
+  // The run loads `skillRegistry.list(agent.skills, session.workspace)` -- the session's key, not
+  // the agent file's pin (bridge.ts). Asking the pin left the skill of a workspace session out of
+  // the page: the owner dropped one in `career/skills`, watched the watcher reload it, and the two
+  // sessions of that workspace never showed it (2026-09-16).
+  const p = params(sessionFor({ workspace: "sofa" }));
+  const entry = (name: string, source: Skill["source"], workspace?: string): [string, Skill] => [
+    workspace ? `${workspace}/${name}` : name,
+    {
+      meta: { name, description: `${name} skill` },
+      content: "",
+      path: join(base, `${name}.md`),
+      source,
+      ...(workspace ? { workspace } : {}),
+    },
+  ];
+  p.skillRegistry.setAll(new Map([
+    entry("shared", "custom"),
+    entry("sofa-only", "workspace", "sofa"),
+    entry("elsewhere-only", "workspace", "dev"),
+  ]));
+
+  const report = await sessionInstructionsReport(p);
+  assert.equal(report.workspace, "sofa");
+  assert.deepEqual(report.skills.map((s) => s.name).sort(), ["shared", "sofa-only"]);
+  // The roster is a layer of the composed prompt, so the page's preview has to carry it too.
+  assert.ok(report.layers.some((l) => l.text.includes("sofa-only")));
 });
 
 test("the report names every layer of the prompt, in build order", async () => {
