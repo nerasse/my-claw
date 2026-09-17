@@ -4,7 +4,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { Database } from "bun:sqlite";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
-import { analyticsDb, pruneOldRecords, recordApiCall } from "../../src/analytics/usage-db.ts";
+import { analyticsDb, recordApiCall } from "../../src/analytics/usage-db.ts";
+import { foldBefore } from "../helpers/analytics-fold.ts";
 import { archiveChannelMessage } from "../../src/conversations/store.ts";
 import { ModelPricing, CACHE_VERSION, setSharedPricing } from "../../src/llm/pricing.ts";
 import { statsReport } from "../../src/channels/stats-command.ts";
@@ -262,7 +263,7 @@ test("a live conversation the owner never renamed is labelled from the archive, 
 test("the payload carries where the detail starts and where the totals start, apart", async () => {
   call({ at: "2026-01-05T10:00:00.000Z", sessionId: "old" });
   call({ at: "2026-09-01T10:00:00.000Z", sessionId: "recent" });
-  pruneOldRecords("2026-04-01T00:00:00.000Z");
+  foldBefore("2026-04-01T00:00:00.000Z");
 
   const stats = await report();
   expect(stats.detailSince).toBe("2026-09-01T10:00:00.000Z");
@@ -276,7 +277,7 @@ test("the payload carries where the detail starts and where the totals start, ap
 
 test("a bounded period never claims to include the rollup, even when one exists", async () => {
   call({ at: "2026-01-05T10:00:00.000Z" });
-  pruneOldRecords("2026-04-01T00:00:00.000Z");
+  foldBefore("2026-04-01T00:00:00.000Z");
   call();
   const stats = await report({}, { period: "30d" });
   expect(stats.period).toBe("30d");
@@ -339,19 +340,17 @@ test("a rolled-up month is settled: a later tariff change does not restate it", 
   call({ at: "2026-01-05T10:00:00.000Z", model: "kimi-k3", promptTokens: 1_000_000 });
 
   // Alive, the row carries no frozen cost, so the page prices it with the table of the moment and
-  // a tariff change moves it. That is the exposure the purge closes.
+  // a tariff change moves it. Closing a month is what settles that exposure.
   expect((await report({}, { kimi: 40 })).totals.billedUsd).toBeCloseTo(40, 6);
 
-  // The purge runs with the table of its own day: kimi at four dollars a million input.
-  setSharedPricing(pricing(4));
-  try {
-    pruneOldRecords("2026-04-01T00:00:00.000Z");
-  } finally {
-    setSharedPricing(null);
-  }
+  // The month closes with the cost the row carried then: kimi at four dollars a million input, in
+  // reference because a rate nobody stated is not a charge.
+  analyticsDb().run("UPDATE api_calls SET cost_usd = 4, cost_billed = 0, cost_source = 'test' WHERE timestamp = ?", [
+    "2026-01-05T10:00:00.000Z",
+  ]);
+  foldBefore("2026-04-01T00:00:00.000Z");
 
-  // Tenfold since, and the closed month does not move: four dollars, and in reference, because a
-  // rate the purge had to look up is not a charge anyone stated.
+  // Tenfold since, and the closed month does not move: four dollars, and in reference still.
   const stats = await report({}, { kimi: 40 });
   expect(stats.totals.referenceUsd).toBeCloseTo(4, 6);
   expect(stats.totals.billedUsd).toBe(0);
@@ -362,15 +361,14 @@ test("a rolled-up month is settled: a later tariff change does not restate it", 
 /**
  * A month closed with no price stays closed with no price.
  *
- * A boot that has not fetched models.dev yet purges anyway, and rolls those calls up as unpriced.
- * Reading them through a table that arrived afterwards would put money on a settled month from
- * tokens alone -- and on a half-frozen group it would drop the frozen charge to do it. Settled is
- * settled; `unpriced` is the page saying so.
+ * A boot with no price table in hand used to fold those calls up as unpriced, and a month closed that
+ * way stays closed: reading it through a table that arrived afterwards would put money on a settled
+ * month from tokens alone. Settled is settled; `unpriced` is the page saying so.
  */
 test("a month rolled up without a price table is not re-priced by one that arrives later", async () => {
   call({ at: "2026-01-05T10:00:00.000Z", model: "kimi-k3", promptTokens: 1_000_000 });
   // No table published: this is the first boot of a fresh install, and the purge still runs.
-  pruneOldRecords("2026-04-01T00:00:00.000Z");
+  foldBefore("2026-04-01T00:00:00.000Z");
 
   // The table is there now, and it knows this model perfectly well. The closed month is not its
   // business.
@@ -385,7 +383,7 @@ test("a call the ladder could not price even at the purge is still counted, and 
   call({ at: "2026-01-05T10:00:00.000Z", model: "a-model-no-table-knows", baseUrl: "https://unknown.example.test" });
   setSharedPricing(pricing());
   try {
-    pruneOldRecords("2026-04-01T00:00:00.000Z");
+    foldBefore("2026-04-01T00:00:00.000Z");
   } finally {
     setSharedPricing(null);
   }
@@ -403,7 +401,7 @@ test("the rolled-up money is added to the live money, and the calls are counted 
   call({ at: "2026-09-01T10:00:00.000Z" });
   setSharedPricing(null);
   const before = await report();
-  pruneOldRecords("2026-04-01T00:00:00.000Z");
+  foldBefore("2026-04-01T00:00:00.000Z");
   const after = await report();
 
   expect(after.totals.calls).toBe(before.totals.calls);
@@ -619,7 +617,7 @@ test("an unfiltered report carries the facets of its own rows", async () => {
 test("a filter a month cannot answer turns the horizon off rather than claiming it", async () => {
   call({ at: "2026-01-05T10:00:00.000Z", sessionId: "old" });
   call({ sessionId: "new" });
-  pruneOldRecords("2026-04-01T00:00:00.000Z");
+  foldBefore("2026-04-01T00:00:00.000Z");
 
   const all = await report();
   expect(all.rollupIncluded).toBe(true);

@@ -14,7 +14,7 @@ import {
   getSessionModelUsage,
   getLastContextTokens,
   getSessionUsage,
-  RETENTION_DAYS,
+  usageHorizon,
   type SessionModelRow,
 } from "../analytics/usage-db.ts";
 import type { ModelPricing, CostBreakdown } from "../llm/pricing.ts";
@@ -237,7 +237,9 @@ async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {
     const ownTotals = totalsOf(own);
     const total = { ...ownTotals };
     for (const agent of agents) addTotals(total, agent);
-    const horizon = Date.now() - RETENTION_DAYS * 86_400_000;
+    // The rows the analytics still hold, which is what this report can answer for. Nothing sweeps
+    // them any more, so this is the first recorded call, not a retention wall (docs/stats-page.md).
+    const detailSince = usageHorizon().detailSince;
     const createdAt = p.session ? Date.parse(p.session.createdAt) : NaN;
     usage = {
       total,
@@ -247,7 +249,7 @@ async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {
         rows: own.map(modelRow),
       },
       agents,
-      ...(Number.isFinite(createdAt) && createdAt < horizon ? { since: new Date(horizon).toISOString() } : {}),
+      ...(Number.isFinite(createdAt) && detailSince !== undefined && Date.parse(detailSince) > createdAt ? { since: detailSince } : {}),
     };
   }
 

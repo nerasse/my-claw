@@ -2,15 +2,17 @@ import { test, expect, beforeEach } from "bun:test";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
-import { analyticsDb, pruneOldRecords, recordApiCall } from "../../src/analytics/usage-db.ts";
+import { analyticsDb, recordApiCall } from "../../src/analytics/usage-db.ts";
+import { foldBefore } from "../helpers/analytics-fold.ts";
 import { filterNarrows, filterReachesRollup, periodCutoff, reachesRollup, usageByCaller, usageByDay, usageByModel, usageBySession } from "../../src/analytics/usage-stats.ts";
 
 /**
  * The four windows the statistics page offers, and which of them reach past the retention wall.
  *
- * A bounded period stops at most ninety days back and reads live rows alone; `all` adds the
- * permanent rollup, which holds exactly the rows the purge deleted. The two can never describe the
- * same call, which is why adding them is a total and not a double count.
+ * A bounded period stops at most ninety days back and reads live rows alone; `all` also adds the
+ * permanent rollup, which holds exactly the rows an earlier purge deleted (nothing sweeps any more:
+ * see `tests/helpers/analytics-fold.ts` for the state these tests sow). The two can never describe
+ * the same call, which is why adding them is a total and not a double count.
  */
 
 beforeEach(() => {
@@ -103,7 +105,7 @@ test("`all` reads the rollup and the live rows, each call once", () => {
   call(daysAgo(2));
   expect(totalCalls(usageByModel("all", {}))).toBe(3);
 
-  pruneOldRecords("2026-04-01T00:00:00.000Z");
+  foldBefore("2026-04-01T00:00:00.000Z");
   const groups = usageByModel("all", {});
   expect(totalCalls(groups)).toBe(3);
   expect(groups.map((g) => g.origin).sort()).toEqual(["live", "rollup"]);
@@ -114,7 +116,7 @@ test("`all` reads the rollup and the live rows, each call once", () => {
 
 test("a bounded period never touches the rollup, even when the rollup holds the same model", () => {
   call("2026-01-05T10:00:00.000Z");
-  pruneOldRecords("2026-04-01T00:00:00.000Z");
+  foldBefore("2026-04-01T00:00:00.000Z");
   call(daysAgo(1));
 
   expect(totalCalls(usageByModel("7d", {}))).toBe(1);
@@ -131,7 +133,7 @@ test("a bounded period never touches the rollup, even when the rollup holds the 
 test("the per-session and per-day views are bounded by the live rows, `all` included", () => {
   call("2026-01-05T10:00:00.000Z", { sessionId: "old-one" });
   call(daysAgo(1), { sessionId: "recent-one" });
-  pruneOldRecords("2026-04-01T00:00:00.000Z");
+  foldBefore("2026-04-01T00:00:00.000Z");
 
   expect(usageBySession("all", {}).map((g) => g.sessionId)).toEqual(["recent-one"]);
   expect(usageByDay("all", {})).toHaveLength(1);
@@ -251,7 +253,7 @@ test("unpricedOnly keeps the calls that carry no frozen cost, and only those", (
 test("a filter no monthly fold can answer drops the rollup rather than adding untouched months", () => {
   call("2026-01-05T10:00:00.000Z", { sessionId: "old-one" });
   call(daysAgo(1), { sessionId: "recent-one" });
-  pruneOldRecords("2026-04-01T00:00:00.000Z");
+  foldBefore("2026-04-01T00:00:00.000Z");
 
   expect(usageByModel("all", { model: "glm-5.2" }).map((g) => g.origin).sort()).toEqual(["live", "rollup"]);
 

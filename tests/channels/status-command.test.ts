@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { LegacySessionData } from "../../src/sessions/store.ts";
-import { recordApiCall } from "../../src/analytics/usage-db.ts";
+import { analyticsDb, recordApiCall } from "../../src/analytics/usage-db.ts";
 import { ModelPricing, CACHE_VERSION } from "../../src/llm/pricing.ts";
 import { statusReport } from "../../src/channels/status-command.ts";
 import type { SubAgentMeta } from "../../src/sessions/store.ts";
@@ -91,7 +91,6 @@ test("the usage is one block: calls, tokens and money from analytics, no second 
   expect(status.usage?.own.promptTokens).toBe(4_000_000);
   expect(status.usage?.own.durationMs).toBe(40);
   expect(status.usage?.total).toEqual(expect.objectContaining({ calls: 4, promptTokens: 4_000_000, completionTokens: 4000 }));
-  expect(status.usage?.since).toBeUndefined();
   expect("conversation" in status).toBe(false);
   expect("analytics" in status).toBe(false);
 });
@@ -154,12 +153,16 @@ test("a sub-agent's own sub-agents are billed to it, so the walk continues under
 });
 
 test("a conversation older than the analytics horizon says where its figures start", async () => {
+  // The horizon is the first call still on disk, not a retention wall: nothing sweeps the rows any
+  // more (2026-09-17). A conversation that began before it -- this install has one, at the June
+  // fold -- is told where its figures start instead of reading a partial total as a whole one.
   const sessionId = "my-claw-app/thread/o/old";
   call(sessionId);
   const status = await report({ sessionId, session: session(sessionId, { createdAt: new Date(Date.now() - 200 * 86_400_000).toISOString() }) });
-  expect(status.usage?.since).toBeDefined();
-  const since = Date.parse(status.usage!.since!);
-  expect(Math.abs(Date.now() - 90 * 86_400_000 - since)).toBeLessThan(60_000);
+  const since = status.usage?.since;
+  expect(since).toBeDefined();
+  const oldest = (analyticsDb().query("SELECT MIN(timestamp) AS at FROM api_calls").get() as { at: string }).at;
+  expect(since).toBe(oldest);
 });
 
 test("measured, estimated and occupied are reported apart, because the estimate under-counts", async () => {

@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { closeDb, pruneOldRecords } from "./analytics/usage-db.ts";
+import { closeDb, usageHorizon } from "./analytics/usage-db.ts";
 import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, loadSession, loadLegacySession } from "./sessions/store.ts";
 import { sessionLogOf } from "./sessions/log-access.ts";
 import { promptOf } from "./sessions/projection.ts";
@@ -356,11 +356,10 @@ async function main() {
   // files that hold no table of their own, so the one instance is published here.
   setSharedPricing(pricing);
 
-  // After the table is published, and not with the other boot sweeps: the purge folds the rows it
-  // deletes into the monthly rollup and prices, on the way out, the ones that carry no frozen cost.
-  // Run before `setSharedPricing` it would find no table, roll every condemned month up at zero and
-  // write that down for good -- the rollup is never recomputed (docs/stats-page.md).
-  pruneOldRecords();
+  // Nothing is ever swept: every call stays in `api_calls` for good, so the ranking and the daily
+  // graph reach back to the first recorded row. The monthly rollup still counts the months an
+  // earlier retention policy folded away, with no session and no day in them (docs/stats-page.md).
+  log("info", "analytics kept in full", { since: usageHorizon().detailSince });
 
   // Dynamic model catalog: discovered models (Claude SDK + OpenAI /v1/models) merge into the
   // curated config.models. Everything (resolver, dispatcher, picker) reads config.llm.models,

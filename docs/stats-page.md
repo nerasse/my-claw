@@ -30,14 +30,23 @@ more, so the listener, the adapter method and `StatusWatch.refreshed()` are gone
 still fires from `refreshOpenRouterAccount`, and `tests/llm/openrouter-account.test.ts` still proves
 it fires on a successful read and on nothing else.
 
-## The 90-day wall, and the rollup that survives it
+## Nothing is ever swept
 
-`pruneOldRecords()` deletes every `api_calls` row older than `RETENTION_DAYS` (90) at boot. A page
-claiming to show everything would be short by however much history the purge has already taken, and
-would never say so.
+**Every `api_calls` row stays, forever** (decided 2026-09-17: the owner deleted old conversations,
+watched the ranking they had disappeared from, and asked for "rien perdre"). There is no retention
+wall, no `RETENTION_DAYS`, and nothing at boot folds or deletes a call. The ranking and the daily
+graph therefore reach back to the first recorded row, and a global reading is `api_calls` itself.
 
-The design is one sentence: **the rollup covers exactly the rows the purge deletes, and nothing
-else.**
+What an earlier policy already folded is not recoverable: the rollup key carries no session and no
+day, so those months count in the totals and in no conversation. The rollup is still read, and this
+section is kept for what it explains -- why a rolled month adds up instead of overlapping.
+
+### The purge that used to run (retired 2026-09-17)
+
+`pruneOldRecords()` deleted every `api_calls` row older than `RETENTION_DAYS` (90) at boot, after
+folding them into `usage_monthly`. Its design was one sentence: **the rollup covers exactly the rows
+the purge deletes, and nothing else.** That is what made `rollup + live` a safe global total, and it
+is the property the readers downstream still rely on.
 
 ```
 BEGIN
@@ -381,20 +390,14 @@ Neither has an absolute path of this machine: the payload carries model ids, bas
 and numbers. Tested on the serialized JSON rather than on the object, which is what actually crosses
 the socket.
 
-## Where the purge runs at boot
+## Where the sweep used to run at boot
 
-`pruneOldRecords()` used to sit with the other boot sweeps (logs, old sessions), before the price
-table existed. It now runs **immediately after `setSharedPricing(pricing)`** in `src/index.ts`, and
-that ordering is load-bearing: run earlier it would find no table, roll every condemned month up at
-zero, and write that down permanently. A rollup is never recomputed, so a purge that ran too early
-is not a delay, it is a loss.
+Nothing runs there any more. The boot publishes the price table (`setSharedPricing(pricing)`) and
+then logs the horizon it holds (`analytics kept in full`, with `since`). The order that mattered --
+price first, then condemn -- went with the purge it protected.
 
 ## A boot with no price table
 
-`sharedPricing()` is published at boot, before the purge runs. When it is absent -- a first boot that
-has not fetched models.dev yet, or a fetch that failed -- the purge still folds and still deletes:
-the condemned calls are counted, their tokens are kept, and their money goes to `unpriced_calls`.
-Nothing is lost that was not already unknown, and the page says so instead of implying a zero.
-
-That is the only degradation, and it is the honest one. The alternative would be skipping the purge
-and letting `api_calls` grow without bound because a third party's price list was unreachable.
+Unchanged in substance, and simpler now: a boot that has not fetched models.dev yet prices nothing
+and deletes nothing. The rows stay, and `/status` and the page price them from the table the moment
+it lands.
