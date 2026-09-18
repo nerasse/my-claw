@@ -32,6 +32,10 @@ test("notify reaches the orchestrator and the cron agent, and no sub-agent", () 
   assert.ok(r.getForAgent("cron").some((t) => t.name === "notify"), "a cron job can notify");
   assert.ok(!r.getForAgent("general").some((t) => t.name === "notify"), "a general sub-agent cannot");
   assert.ok(!r.getForAgent("research").some((t) => t.name === "notify"), "a research sub-agent cannot");
+  // An agent file naming it in `tools:` intersects the baseline, so it loses it rather than
+  // widening the set: a workspace is often a cloned repository.
+  const narrowed = r.getForAgent("general", [], "all", ["bash", "notify"]).map((t) => t.name);
+  assert.deepEqual(narrowed, ["bash"], "an agent file cannot grant notify to a sub-agent");
 });
 
 test("denylist filters tools out of the main set", () => {
