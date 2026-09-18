@@ -161,10 +161,11 @@ export interface PushNotification {
   /** Deep link opened when the notification is tapped: myclaw://thread/<id> or myclaw://job/<id>. */
   url?: string;
   /**
-   * Ask for the phone to ring rather than buzz: the payload names the `urgent` channel, which the
-   * app pre-creates on the alarm stream, so it is heard in vibrate and in silent too. That is the
-   * point of it -- an agent that has to be answered now -- so it is rate-limited instead: see
-   * RING_COOLDOWN_MS.
+   * Ask for the phone to ring rather than buzz: the payload names the `ring` channel, which the
+   * app pre-creates louder and longer than the ordinary one. It is a notification on the
+   * notification stream, so the phone's own mode governs it like anything else: heard in normal,
+   * vibrating in vibrate, quiet in silent. The owner was explicit, and it is rate-limited anyway:
+   * see RING_COOLDOWN_MS.
    */
   ring?: boolean;
 }
@@ -178,14 +179,14 @@ export interface PushNotification {
 /**
  * The Android channels the app pre-creates, and the only two names a payload may carry.
  *
- * `runs` is the ordinary one: IMPORTANCE_HIGH, the system's own notification sound, so it follows
- * the ringer mode like any other notification. `urgent` is the alarm stream, and it is what
- * "sonner" means -- it is heard with the phone on vibrate or silent. Channel settings are frozen
- * at first creation, so these names are a contract with the app: renaming one silently downgrades
- * every notification that carries it.
+ * `runs` is the ordinary one: IMPORTANCE_HIGH, the system's own notification sound. `ring` is the
+ * loud one -- a longer, more insistent sound, IMPORTANCE_HIGH -- and it is a notification like any
+ * other, so the ringer mode decides what it does. Channel settings are frozen at first creation,
+ * so these names are a contract with the app: renaming one silently downgrades every notification
+ * that carries it to the library's own default channel.
  */
 const CHANNEL_ORDINARY = "runs";
-const CHANNEL_URGENT = "urgent";
+const CHANNEL_RING = "ring";
 
 /**
  * A ring is a signal, not a weapon. An agent in a loop could otherwise ring the owner every
@@ -200,7 +201,7 @@ let lastRingAt = 0;
 export function buildPushPayload(notification: PushNotification): string {
   return JSON.stringify({
     id: notification.url ? notificationIdFor(notification.url) : notificationCounter++,
-    type: notification.ring === true ? CHANNEL_URGENT : CHANNEL_ORDINARY,
+    type: notification.ring === true ? CHANNEL_RING : CHANNEL_ORDINARY,
     title: notification.title,
     body: notification.body,
     ...(notification.url ? { url: notification.url } : {}),
@@ -210,7 +211,7 @@ export function buildPushPayload(notification: PushNotification): string {
 export interface PublishOutcome {
   /** How many devices the push server accepted the notification for. */
   delivered: number;
-  /** Whether it went out on the urgent channel; false when there was nothing to ring. */
+  /** Whether it went out on the ring channel; false when there was nothing to ring. */
   rang: boolean;
 }
 

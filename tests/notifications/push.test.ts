@@ -92,11 +92,11 @@ test("the payload carries the channel type the app pre-creates as IMPORTANCE_HIG
   assert.equal(payload.url, "myclaw://thread/x");
 });
 
-test("an urgent ring out names the channel the app pre-created on the alarm stream", () => {
+test("a ring names the louder channel the app pre-creates, not the ordinary one", () => {
   const plain = JSON.parse(buildPushPayload({ title: "t", body: "b" }));
   const rung = JSON.parse(buildPushPayload({ title: "t", body: "b", ring: true }));
   assert.equal(plain.type, "runs");
-  assert.equal(rung.type, "urgent");
+  assert.equal(rung.type, "ring");
 });
 
 test("a notification that names a thread is addressable: same link, same id, and it fits an Android Int", () => {

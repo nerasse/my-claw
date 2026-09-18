@@ -75,7 +75,7 @@ canal le dégrade en silence pour toutes les notifications qui le portent.
 | `type` | Canal | Ce qu'il fait |
 | --- | --- | --- |
 | `runs` | ordinaire, à l'écran | `IMPORTANCE_HIGH`, son de notification système : bannière, et **suit le mode sonnerie** comme n'importe quelle notification (silencieux = rien, vibreur = vibreur). |
-| `urgent` | sonnerie | `IMPORTANCE_HIGH` sur le **flux alarme** (`USAGE_ALARM`, sonnerie d'alarme système, vibration longue) : c'est le seul moyen qu'a une app de se faire entendre en vibreur ou en silencieux. |
+| `ring` | sonnerie | `IMPORTANCE_HIGH`, sonnerie d'alarme système, vibration longue, **sur le flux notification** : plus fort et plus long que l'ordinaire, mais le mode du téléphone décide comme pour n'importe quelle notification (muet en silencieux, vibreur en vibreur). |
 
 ## Le tool `notify`
 

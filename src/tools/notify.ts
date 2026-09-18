@@ -22,8 +22,9 @@ export function notifyLink(): string | undefined {
  * A push notification to the owner's own devices, sent by the agent rather than by the run.
  *
  * The owner asked for this to shout at him when something needs him: the ordinary notification is
- * a banner, and `ring` is the alarm channel, heard through vibrate and silent. Both exist as
- * completion notifications already -- this one is the agent's own voice in between, and the
+ * a banner, and `ring` is a longer, more insistent one. Both obey the phone's own mode -- a ring is
+ * quiet in silent like any notification, which the owner was explicit about -- and both exist as
+ * completion notifications already: this one is the agent's own voice in between, and the
  * description says so, because a tool that can ring a phone is a tool an agent will overuse.
  */
 export function createNotifyTool(): Tool {
@@ -31,7 +32,7 @@ export function createNotifyTool(): Tool {
     name: "notify",
     description: [
       "Send a push notification to the owner's devices. Use it to reach him between runs: a job that found something he should act on, a run that has to wait for him.",
-      "`ring` makes the phone ring on the alarm channel, through vibrate and silent. Reserve it for something he must act on now, and say why in the body: it is rate-limited to one ring every ten minutes, and an ordinary notification is what later rings become.",
+      "`ring` makes the phone ring instead of buzzing: a longer, more insistent sound, still under the phone's own silent and vibrate settings. Reserve it for something he must act on now, and say why in the body: it is rate-limited to one ring every ten minutes, and an ordinary notification is what later rings become.",
       "Do not use it to report a run's own result -- that notification is sent for you when the run ends.",
     ].join(" "),
     parameters: {
