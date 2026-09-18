@@ -359,6 +359,8 @@ export interface MyClawAppNotificationsController {
   info(): Promise<string | undefined>;
   register(deviceId: string, frame: MyClawAppNotificationsRegister): Promise<void>;
   unregister(deviceId: string): Promise<void>;
+  /** Stores the sound channels this device pre-created, next to its endpoint (docs/notifications.md). */
+  setChannels(deviceId: string, channels: { ordinary?: string; ring?: string }): Promise<void>;
   setForeground(deviceId: string, state: { foreground: boolean; threadId?: string }): Promise<void>;
 }
 

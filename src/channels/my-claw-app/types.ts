@@ -1087,6 +1087,7 @@ export type MyClawAppClientFrame =
   | MyClawAppJobDelete
   | MyClawAppNotificationsRegister
   | MyClawAppNotificationsState
+  | MyClawAppNotificationsChannels
   | MyClawAppTagsList
   | MyClawAppTagsUpsert
   | MyClawAppTagsDelete
@@ -3429,6 +3430,19 @@ export interface MyClawAppNotificationsState {
   type: "notifications.state";
   foreground: boolean;
   threadId?: string;
+}
+
+/**
+ * The sounds this device picked in the app, named by the channels it pre-created for them
+ * (docs/notifications.md). Sent after connecting and on every sound change, carrying the whole
+ * selection. `deviceId` names the device the choice belongs to; the socket's own device wins
+ * whenever it has one. A name outside the accepted grammar is ignored and the sound falls back
+ * to the default channel.
+ */
+export interface MyClawAppNotificationsChannels {
+  type: "notifications.channels";
+  deviceId: string;
+  channels: { ordinary?: string; ring?: string };
 }
 
 /** The VAPID public key the device must hand to its distributor at registration. */

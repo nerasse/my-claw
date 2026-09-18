@@ -2130,6 +2130,7 @@ async function main() {
           updatedAt: new Date().toISOString(),
         }),
       unregister: (deviceId) => endpointStore.unregister(deviceId),
+      setChannels: (deviceId, channels) => endpointStore.setChannels(deviceId, channels),
       setForeground: (deviceId, state) => foregroundStore.set(deviceId, state),
     });
 

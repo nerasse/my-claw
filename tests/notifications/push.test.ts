@@ -1,5 +1,7 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import {
   loadOrCreateVapid,
   endpointStore,
@@ -11,7 +13,9 @@ import {
   cleanNotificationText,
   buildPushPayload,
   notificationIdFor,
+  validChannelName,
 } from "../../src/notifications/push.ts";
+import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
 // The stores persist to the temp MY_CLAW_DIR; resetPushState() (also wired in
@@ -39,6 +43,20 @@ test("endpointStore registers, lists and unregisters per device", async () => {
   await endpointStore.unregister("dev-1");
   const after = await endpointStore.endpoints();
   assert.deepEqual(after.map((e) => e.deviceId), ["dev-2"]);
+});
+
+test("validChannelName accepts the names the app derives and refuses everything else", () => {
+  assert.equal(validChannelName("runs"), true);
+  assert.equal(validChannelName("ring-3f9a"), true);
+  assert.equal(validChannelName("a"), true);
+  // The cap is 41 characters including the leading letter.
+  assert.equal(validChannelName(`a${"b".repeat(40)}`), true);
+  assert.equal(validChannelName(`a${"b".repeat(41)}`), false);
+  assert.equal(validChannelName("Ring"), false);
+  assert.equal(validChannelName("ring/../x"), false);
+  assert.equal(validChannelName(""), false);
+  assert.equal(validChannelName("x".repeat(60)), false);
+  assert.equal(validChannelName("runs "), false);
 });
 
 test("foregroundStore tracks the device state and isForegroundOn matches only the same thread", async () => {
@@ -97,6 +115,53 @@ test("a ring names the louder channel the app pre-creates, not the ordinary one"
   const rung = JSON.parse(buildPushPayload({ title: "t", body: "b", ring: true }));
   assert.equal(plain.type, "runs");
   assert.equal(rung.type, "ring");
+});
+
+test("buildPushPayload takes the device's own channel when given, and keeps the defaults without one", () => {
+  const ordinary = JSON.parse(buildPushPayload({ title: "t", body: "b" }, { channel: "quiet-1a2b" }));
+  const ring = JSON.parse(buildPushPayload({ title: "t", body: "b", ring: true }, { channel: "ring-abc" }));
+  assert.equal(ordinary.type, "quiet-1a2b");
+  assert.equal(ring.type, "ring-abc");
+  // The two-argument call stays the app's default pair, pre-created on every device.
+  assert.equal(JSON.parse(buildPushPayload({ title: "t", body: "b" })).type, "runs");
+  assert.equal(JSON.parse(buildPushPayload({ title: "t", body: "b", ring: true })).type, "ring");
+});
+
+test("setChannels stores a device's sound selection beside its endpoint and leaves the rest alone", async () => {
+  await resetPushState();
+  await endpointStore.register("dev-1", { endpoint: "https://push.example/up/one", ...SUB_KEYS, updatedAt: "t1" });
+  await endpointStore.setChannels("dev-1", { ordinary: "quiet-1a2b", ring: "ring-abc" });
+
+  const [entry] = await endpointStore.endpoints();
+  assert.equal(entry?.deviceId, "dev-1");
+  assert.deepEqual(entry?.endpoint.channels, { ordinary: "quiet-1a2b", ring: "ring-abc" });
+  assert.equal(entry?.endpoint.endpoint, "https://push.example/up/one");
+  assert.equal(entry?.endpoint.pubKey, SUB_KEYS.pubKey);
+  assert.equal(entry?.endpoint.auth, SUB_KEYS.auth);
+  assert.equal(entry?.endpoint.updatedAt, "t1");
+
+  // Persisted on disk next to the endpoint: what the next publish reads.
+  const raw = JSON.parse(await readFile(join(MY_CLAW_DIR, "push", "endpoints.json"), "utf8")) as Record<string, { channels?: unknown }>;
+  assert.deepEqual(raw["dev-1"]?.channels, { ordinary: "quiet-1a2b", ring: "ring-abc" });
+
+  // A device that never registered has nothing to attach a choice to: no ghost entry.
+  await endpointStore.setChannels("dev-ghost", { ordinary: "quiet" });
+  assert.deepEqual((await endpointStore.endpoints()).map((e) => e.deviceId), ["dev-1"]);
+});
+
+test("an invalid channel name is ignored: the stored selection does not move", async () => {
+  await resetPushState();
+  await endpointStore.register("dev-1", { endpoint: "https://push.example/up/one", ...SUB_KEYS, updatedAt: "t" });
+  await endpointStore.setChannels("dev-1", { ring: "ring-abc" });
+  const before = await readFile(join(MY_CLAW_DIR, "push", "endpoints.json"), "utf8");
+
+  await endpointStore.setChannels("dev-1", { ring: "Ring" });
+  assert.equal(await readFile(join(MY_CLAW_DIR, "push", "endpoints.json"), "utf8"), before);
+
+  // In a mixed frame the valid name is kept and the invalid one dropped.
+  await endpointStore.setChannels("dev-1", { ordinary: "quiet", ring: "ring/../x" });
+  const [entry] = await endpointStore.endpoints();
+  assert.deepEqual(entry?.endpoint.channels, { ordinary: "quiet" });
 });
 
 test("a notification that names a thread is addressable: same link, same id, and it fits an Android Int", () => {
@@ -166,6 +231,30 @@ test("publishNotification skips a device foreground on the same thread", async (
   );
   assert.equal(outcome.delivered, 1);
   assert.deepEqual(urls, ["https://push.example/up/two"]);
+  mocked.restore();
+});
+
+test("a ring resolves the type per device: the sound it picked, else the default", async () => {
+  await resetPushState();
+  await endpointStore.register("dev-1", { endpoint: "https://push.example/up/one", ...SUB_KEYS, updatedAt: "t" });
+  await endpointStore.register("dev-2", { endpoint: "https://push.example/up/two", ...SUB_KEYS, updatedAt: "t" });
+  await endpointStore.setChannels("dev-1", { ring: "ring-abc" });
+
+  // The body is encrypted on the wire (RFC 8291), so the type a device ends up carrying is
+  // asserted where publishNotification decides it: buildPushPayload with the device's channel,
+  // and the stored selections the per-device build reads.
+  const picked = JSON.parse(buildPushPayload({ title: "t", body: "b", ring: true }, { channel: "ring-abc" }));
+  const fallback = JSON.parse(buildPushPayload({ title: "t", body: "b", ring: true }));
+  assert.equal(picked.type, "ring-abc");
+  assert.equal(fallback.type, "ring");
+
+  const targets = await endpointStore.endpoints();
+  assert.equal(targets.find((t) => t.deviceId === "dev-1")?.endpoint.channels?.ring, "ring-abc");
+  assert.equal(targets.find((t) => t.deviceId === "dev-2")?.endpoint.channels, undefined);
+
+  // Both devices still get the ring: the sound is per device, the cooldown decision is one.
+  const mocked = mockFetch(() => Promise.resolve(new Response("ok", { status: 200 })));
+  assert.deepEqual(await publishNotification({ title: "t", body: "b", ring: true }), { delivered: 2, rang: true });
   mocked.restore();
 });
 

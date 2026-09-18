@@ -142,6 +142,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppSubAgentsReset,
   MyClawAppNotificationsRegister,
   MyClawAppNotificationsState,
+  MyClawAppNotificationsChannels,
   MyClawAppLocationCapabilities,
   MyClawAppLocationPreview,
 } from "./types.ts";
@@ -1789,6 +1790,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "notifications.state":
         this.detach(this.handleNotificationsState(ws, frame), "handleNotificationsState");
         break;
+      case "notifications.channels":
+        this.detach(this.handleNotificationsChannels(ws, frame), "handleNotificationsChannels");
+        break;
 
       case "files.delete":
         this.detach(this.handleFileDelete(ws, frame), "handleFileDelete");
@@ -2518,6 +2522,21 @@ export class MyClawAppAdapter implements ChannelAdapter {
       foreground: Boolean(frame.foreground),
       threadId: frame.threadId || undefined,
     });
+  }
+
+  /**
+   * The sounds a device picked, carried by the names of the channels it pre-created. The socket's
+   * own device wins when it has one, so a frame can never write another device's selection; the
+   * store ignores an unregistered device and any name outside the accepted grammar.
+   */
+  private async handleNotificationsChannels(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppNotificationsChannels,
+  ): Promise<void> {
+    if (!this.notifications) return;
+    const deviceId = ws.data.deviceId || frame.deviceId;
+    if (!deviceId) return;
+    await this.notifications.setChannels(deviceId, frame.channels ?? {});
   }
 
   /** The session a frame names, as a spreadable field: an unusable threadId yields nothing at

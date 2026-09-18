@@ -58,6 +58,22 @@ export interface PushEndpoint {
   pubKey?: string;
   auth?: string;
   updatedAt: string;
+  /**
+   * The sounds this device picked in the app, one channel name per kind. The app pre-creates each
+   * channel on the device, and Android freezes a channel at creation: the name is the contract,
+   * so these are names the app derived, never names the server may invent. They arrive from the
+   * device, so setChannels only stores what validChannelName accepts and ignores the rest.
+   */
+  channels?: { ordinary?: string; ring?: string };
+}
+
+/**
+ * Whether a channel name a device sent may be stored. The names are derived app-side and end up
+ * as Android channel ids (`<package>:unified_push_channel:<name>`), so the grammar is narrow on
+ * purpose; a refused name is ignored and the sound falls back to the default channel.
+ */
+export function validChannelName(name: string): boolean {
+  return /^[a-z][a-z0-9_-]{0,40}$/.test(name);
 }
 
 export interface VapidKeys {
@@ -105,6 +121,8 @@ export async function loadOrCreateVapid(): Promise<VapidKeys> {
 export interface EndpointStore {
   register(deviceId: string, endpoint: PushEndpoint): Promise<void>;
   unregister(deviceId: string): Promise<void>;
+  /** Replaces the device's stored sound selection; an unregistered device is left alone. */
+  setChannels(deviceId: string, channels: { ordinary?: string; ring?: string }): Promise<void>;
   endpoints(): Promise<Array<{ deviceId: string; endpoint: PushEndpoint }>>;
 }
 
@@ -122,6 +140,23 @@ function jsonEndpointStore(path: string): EndpointStore {
       const all = await load();
       if (!all[deviceId]) return;
       delete all[deviceId];
+      await writeJson(path, all);
+    },
+    async setChannels(deviceId, channels) {
+      const all = await load();
+      const entry = all[deviceId];
+      // No endpoint, nothing to attach a choice to: never grow a ghost entry.
+      if (!entry) return;
+      const valid: { ordinary?: string; ring?: string } = {};
+      for (const field of ["ordinary", "ring"] as const) {
+        const name = channels[field];
+        if (name === undefined) continue;
+        if (validChannelName(name)) valid[field] = name;
+        else void log("warn", "invalid notification channel name ignored", { deviceId, field, name });
+      }
+      // Nothing usable came in: leave the stored selection alone instead of clearing it.
+      if (valid.ordinary === undefined && valid.ring === undefined) return;
+      entry.channels = valid;
       await writeJson(path, all);
     },
     async endpoints() {
@@ -197,11 +232,17 @@ const CHANNEL_RING = "ring";
 const RING_COOLDOWN_MS = 10 * 60_000;
 let lastRingAt = 0;
 
-/** The plaintext notification: the renderer reads every field except the numeric id. */
-export function buildPushPayload(notification: PushNotification): string {
+/**
+ * The plaintext notification: the renderer reads every field except the numeric id.
+ *
+ * `channel` overrides the type -- the per-device sound channel publishNotification resolves for
+ * each target. Without it the payload names the app's default pair, `runs` or `ring`, which is
+ * what a device with no choice of its own receives.
+ */
+export function buildPushPayload(notification: PushNotification, options?: { channel?: string }): string {
   return JSON.stringify({
     id: notification.url ? notificationIdFor(notification.url) : notificationCounter++,
-    type: notification.ring === true ? CHANNEL_RING : CHANNEL_ORDINARY,
+    type: options?.channel ?? (notification.ring === true ? CHANNEL_RING : CHANNEL_ORDINARY),
     title: notification.title,
     body: notification.body,
     ...(notification.url ? { url: notification.url } : {}),
@@ -225,7 +266,6 @@ export async function publishNotification(
   const vapid = await loadOrCreateVapid();
   const rang = notification.ring === true && Date.now() - lastRingAt >= RING_COOLDOWN_MS;
   if (rang) lastRingAt = Date.now();
-  const payload = buildPushPayload({ ...notification, ring: rang });
 
   let delivered = 0;
   await Promise.all(targets.map(async ({ deviceId, endpoint }) => {
@@ -234,6 +274,13 @@ export async function publishNotification(
       void log("warn", "push endpoint has no encryption keys; skipping", { deviceId });
       return;
     }
+    // The type is the one field that cannot be shared: each device picked its own sounds, and an
+    // Android channel is frozen at creation, so this device's names -- or the defaults -- decide
+    // it. `rang` was decided once, before the loop, so the ring cooldown stays global.
+    const channel = rang
+      ? endpoint.channels?.ring ?? CHANNEL_RING
+      : endpoint.channels?.ordinary ?? CHANNEL_ORDINARY;
+    const payload = buildPushPayload({ ...notification, ring: rang }, { channel });
     try {
       // The UnifiedPush connector decrypts with the keys it generated at registration and
       // drops anything it cannot decrypt, so the payload MUST be Web Push encrypted

@@ -5214,6 +5214,7 @@ describe("notifications", () => {
   let client: WsClient;
   const registrations: Array<{ deviceId: string; endpoint?: string; pubKey?: string; auth?: string }> = [];
   const states: Array<{ deviceId: string; foreground: boolean; threadId?: string }> = [];
+  const channelUpdates: Array<{ deviceId: string; channels: { ordinary?: string; ring?: string } }> = [];
 
   const until = async (predicate: () => boolean, timeoutMs = 3000): Promise<void> => {
     const start = Date.now();
@@ -5230,6 +5231,7 @@ describe("notifications", () => {
       info: async () => "vapid-public-key",
       register: async (deviceId, frame) => { registrations.push({ deviceId, endpoint: frame.endpoint, pubKey: frame.pubKey, auth: frame.auth }); },
       unregister: async (deviceId) => { registrations.push({ deviceId, endpoint: undefined }); },
+      setChannels: async (deviceId, channels) => { channelUpdates.push({ deviceId, channels }); },
       setForeground: async (deviceId, state) => { states.push({ deviceId, ...state }); },
     });
     await adapter.start();
@@ -5241,6 +5243,7 @@ describe("notifications", () => {
     await adapter.stop();
     registrations.length = 0;
     states.length = 0;
+    channelUpdates.length = 0;
   });
 
   test("a connecting device is greeted with the VAPID public key", async () => {
@@ -5270,6 +5273,17 @@ describe("notifications", () => {
     client.ws.send(JSON.stringify({ type: "notifications.state", foreground: true, threadId: "t1" }));
     await until(() => states.length === 1);
     assert.deepEqual(states, [{ deviceId: DEVICE_ID, foreground: true, threadId: "t1" }]);
+  });
+
+  test("notifications.channels records the sounds under the socket's own device", async () => {
+    client.ws.send(JSON.stringify({
+      type: "notifications.channels",
+      deviceId: "someone-else",
+      channels: { ordinary: "quiet-1a2b", ring: "ring-3f9a" },
+    }));
+    await until(() => channelUpdates.length === 1);
+    // The frame's deviceId is ignored: the authenticated socket is the only device it can write.
+    assert.deepEqual(channelUpdates, [{ deviceId: DEVICE_ID, channels: { ordinary: "quiet-1a2b", ring: "ring-3f9a" } }]);
   });
 
   test("notifications.register without a controller is refused on the notifications scope", async () => {

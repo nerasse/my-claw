@@ -65,17 +65,38 @@ même fonction (`src/core/notifications.ts` côté app) : les deux implémentati
 de fil, verrouillé des deux côtés par les mêmes vecteurs de test. Une notification sans `url`
 n'est adressable par personne : elle garde un compteur unique.
 
-`type` nomme le canal Android (`<package>:unified_push_channel:<type>`). L'app pré-crée ses deux
-canaux en `IMPORTANCE_HIGH` au boot, ce qui rend la notification affichable en bannière en haut
-de l'écran ; la lib expo-unified-push ne le crée qu'en `IMPORTANCE_DEFAULT` (son sans
-bannière), mais les réglages d'un canal sont figés à sa première création, donc la
-pré-création gagne. `type` doit rester stable pour que le canal ne change pas : renommer un
-canal le dégrade en silence pour toutes les notifications qui le portent.
+`type` nomme le canal Android (`<package>:unified_push_channel:<type>`). L'app pré-crée ses
+canaux en `IMPORTANCE_HIGH` au boot (les deux par défaut, plus un par son choisi, section
+suivante), ce qui rend la notification affichable en bannière en haut de l'écran ; la lib
+expo-unified-push ne le crée qu'en `IMPORTANCE_DEFAULT` (son sans bannière), mais les réglages
+d'un canal sont figés à sa première création, donc la pré-création gagne. `type` doit rester
+stable pour que le canal ne change pas : renommer un canal le dégrade en silence pour toutes
+les notifications qui le portent.
 
 | `type` | Canal | Ce qu'il fait |
 | --- | --- | --- |
 | `runs` | ordinaire, à l'écran | `IMPORTANCE_HIGH`, son de notification système : bannière, et **suit le mode sonnerie** comme n'importe quelle notification (silencieux = rien, vibreur = vibreur). |
 | `ring` | sonnerie | `IMPORTANCE_HIGH`, sonnerie d'alarme système, vibration longue, **sur le flux notification** : plus fort et plus long que l'ordinaire, mais le mode du téléphone décide comme pour n'importe quelle notification (muet en silencieux, vibreur en vibreur). |
+
+## Choix du son côté app
+
+Le son est un réglage **de l'appareil**, pas du serveur : deux appareils du même owner peuvent
+en vouloir deux différents. Chaque choix correspond à un canal Android que l'app **pré-crée** sur
+le téléphone, et un canal Android est figé à sa création : le nom du canal **est** le contrat,
+donc le serveur ne fait que retenir les noms que l'app lui donne. C'est pour ça que le `type` est
+le seul champ du payload construit **par appareil**.
+
+- Après connexion, et à chaque changement de son, l'app envoie sa **sélection complète** : frame
+  `notifications.channels { deviceId, channels: { ordinary?, ring? } }`. Un nom hors du format
+  `^[a-z][a-z0-9_-]{0,40}$` (les noms sont dérivés côté app et servent d'identifiant de canal)
+  est ignoré, avec un warn : le son retombe sur le canal par défaut. Le `deviceId` du socket
+  authentifié fait foi plutôt que celui du message, et un appareil non enregistré (pas
+  d'endpoint dans `endpoints.json`) n'a rien à quoi rattacher un choix : la frame ne fait rien.
+- Le serveur stocke la sélection à côté de l'endpoint, dans `endpoints.json`.
+- À la publication, le `type` est résolu **par appareil** : `channels.ring ?? "ring"` pour une
+  sonnerie, sinon `channels.ordinary ?? "runs"`. Le reste du payload est identique pour tous, et
+  le plafond de dix minutes de la sonnerie reste global : il se décide une fois, pour toutes les
+  cibles, avant que chaque payload ne soit construit.
 
 ## Le tool `notify`
 
@@ -135,7 +156,8 @@ Règles :
   publique part à l'app via `notifications.info` et identifie notre serveur dans la signature
   VAPID ; la privée signe chaque push.
 - `endpoints.json` : endpoints UnifiedPush par device id (`notifications.register` /
-  endpoint vide = désinscription).
+  endpoint vide = désinscription), plus la sélection de sons de chaque appareil
+  (`notifications.channels`).
 - `foreground.json` : dernier état premier-plan par device.
 
 ## Frame du canal my-claw-app
@@ -145,6 +167,7 @@ Règles :
 | serveur → app | `notifications.info` | `{ vapidPublicKey }`, envoyé à la connexion |
 | app → serveur | `notifications.register` | `{ endpoint, pubKey?, auth? }` ; endpoint vide = désinscription |
 | app → serveur | `notifications.state` | `{ foreground, threadId? }` |
+| app → serveur | `notifications.channels` | `{ deviceId, channels: { ordinary?, ring? } }` ; noms validés (`^[a-z][a-z0-9_-]{0,40}$`), un nom refusé retombe sur le canal par défaut |
 
 ## Tap → ouverture
 
