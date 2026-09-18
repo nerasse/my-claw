@@ -443,6 +443,13 @@ export interface MyClawAppDiagReport {
     /** ApplicationExitInfo: CRASH, CRASH_NATIVE, ANR, LOW_MEMORY, USER_REQUESTED... */
     reason?: string;
   }[];
+  /**
+   * What the device's notification channels actually are, read back from Android. Carried even
+   * with no crash report: the app cannot change a channel's sound after creation, so what the
+   * system holds is the only truth about why a notification sounded the way it did, and the
+   * phone is not always reachable with a cable.
+   */
+  notificationChannels?: Record<string, unknown>;
 }
 
 /** Tail of the server log files, filtered. `run` is the correlation id stamped on every line. */

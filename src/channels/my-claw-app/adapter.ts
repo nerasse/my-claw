@@ -3157,6 +3157,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
         ...(typeof report.stack === "string" ? { stack: report.stack.slice(0, 8000) } : {}),
       });
     }
+    if (frame.notificationChannels) {
+      await myClawAppLog("info", "device notification channels", {
+        deviceId: ws.data.deviceId,
+        ...frame.notificationChannels,
+      });
+    }
     ws.send(JSON.stringify({ type: "diag.report.result", accepted: reports.length }));
   }
 
