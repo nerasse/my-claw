@@ -65,11 +65,35 @@ même fonction (`src/core/notifications.ts` côté app) : les deux implémentati
 de fil, verrouillé des deux côtés par les mêmes vecteurs de test. Une notification sans `url`
 n'est adressable par personne : elle garde un compteur unique.
 
-`type` nomme le canal Android (`<package>:unified_push_channel:<type>`). L'app pré-crée ce
-canal en `IMPORTANCE_HIGH` au boot, ce qui rend la notification affichable en bannière en haut
+`type` nomme le canal Android (`<package>:unified_push_channel:<type>`). L'app pré-crée ses deux
+canaux en `IMPORTANCE_HIGH` au boot, ce qui rend la notification affichable en bannière en haut
 de l'écran ; la lib expo-unified-push ne le crée qu'en `IMPORTANCE_DEFAULT` (son sans
 bannière), mais les réglages d'un canal sont figés à sa première création, donc la
-pré-création gagne. `type` doit rester stable pour que le canal ne change pas.
+pré-création gagne. `type` doit rester stable pour que le canal ne change pas : renommer un
+canal le dégrade en silence pour toutes les notifications qui le portent.
+
+| `type` | Canal | Ce qu'il fait |
+| --- | --- | --- |
+| `runs` | ordinaire, à l'écran | `IMPORTANCE_HIGH`, son de notification système : bannière, et **suit le mode sonnerie** comme n'importe quelle notification (silencieux = rien, vibreur = vibreur). |
+| `urgent` | sonnerie | `IMPORTANCE_HIGH` sur le **flux alarme** (`USAGE_ALARM`, sonnerie d'alarme système, vibration longue) : c'est le seul moyen qu'a une app de se faire entendre en vibreur ou en silencieux. |
+
+## Le tool `notify`
+
+L'agent peut notifier lui-même, sans attendre la fin d'un run : `body` requis, `title` optionnel,
+`ring` optionnel (faux par défaut). Le tool n'est donné qu'à l'**orchestrateur** et à l'agent
+**cron** (`SUBAGENT_EXCLUDED_TOOLS` dans `tools/registry.ts`) : un sous-agent est un travailleur
+délégué, ses résultats sont rapportés par celui qui l'a lancé, et rien qui puisse sonner un
+téléphone ne doit être à portée de cinquante sous-agents.
+
+Le tap suit le run : le lien se lit dans le contexte du run (`utils/run-context.ts`), qui porte
+désormais le fil de la conversation et l'id du job cron. Un job l'emporte sur un fil, parce que
+le résultat d'un job se lit dans le job et que la session où il a tourné est un détail
+d'implémentation. Hors run, il n'y a pas de lien : la notification ouvre l'app.
+
+La sonnerie est **plafonnée à une par dix minutes** (`RING_COOLDOWN_MS`). Un agent qui boucle
+sinon sonnerait le téléphone chaque seconde, ce qui apprend surtout à couper les notifications.
+Passé le délai, la sonnerie est **rétrogradée** en notification ordinaire, jamais jetée : ce que
+l'agent avait à dire arrive quand même, il arrête juste de crier.
 
 ## Événements notifiés
 
@@ -78,6 +102,7 @@ pré-création gagne. `type` doit rester stable pour que le canal ne change pas.
 | `message:route:complete` | titre de session (ou premiers mots du message) | `Run finished in <durée>: <extrait>` | `myclaw://thread/<id>` |
 | `message:route:error` | idem | `Run failed after <durée>: <erreur>` | `myclaw://thread/<id>` |
 | `cron:job:end` (succès) | nom du job | `Job finished` | `myclaw://job/<id>` |
+| tool `notify` | `my-claw` ou le titre donné | le texte de l'agent | `myclaw://thread/<id>` ou `myclaw://job/<id>` |
 | `cron:job:error` | nom du job | `Job failed: <erreur>` | `myclaw://job/<id>` |
 
 Règles :

@@ -160,6 +160,13 @@ export interface PushNotification {
   body: string;
   /** Deep link opened when the notification is tapped: myclaw://thread/<id> or myclaw://job/<id>. */
   url?: string;
+  /**
+   * Ask for the phone to ring rather than buzz: the payload names the `urgent` channel, which the
+   * app pre-creates on the alarm stream, so it is heard in vibrate and in silent too. That is the
+   * point of it -- an agent that has to be answered now -- so it is rate-limited instead: see
+   * RING_COOLDOWN_MS.
+   */
+  ring?: boolean;
 }
 
 /**
@@ -168,28 +175,56 @@ export interface PushNotification {
  * `skipDevice` filters per device before publishing — the run-completion notification skips a
  * device that is foreground on the very thread that just finished.
  */
-/** The plaintext notification: the renderer reads every field except the numeric id. The
- *  `type` names the Android channel the app pre-creates as IMPORTANCE_HIGH (heads-up banner),
- *  so it must stay stable across payloads. */
+/**
+ * The Android channels the app pre-creates, and the only two names a payload may carry.
+ *
+ * `runs` is the ordinary one: IMPORTANCE_HIGH, the system's own notification sound, so it follows
+ * the ringer mode like any other notification. `urgent` is the alarm stream, and it is what
+ * "sonner" means -- it is heard with the phone on vibrate or silent. Channel settings are frozen
+ * at first creation, so these names are a contract with the app: renaming one silently downgrades
+ * every notification that carries it.
+ */
+const CHANNEL_ORDINARY = "runs";
+const CHANNEL_URGENT = "urgent";
+
+/**
+ * A ring is a signal, not a weapon. An agent in a loop could otherwise ring the owner every
+ * second, which trains him to silence the app -- the exact opposite of the point. Inside this
+ * window a ring is downgraded to an ordinary notification rather than dropped: what the agent has
+ * to say still arrives, it just stops shouting.
+ */
+const RING_COOLDOWN_MS = 10 * 60_000;
+let lastRingAt = 0;
+
+/** The plaintext notification: the renderer reads every field except the numeric id. */
 export function buildPushPayload(notification: PushNotification): string {
   return JSON.stringify({
     id: notification.url ? notificationIdFor(notification.url) : notificationCounter++,
-    type: "runs",
+    type: notification.ring === true ? CHANNEL_URGENT : CHANNEL_ORDINARY,
     title: notification.title,
     body: notification.body,
     ...(notification.url ? { url: notification.url } : {}),
   });
 }
 
+export interface PublishOutcome {
+  /** How many devices the push server accepted the notification for. */
+  delivered: number;
+  /** Whether it went out on the urgent channel; false when there was nothing to ring. */
+  rang: boolean;
+}
+
 export async function publishNotification(
   notification: PushNotification,
   options?: { skipDevice?: (deviceId: string) => Promise<boolean> },
-): Promise<number> {
+): Promise<PublishOutcome> {
   const targets = await endpointStore.endpoints();
-  if (targets.length === 0) return 0;
+  if (targets.length === 0) return { delivered: 0, rang: false };
 
   const vapid = await loadOrCreateVapid();
-  const payload = buildPushPayload(notification);
+  const rang = notification.ring === true && Date.now() - lastRingAt >= RING_COOLDOWN_MS;
+  if (rang) lastRingAt = Date.now();
+  const payload = buildPushPayload({ ...notification, ring: rang });
 
   let delivered = 0;
   await Promise.all(targets.map(async ({ deviceId, endpoint }) => {
@@ -236,7 +271,7 @@ export async function publishNotification(
       void log("warn", "push publish failed", { deviceId, error: String(err) });
     }
   }));
-  return delivered;
+  return { delivered, rang };
 }
 
 /** Whether a device is foreground on the given thread — the one case the run notification is skipped. */
@@ -271,6 +306,7 @@ export function cleanNotificationText(text: string): string {
 
 /** Test seam: drops the stored endpoints and foreground state (setup-globals.ts). */
 export async function resetPushState(): Promise<void> {
+  lastRingAt = 0;
   for (const path of [ENDPOINTS_PATH, FOREGROUND_PATH]) {
     await rm(path, { force: true }).catch(() => {});
   }

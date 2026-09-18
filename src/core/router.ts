@@ -9,7 +9,7 @@ import { hooks } from "../hooks/index.ts";
 import { isAbort } from "./aborted.ts";
 import { runRegistry } from "./run-registry.ts";
 import type { StopOutcome } from "./stop.ts";
-import { withRunContext, setRunSession } from "../utils/run-context.ts";
+import { withRunContext, setRunSession, setRunThread } from "../utils/run-context.ts";
 import { cleanupGeneratedTempFiles } from "../utils/media.ts";
 import { archiveAssistantMessage, archiveChannelMessage } from "../conversations/store.ts";
 
@@ -164,6 +164,7 @@ export class MessageRouter {
       },
     );
     setRunSession(sessionId);
+    setRunThread(message.threadId);
 
     // A compaction is rewriting the history this run would resume: starting now would both race
     // it on the session file and answer from a transcript that is about to be replaced, which is

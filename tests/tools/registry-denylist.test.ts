@@ -26,6 +26,14 @@ test("getForAgent without a denylist returns the full main set", () => {
   assert.equal(r.getForAgent("main").length, 4);
 });
 
+test("notify reaches the orchestrator and the cron agent, and no sub-agent", () => {
+  const r = registry(["read", "bash", "notify"]);
+  assert.ok(r.getForAgent("main").some((t) => t.name === "notify"), "the orchestrator can notify");
+  assert.ok(r.getForAgent("cron").some((t) => t.name === "notify"), "a cron job can notify");
+  assert.ok(!r.getForAgent("general").some((t) => t.name === "notify"), "a general sub-agent cannot");
+  assert.ok(!r.getForAgent("research").some((t) => t.name === "notify"), "a research sub-agent cannot");
+});
+
 test("denylist filters tools out of the main set", () => {
   const r = registry(["read", "write", "bash", "browser"]);
   const names = r.getForAgent("main", ["browser", "bash"]).map((t) => t.name);

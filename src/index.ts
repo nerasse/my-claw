@@ -116,6 +116,7 @@ import { createVoiceModeTool } from "./tools/voice-mode.ts";
 import { createWebSearchTool } from "./tools/web-search.ts";
 import { BrowserSession, createDelegateBrowserTool, registerBrowserTools } from "./tools/browser/index.ts";
 import { createCronTool } from "./tools/cron.ts";
+import { createNotifyTool } from "./tools/notify.ts";
 import { createQuestionTool } from "./tools/question.ts";
 import { questionManager } from "./questions/manager.ts";
 import { createWorkspacesTool } from "./tools/workspaces.ts";
@@ -777,6 +778,8 @@ async function main() {
       ),
     );
   });
+
+  toolRegistry.register(createNotifyTool());
 
   toolRegistry.register(createCronTool(cronScheduler, {
     // Live catalogs, read per call: a workspace or a skill added while the server runs must

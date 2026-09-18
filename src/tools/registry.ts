@@ -18,7 +18,10 @@ export function mcpServerOf(toolName: string): string | undefined {
 // read_skill/list_skills are read-only and the system prompt tells every agent to call
 // read_skill to load a skill; research agents need them or they hit unknown-tool errors.
 export const READ_ONLY_TOOLS = ["read", "search", "ls", "fetch", "web_search", "conversation_search", "list_skills", "read_skill"];
-const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory", "cron", "workspaces", "question"];
+// `notify` reaches the owner's phone, which is the orchestrator's and the cron agent's business: a
+// sub-agent is a delegated worker whose results are reported by whoever spawned it, and a worker
+// that can ring the phone is a worker that can ring it fifty times.
+const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory", "cron", "workspaces", "question", "notify"];
 const CRON_EXCLUDED_TOOLS = ["cron", "spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory", "conversation_search", "workspaces", "question"];
 
 /**

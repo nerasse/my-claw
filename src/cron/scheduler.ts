@@ -13,6 +13,7 @@ import {
   snapshotLifecycle,
 } from "./store.ts";
 import type { CronJob, CronDeliveryTarget } from "./types.ts";
+import { withRunContext } from "../utils/run-context.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { cleanupGeneratedTempFiles } from "../utils/media.ts";
@@ -204,7 +205,13 @@ export class CronScheduler {
 
       let result: Awaited<ReturnType<typeof this.router.routeCron>>;
       try {
-        result = await this.router.routeCron(synthMessage, sessionId);
+        // Opened here rather than in the router so the job id rides along: a notification sent
+        // from inside the run points its tap at the job. The router reuses this context instead
+        // of nesting a second one.
+        result = await withRunContext(
+          { platform: synthMessage.platform, sessionId, jobId: job.id },
+          () => this.router.routeCron(synthMessage, sessionId),
+        );
       } finally {
         clearTimeout(timer);
       }

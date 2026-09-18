@@ -35,6 +35,16 @@ export interface RunContext {
   platform?: string;
   sessionId?: string;
   /**
+   * The conversation thread this run answers in, when the channel has one: what a notification
+   * sent from inside the run points its tap at. Absent on a run nobody can be linked to.
+   */
+  threadId?: string;
+  /**
+   * The cron job this run is, when one is what runs. Wins over `threadId`: a job's own link is
+   * where its result is listed, and the session it ran in is an implementation detail.
+   */
+  jobId?: string;
+  /**
    * Bubble ids per session. Keyed, because a sub-agent paints its own bubbles inside the parent's
    * run context: unkeyed, the child's ids would be claimed by the parent's phases.
    */
@@ -83,6 +93,12 @@ export function currentRunId(): string | undefined {
 export function setRunSession(sessionId: string): void {
   const ctx = storage.getStore();
   if (ctx) ctx.sessionId = sessionId;
+}
+
+/** The thread comes from the inbound message, which the router is the first to see whole. */
+export function setRunThread(threadId: string | undefined): void {
+  const ctx = storage.getStore();
+  if (ctx && threadId) ctx.threadId = threadId;
 }
 
 /**

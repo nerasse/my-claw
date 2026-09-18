@@ -67,13 +67,13 @@ test("publishNotification encrypts the payload: the connector drops anything it 
   await endpointStore.register("dev-1", { endpoint: "https://push.example/up/one", ...SUB_KEYS, updatedAt: "t" });
   await endpointStore.register("dev-2", { endpoint: "https://push.example/up/two", ...SUB_KEYS, updatedAt: "t" });
 
-  const delivered = await publishNotification({
+  const outcome = await publishNotification({
     title: "Nightly digest",
     body: "Run finished",
     url: "myclaw://thread/t1",
   });
 
-  assert.equal(delivered, 2);
+  assert.deepEqual(outcome, { delivered: 2, rang: false });
   assert.equal(calls.length, 2);
   for (const call of calls) {
     // RFC 8291 body: binary, and never the plaintext JSON.
@@ -90,6 +90,13 @@ test("the payload carries the channel type the app pre-creates as IMPORTANCE_HIG
   assert.equal(payload.type, "runs");
   assert.equal(payload.title, "t");
   assert.equal(payload.url, "myclaw://thread/x");
+});
+
+test("an urgent ring out names the channel the app pre-created on the alarm stream", () => {
+  const plain = JSON.parse(buildPushPayload({ title: "t", body: "b" }));
+  const rung = JSON.parse(buildPushPayload({ title: "t", body: "b", ring: true }));
+  assert.equal(plain.type, "runs");
+  assert.equal(rung.type, "urgent");
 });
 
 test("a notification that names a thread is addressable: same link, same id, and it fits an Android Int", () => {
@@ -127,7 +134,7 @@ test("an endpoint without encryption keys is skipped rather than sent in the cle
   });
   await endpointStore.register("dev-legacy", { endpoint: "https://push.example/up/legacy", updatedAt: "t" });
 
-  assert.equal(await publishNotification({ title: "t", body: "b" }), 0);
+  assert.equal((await publishNotification({ title: "t", body: "b" })).delivered, 0);
   assert.equal(calls, 0);
   mocked.restore();
 });
@@ -137,7 +144,7 @@ test("a gone subscription (404/410) is unregistered instead of retried forever",
   const mocked = mockFetch(() => Promise.resolve(new Response("gone", { status: 410 })));
   await endpointStore.register("dev-1", { endpoint: "https://push.example/up/one", ...SUB_KEYS, updatedAt: "t" });
 
-  assert.equal(await publishNotification({ title: "t", body: "b" }), 0);
+  assert.equal((await publishNotification({ title: "t", body: "b" })).delivered, 0);
   assert.deepEqual(await endpointStore.endpoints(), []);
   mocked.restore();
 });
@@ -153,11 +160,11 @@ test("publishNotification skips a device foreground on the same thread", async (
   await endpointStore.register("dev-2", { endpoint: "https://push.example/up/two", ...SUB_KEYS, updatedAt: "t" });
   await foregroundStore.set("dev-1", { foreground: true, threadId: "t1" });
 
-  const delivered = await publishNotification(
+  const outcome = await publishNotification(
     { title: "t", body: "b", url: "myclaw://thread/t1" },
     { skipDevice: (deviceId) => isForegroundOn(deviceId, "t1") },
   );
-  assert.equal(delivered, 1);
+  assert.equal(outcome.delivered, 1);
   assert.deepEqual(urls, ["https://push.example/up/two"]);
   mocked.restore();
 });
@@ -166,12 +173,12 @@ test("publishNotification with no endpoints is a no-op, and a rejected endpoint 
   await resetPushState();
   const mocked = mockFetch(() => Promise.resolve(new Response("denied", { status: 401 })));
   await endpointStore.register("dev-1", { endpoint: "https://push.example/up/one", ...SUB_KEYS, updatedAt: "t" });
-  const delivered = await publishNotification({ title: "t", body: "b" });
-  assert.equal(delivered, 0);
+  const outcome = await publishNotification({ title: "t", body: "b" });
+  assert.equal(outcome.delivered, 0);
   mocked.restore();
 
   await endpointStore.unregister("dev-1");
-  assert.equal(await publishNotification({ title: "t", body: "b" }), 0);
+  assert.equal((await publishNotification({ title: "t", body: "b" })).delivered, 0);
 });
 
 test("stripMarkdown turns a markdown answer into plain text and keeps the bullet lines", () => {
