@@ -2416,7 +2416,7 @@ export interface MyClawAppCommandResult {
   reset?: "branch-switch";
   /** Text to prefill in the composer (for retry: the user message being retried). */
   compose?: string;
-  /** The new threadId to navigate to (for fork). */
+  /** The new threadId to navigate to (for `/new` and `/fork`). */
   newThreadId?: string;
   /**
    * The command's input bubble is noise (undo, retry, branches): the app must drop the

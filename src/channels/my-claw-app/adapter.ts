@@ -361,6 +361,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
    * not wait behind it.
    */
   private sendTurns = new Map<string, Promise<void>>();
+  /** Command ids reserved before the handler starts, so a retried command cannot repeat a side effect. */
+  private commandSends = new Set<string>();
   /**
    * The last sends, as the `chat.user` frame their other windows received. A send that gets parked
    * is only known to be parked once the router says so, and by then the frame is what the journal
@@ -1944,7 +1946,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
     if (this.live.isQueued(owner, threadId, id)) return true;
     try {
       const log = await sessionLogOf(this.store.resolveSessionId(owner, threadId));
-      return log.get(id) !== undefined;
+      if (log.get(id)) return true;
+      return log.entries().some((entry) => entry.type === "command" && entry.sourceId === id);
     } catch (err) {
       await myClawAppLog("debug", "duplicate check skipped", { threadId, error: String(err) });
       return false;
@@ -1997,13 +2000,33 @@ export class MyClawAppAdapter implements ChannelAdapter {
     const hasLocation = frame.location !== undefined;
     if (!text && refs.length === 0 && !hasLocation) return;
 
+    const commandHandler = this.commandHandler;
+    const commandMatch = text && refs.length === 0 && !hasLocation && commandHandler
+      ? /^\/([a-z-]+)(?:@[A-Za-z0-9_-]+)?/i.exec(text)
+      : undefined;
+    const command = commandMatch?.[1];
+    const args = commandMatch ? text.slice(commandMatch[0].length).trim() : "";
+    const commandInfo = command
+      ? APP_COMMANDS.find((c) => c.command === command && (!c.noArgs || args.length === 0))
+      : undefined;
+    const commandKey = command && commandInfo && frame.id
+      ? `${owner}\u0000${threadId}\u0000${frame.id}`
+      : undefined;
+
     // The receipt goes first, to this socket only: the app has a bubble waiting on it, whatever the
     // socket claimed about itself. A send it never gets a receipt for is offered again, so the same
     // id arriving twice is taken once: on the branch already, or parked in the run's mailbox, it is
     // receipted and goes no further.
     if (typeof frame.id === "string" && frame.id) {
       this.sendFrame(ws, { type: "chat.send.received", threadId, id: frame.id });
-      if (await this.alreadyHeld(owner, threadId, frame.id)) return;
+      if (commandKey) {
+        if (this.commandSends.has(commandKey)) return;
+        this.commandSends.add(commandKey);
+      }
+      if (await this.alreadyHeld(owner, threadId, frame.id)) {
+        if (commandKey) this.commandSends.delete(commandKey);
+        return;
+      }
     }
 
     // Typing instead of answering cancels the question: the message is the answer, and it
@@ -2039,71 +2062,75 @@ export class MyClawAppAdapter implements ChannelAdapter {
     // sent to the model as a plain question would be answered from nothing. The user's own
     // bubble is drawn by the app from its send; only the result is new here. Only the catalog
     // is intercepted: an unknown /word is a question like any other and must reach the agent.
-    if (text && refs.length === 0 && !hasLocation && this.commandHandler) {
-      const command = /^\/([a-z-]+)/i.exec(text)?.[1];
-      const commandInfo = command ? APP_COMMANDS.find((c) => c.command === command) : undefined;
-      if (command && commandInfo) {
-        const args = text.slice(command.length + 1).trim();
-        // A command is a prompt too: the other windows show what was typed, then its answer.
-        // A quiet command (undo, retry, branches) is the opposite: the input is navigation
-        // noise, only the result bubble is worth showing, live and on every refresh.
-        const quiet = commandInfo.quiet === true;
-        if (!quiet) this.echoUserMessage(ws, threadId, frame, text, []);
-        // Most commands answer in a blink and a placeholder bubble would only flicker. The slow
-        // ones (a `/compact` on a full session runs for minutes) would otherwise leave the chat
-        // silent with nothing to show for it, so the notice is sent on a delay: whichever comes
-        // first wins, and the result replaces the notice when both were sent.
-        const pending = quiet
-          ? undefined
-          : setTimeout(() => {
-              this.broadcast(owner, {
-                type: "chat.command.pending",
-                threadId,
-                replyToId: frame.id,
-                text: `Running /${command}...`,
-              });
-            }, COMMAND_PENDING_NOTICE_MS);
-        try {
-          // The order of arrival is settled; what follows can take minutes.
-          pass();
-          const output = await this.commandHandler(owner, threadId, command, args);
-          clearTimeout(pending);
-          if (output) {
-            const text = typeof output === "string" ? output : output.text;
-            const status = typeof output === "string" ? undefined : output.status;
-            const details = typeof output === "string" ? undefined : output.details;
-            const reset = typeof output === "string" ? undefined : output.reset;
-            const compose = typeof output === "string" ? undefined : output.compose;
-            const newThreadId = typeof output === "string" ? undefined : output.newThreadId;
+    if (command && commandInfo && commandHandler) {
+      // A command is a prompt too: the other windows show what was typed, then its answer.
+      // A quiet command (undo, retry, branches) is the opposite: the input is navigation
+      // noise, only the result bubble is worth showing, live and on every refresh.
+      const quiet = commandInfo.quiet === true;
+      if (!quiet) this.echoUserMessage(ws, threadId, frame, text, []);
+      // Most commands answer in a blink and a placeholder bubble would only flicker. The slow
+      // ones (a `/compact` on a full session runs for minutes) would otherwise leave the chat
+      // silent with nothing to show for it, so the notice is sent on a delay: whichever comes
+      // first wins, and the result replaces the notice when both were sent.
+      const pending = quiet
+        ? undefined
+        : setTimeout(() => {
             this.broadcast(owner, {
-              type: "chat.command.result",
+              type: "chat.command.pending",
               threadId,
               replyToId: frame.id,
-              text,
-              ...(status ? { status } : {}),
-              ...(details ? { details } : {}),
-              ...(reset ? { reset } : {}),
-              ...(compose !== undefined ? { compose } : {}),
-              ...(newThreadId ? { newThreadId } : {}),
-              ...(quiet ? { dropInput: true } : {}),
+              text: `Running /${command}...`,
             });
-            await this.journalCommand(owner, threadId, command, args, text, status !== undefined, details, frame.id, quiet);
-          }
-          return;
-        } catch (err) {
-          clearTimeout(pending);
-          void myClawAppLog("error", "command failed", { owner, threadId, command, error: String(err) });
-          const failure = `error: ${err instanceof Error ? err.message : String(err)}`;
+          }, COMMAND_PENDING_NOTICE_MS);
+      try {
+        // The order of arrival is settled; what follows can take minutes.
+        pass();
+        const output = await commandHandler(owner, threadId, command, args);
+        clearTimeout(pending);
+        if (output) {
+          const text = typeof output === "string" ? output : output.text;
+          const status = typeof output === "string" ? undefined : output.status;
+          const details = typeof output === "string" ? undefined : output.details;
+          const reset = typeof output === "string" ? undefined : output.reset;
+          const compose = typeof output === "string" ? undefined : output.compose;
+          const newThreadId = typeof output === "string" ? undefined : output.newThreadId;
           this.broadcast(owner, {
             type: "chat.command.result",
             threadId,
             replyToId: frame.id,
-            text: failure,
+            text,
+            ...(status ? { status } : {}),
+            ...(details ? { details } : {}),
+            ...(reset ? { reset } : {}),
+            ...(compose !== undefined ? { compose } : {}),
+            ...(newThreadId ? { newThreadId } : {}),
             ...(quiet ? { dropInput: true } : {}),
           });
-          await this.journalCommand(owner, threadId, command, args, failure, false, undefined, frame.id, quiet);
-          return;
+          await this.journalCommand(owner, threadId, command, args, text, status !== undefined, details, frame.id, quiet);
+          if (newThreadId) {
+            try {
+              this.broadcast(owner, await this.sessionListFrame(owner));
+            } catch (err) {
+              void myClawAppLog("warn", "session list after command failed", { owner, error: String(err) });
+            }
+          }
         }
+        return;
+      } catch (err) {
+        clearTimeout(pending);
+        void myClawAppLog("error", "command failed", { owner, threadId, command, error: String(err) });
+        const failure = `error: ${err instanceof Error ? err.message : String(err)}`;
+        this.broadcast(owner, {
+          type: "chat.command.result",
+          threadId,
+          replyToId: frame.id,
+          text: failure,
+          ...(quiet ? { dropInput: true } : {}),
+        });
+        await this.journalCommand(owner, threadId, command, args, failure, false, undefined, frame.id, quiet);
+        return;
+      } finally {
+        if (commandKey) this.commandSends.delete(commandKey);
       }
     }
 

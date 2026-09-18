@@ -375,7 +375,7 @@ export type MyClawAppCommandOutput = {
   reset?: "branch-switch";
   /** Text to prefill in the composer (for retry). */
   compose?: string;
-  /** The new threadId to navigate to (for fork). */
+  /** The new threadId to navigate to (for `/new` and `/fork`). */
   newThreadId?: string;
 };
 

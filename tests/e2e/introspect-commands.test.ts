@@ -19,7 +19,7 @@ import { cleanupGeneratedTempFiles } from "../../src/utils/media.ts";
 import { hooks } from "../../src/hooks/index.ts";
 import type { OutgoingMessage } from "../../src/channels/types.ts";
 
-const NEW_COMMANDS = ["skills", "agents", "mcp", "instructions"] as const;
+const NEW_COMMANDS = ["new", "skills", "agents", "mcp", "instructions"] as const;
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {

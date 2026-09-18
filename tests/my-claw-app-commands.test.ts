@@ -141,6 +141,54 @@ describe("/effort and /cap on the app channel", () => {
   });
 });
 
+describe("/new on the app channel", () => {
+  const config = {
+    llm: { defaultModel: "claude-opus-5", models: [{ id: "claude-opus-5", label: "Opus 5", limit: { context: 1_000_000 } }] },
+  } as unknown as MyClawConfig;
+
+  function makeHandler(sessionManager: SessionManager) {
+    return createMyClawAppCommandHandler({
+      config,
+      sessionManager,
+      modelPicker: new ModelPicker([{ id: "claude-opus-5", label: "Opus 5" }]),
+    });
+  }
+
+  test("creates a new empty thread without changing the current one", async () => {
+    const sessionManager = new SessionManager();
+    const currentThreadId = "current-thread";
+    const currentSessionId = SessionManager.resolveSessionId("my-claw-app", "dm", "neras", "neras", {
+      threadId: currentThreadId,
+      sessionScope: "per-user",
+    });
+    const current = await sessionManager.getOrCreateWithMeta(currentSessionId, "my-claw-app", "dm", "sofa");
+    current.modelOverride = "pinned-model";
+    await sessionManager.persist(currentSessionId);
+
+    const output = await makeHandler(sessionManager)("neras", currentThreadId, "new", "");
+    expect(output).toMatchObject({ text: "New session started." });
+    const newThreadId = (output as { newThreadId?: string }).newThreadId;
+    expect(newThreadId).toMatch(/^[0-9a-f-]{36}$/);
+
+    const newSessionId = SessionManager.resolveSessionId("my-claw-app", "dm", "neras", "neras", {
+      threadId: newThreadId!,
+      sessionScope: "per-user",
+    });
+    const created = await sessionManager.peek(newSessionId);
+    expect(created?.workspace).toBe("sofa");
+    expect(created?.modelOverride).toBeUndefined();
+    expect(created?.createdAt).toBeDefined();
+
+    const unchanged = await sessionManager.peek(currentSessionId);
+    expect(unchanged?.modelOverride).toBe("pinned-model");
+  });
+
+  test("does not treat arguments as the no-argument command", async () => {
+    const output = await makeHandler(new SessionManager())("neras", "current-thread", "new", "please explain");
+    expect(output).toBeUndefined();
+  });
+});
+
 describe("what a command writes down about itself", () => {
   /**
    * `/claude set-token <token>` hands over a live credential. The session journal masked it from

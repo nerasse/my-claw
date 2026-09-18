@@ -619,11 +619,13 @@ provider request URLs.
   computed against the live catalogs; the app paints them red but never refuses the save — the
   job is the truth. An unknown `workspace` is the one case with teeth: it pauses the job at its
   next run, so the page calls it out.
-- A `chat.send` whose text is a known slash command (the catalog) is executed server-side
-  like on the other channels and answered with `chat.command.result`; it never reaches the
-  agent. Commands outside the catalog still route as normal messages. A command that has not
-  answered within 400 ms first gets a `chat.command.pending` frame: `/compact` on a full
-  session runs for minutes, and the chat showed nothing at all for that whole time. The
+- A `chat.send` whose text is a known slash command (the catalog and its argument policy) is
+  executed server-side like on the other channels and answered with `chat.command.result`; it
+  never reaches the agent. `/new` is intentionally a no-argument command: it creates and opens a
+  new empty thread, while `/new ...` remains an ordinary message so prose about the command cannot
+  change the current conversation. Commands outside the catalog still route as normal messages. A
+  command that has not answered within 400 ms first gets a `chat.command.pending` frame: `/compact`
+  on a full session runs for minutes, and the chat showed nothing at all for that whole time. The
   placeholder is only ever sent when the wait is real, so a fast command never flickers one.
 - A command and the bubble it produced are journaled on the conversation (`session.commands`),
   because a command never reaches the router and so leaves no trace in `messages`. Without the
@@ -708,7 +710,7 @@ runs fresh like any other message.
 { "type": "question.resolved", "id": "que_...", "threadId": "projet", "reason": "answered|canceled" }
 { "type": "chat.transcript", "threadId": "projet", "replyToId": "uuid", "items": [{ "id": "uuid", "text": "ce que le serveur a entendu" }] }
 { "type": "chat.command.pending", "threadId": "projet", "replyToId": "uuid", "text": "Running /compact..." }
-{ "type": "chat.command.result", "threadId": "projet", "replyToId": "uuid", "text": "output of a command the server executed", "details": "long aside, folded in the bubble" }
+{ "type": "chat.command.result", "threadId": "projet", "replyToId": "uuid", "text": "output of a command the server executed", "details": "long aside, folded in the bubble", "newThreadId": "new-thread" }
 { "type": "chat.send.received", "threadId": "projet", "id": "uuid" }
 { "type": "chat.send.queued", "threadId": "projet", "replyToId": "uuid", "reason": "compaction" }
 { "type": "chat.compaction", "threadId": "projet", "id": "<the compaction entry's id>", "summary": "ce qui precede", "count": 813, "ts": "iso" }
@@ -793,7 +795,9 @@ runs fresh like any other message.
   before every write, so `/config rollback` can undo an edit made from the app.
 
 - `chat.command.result` is the output of a slash command executed by the server. The app
-  renders it as a distinct bubble so a command result never masquerades as an agent answer.
+  renders it as a distinct bubble so a command result never masquerades as an agent answer. When
+  `newThreadId` is present, the app opens that newly created thread; the server also pushes a fresh
+  `session.list.result` so every window sees it.
 - `details` on a command result is an aside too long to state inline: today, the summary a
   `/compact` produced. The app folds it under the outcome line, in the same collapsed block it
   uses for a model's reasoning, so the thread keeps one short bubble either way.

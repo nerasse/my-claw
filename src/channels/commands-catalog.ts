@@ -13,15 +13,18 @@ export interface CommandInfo {
    */
   channels?: readonly string[];
   /**
-   * The typed input is not echoed: the command is pure navigation (undo, retry, branches), its
+   * The typed input is not echoed: the command is pure navigation (new, undo, retry, branches), its
    * input line is noise, only the result bubble is worth seeing. Quiet commands skip the live
    * echo, the "Running ..." notice and the replayed input bubble -- the output alone is the
    * whole story, live and on every later refresh.
    */
   quiet?: boolean;
+  /** When set, the command is recognized only without arguments. */
+  noArgs?: boolean;
 }
 
 export const COMMANDS: readonly CommandInfo[] = [
+  { command: "new", description: "Start a fresh conversation", channels: ["my-claw-app"], quiet: true, noArgs: true },
   // The app intercepts `/tag` natively: it opens the tags page / tag editor.
   { command: "tag", description: "Model tags: /tag new \"name\"" },
   { command: "model", description: "Show or change current model, or an agent default: /model <agent>" },

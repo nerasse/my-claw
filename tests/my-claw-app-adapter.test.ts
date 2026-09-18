@@ -1370,6 +1370,7 @@ describe("MyClawAppAdapter", () => {
     assert.ok(frame.commands.length >= 15);
     assert.ok(frame.commands.some((c) => c.name === "status" && c.description.length > 0));
     assert.ok(frame.commands.some((c) => c.name === "help"));
+    assert.ok(frame.commands.some((c) => c.name === "new"));
   });
 
   test("uploads a file, routes it as an attachment, and lists it back", async () => {
@@ -3842,10 +3843,53 @@ describe("command frames", () => {
     assert.deepEqual(store.journal.map((e) => e.output), ["error: boom"]);
   });
 
-  test("/new is not a command any more, so it journals nothing", async () => {
+  test("/new is a quiet command and tells the app which thread to open", async () => {
+    adapter.onCommandHandler(async (_owner, _threadId, command, args) => {
+      handled.push({ command, args });
+      return command === "new" ? { text: "New session started.", newThreadId: "new-thread" } : `${command} done`;
+    });
     client.ws.send(JSON.stringify({ type: "chat.send", id: "j4", text: "/new", threadId: "t1" }));
-    await new Promise((r) => setTimeout(r, 150));
-    assert.deepEqual(store.journal, []);
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "chat.command.result");
+    assert.equal(frame["text"], "New session started.");
+    assert.equal(frame["newThreadId"], "new-thread");
+    assert.equal(frame["dropInput"], true);
+    assert.equal((await nextFrame(client))["type"], "session.list.result");
+    assert.deepEqual(handled, [{ command: "new", args: "" }]);
+  });
+
+  test("a retried command id cannot run /new twice", async () => {
+    let newCalls = 0;
+    let finishNew!: () => void;
+    const firstNew = new Promise<void>((resolve) => {
+      finishNew = resolve;
+    });
+    adapter.onCommandHandler(async (_owner, _threadId, command) => {
+      if (command === "new") {
+        newCalls += 1;
+        await firstNew;
+        return { text: "New session started.", newThreadId: `new-thread-${newCalls}` };
+      }
+      return `${command} done`;
+    });
+
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "retry-new", text: "/new", threadId: "t1" }));
+    await waitUntil(() => newCalls === 1);
+    const retry = await connectClient(adapter.port, DEVICE_ID, TOKEN, false, false, false, false, true);
+    try {
+      retry.ws.send(JSON.stringify({ type: "chat.send", id: "retry-new", text: "/new", threadId: "t1" }));
+      assert.deepEqual(await nextFrame(retry), { type: "chat.send.received", threadId: "t1", id: "retry-new" });
+      finishNew();
+
+      const result = await nextFrame(client);
+      assert.equal(result["newThreadId"], "new-thread-1");
+      assert.equal((await nextFrame(client))["type"], "session.list.result");
+      client.ws.send(JSON.stringify({ type: "chat.send", id: "after-retry", text: "/status", threadId: "t1" }));
+      await nextFrame(client);
+      assert.equal(newCalls, 1);
+    } finally {
+      retry.ws.close();
+    }
   });
 
   test("a fast command answers without ever showing a pending bubble", async () => {
@@ -4284,24 +4328,19 @@ describe("command frames", () => {
     assert.equal(frame["type"], "session.list.result");
   });
 
-  /**
-   * The message below is the one that was actually sent on 2026-08-23. It opens with the name of
-   * the command because it is *about* the command, and `/new` archived 178 turns mid-task. There
-   * is no confirmation on a slash command and there cannot be one on every message that starts
-   * with a word: the command is gone instead, and this is the sentence that proves it.
-   */
-  test("a sentence opening with /new is a question now, not an order to wipe the thread", async () => {
-    client.ws.send(JSON.stringify({
-      type: "chat.send",
-      id: "c4",
-      text: "/new doit etre supprime, on a plus matrix et telegram",
-      threadId: "t8",
-    }));
-    await new Promise((r) => setTimeout(r, 150));
+  test("/new with arguments remains a normal message", async () => {
+    const received: string[] = [];
+    adapter.onMessage(async (message) => {
+      received.push(message.text);
+    });
+    const text = "/new doit etre supprime, on a plus matrix et telegram";
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "c4", text, threadId: "t8" }));
+    await waitUntil(() => received.length === 1);
+    assert.deepEqual(received, [text]);
     assert.deepEqual(handled, [], "the command handler was never consulted");
     assert.ok(
-      client.frames.every((f) => (f as Record<string, unknown>)["type"] !== "chat.cleared"),
-      "nothing told the device to drop its copy of the thread",
+      client.frames.every((f) => !["chat.command.result", "chat.cleared"].includes(String((f as Record<string, unknown>)["type"]))),
+      "a sentence about /new must not navigate or clear a thread",
     );
   });
 

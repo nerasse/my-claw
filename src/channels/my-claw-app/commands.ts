@@ -1,4 +1,5 @@
 import type { MyClawConfig } from "../../core/config.ts";
+import { randomUUID } from "node:crypto";
 import { readFile, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { SessionManager } from "../../sessions/manager.ts";
@@ -361,6 +362,21 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
         if (command === "agents") return handleAgentsCommand(params);
         if (command === "mcp") return handleMcpCommand(params);
         return instructionsText(await handleInstructionsCommand(params));
+      }
+
+      case "new": {
+        if (args.trim()) return undefined;
+        const newThreadId = randomUUID();
+        const newSessionId = sessionIdFor(owner, newThreadId);
+        const newSession = await deps.sessionManager.getOrCreateWithMeta(
+          newSessionId,
+          "my-claw-app",
+          "dm",
+          existing?.workspace,
+        );
+        newSession.lastActiveAt = new Date().toISOString();
+        await deps.sessionManager.persist(newSessionId);
+        return { text: "New session started.", newThreadId };
       }
 
       case "branches":
