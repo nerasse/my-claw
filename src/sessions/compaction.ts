@@ -322,10 +322,10 @@ export type SummaryResult =
   | { ok: true; summary: string; elapsedMs: number }
   | { ok: false; reason: string };
 
-/** One summarizer call, before any retry decision. */
+/** One summarizer call, before the retry decision. `emptyStream` is what earns the one retry. */
 type SummaryAttempt =
   | { ok: true; summary: string; elapsedMs: number }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; emptyStream: boolean };
 
 /**
  * What one call actually came back with, and what to call it.
@@ -343,7 +343,7 @@ type SummaryAttempt =
  */
 function classifySummaryResponse(
   response: LlmResponse,
-): { ok: true; summary: string } | { ok: false; reason: string } {
+): { ok: true; summary: string } | { ok: false; reason: string; emptyStream: boolean } {
   const summary = response.content.trim();
   const completionTokens = response.usage?.completionTokens ?? 0;
   const finishReason = response.finishReason ?? "none";
@@ -352,25 +352,28 @@ function classifySummaryResponse(
     return {
       ok: false,
       reason: `The summary hit the output ceiling and is incomplete (finish_reason: ${finishReason}).`,
+      emptyStream: false,
     };
   }
 
   if (!summary) {
     // Three shapes, told apart by what the wire actually carried. A clean `stop` with no text is
     // the model's own answer. A non-stop reason with no fragment, no usage and no text at all is a
-    // gateway that rendered nothing -- and that is what the message must say, because accusing a
-    // ceiling there sent the owner hunting a limit that was not there.
+    // gateway that rendered nothing -- that one is retried once by the caller, because it is an
+    // aléa and not a property of the request. Anything else empty is the model saying nothing
+    // where the conversation needed a summary.
     if (response.usage === undefined && !response.reasoning && response.finishReason !== "stop") {
       return {
         ok: false,
         reason: `The provider returned an empty stream (no content, no usage, finish_reason: ${finishReason}).`,
+        emptyStream: true,
       };
     }
-    return { ok: false, reason: `The model returned an empty summary (finish_reason: ${finishReason}).` };
+    return { ok: false, reason: `The model returned an empty summary (finish_reason: ${finishReason}).`, emptyStream: false };
   }
-  if (summary.length < 50) return { ok: false, reason: "The model returned a summary that is too short." };
+  if (summary.length < 50) return { ok: false, reason: "The model returned a summary that is too short.", emptyStream: false };
   if (REFUSAL_PATTERNS.some((pattern) => pattern.test(summary))) {
-    return { ok: false, reason: "The model refused to generate a summary." };
+    return { ok: false, reason: "The model refused to generate a summary.", emptyStream: false };
   }
   return { ok: true, summary };
 }
@@ -477,7 +480,12 @@ export async function summarizeForCompaction(
     return classified.ok ? { ok: true, summary: classified.summary, elapsedMs: now() - attemptStartedAt } : classified;
   };
 
-  const attempt = await attemptOnce();
+  let attempt = await attemptOnce();
+  // One retry, and one only, earned by an empty stream. Decided here, where the failure is seen,
+  // and not a transport policy: the transports already retry statuses and transients, and a 200
+  // that streams nothing is neither. The aléa is measured -- 4 empty streams in 18 deepseek-flash
+  // compactions behind opencode zen, and the same call answered 6 689 tokens 30 s later.
+  if (!attempt.ok && attempt.emptyStream) attempt = await attemptOnce();
   if (!attempt.ok) return { ok: false, reason: attempt.reason };
 
   // The anchor is computed over the whole branch, not over `middle`: a path the tail still shows is

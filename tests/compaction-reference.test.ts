@@ -177,6 +177,7 @@ test("a summary that hit the output ceiling is refused instead of stored", async
     assert.equal(result.ok, false);
     assert.match(result.reason ?? "", /incomplete/);
     assert.match(result.reason ?? "", /finish_reason: length/);
+    assert.equal(mock.bodies.length, 1, "a truncated summary is refused, not retried");
   } finally {
     mock.restore();
   }
@@ -240,6 +241,7 @@ test("an empty answer the model simply did not write keeps its own message", asy
     const result = await compactSession(config(), sess);
     assert.equal(result.ok, false);
     assert.match(result.reason ?? "", /empty summary/);
+    assert.equal(mock.bodies.length, 1, "a clean stop that says nothing is an answer, not an aléa");
   } finally {
     mock.restore();
   }
@@ -253,9 +255,9 @@ test("an empty answer the model simply did not write keeps its own message", asy
  * guard -- reading `incomplete`, which is `finish_reason !== "stop"` on an answer with no text --
  * announced "the summary hit the output ceiling and is incomplete". Nothing had come out, so the
  * accusation sent the owner looking for a limit that was not there. The message now says what the
- * wire carried.
+ * wire carried, and the empty stream is retried once before the failure is final.
  */
-test("an empty stream is reported as one, not as a ceiling", async () => {
+test("an empty stream is reported as one, not as a ceiling, and is retried once", async () => {
   conversation(8);
   await log.flush();
 
@@ -266,10 +268,34 @@ test("an empty stream is reported as one, not as a ceiling", async () => {
     assert.match(result.reason ?? "", /empty stream/);
     assert.match(result.reason ?? "", /finish_reason: length/);
     assert.doesNotMatch(result.reason ?? "", /ceiling/);
+    assert.equal(mock.bodies.length, 2, "one retry, and only one: the second attempt is the failure");
   } finally {
     mock.restore();
   }
   assert.equal(contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"), false);
+});
+
+/** The retry exists because the empty stream is an aléa: the same call answered 6 689 tokens 30 s
+ * later that night. It has to be able to actually land the summary, not just fail politely. */
+test("the one retry can land it: the second call's summary becomes the boundary", async () => {
+  conversation(8);
+  await log.flush();
+
+  let calls = 0;
+  const mock = summarizer(() => {
+    calls += 1;
+    if (calls === 1) return answer("", { finish_reason: "length" });
+    return answer("The retry answered: the summary stands, and it clears the fifty character floor.");
+  });
+  try {
+    const result = await compactSession(config(), sess);
+    assert.equal(result.ok, true, result.reason ?? "");
+    assert.equal(calls, 2, "one empty stream, one retry -- no third call");
+    assert.ok(result.summary?.includes("The retry answered"));
+  } finally {
+    mock.restore();
+  }
+  assert.ok(contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"), "the retry's summary is stored");
 });
 
 /**

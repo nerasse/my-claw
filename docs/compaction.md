@@ -197,7 +197,7 @@ contenu.
   phrase coupée devenait le plancher définitif de la conversation, et ce qui manquait était Next
   Steps.
 
-**Un flux vide n'est pas un plafond.** Jusqu'au 19/09/2026 le
+**Un flux vide n'est pas un plafond, et c'est le seul cas qui est repris.** Jusqu'au 19/09/2026 le
 garde se déclenchait sur `incomplete`, qui n'est que `finish_reason !== "stop"` sur une réponse sans
 texte : une passerelle qui n'avait rien streamé du tout s'annonçait « the summary hit the output
 ceiling and is incomplete ». Mesuré sur le fil qui a déclenché ça (`opencode_go/deepseek-flash`
@@ -207,11 +207,18 @@ message dit maintenant ce que le fil a porté : `finish_reason` reçu, et si un 
 
 Trois formes, et pas une de plus :
 
-| ce que le fil a porté | message |
-|---|---|
-| troncature (`length` / `max_tokens` / `incomplete`) **avec** du texte ou des tokens | `output ceiling` — un résumé tronqué ne devient jamais un checkpoint |
-| un `stop` propre, ou des tokens/fragments sans texte | `empty summary` |
-| non `stop`, **aucun fragment, aucun usage, contenu vide** | `empty stream`, avec le `finish_reason` reçu |
+| ce que le fil a porté | message | reprise |
+|---|---|---|
+| troncature (`length` / `max_tokens` / `incomplete`) **avec** du texte ou des tokens | `output ceiling` | non — un résumé tronqué ne devient jamais un checkpoint |
+| un `stop` propre, ou des tokens/fragments sans texte | `empty summary` | non — le modèle a répondu, ou quelque chose est sorti |
+| non `stop`, **aucun fragment, aucun usage, contenu vide** | `empty stream`, avec le `finish_reason` reçu | **oui, une fois** |
+
+La reprise est décidée dans `summarizeForCompaction`, là où l'échec est constaté — pas une seconde
+politique de transport : les transports reprennent déjà les statuts et les transitoires, et un HTTP
+200 qui ne streame rien n'est ni l'un ni l'autre. Une seule reprise, jamais une boucle : le second
+échec est franc. L'aléa est réel — 4 échecs vides sur 18 compactions deepseek-flash mesurées, et la
+même requête a rendu 6 689 tokens 30 secondes plus tard. Un résumé **tronqué** ne devient toujours
+jamais un checkpoint : la reprise ne s'applique qu'au flux vide.
 
 ### Le budget de sortie : aucun
 
