@@ -16,6 +16,7 @@ import { contextEntries } from "./projection.ts";
 import type { Entry, PhaseEntry, ToolEntry, UserEntry, CompactionEntry, CompactionStoppedEntry } from "./log.ts";
 import { estimateMessagesTokens } from "../llm/tokens.ts";
 import { cutByOutputCeiling } from "../llm/truncation.ts";
+import type { LlmResponse } from "../llm/provider.ts";
 import { messagesOf, promptOf } from "./projection.ts";
 import { normalizeUntrusted } from "../agent/prompt/normalize-untrusted.ts";
 import { firstSummaryPrompt, updateSummaryPrompt, SUMMARIZER_SYSTEM } from "./compaction-prompts.ts";
@@ -321,6 +322,59 @@ export type SummaryResult =
   | { ok: true; summary: string; elapsedMs: number }
   | { ok: false; reason: string };
 
+/** One summarizer call, before any retry decision. */
+type SummaryAttempt =
+  | { ok: true; summary: string; elapsedMs: number }
+  | { ok: false; reason: string };
+
+/**
+ * What one call actually came back with, and what to call it.
+ *
+ * The ceiling is named only when it is established: a truncation `finish_reason` AND output that
+ * came out -- text, or tokens the provider billed for. Before this, `incomplete` alone was enough,
+ * and `incomplete` is just `finish_reason !== "stop"` on an answer with no text: a gateway that
+ * streamed nothing at all was announced as "the summary hit the output ceiling and is incomplete",
+ * which is false and sent the owner hunting a limit that was not there. Measured on
+ * `opencode_go/deepseek-flash` behind opencode zen (2026-09-19): two compactions, 0 tokens in and
+ * 0 out, 39 s and 78 s, and the guard called both a ceiling.
+ *
+ * A summary that hit the ceiling for real is not a shorter summary either, it is a summary missing
+ * its end -- what it is missing is Next Steps, the section the next turn needs most.
+ */
+function classifySummaryResponse(
+  response: LlmResponse,
+): { ok: true; summary: string } | { ok: false; reason: string } {
+  const summary = response.content.trim();
+  const completionTokens = response.usage?.completionTokens ?? 0;
+  const finishReason = response.finishReason ?? "none";
+
+  if (cutByOutputCeiling(response.finishReason) && (summary.length > 0 || completionTokens > 0)) {
+    return {
+      ok: false,
+      reason: `The summary hit the output ceiling and is incomplete (finish_reason: ${finishReason}).`,
+    };
+  }
+
+  if (!summary) {
+    // Three shapes, told apart by what the wire actually carried. A clean `stop` with no text is
+    // the model's own answer. A non-stop reason with no fragment, no usage and no text at all is a
+    // gateway that rendered nothing -- and that is what the message must say, because accusing a
+    // ceiling there sent the owner hunting a limit that was not there.
+    if (response.usage === undefined && !response.reasoning && response.finishReason !== "stop") {
+      return {
+        ok: false,
+        reason: `The provider returned an empty stream (no content, no usage, finish_reason: ${finishReason}).`,
+      };
+    }
+    return { ok: false, reason: `The model returned an empty summary (finish_reason: ${finishReason}).` };
+  }
+  if (summary.length < 50) return { ok: false, reason: "The model returned a summary that is too short." };
+  if (REFUSAL_PATTERNS.some((pattern) => pattern.test(summary))) {
+    return { ok: false, reason: "The model refused to generate a summary." };
+  }
+  return { ok: true, summary };
+}
+
 /**
  * Run the summarizer for a plan.
  *
@@ -365,76 +419,71 @@ export async function summarizeForCompaction(
     cacheKey: resolved.cacheKey ?? session.id,
   };
 
-  const startedAt = now();
-  // Streamed, not a single blocking call. The budget a transport enforces is "time with not one
-  // byte received": a stream rearms it at every chunk and measures silence, while a one-shot call
-  // turns it into a hard ceiling on the whole operation -- prompt prefill plus a 20k-token summary.
-  // The OpenAI-compatible default of 120 s made that ceiling real: a compaction of this very
-  // conversation timed out at 23:36 on 2026-09-11 and the same work took 85 s two minutes later,
-  // while every Anthropic compaction in the history ran 180-360 s and only survived because that
-  // transport allows 600. Streaming also gives the summary a live mouth: the fragments go out as
-  // they arrive, so a window can watch it being written -- docs/compaction.md.
-  const progress = compactionProgress(session.id);
-  // The thinking goes out too, batched the same way. A summarizer inheriting the session's effort
-  // spends that time before its first word, and the rule with a counter was the only thing on
-  // screen for it -- docs/compaction.md.
-  const thinking = compactionProgress(session.id, "session:compact:reasoning");
-  const response = await llmCompleteStream(
-    llmConfig,
-    [
-      { role: "system", content: SUMMARIZER_SYSTEM },
-      { role: "user", content: prompt },
-    ],
-    (chunk: string) => progress.push(chunk),
-    undefined,
-    signal,
-    { onText: async (delta: string) => void thinking.push(delta) },
-  );
-  progress.flush();
-  thinking.flush();
-  recordApiCall({
-    sessionId: session.id,
-    // Compaction is maintenance on a session, not work delegated by another one, so it bills
-    // to the session it is compacting.
-    parentSessionId: attributionParent(session),
-    platform: session.platform,
-    model: usageModelOf(llmConfig),
-    baseUrl: llmConfig.baseUrl,
-    streaming: false,
-    caller,
-    promptTokens: response.usage?.promptTokens ?? 0,
-    completionTokens: response.usage?.completionTokens ?? 0,
-    totalTokens: response.usage?.totalTokens ?? 0,
-    cacheReadTokens: response.usage?.cacheReadTokens ?? 0,
-    cacheWriteTokens: response.usage?.cacheWriteTokens ?? 0,
-    toolCalls: 0,
-    iteration: 0,
-    durationMs: Date.now() - startedAt,
-    proxyCostUsd: response.proxyCostUsd,
-    upstreamApiBase: response.upstreamApiBase,
-    ...cacheAttributionOf(llmConfig),
-  });
+  /**
+   * One summarizer call: the stream, its accounting, and what the response turned out to be.
+   *
+   * Streamed, not a single blocking call. The budget a transport enforces is "time with not one
+   * byte received": a stream rearms it at every chunk and measures silence, while a one-shot call
+   * turns it into a hard ceiling on the whole operation -- prompt prefill plus a 20k-token summary.
+   * The OpenAI-compatible default of 120 s made that ceiling real: a compaction of this very
+   * conversation timed out at 23:36 on 2026-09-11 and the same work took 85 s two minutes later,
+   * while every Anthropic compaction in the history ran 180-360 s and only survived because that
+   * transport allows 600. Streaming also gives the summary a live mouth: the fragments go out as
+   * they arrive, so a window can watch it being written -- docs/compaction.md.
+   */
+  const attemptOnce = async (): Promise<SummaryAttempt> => {
+    const attemptStartedAt = now();
+    const progress = compactionProgress(session.id);
+    // The thinking goes out too, batched the same way. A summarizer inheriting the session's effort
+    // spends that time before its first word, and the rule with a counter was the only thing on
+    // screen for it -- docs/compaction.md.
+    const thinking = compactionProgress(session.id, "session:compact:reasoning");
+    const response = await llmCompleteStream(
+      llmConfig,
+      [
+        { role: "system", content: SUMMARIZER_SYSTEM },
+        { role: "user", content: prompt },
+      ],
+      (chunk: string) => progress.push(chunk),
+      undefined,
+      signal,
+      { onText: async (delta: string) => void thinking.push(delta) },
+    );
+    progress.flush();
+    thinking.flush();
+    recordApiCall({
+      sessionId: session.id,
+      // Compaction is maintenance on a session, not work delegated by another one, so it bills
+      // to the session it is compacting.
+      parentSessionId: attributionParent(session),
+      platform: session.platform,
+      model: usageModelOf(llmConfig),
+      baseUrl: llmConfig.baseUrl,
+      streaming: false,
+      caller,
+      promptTokens: response.usage?.promptTokens ?? 0,
+      completionTokens: response.usage?.completionTokens ?? 0,
+      totalTokens: response.usage?.totalTokens ?? 0,
+      cacheReadTokens: response.usage?.cacheReadTokens ?? 0,
+      cacheWriteTokens: response.usage?.cacheWriteTokens ?? 0,
+      toolCalls: 0,
+      iteration: 0,
+      durationMs: Date.now() - attemptStartedAt,
+      proxyCostUsd: response.proxyCostUsd,
+      upstreamApiBase: response.upstreamApiBase,
+      ...cacheAttributionOf(llmConfig),
+    });
+    const classified = classifySummaryResponse(response);
+    return classified.ok ? { ok: true, summary: classified.summary, elapsedMs: now() - attemptStartedAt } : classified;
+  };
 
-  // Tested before the content, because the two are one event on a reasoning model: the reasoning
-  // shares `max_tokens` with the text, so a model that thinks past the ceiling comes back with an
-  // empty `content` and `finish_reason: "length"`. Calling that an empty summary named the symptom
-  // and hid the cause. A summary that hit the ceiling is not a shorter summary either, it is a
-  // summary missing its end -- and what it is missing is Next Steps, the section the next turn
-  // needs most.
-  if (response.incomplete || cutByOutputCeiling(response.finishReason)) {
-    return { ok: false, reason: "The summary hit the output ceiling and is incomplete." };
-  }
-  const summary = response.content.trim();
-  if (!summary) return { ok: false, reason: "The model returned an empty summary." };
-  if (summary.length < 50) return { ok: false, reason: "The model returned a summary that is too short." };
-  if (REFUSAL_PATTERNS.some((pattern) => pattern.test(summary))) {
-    return { ok: false, reason: "The model refused to generate a summary." };
-  }
+  const attempt = await attemptOnce();
+  if (!attempt.ok) return { ok: false, reason: attempt.reason };
 
   // The anchor is computed over the whole branch, not over `middle`: a path the tail still shows is
   // one the next turn is most likely to need, and naming it twice costs a line.
   const anchor = fileAnchorOf(plan.entries);
-  return { ok: true, summary: anchor ? `${summary}\n\n${anchor}` : summary, elapsedMs: now() - startedAt };
+  return { ok: true, summary: anchor ? `${attempt.summary}\n\n${anchor}` : attempt.summary, elapsedMs: attempt.elapsedMs };
 }
 
 /** Append the boundary. The turns it stands for stay on disk and stay on screen. */

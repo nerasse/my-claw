@@ -176,6 +176,7 @@ test("a summary that hit the output ceiling is refused instead of stored", async
     const result = await compactSession(config(), sess);
     assert.equal(result.ok, false);
     assert.match(result.reason ?? "", /incomplete/);
+    assert.match(result.reason ?? "", /finish_reason: length/);
   } finally {
     mock.restore();
   }
@@ -186,19 +187,24 @@ test("a summary that hit the output ceiling is refused instead of stored", async
  * The reasoning shares `max_tokens` with the text on every reasoning model, so a model that thinks
  * past the ceiling comes back with an empty `content` and `finish_reason: "length"` -- measured on
  * opencode_go/deepseek-flash, 2026-09-10: 400 tokens of budget, 400 billed, zero characters out.
- * Reporting that as "the model returned an empty summary" named the symptom and hid the cause: the
- * owner read two different messages for one problem, on two sessions.
+ * The ceiling is established there: the reason says truncation and the usage says the budget was
+ * spent, there is just no text to show for it. (With no usage at all and nothing out, the same
+ * reason is the empty stream tested below -- the two are told apart by the tokens, not the reason.)
  */
 test("an empty answer cut by the ceiling is reported as the ceiling, not as an empty model", async () => {
   conversation(8);
   await log.flush();
 
-  const mock = summarizer(() => answer("", { finish_reason: "length" }));
+  const mock = summarizer(() => ({
+    choices: [{ message: { content: "" }, finish_reason: "length" }],
+    usage: { prompt_tokens: 33_000, completion_tokens: 400, total_tokens: 33_400 },
+  }));
   try {
     const result = await compactSession(config(), sess);
     assert.equal(result.ok, false);
     assert.match(result.reason ?? "", /incomplete/);
-    assert.doesNotMatch(result.reason ?? "", /empty summary/);
+    assert.match(result.reason ?? "", /finish_reason: length/);
+    assert.doesNotMatch(result.reason ?? "", /empty stream/);
   } finally {
     mock.restore();
   }
@@ -237,6 +243,33 @@ test("an empty answer the model simply did not write keeps its own message", asy
   } finally {
     mock.restore();
   }
+});
+
+/**
+ * A gateway that returns nothing at all is not a ceiling, and gets one retry.
+ *
+ * Measured on the thread that triggered this (2026-09-19, opencode zen / deepseek-flash behind
+ * `opencode.ai/zen/go/v1`): two /compact calls, 39 s and 78 s, zero tokens in and zero out, and the
+ * guard -- reading `incomplete`, which is `finish_reason !== "stop"` on an answer with no text --
+ * announced "the summary hit the output ceiling and is incomplete". Nothing had come out, so the
+ * accusation sent the owner looking for a limit that was not there. The message now says what the
+ * wire carried.
+ */
+test("an empty stream is reported as one, not as a ceiling", async () => {
+  conversation(8);
+  await log.flush();
+
+  const mock = summarizer(() => answer("", { finish_reason: "length" }));
+  try {
+    const result = await compactSession(config(), sess);
+    assert.equal(result.ok, false);
+    assert.match(result.reason ?? "", /empty stream/);
+    assert.match(result.reason ?? "", /finish_reason: length/);
+    assert.doesNotMatch(result.reason ?? "", /ceiling/);
+  } finally {
+    mock.restore();
+  }
+  assert.equal(contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"), false);
 });
 
 /**

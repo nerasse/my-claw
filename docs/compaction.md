@@ -180,13 +180,15 @@ contenu.
 
 ### Ce qui est refusé plutôt que stocké
 
-- un résumé vide ou de moins de 50 caractères, une fois écarté le cas du plafond ci-dessous ;
+- un résumé vide ou de moins de 50 caractères, une fois écartés les deux cas ci-dessous ;
 - un refus du modèle (`REFUSAL_PATTERNS`, français et anglais) ;
-- **un résumé tronqué**, et ce test passe **avant** celui du contenu vide. `max_tokens` est un seul
-  budget pour deux choses sur un modèle qui raisonne : le raisonnement et le texte. Un modèle qui
-  réfléchit au-delà du plafond rend un `content` vide avec `finish_reason: "length"` ; l'annoncer
-  comme « le modèle a rendu un résumé vide » nommait le symptôme et cachait la cause. Mesuré le
-  10/09/2026 sur `opencode_go/deepseek-flash` : `max_tokens=400` → 400 tokens facturés, 0 caractère.
+- **un résumé tronqué**, et ce test passe **avant** ceux du contenu. Le plafond n'est nommé que
+  lorsqu'il est établi : `finish_reason` de troncature **et** de la sortie — du texte, ou des
+  tokens facturés. `max_tokens` est un seul budget pour deux choses sur un modèle qui raisonne : un
+  modèle qui réfléchit au-delà du plafond rend un `content` vide avec `finish_reason: "length"` et
+  l'usage qui va avec ; l'annoncer comme « le modèle a rendu un résumé vide » nommait le symptôme
+  et cachait la cause. Mesuré le 10/09/2026 sur `opencode_go/deepseek-flash` : `max_tokens=400` →
+  400 tokens facturés, 0 caractère.
 - les trois orthographes du plafond sont reconnues (`src/llm/truncation.ts`) : `length`
   (OpenAI-compatible), `max_tokens` (Anthropic Messages) et `incomplete` (Codex Responses). Tester
   `=== "length"` seul était le dialecte OpenAI, et une réponse Anthropic tronquée arrive **avec** du
@@ -194,6 +196,22 @@ contenu.
 - Ce garde existait déjà sous une autre forme : c'était un `slice(0, 8000)` silencieux, dont la
   phrase coupée devenait le plancher définitif de la conversation, et ce qui manquait était Next
   Steps.
+
+**Un flux vide n'est pas un plafond.** Jusqu'au 19/09/2026 le
+garde se déclenchait sur `incomplete`, qui n'est que `finish_reason !== "stop"` sur une réponse sans
+texte : une passerelle qui n'avait rien streamé du tout s'annonçait « the summary hit the output
+ceiling and is incomplete ». Mesuré sur le fil qui a déclenché ça (`opencode_go/deepseek-flash`
+derrière opencode zen, `opencode.ai/zen/go/v1`) : deux `/compact`, 39 s et 78 s, **0 token en entrée
+et 0 en sortie** — le message a envoyé le propriétaire chercher une limite qui n'existait pas. Le
+message dit maintenant ce que le fil a porté : `finish_reason` reçu, et si un usage est arrivé.
+
+Trois formes, et pas une de plus :
+
+| ce que le fil a porté | message |
+|---|---|
+| troncature (`length` / `max_tokens` / `incomplete`) **avec** du texte ou des tokens | `output ceiling` — un résumé tronqué ne devient jamais un checkpoint |
+| un `stop` propre, ou des tokens/fragments sans texte | `empty summary` |
+| non `stop`, **aucun fragment, aucun usage, contenu vide** | `empty stream`, avec le `finish_reason` reçu |
 
 ### Le budget de sortie : aucun
 
