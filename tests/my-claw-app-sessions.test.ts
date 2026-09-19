@@ -345,33 +345,45 @@ describe("MyClawAppSessionStoreImpl.history", () => {
       { role: "user", content: "tour precedent", timestamp: "2026-01-01T00:00:01.000Z" },
     ]));
 
-    // A finished run, written the way the run-recorder writes one.
-    logSetup.log.append({ type: "user", prompt: true, text: "fais le travail" });
-    const start = logSetup.log.append({ type: "run_start", prompt: false });
-    const work: Entry[] = [];
-    for (let i = 0; i < 12; i++) {
-      work.push(logSetup.log.append({ type: "phase", prompt: true, text: `etape ${i}`, runId: start.id }));
-      work.push(logSetup.log.append({
-        type: "tool", prompt: true, callId: `call-${i}`, name: "bash",
-        args: { command: "ls" }, output: "x".repeat(2000), truncated: false, ok: true, runId: start.id,
-      }));
-    }
-    logSetup.log.append({ type: "run_end", prompt: false, reason: "done" });
+    // A finished run, written the way the run-recorder writes one: bursts of tools between the
+    // messages the agent wrote. What folds is a burst -- the work between two messages -- so the
+    // messages themselves stay on the page (owner's rule, 2026-09-17).
+    const log = logSetup.log;
+    log.append({ type: "user", prompt: true, text: "fais le travail" });
+    const start = log.append({ type: "run_start", prompt: false });
+    const burst = (tag: string): Entry[] => {
+      const tools: Entry[] = [];
+      for (let i = 0; i < 8; i++) {
+        tools.push(log.append({
+          type: "tool", prompt: true, callId: `call-${tag}-${i}`, name: "bash",
+          args: { command: "ls" }, output: "x".repeat(2000), truncated: false, ok: true, runId: start.id,
+        }));
+      }
+      return tools;
+    };
+    const first = burst("a");
+    log.append({ type: "phase", prompt: true, text: "premier point", runId: start.id });
+    burst("b");
+    log.append({ type: "phase", prompt: true, text: "voila", runId: start.id });
+    log.append({ type: "run_end", prompt: false, reason: "done" });
 
     // What an app that never asked receives: every item, as today.
     const whole = await store.history(DEVICE, "thread-fold");
-    assert.equal(whole.entries.filter((e) => e.role === "tool").length, 12);
+    assert.equal(whole.entries.filter((e) => e.role === "tool").length, 16);
     assert.equal(whole.entries.some((e) => e.role === "run"), false);
 
-    // What an app that asked receives: the question, then one row for the run.
+    // What an app that asked receives: the question, then message, header, message, header,
+    // message -- both bursts fold, and both messages stay.
     const folded = await store.history(DEVICE, "thread-fold", undefined, 0, undefined, true);
-    assert.deepEqual(folded.entries.map((e) => e.role), ["user", "user", "run"]);
+    assert.deepEqual(folded.entries.map((e) => e.role), [
+      "user", "user", "run", "assistant", "run", "assistant",
+    ]);
     const summary = folded.entries[2]!;
-    assert.equal(summary.role === "run" ? summary.toolCount : 0, 12);
+    assert.equal(summary.role === "run" ? summary.toolCount : 0, 8);
     assert.equal(summary.role === "run" ? summary.run.status : "", "done");
-    // Keyed on the first entry it stands for, not on the run: an injection can cut one run into
-    // several folded segments, and each needs an id of its own.
-    assert.equal(summary.id, `run-${work[0]!.id}`);
+    // Keyed on the first entry it stands for, not on the run: a run with several bursts folds
+    // into several rows, and each needs an id of its own.
+    assert.equal(summary.id, `run-${first[0]!.id}`);
 
     // The point of the exercise.
     assert.ok(
@@ -385,12 +397,14 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     const older = await store.history(DEVICE, "thread-fold", 50, 0, summary.id, true);
     assert.ok(older.entries.length > 0, "a summary cursor must not return an empty page");
     assert.equal(older.entries.some((e) => e.role === "tool" || e.role === "run"), false);
-    const first = older.entries[0]!;
-    assert.equal(first.role === "user" ? first.text : "", "tour precedent");
+    const oldest = older.entries[0]!;
+    assert.equal(oldest.role === "user" ? oldest.text : "", "tour precedent");
 
     // The same on the frame an opening app actually sends.
     const synced = await store.sync(DEVICE, "thread-fold", null, undefined, 500, true);
-    assert.deepEqual(synced.entries.map((e) => e.role), ["user", "user", "run"]);
+    assert.deepEqual(synced.entries.map((e) => e.role), [
+      "user", "user", "run", "assistant", "run", "assistant",
+    ]);
   });
 
   /** The other half of the fold: what the reader gets when the collapsed group is opened. */
@@ -403,7 +417,6 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     logSetup.log.append({ type: "user", prompt: true, text: "fais le travail" });
     const start = logSetup.log.append({ type: "run_start", prompt: false });
     for (let i = 0; i < 12; i++) {
-      logSetup.log.append({ type: "phase", prompt: true, text: `etape ${i}`, runId: start.id });
       logSetup.log.append({
         type: "tool", prompt: true, callId: `call-${i}`, name: "bash",
         args: { command: "ls" }, output: `sortie ${i}`, truncated: false, ok: true, runId: start.id,
@@ -414,8 +427,8 @@ describe("MyClawAppSessionStoreImpl.history", () => {
 
     const folded = await store.history(DEVICE, "thread-hydrate", undefined, 0, undefined, true);
     const summary = folded.entries.find((e) => e.role === "run");
-    assert.ok(summary && summary.role === "run", "the run must have folded");
-    // The answer is hoisted: it is on the page, not in the fold.
+    assert.ok(summary && summary.role === "run", "the burst must have folded");
+    // The message is on the page, not in the fold.
     assert.equal(folded.entries.some((e) => e.id === answer.id), true);
 
     const hydrated = await store.runItems(DEVICE, "thread-hydrate", summary.id, summary.lastId);

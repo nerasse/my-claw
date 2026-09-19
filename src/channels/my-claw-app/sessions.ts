@@ -510,9 +510,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // tags its entries with the run they belong to (docs/run-grouping.md).
     const runs = runFold(path);
     // A finished run travels as its header when the client asked for that -- docs/run-hydration.md.
-    // The plan is computed against the whole branch and not against the window, because the rule
-    // is containment: a run the page boundary cut keeps its items.
-    const plan = fold ? runFoldPlan(path, window, runs) : undefined;
+    // The plan reads the page alone: what folds is the work between two messages, and a message
+    // is a message wherever the page boundary fell.
+    const plan = fold ? runFoldPlan(window, runs) : undefined;
     const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(log.entries()), files, runs, plan);
     return { entries, hasMore, nextBefore, ...(draft ? { draft } : {}) };
   }
@@ -611,7 +611,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // watching arrive, item by item, and its runs are usually the ones still running -- which
     // never fold anyway. Folding a delta would also have to reason about what the client already
     // holds, since the run it continues is half on screen.
-    const plan = fold && freshWindow ? runFoldPlan(path, foldWindow, runs) : undefined;
+    const plan = fold && freshWindow ? runFoldPlan(foldWindow, runs) : undefined;
     const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(allEntries), files, runs, plan);
 
     const branchLength = path.length;

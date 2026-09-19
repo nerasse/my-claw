@@ -247,15 +247,19 @@ export function runFold(path: readonly Entry[]): Map<string, MyClawAppRunMeta> {
  * app draws collapsed -- fetched, parsed and held so that a fold could hide it. Sending the header
  * alone puts that page at 21 KB, and `session.run.items` fetches the work if the reader opens it.
  *
- * What is folded is a **segment**: consecutive work of one terminal run, inside this page. Not a
- * whole run, and that is deliberate on both counts.
+ * What is folded is a **segment between two messages**: consecutive work of one terminal run,
+ * inside this page. Messages are what the reader follows, so they never fold -- every reply the
+ * agent wrote, and every picture it sent, stays on screen, and the header hides the work between
+ * two of them (owner's decision, 2026-09-17: "je veux pouvoir tous les voir, ce qu'il y a entre
+ * se regroupe"). A message is a phase with words, or one carrying media -- its own `MEDIA:` refs,
+ * or the pictures its tools produced and the `run_end` pinned on it.
  *
  * - **Terminal only.** A running run is what the live frames are appending to; folding the thing
  *   currently being watched would fight the stream.
- * - **Hoisted bubbles cut it**, exactly as `runRows.ts` cuts a group in the app: the owner's
- *   injected turns, commands, compaction boundaries, and the run's own final answer stay on
- *   screen. Fold those away and a reopened conversation is a list of questions with collapsed
- *   headers and nothing under them.
+ * - **Messages and hoisted bubbles cut it**, exactly as `runRows.ts` cuts a group in the app: the
+ *   owner's injected turns, commands, compaction boundaries, and every message stay on screen.
+ *   Fold those away and a reopened conversation is a list of questions with collapsed headers
+ *   and nothing under them.
  * - **The page boundary cuts it too.** A run spanning three pages folds into one row per page.
  *   The first version required the run to sit wholly inside the window, to avoid emitting the
  *   same row id twice -- but measured on the real session that refused to fold anything on the
@@ -275,7 +279,6 @@ export interface RunFoldPlan {
 }
 
 export function runFoldPlan(
-  path: readonly Entry[],
   window: readonly Entry[],
   runs: ReadonlyMap<string, MyClawAppRunMeta>,
   minItems = RUN_FOLD_MIN_ITEMS,
@@ -283,32 +286,18 @@ export function runFoldPlan(
   const plan: RunFoldPlan = { summaries: new Map(), folded: new Set() };
   if (window.length === 0) return plan;
 
-  // One pass over the branch: per run, which entry is its answer. Over the branch and not over
-  // the page, because a run whose work is on this page can have answered on the next one -- and
-  // an entry that is the last of the window is not thereby an answer.
-  const seen = new Map<string, RunAcc>();
-  for (const entry of path) {
-    const meta = runs.get(entry.id);
-    if (!meta) continue;
-    let acc = seen.get(meta.id);
-    if (!acc) {
-      acc = { meta };
-      seen.set(meta.id, acc);
-    }
-    if (rowsOf(entry) === 0) continue;
-    // The run's answer is its last bubble, when that bubble is prose the agent wrote. A run whose
-    // last entry is a tool card died before answering, and then nothing is hoisted out.
-    acc.answerId = isAgentProse(entry) ? entry.id : undefined;
-  }
+  // The phases the run's media landed on: a picture with no words is a message too, so those
+  // phases have to be told apart from the ones that only thought before calling a tool.
+  const mediaPhases = mediaPhasesOf(window);
 
-  // Then one pass over the page, folding runs of consecutive work. A hoisted bubble cuts the
-  // group in two rather than travelling inside it, which is what keeps a folded conversation
-  // readable: question, header, answer.
+  // One pass over the page, folding runs of consecutive work. A message or a hoisted bubble cuts
+  // the group in two rather than travelling inside it, which is what keeps a folded conversation
+  // readable: message, header, message.
   let group: Entry[] = [];
-  let groupRun: RunAcc | null = null;
+  let groupRun: MyClawAppRunMeta | null = null;
   const flush = () => {
     if (groupRun && group.length > 0) {
-      const rows = group.reduce((n, entry) => n + rowsOf(entry), 0);
+      const rows = group.reduce((n, entry) => n + rowsOf(entry, mediaPhases), 0);
       if (rows >= minItems) {
         const first = group[0]!;
         const last = group[group.length - 1]!;
@@ -320,7 +309,7 @@ export function runFoldPlan(
           // Where the work stood, not where the run opened: a run cut into segments has a header
           // per segment, and they must sort in the order the reader met them.
           ts: new Date(first.ts).toISOString(),
-          run: groupRun.meta,
+          run: groupRun,
           toolCount: tools.length,
           ...(firstTool?.type === "tool" ? { firstTool: toolDisplayName(firstTool.name) } : {}),
           itemCount: rows,
@@ -335,16 +324,15 @@ export function runFoldPlan(
 
   for (const entry of window) {
     const meta = runs.get(entry.id);
-    const acc = meta ? seen.get(meta.id) : undefined;
     const foldable =
-      acc !== undefined &&
-      acc.meta.status !== "running" &&
-      entry.id !== acc.answerId &&
-      !isHoisted(entry);
+      meta !== undefined &&
+      meta.status !== "running" &&
+      !isHoisted(entry) &&
+      !isMessage(entry, mediaPhases);
     // An entry that draws nothing is transparent: it neither opens a group -- the summary has to
     // stand on a row the client can point a cursor at -- nor breaks one, which the `run_start`
     // marker sitting at the head of every run would otherwise do to all of them.
-    if (rowsOf(entry) === 0) {
+    if (rowsOf(entry, mediaPhases) === 0) {
       if (foldable && groupRun) group.push(entry);
       continue;
     }
@@ -352,18 +340,40 @@ export function runFoldPlan(
       flush();
       continue;
     }
-    if (groupRun && groupRun.meta.id !== acc.meta.id) flush();
-    groupRun = acc;
+    if (groupRun && groupRun.id !== meta.id) flush();
+    groupRun = meta;
     group.push(entry);
   }
   flush();
   return plan;
 }
 
-interface RunAcc {
-  meta: MyClawAppRunMeta;
-  /** The run's final bubble, hoisted out of the fold so the answer stays on screen. */
-  answerId?: string;
+/**
+ * The phases the media of a run lands on, read the way `displayOf` reads it.
+ *
+ * The end marker is written after the phase it belongs to, so the last phase before a `run_end`
+ * that carries media is the bubble those pictures hang on -- and a bubble with pictures is a
+ * message even when it has no words (2026-09-14).
+ */
+function mediaPhasesOf(window: readonly Entry[]): Set<string> {
+  const out = new Set<string>();
+  let lastPhase: string | undefined;
+  for (const entry of window) {
+    if (entry.type === "phase") lastPhase = entry.id;
+    else if (entry.type === "run_end" && entry.media?.length && lastPhase) out.add(lastPhase);
+  }
+  return out;
+}
+
+/**
+ * A message the agent addressed to the owner: the words it wrote, or the pictures it sent.
+ *
+ * Everything else in a terminal run is work, and folds between two messages. A phase that only
+ * thought before calling a tool wrote nothing and carries nothing: it stays in the fold.
+ */
+function isMessage(entry: Entry, mediaPhases: ReadonlySet<string>): boolean {
+  if (entry.type !== "phase") return false;
+  return entry.text.trim() !== "" || mediaPhases.has(entry.id);
 }
 
 /**
@@ -371,8 +381,8 @@ interface RunAcc {
  *
  * The owner's own turns (an injection splits the group around it, so the answer to a question
  * stays readable), command output and the model-change notices (the agent did not write them),
- * and compaction boundaries (a divider across the thread, not a bubble). Everything else -- tool
- * cards, thinking phases, interim prose -- is the run's work and folds with it.
+ * and compaction boundaries (a divider across the thread, not a bubble). Everything else is the
+ * run's work: tool cards and thinking phases fold between the messages (see `isMessage`).
  *
  * This rule used to live in the app alone, and it stays there for what the app draws live. It has
  * to exist here too because the server is what decides not to send something, and the two are
@@ -392,10 +402,6 @@ function isHoisted(entry: Entry): boolean {
   );
 }
 
-/** Prose the agent wrote: what the last bubble of a run has to be for it to be its answer. */
-function isAgentProse(entry: Entry): boolean {
-  return entry.type === "phase" || entry.type === "failure" || entry.type === "note";
-}
 
 /**
  * Where folding starts paying. Under it the header costs more than the work it hides, and a reader
@@ -412,13 +418,14 @@ export const RUN_FOLD_MIN_ITEMS = 8;
  * that only thought before calling carry nothing to draw. A skeleton a third too long is a
  * scrollbar that jumps when the items land.
  */
-function rowsOf(entry: Entry): number {
+function rowsOf(entry: Entry, mediaPhases?: ReadonlySet<string>): number {
   // Bookkeeping: the run markers and the spawn annotations reach no screen.
   if (entry.type === "run_start" || entry.type === "run_end" || entry.type === "spawn_state") return 0;
   if (entry.type === "phase") {
-    // Mirrors the drop in `displayOf`: no words, no media (a `MEDIA:` ref lives in the text), no
-    // thought. Anything else is a bubble.
-    const empty = !entry.text.trim() && !entry.reasoning?.trim() && !entry.reasoningTokens;
+    // Mirrors the drop in `displayOf`: no words, no media (a `MEDIA:` ref lives in the text, and
+    // a tool's pictures land on the phase), no thought. Anything else is a bubble.
+    const empty =
+      !entry.text.trim() && !entry.reasoning?.trim() && !entry.reasoningTokens && !mediaPhases?.has(entry.id);
     return empty ? 0 : 1;
   }
   // A command draws its input and its answer, unless it was quiet -- then the answer alone.

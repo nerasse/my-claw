@@ -61,16 +61,24 @@ le runId, pour trois raisons trouvées à l'implémentation :
 Côté app (lot 3) : deux résumés adjacents du même run se fusionnent en un seul groupe.
 
 Ce que le résumé **ne remplace pas** et qui continue de voyager en clair : les bulles
-hoistées (tours de l'owner, commandes, notices, bornes de compaction) et la réponse finale
-du run. C'est déjà la règle de `buildRows`, et c'est ce qui garde la conversation lisible
-une fois tout replié : question, réponse, et un en-tête entre les deux.
+hoistées (tours de l'owner, commandes, notices, bornes de compaction) et **tous les messages
+du run** — ce qui plie est le travail *entre deux messages* (`docs/run-grouping.md`), et un
+message ne voyage jamais replié. C'est déjà la règle de `buildRows`, et c'est ce qui garde la
+conversation lisible une fois tout replié : les messages, et un en-tête entre eux.
 
 Ce point n'est pas cosmétique : une première implémentation repliait tout le run, réponse
 comprise. Résultat mesuré sur la vraie session : une conversation rouverte n'était plus
 qu'une suite de questions avec des en-têtes repliés et **rien dessous**. La règle de hoisting
-est donc portée telle quelle côté serveur (`isHoisted` dans `display.ts`, mêmes noms qu'en
-face), et un test de parité sur la session réelle vérifie que rien de ce que l'app dessine
-hors groupe n'est avalé par un pli.
+est donc portée telle quelle côté serveur (`isHoisted` et `isMessage` dans `display.ts`,
+mêmes noms qu'en face), et un test de parité sur la session réelle vérifie que rien de ce que
+l'app dessine hors groupe n'est avalé par un pli.
+
+Le pli par message a un prix mesuré sur le fil `4d5775e7` (135 runs, 1 839 messages) : les
+bulles qui remontent emportent leur `reasoning` (4,7 KB en moyenne par message, dont ~380 o
+de prose), donc une page de 50 entrées passe d'environ 3 KB (règle d'avant) à 79 KB médian,
+416 KB au pire — toujours très en dessous des 1 068 KB d'avant l'hydratation, mais un vrai
+écart. Le levier, si les pages pèsent : le seuil `RUN_FOLD_MIN_ITEMS` (3 → 53 KB, 1 → 36 KB
+médian, mesuré).
 
 ## Le seuil : les petits runs voyagent entiers
 
@@ -265,7 +273,8 @@ sur un vieux serveur ne reçoit simplement aucun résumé.
 ## Tests
 
 - `displayOf` : un run sous le seuil voyage entier, au-dessus il devient un résumé ; les
-  bulles hoistées et la réponse finale restent en clair dans les deux cas.
+  bulles hoistées et les messages restent en clair dans les deux cas, et le pli se découpe
+  entre deux messages.
 - `carriesDisplayId` : `run-<runId>` résout vers la première entrée du run (et la
   pagination remonte page après page sur une session dont chaque page est un résumé).
 - `session.run.items` : rend les items du run ; `found: false` sur un run hors branche.

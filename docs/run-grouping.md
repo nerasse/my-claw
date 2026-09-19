@@ -2,11 +2,15 @@
 
 ## Le problème
 
-Un prompt lance un run : reasoning, tool calls, phases intermédiaires, injections,
-puis une réponse finale (ou une erreur). Pendant le run, tout doit être visible en
-direct. Une fois le run terminé, ce « travail » intermédiaire encombre la conversation :
-le lecteur ne veut voir que la question et la réponse, et déplier le reste s'il a besoin
-de savoir ce qui s'est passé entre les deux.
+Un prompt lance un run : reasoning, tool calls, phases intermédiaires, injections, et
+plusieurs **messages** — l'agent écrit souvent, pas seulement pour conclure. Pendant le
+run, tout est visible en direct. Une fois le run terminé, le travail intermédiaire
+encombre la conversation : le lecteur veut lire **tous les messages**, et déplier le
+travail entre deux d'entre eux s'il a besoin de savoir ce qui s'est passé là.
+
+Décision owner (2026-09-17) : « je veux pouvoir tous les voir, mais ce qu'il y a entre
+sauf compact se regroupe ». Avant elle, seul le dernier message — la « réponse élue » —
+sortait du pli : sur un run mesuré de 180 items à 10 messages, un seul était visible.
 
 L'app sait quand un run commence et finit en live (`chat.run.start` / `chat.run.end`),
 mais rien ne persistait cette frontière : une conversation rouverte ou re-synchronisée
@@ -86,34 +90,39 @@ La FlatList porte des **rows**, pas des items bruts :
 
 - un item sans run, ou d'un run `running` : row individuelle (rien n'est groupé
   pendant que le run répond) ;
-- un run terminal : ses items non hoistés deviennent un groupe par segment ;
+- un run terminal : ses items non hoistés deviennent un groupe par **segment entre deux
+  messages** ;
 - **hoistés** (toujours des rows, le groupe se découpe autour) : les messages `user`
   (réponses aux questions, injections), les résultats de commandes, les notices, les
-  bornes de compaction, et **tout item `text` portant une `error`**. Les quatre premiers parce
-  que l'agent ne les a pas écrits ; le dernier pour une autre raison : c'est pourquoi le run
-  s'est arrêté, et un groupe fermé par défaut le cacherait. Un run mort après
-  `chat.stream.start` mais avant son premier token porte ce message sur la phase elle-même
-  (`abortStream`), donc **dans** le run. Hoisté et non élu comme réponse : la row garde sa place
-  et coupe le groupe autour d'elle, là où une réponse serait déplacée après tout le groupe. Une
-  **carte d'outil** en échec n'est pas concernée (`isHoisted` filtre sur le `kind` avant tout) :
-  une commande sortie non-zéro est du travail, pas un verdict ;
-- la **réponse** du run (la dernière prose que l'agent a écrite) sort du groupe : c'est elle que
-  le lecteur doit lire, le reste est replié. Trouvée par **contenu**, pas par position : un item
-  agent sans prose (une phase qui n'a fait que réfléchir) n'est pas une réponse, et une carte
-  restée `running` quand le run s'est terminé est recollée après elle par le store (2026-09-10) —
-  « le dernier item » lisait alors cette carte comme la réponse, la vraie restant dans le groupe
-  sous un en-tête descendu plus bas qu'elle ;
-- un run qui n'a écrit **aucune prose** — que des cartes, ou des phases qui n'ont fait que
-  réfléchir — n'a jamais répondu : tout reste dans le groupe, et la bulle d'erreur (`failure`,
-  hors run par construction) reste visible. Mesuré le 2026-09-13 sur un run mort avec quatre
-  phases de réflexion et pas une ligne de prose : la dernière était élue réponse et dessinée
-  après tous les tool calls qu'elle précédait, juste au-dessus de l'erreur ;
-- un groupe ne s'affiche que s'il contient au moins un item : une réponse seule ne
-  produit jamais un header vide.
+  bornes de compaction, **tout item `text` portant une `error`**, et **tout message de
+  l'agent** — une phase avec du texte, ou une phase qui porte des médias (ses propres refs
+  `MEDIA:`, ou les images produites par ses outils et épinglées par le `run_end`). Les
+  messages `user`, commandes et notices parce que l'agent ne les a pas écrits ; l'`error`
+  parce que c'est pourquoi le run s'est arrêté, et un groupe fermé par défaut le cacherait —
+  un run mort après `chat.stream.start` mais avant son premier token porte ce message sur la
+  phase elle-même (`abortStream`), donc **dans** le run. Une **carte d'outil** en échec n'est
+  pas concernée (`isHoisted` filtre sur le `kind` avant tout) : une commande sortie non-zéro
+  est du travail, pas un verdict. Une phase qui n'a fait que **réfléchir** n'est pas un
+  message : elle reste dans le pli, comme les cartes d'outils ;
+- le concept de **réponse élue** n'existe plus : le dernier message est simplement le dernier
+  message, à sa place. Trois cas spéciaux tombent avec lui — l'élection par contenu, « seul un
+  run `done` élit » (un run stoppé ou mort garde maintenant ses messages visibles, dans
+  l'ordre), et la carte recollée après la réponse : l'ordre est naturel, il n'y a plus rien à
+  recoller. L'élection avait sa propre histoire de bugs (ordre inversé 2026-09-13, prose
+  sortie du mauvais côté 2026-09-14) ; la règle par message les rend impossibles par
+  construction ;
+- un run qui n'a écrit **aucun message** — que des cartes, ou des phases qui n'ont fait que
+  réfléchir — n'a rien à sortir : tout reste dans le groupe, et la bulle d'erreur (`failure`,
+  hors run par construction) reste visible ;
+- un groupe ne s'affiche que s'il contient au moins un item : deux messages collés ne
+  produisent jamais un header vide.
 
 `RunGroup` est un header repliable (chevron, nombre de tool calls, premier outil,
 durée, statut coloré en erreur/aborté), fermé par défaut : une session rouverte
-commence avec tout replié.
+commence avec tout replié. Un run a maintenant plusieurs plis : le **statut et la durée
+totale du run vivent sur son dernier pli** (décision owner), les autres plis n'affichent
+que leur propre contenu. Un pli sans aucun outil s'intitule « réflexion · N s » au lieu
+du « run » de repli.
 
 Deux détails de contrôle, tous deux appris à l'usage :
 

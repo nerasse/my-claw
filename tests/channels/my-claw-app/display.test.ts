@@ -455,7 +455,7 @@ describe("displayOf: what is shown and never sent", () => {
       runEnd(),
     ]);
     const runs = runFold(path);
-    const plan = runFoldPlan(path, path, runs);
+    const plan = runFoldPlan(path, runs);
     const trace = path[path.length - 2]!;
     expect(plan.folded.has(trace.id)).toBe(false);
     const shown = displayOf(path, resolvers, 1000, undefined, [], runs, plan);
@@ -633,7 +633,7 @@ describe("runFoldPlan: a finished run travels as its header", () => {
 
   const foldedShow = (path: Entry[], window: Entry[] = path, minItems?: number) => {
     const runs = runFold(path);
-    return displayOf(window, resolvers, 1000, undefined, [], runs, runFoldPlan(path, window, runs, minItems));
+    return displayOf(window, resolvers, 1000, undefined, [], runs, runFoldPlan(window, runs, minItems));
   };
 
   test("the work is replaced by one row, where the run stood", () => {
@@ -750,8 +750,9 @@ describe("runFoldPlan: a finished run travels as its header", () => {
   });
 
   test("the run's answer stays on screen, outside the fold", () => {
-    // The whole point of hoisting: fold the answer away and a reopened conversation is a list of
-    // questions with collapsed headers and nothing under them.
+    // The rule is about messages now, not about a single elected answer: fold a message away and
+    // a reopened conversation is a list of questions with collapsed headers and nothing under
+    // them (owner, 2026-09-17: "je veux pouvoir tous les voir").
     const path = chain([
       user("q"),
       runStart(),
@@ -765,11 +766,66 @@ describe("runFoldPlan: a finished run travels as its header", () => {
   });
 
   test("a run that died before answering keeps everything in the fold", () => {
-    // Its last entry is a tool card, so there is no answer to hoist.
+    // Its last entry is a tool card: the run wrote no message, so nothing stays out.
     const path = chain([
       user("q"), runStart(), ...Array.from({ length: 9 }, (_, i) => tool(`c${i}`)), runEnd("aborted"),
     ]);
     expect(foldedShow(path).map((e) => e.role)).toEqual(["user", "run"]);
+  });
+
+  test("every message of a run stays, and the work folds between two of them", () => {
+    // The shape of a long agentic run: a message, a burst of tools, a message, a burst, the
+    // answer. Each burst is a fold of its own, and every message keeps its place in the order it
+    // was written -- the interim ones included, which is the whole point (2026-09-17).
+    const path = chain([
+      user("q"),
+      runStart(),
+      ...Array.from({ length: 9 }, (_, i) => tool(`a${i}`)),
+      phase("premier point"),
+      ...Array.from({ length: 9 }, (_, i) => tool(`b${i}`)),
+      phase("deuxieme point"),
+      ...Array.from({ length: 9 }, (_, i) => tool(`c${i}`)),
+      phase("voila"),
+      runEnd(),
+    ]);
+    const shown = foldedShow(path);
+    expect(shown.map((e) => e.role)).toEqual([
+      "user", "run", "assistant", "run", "assistant", "run", "assistant",
+    ]);
+    // Two bursts, two headers, and neither swallows a message.
+    expect(shown[2]).toMatchObject({ text: "premier point" });
+    expect(shown[4]).toMatchObject({ text: "deuxieme point" });
+    expect(shown[6]).toMatchObject({ text: "voila" });
+  });
+
+  test("a picture with no words is a message too", () => {
+    // The browser tool's captures ride the end marker and land on the run's last phase, which
+    // can carry no prose at all. Folding that phase away would hide the pictures the run was
+    // asked for.
+    const path = chain([
+      user("q"),
+      runStart(),
+      ...Array.from({ length: 9 }, (_, i) => tool(`c${i}`)),
+      phase(""),
+      runEnd("done", ["/tmp/shots/a.png"]),
+    ]);
+    const shown = foldedShow(path);
+    expect(shown.map((e) => e.role)).toEqual(["user", "run", "assistant"]);
+    expect(shown[2]).toMatchObject({ attachments: [{ name: "/tmp/shots/a.png" }] });
+  });
+
+  test("a phase that only thought stays in the fold", () => {
+    // The counterpart of the rule: a thought is work, not a message. Hoisting those would put a
+    // reasoning card between every two tool calls.
+    const path = chain([
+      user("q"),
+      runStart(),
+      phase("", { reasoning: "je reflechis" }),
+      ...Array.from({ length: 9 }, (_, i) => tool(`c${i}`)),
+      runEnd(),
+    ]);
+    const shown = foldedShow(path);
+    expect(shown.map((e) => e.role)).toEqual(["user", "run"]);
   });
 
   test("a turn the owner injected mid-run cuts the fold in two", () => {
@@ -875,7 +931,7 @@ describe("pageBefore: a folded run as the cursor", () => {
   test("the cursor of a summary is the id the fold actually emitted", () => {
     const path = chain([user("q"), runStart(), ...Array.from({ length: 9 }, (_, i) => tool(`c${i}`)), runEnd()]);
     const runs = runFold(path);
-    const summary = displayOf(path, resolvers, 1000, undefined, [], runs, runFoldPlan(path, path, runs))[1]!;
+    const summary = displayOf(path, resolvers, 1000, undefined, [], runs, runFoldPlan(path, runs))[1]!;
     // Held id in, entries out: the round trip the app makes on scroll. Never an empty page.
     const { window } = pageBefore(path, summary.id, 10, 0);
     expect(window.length).toBeGreaterThan(0);
