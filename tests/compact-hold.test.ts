@@ -15,6 +15,8 @@ import type { LegacySessionData } from "../src/sessions/store.ts";
 import { MessageRouter } from "../src/core/router.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
+import { commandTailBudget, planCompaction, tailBudgetFor } from "../src/sessions/compaction.ts";
+import { resolveFullContextWindow } from "../src/llm/context-window.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
 import { sseFromCompletion } from "./helpers/sse.ts";
 import { setupSessionLog, type SessionLogSetup } from "./helpers/session-log.ts";
@@ -426,5 +428,114 @@ test("a compaction that never rewrote anything announces no boundary", async () 
     assert.deepEqual(seen, []);
   } finally {
     hooks.off("session:compact:boundary", collect);
+  }
+});
+
+/**
+ * The window `/compact` resolves -- docs/compaction.md.
+ *
+ * The command is an explicit order, and the owner freed it from every ceiling: the session's
+ * Context choice, a tag's cap, the standing cap. Those exist to brake automatic runs, whose
+ * threshold is computed on the window the session actually runs under; a split made from a
+ * capped window folds turns the model could have kept. The two readings are one line apart
+ * (`commandTailBudget` vs `tailBudgetFor`), and this block pins the command's side.
+ */
+function fullWindowConfig(over?: Partial<MyClawConfig>): MyClawConfig {
+  return {
+    whitelist: [],
+    blacklist: [],
+    channels: {},
+    llm: {
+      defaultProvider: "test",
+      defaultModel: "big-model",
+      apiKey: "k",
+      vision: false,
+      // The global fallback sits below the model's own declaration, so "which window was read"
+      // shows up in both the window and the tail.
+      limit: { context: 200_000, output: 4096 },
+      providers: { test: { baseUrl: "https://test.example.com", apiKeyEnv: "TEST_KEY" } },
+      models: [
+        { id: "big-model", label: "Big", provider: "test", limit: { context: 1_000_000 } },
+        { id: "bare-model", label: "Bare", provider: "test" },
+      ],
+    },
+    agents: {},
+    webSearch: { baseUrl: "", language: "en" },
+    ...over,
+  } as unknown as MyClawConfig;
+}
+
+test("the /compact tail ignores the session's context override", () => {
+  const config = fullWindowConfig();
+  const session = makeSession("s-window-override");
+  session.modelOverride = "big-model";
+  session.contextOverride = 200_000;
+
+  // 0.12 x 0.8 x 1 000 000, over the 48 000 ceiling. In the automatic policy's hands the
+  // 200 000 override caps the window to the 20 000 floor -- the reading being refused here.
+  assert.equal(commandTailBudget(config, session), 48_000);
+
+  session.contextOverride = "full";
+  assert.equal(commandTailBudget(config, session), 48_000);
+});
+
+test("the /compact tail ignores a tag's contextCap", () => {
+  const config = fullWindowConfig({ tags: { cheap: { model: "big-model", contextCap: 200_000 } } });
+  const session = makeSession("s-window-tag-cap");
+  session.modelOverride = "tag:cheap";
+
+  assert.equal(commandTailBudget(config, session), 48_000);
+});
+
+test("the /compact window is the one the model declares, whole", () => {
+  const config = fullWindowConfig();
+  const window = resolveFullContextWindow(config, "big-model");
+  assert.equal(window.rawSource, "declared");
+  // The 512k standing cap has nothing to lower here, and the 200k global fallback is not read.
+  assert.equal(window.effective, 1_000_000);
+});
+
+test("the /compact window falls to llm.limit.context when the model declares none", () => {
+  const config = fullWindowConfig();
+  const window = resolveFullContextWindow(config, "bare-model");
+  // A last resort, never a ceiling: the global declaration is the only window this model has.
+  assert.equal(window.effective, 200_000);
+});
+
+test("the /compact tail ignores the standing context cap", () => {
+  const config = fullWindowConfig({ context: { cap: 200_000 } });
+  const session = makeSession("s-window-cap");
+  session.modelOverride = "big-model";
+
+  assert.equal(commandTailBudget(config, session), 48_000);
+});
+
+test("a /compact runs its pass on the full window, not the session's capped one", async () => {
+  const config = fullWindowConfig();
+  const session = makeSession("s-window-pass");
+  session.modelOverride = "big-model";
+  session.contextOverride = 200_000;
+  const setup = await setupSessionLog("s-window-pass");
+  // ~36k tokens: over the 20 000 floor a capped window keeps, under the 48 000 the declared one
+  // keeps -- so the capped reading has a middle to summarise and the full one does not.
+  for (let i = 0; i < 15; i++) {
+    setup.log.append({ type: "user", prompt: true, text: `turn ${i * 2} ${"filler ".repeat(600)}` });
+    setup.log.append({ type: "phase", prompt: true, text: `turn ${i * 2 + 1} ${"filler ".repeat(600)}`, runId: `run-${i}` });
+  }
+  await setup.log.flush();
+
+  // What the capped window would have folded, had the command inherited it: the fixture is known
+  // to tell the two policies apart only if this plan has a middle at all.
+  const capped = planCompaction(setup.log, tailBudgetFor(config, session));
+  assert.equal(capped.ok, true, "the fixture must discriminate: the capped window has a middle");
+
+  const mock = mockFetch(async () => summaryResponse(SUMMARY));
+  try {
+    const outcome = await handleCompactCommand({ config, session, persist: async () => {} });
+    assert.equal(outcome.ok, false);
+    assert.match(outcome.text, /Nothing to compact/);
+  } finally {
+    mock.restore();
+    await setup.cleanup();
   }
 });

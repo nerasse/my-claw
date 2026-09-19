@@ -51,19 +51,44 @@ export function resolveModelContextWindow(
   sessionOverride?: ContextOverride,
   agent: AgentToolType | "orchestrator" = "main",
 ): ResolvedContextWindow {
+  return resolveContextWindow({
+    ...declaredWindowOf(config, modelId),
+    sessionOverride,
+    agent,
+  });
+}
+
+/**
+ * The window a model declares, whole: no cap, no exemption, no session override.
+ *
+ * `/compact` resolves this instead of `resolveModelContextWindow` (docs/compaction.md): the
+ * command is an explicit order, and the ceilings that brake automatic runs -- the standing cap,
+ * a tag route's cap, the session's own choice -- have nothing to brake there. The last rung
+ * stands: a model declaring no window of its own still inherits `llm.limit.context`.
+ */
+export function resolveFullContextWindow(config: MyClawConfig, modelId: string): ResolvedContextWindow {
+  const { raw, rawSource, approximate } = resolveRaw(declaredWindowOf(config, modelId));
+  const out: ResolvedContextWindow = { raw, effective: raw, rawSource };
+  if (approximate) out.approximate = true;
+  return out;
+}
+
+/**
+ * Where a model id carries its declared window: the model the id ends on (a `tag:` reference
+ * reports the window of the model behind it), plus the fallback the resolver hands the run.
+ */
+function declaredWindowOf(config: MyClawConfig, modelId: string): ResolveWindowOptions {
   const tags = tagsOf(config);
   const leaf = leafModelId(tags && !config.llm?.tags ? { ...config.llm, tags } : config.llm, modelId);
   const entry = config.llm ? findModel(config.llm, leaf) : undefined;
-  return resolveContextWindow({
+  return {
     model: modelId,
     config,
     // The same fallback the resolver hands the run: a model with no window of its own inherits
     // the global one, so a menu cannot offer a number the run would not use.
     declared: entry?.limit?.context ?? config.llm?.limit?.context,
     declaredSource: entry?.contextFrom,
-    sessionOverride,
-    agent,
-  });
+  };
 }
 
 /**

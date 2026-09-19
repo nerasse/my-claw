@@ -426,6 +426,22 @@ vers laquelle on vient de basculer.
 
 `/compact <instructions>` ajoute un focus au prompt et force un recalcul : jamais de résumé armé.
 
+**La fenêtre.** La commande résout la fenêtre du modèle **déclarée, entière**
+(`resolveFullContextWindow`), et n'en dérive pas moins : ni le choix Context de la session, ni le
+`contextCap` d'une route de tag, ni le `context.cap` global, ni une exemption ne la resserrent.
+`llm.limit.context` reste le dernier recours quand le modèle n'en déclare aucune, jamais un
+plafond au-dessus d'une fenêtre déclarée. C'est une décision de l'owner, mesurée sur son propre
+fil : les plafonds freinent les portes automatiques (c'est leur seuil de déclenchement), une
+passe explicite n'a rien à freiner, et un découpage taillé sur une fenêtre capée replie des tours
+que le modèle aurait pu garder. Le tail de la commande (`commandTailBudget`) est donc dimensionné
+sur cette fenêtre pleine, tandis que les portes automatiques et la spéculation gardent le leur
+(`tailBudgetFor`, fenêtre effective, override et caps inclus) : deux politiques, deux fonctions
+nommées, une ligne d'écart dans `sessions/compaction.ts`.
+
+Les deux passent par la même passe (`compactSession` / `compactSessionForCommand`, l'une prenant
+le tail de l'autre) : ce qui diffère entre elles est le tail, pas le hold, le signal, le résumeur
+ni la frontière.
+
 ### Ce qu'une compaction affiche
 
 Une coupure se dit d'une seule façon, quelle que soit son origine : la règle en travers du fil,
