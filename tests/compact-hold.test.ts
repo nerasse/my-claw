@@ -471,12 +471,12 @@ test("the /compact tail ignores the session's context override", () => {
   session.modelOverride = "big-model";
   session.contextOverride = 200_000;
 
-  // 0.12 x 0.8 x 1 000 000, over the 48 000 ceiling. In the automatic policy's hands the
+  // 0.12 x 0.8 x 1 000 000 = 96000, over the 64 000 ceiling. In the automatic policy's hands the
   // 200 000 override caps the window to the 20 000 floor -- the reading being refused here.
-  assert.equal(commandTailBudget(config, session), 48_000);
+  assert.equal(commandTailBudget(config, session), 64_000);
 
   session.contextOverride = "full";
-  assert.equal(commandTailBudget(config, session), 48_000);
+  assert.equal(commandTailBudget(config, session), 64_000);
 });
 
 test("the /compact tail ignores a tag's contextCap", () => {
@@ -484,7 +484,7 @@ test("the /compact tail ignores a tag's contextCap", () => {
   const session = makeSession("s-window-tag-cap");
   session.modelOverride = "tag:cheap";
 
-  assert.equal(commandTailBudget(config, session), 48_000);
+  assert.equal(commandTailBudget(config, session), 64_000);
 });
 
 test("the /compact window is the one the model declares, whole", () => {
@@ -507,7 +507,7 @@ test("the /compact tail ignores the standing context cap", () => {
   const session = makeSession("s-window-cap");
   session.modelOverride = "big-model";
 
-  assert.equal(commandTailBudget(config, session), 48_000);
+  assert.equal(commandTailBudget(config, session), 64_000);
 });
 
 test("a /compact runs its pass on the full window, not the session's capped one", async () => {
@@ -516,7 +516,7 @@ test("a /compact runs its pass on the full window, not the session's capped one"
   session.modelOverride = "big-model";
   session.contextOverride = 200_000;
   const setup = await setupSessionLog("s-window-pass");
-  // ~36k tokens: over the 20 000 floor a capped window keeps, under the 48 000 the declared one
+  // ~36k tokens: over the 20 000 floor a capped window keeps, under the 64 000 the declared one
   // keeps -- so the capped reading has a middle to summarise and the full one does not.
   for (let i = 0; i < 15; i++) {
     setup.log.append({ type: "user", prompt: true, text: `turn ${i * 2} ${"filler ".repeat(600)}` });

@@ -30,7 +30,7 @@ journal append-only n'a pas de place pour une réécriture.
 
 ## 2. Le tail : un budget en tokens, mis à l'échelle de la fenêtre
 
-`context.autoCompact.tailTokens`, défaut **48 000**, et c'est un **plafond**.
+`context.autoCompact.tailTokens`, défaut **64 000**, et c'est un **plafond**.
 
 C'était `TAIL_KEEP = 4` **entrées**. Une entrée est une unité de log, pas un tour : quatre d'entre
 elles, c'est couramment un demi-tour d'agent sans le message qui l'a déclenché, et le modèle
@@ -52,11 +52,12 @@ même chose selon la fenêtre où il atterrit.
 | fenêtre | seuil | tail | travail neuf par cycle |
 |---|---|---|---|
 | 128k | 102k | 20 000 | 78k |
-| 128k | 102k | *48 000* | *50k, soit 1,6× plus de compactions* |
-| 512k (le cap) | 410k | 48 000 | 357k, contre 385k à 20 000 |
+| 128k | 102k | *64 000* | *34k, soit 2,3× plus de compactions* |
+| 512k (le cap) | 410k | 49 152 | 356k, contre 385k à 20 000 |
 
-Sur 512k, 48 000 coûte 7 % d'intervalle pour 2,4× plus de verbatim : gratuit. Sur 128k, il double
-presque le nombre d'appels de résumé, et chacun relit tout l'historique.
+Sur 512k, 49 152 coûte 29 152 tokens d'intervalle sur 385 000, soit 7,6 %, pour 2,46× plus de
+verbatim : gratuit. Sur 128k, le plafond appliqué à plat ferait 2,3× plus d'appels de résumé, et
+chacun relit tout l'historique.
 
 D'où :
 
@@ -64,7 +65,7 @@ D'où :
 tail = clamp(seuil × 0,12, 20 000, tailTokens)
 ```
 
-128k → 20 000 · 300k → 28 800 · **512k → 48 000** · 1M → 48 000.
+128k → 20 000 · 300k → 28 800 · **512k → 49 152** · 1M → 64 000.
 
 Le plancher cède à son tour à la moitié du seuil, parce qu'un plancher n'est pas une garantie : sur
 une fenêtre assez étroite, 20 000 est *plus* que le seuil, toute la conversation tient dans son
@@ -556,5 +557,5 @@ Tests : `tests/compaction-reference.test.ts` (le contrat, cas par cas),
 `tests/compaction.test.ts`, `tests/compact-hold.test.ts`, `tests/agent/compact-summary.test.ts`,
 `tests/agent/bridge-mid-run-compaction.test.ts`.
 
-Les fixtures déclarent un `tailTokens` étroit : au défaut de 48 000, une douzaine de messages courts
+Les fixtures déclarent un `tailTokens` étroit : au défaut de 64 000, une douzaine de messages courts
 tient entière dans le tail et il n'y a rien à résumer.

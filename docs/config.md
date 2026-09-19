@@ -757,7 +757,7 @@ Tabs are persistent and never auto-closed (the shared browser stays open for reu
 ```json
 "context": {
   "pruning": { "enabled": true, "keepLastAssistantTurns": 5, "headChars": 200 },
-  "autoCompact": { "enabled": true, "tailTokens": 48000, "speculative": true },
+  "autoCompact": { "enabled": true, "tailTokens": 64000, "speculative": true },
   "cap": 512000,
   "capExempt": ["claude-*", "Qwen3.6-*"]
 }
@@ -782,8 +782,9 @@ hot-reloadable.
     50% on a 32k window, 80% at 200k and beyond. A fixed ratio either strangles a small
     window or leaves 100k idle on a large one.
   - `tailTokens` — **ceiling** on the recent history that crosses the boundary verbatim,
-    default 48 000. The effective tail is `clamp(threshold × 0.12, 20 000, tailTokens)`, so
-    20 000 (the pi and oh-my-pi value) on a 128k window and the full ceiling on the 512k cap.
+    default 64 000. The effective tail is `clamp(threshold × 0.12, 20 000, tailTokens)`, so
+    20 000 (the pi and oh-my-pi value) on a 128k window, 49 152 on the 512k cap, and the full
+    64 000 ceiling at 1M.
     What a tail really spends is the interval between two compactions, and a flat number is
     either wasteful at 512k or doubles the compaction rate at 128k. The floor itself gives way
     to half the threshold on a very narrow window: a tail wider than the window means nothing

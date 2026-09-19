@@ -647,7 +647,7 @@ export interface AutoCompactConfig {
   thresholdRatio?: number; // fraction of the context limit that triggers compaction (default 0.8)
   /** Compact in the background before the threshold, so the crossing costs nothing. Default true. */
   speculative?: boolean;
-  /** Ceiling on the tokens kept verbatim past a boundary. Default 48000, scaled to the window. */
+  /** Ceiling on the tokens kept verbatim past a boundary. Default 64000, scaled to the window. */
   tailTokens?: number;
 }
 
@@ -713,14 +713,15 @@ export function autoCompactSpeculative(config: MyClawConfig): boolean {
  * A ceiling, and the effective tail is scaled to the window under it, because a flat number is
  * either wasteful or dangerous depending on where it lands. What the tail really spends is the
  * *interval between two compactions*: threshold minus the floor a compaction leaves behind (tail +
- * summary). On a 512k window a 48000 tail costs 7% of that interval, on a 128k one it costs 36%,
+ * summary). On a 512k window a 64000 tail costs 11% of that interval, on a 128k one it costs 57%,
  * and on a window narrower than the tail itself the whole conversation fits in the tail, nothing
  * is ever compactable, and the history is silently dropped by `trimToContextWindow` instead.
  *
  * 20000 is the floor because it is what pi and oh-my-pi both keep, measured; 0.12 of the threshold
- * is what puts 512k -- the standing cap -- exactly at the ceiling.
+ * is what lands 512k -- the standing cap -- at 49152, with the ceiling taking over only past a
+ * 667k window.
  */
-export const DEFAULT_COMPACTION_TAIL_TOKENS = 48_000;
+export const DEFAULT_COMPACTION_TAIL_TOKENS = 64_000;
 const MIN_COMPACTION_TAIL_TOKENS = 20_000;
 const COMPACTION_TAIL_RATIO = 0.12;
 /**
