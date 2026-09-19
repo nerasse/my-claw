@@ -10,7 +10,7 @@ import { isAbort } from "../core/aborted.ts";
 import type { MyClawConfig } from "../core/config.ts";
 import { runRegistry } from "../core/run-registry.ts";
 import { hooks } from "../hooks/index.ts";
-import { compactSessionForCommand } from "../sessions/compaction.ts";
+import { compactSession } from "../sessions/compaction.ts";
 import { cancelSpeculation } from "../sessions/compaction-speculative.ts";
 import type { SessionData } from "../sessions/store.ts";
 
@@ -55,7 +55,7 @@ export async function handleCompactCommand(p: CompactCommandParams): Promise<Com
   try {
     // The hold's signal is the one `/stop` and the app's Stop button abort (`runRegistry.stop`):
     // handed to the summarizer, a stop reaches a compaction that has one to two minutes to run.
-    const result = await compactSessionForCommand(p.config, p.session, p.instructions, held.signal);
+    const result = await compactSession(p.config, p.session, p.instructions, held.signal);
     if (!result.ok) return finished({ text: result.reason ?? "Compaction failed.", ok: false });
     await p.persist();
     // Emitted after the session is written, so a window that reloads on the very next tick finds

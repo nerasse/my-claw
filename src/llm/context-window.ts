@@ -61,9 +61,10 @@ export function resolveModelContextWindow(
 /**
  * The window a model declares, whole: no cap, no exemption, no session override.
  *
- * `/compact` resolves this instead of `resolveModelContextWindow` (docs/compaction.md): the
- * command is an explicit order, and the ceilings that brake automatic runs -- the standing cap,
- * a tag route's cap, the session's own choice -- have nothing to brake there. The last rung
+ * Every compaction pass sizes its verbatim tail on this window (`tailBudgetFor`,
+ * docs/compaction.md), the automatic gates and `/compact` alike. The ceilings the other readers
+ * apply -- the standing cap, a tag route's cap, the session's own choice -- are what the
+ * *trigger* reads: they decide when a run compacts, never how much a split keeps. The last rung
  * stands: a model declaring no window of its own still inherits `llm.limit.context`.
  */
 export function resolveFullContextWindow(config: MyClawConfig, modelId: string): ResolvedContextWindow {

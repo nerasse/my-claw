@@ -782,9 +782,10 @@ hot-reloadable.
     50% on a 32k window, 80% at 200k and beyond. A fixed ratio either strangles a small
     window or leaves 100k idle on a large one.
   - `tailTokens` — **ceiling** on the recent history that crosses the boundary verbatim,
-    default 64 000. The effective tail is `clamp(threshold × 0.12, 20 000, tailTokens)`, so
-    20 000 (the pi and oh-my-pi value) on a 128k window, 49 152 on the 512k cap, and the full
-    64 000 ceiling at 1M.
+    default 64 000. The effective tail is `clamp(threshold × 0.12, 20 000, tailTokens)` read on
+    the model's **declared** window, whole: 20 000 (the pi and oh-my-pi value) on a declared
+    128k, 49 152 on 512k, the full 64 000 ceiling from 667k up. The cap above sizes the trigger
+    only -- it decides when a run compacts, never how much verbatim a split keeps.
     What a tail really spends is the interval between two compactions, and a flat number is
     either wasteful at 512k or doubles the compaction rate at 128k. The floor itself gives way
     to half the threshold on a very narrow window: a tail wider than the window means nothing

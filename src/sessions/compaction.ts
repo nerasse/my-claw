@@ -1,6 +1,6 @@
 import type { MyClawConfig } from "../core/config.ts";
 import { DEFAULT_COMPACTION_TAIL_TOKENS, resolveAutoCompactThreshold, resolveCompactionTailTokens } from "../core/config.ts";
-import { resolveFullContextWindow, resolveModelContextWindow } from "../llm/context-window.ts";
+import { resolveFullContextWindow } from "../llm/context-window.ts";
 import { resolveUtilityLlmConfig } from "../llm/utility-model.ts";
 import { llmCompleteStream } from "../llm/transport.ts";
 import { tryResolveRunModel } from "../llm/run-model.ts";
@@ -540,31 +540,19 @@ export async function commitCompactionStopped(
 }
 
 /**
- * The verbatim tail the automatic gates and the speculative arm keep, scaled to the window the
- * session actually runs in -- session override and caps included, because that same window is
- * what their threshold is computed on. `/compact` is the one pass that sizes its own, from the
- * model's declared window (`commandTailBudget`).
+ * The verbatim tail every compaction pass keeps: sized on the model's declared window, whole.
+ *
+ * One policy for both paths -- the automatic gates and `/compact` read this same function
+ * (docs/compaction.md). The ceilings a session can carry -- its Context choice, a tag route's
+ * cap, the standing cap, an exemption -- size the *trigger*: they are what decides when a run
+ * compacts, and they must not decide how much verbatim survives, or a split made through a
+ * capped window folds turns the model could have kept. `llm.limit.context` stays the
+ * last-resort window for a model that declares none, never a ceiling over one.
  *
  * The model is the one the session runs (agent pin and tag included), the same resolution the
  * summarizer uses.
  */
 export function tailBudgetFor(config: MyClawConfig, session: SessionData): number {
-  const modelId = sessionRunModelId(config, session);
-  if (!modelId) return resolveCompactionTailTokens(config);
-  const window = resolveModelContextWindow(config, modelId, session.contextOverride, agentTypeOf(session));
-  return resolveCompactionTailTokens(config, window.effective * resolveAutoCompactThreshold(config, window.effective));
-}
-
-/**
- * The verbatim tail `/compact` keeps: sized on the model's declared window, whole.
- *
- * The command ignores every ceiling -- the session's Context choice, a tag route's cap, the
- * standing cap, an exemption (docs/compaction.md). Those exist to brake automatic runs; an
- * explicit pass has nothing to brake, and a split sized on a capped window folds turns the
- * model could have kept. `llm.limit.context` stays the last-resort window for a model that
- * declares none, never a ceiling over one.
- */
-export function commandTailBudget(config: MyClawConfig, session: SessionData): number {
   const modelId = sessionRunModelId(config, session);
   if (!modelId) return resolveCompactionTailTokens(config);
   const window = resolveFullContextWindow(config, modelId);
@@ -583,8 +571,9 @@ function sessionRunModelId(config: MyClawConfig, session: SessionData): string |
 }
 
 /**
- * A compaction on the window the session runs under: what the automatic gates run
- * (`AgentBridge.runCompaction`). `/compact` sizes its own -- `compactSessionForCommand`.
+ * A compaction pass, whoever asked for it: the automatic gates (`AgentBridge.runCompaction`)
+ * and `/compact` (`channels/compact-command.ts`). Both size their split the same way --
+ * `tailBudgetFor` -- and differ only in what the caller brings: a hold, a signal, instructions.
  */
 export async function compactSession(
   config: MyClawConfig,
@@ -594,21 +583,6 @@ export async function compactSession(
   now: () => number = Date.now,
 ): Promise<CompactionResult> {
   return await runCompactionPass(config, session, tailBudgetFor(config, session), instructions, signal, now);
-}
-
-/**
- * `/compact`, the owner's explicit order: one pass sized on the model's declared window, whole
- * (`commandTailBudget`). The hold, the signal and the boundary stay the command's own
- * (channels/compact-command.ts).
- */
-export async function compactSessionForCommand(
-  config: MyClawConfig,
-  session: SessionData,
-  instructions?: string,
-  signal?: AbortSignal,
-  now: () => number = Date.now,
-): Promise<CompactionResult> {
-  return await runCompactionPass(config, session, commandTailBudget(config, session), instructions, signal, now);
 }
 
 async function runCompactionPass(

@@ -28,7 +28,7 @@ La frontière est ajoutée **après** les tours qu'elle couvre, et la projection
 Aucune donnée ne bouge : c'est une relecture. Même géométrie que pi, et la raison est la même — un
 journal append-only n'a pas de place pour une réécriture.
 
-## 2. Le tail : un budget en tokens, mis à l'échelle de la fenêtre
+## 2. Le tail : un budget en tokens, mis à l'échelle de la fenêtre déclarée
 
 `context.autoCompact.tailTokens`, défaut **64 000**, et c'est un **plafond**.
 
@@ -49,11 +49,11 @@ Ce que le tail dépense vraiment, c'est **l'intervalle entre deux compactions** 
 plancher qu'une compaction laisse derrière elle (tail + résumé). Le même nombre ne coûte pas la
 même chose selon la fenêtre où il atterrit.
 
-| fenêtre | seuil | tail | travail neuf par cycle |
+| fenêtre déclarée | seuil | tail | travail neuf par cycle |
 |---|---|---|---|
 | 128k | 102k | 20 000 | 78k |
 | 128k | 102k | *64 000* | *34k, soit 2,3× plus de compactions* |
-| 512k (le cap) | 410k | 49 152 | 356k, contre 385k à 20 000 |
+| 512k | 410k | 49 152 | 356k, contre 385k à 20 000 |
 
 Sur 512k, 49 152 coûte 29 152 tokens d'intervalle sur 385 000, soit 7,6 %, pour 2,46× plus de
 verbatim : gratuit. Sur 128k, le plafond appliqué à plat ferait 2,3× plus d'appels de résumé, et
@@ -67,6 +67,15 @@ tail = clamp(seuil × 0,12, 20 000, tailTokens)
 
 128k → 20 000 · 300k → 28 800 · **512k → 49 152** · 1M → 64 000.
 
+Le `seuil` de cette formule est celui de la fenêtre **déclarée**, entière. C'est la politique
+unique des deux chemins : les portes automatiques et `/compact` lisent la même fonction
+(`tailBudgetFor`), donc une compaction automatique sur un modèle qui déclare 1 M garde 64 000
+tokens de verbatim, pas les 49 152 qu'une lecture capée à 512k donnait. Les plafonds qu'une
+session porte -- choix Context, `contextCap` d'une route de tag, `context.cap` global, exemption --
+gardent leur rôle, et c'est celui du **déclenchement** : ils décident *quand* un run compacte, et
+jamais combien de verbatim il garde. Le seuil de la porte, lui, continue de se calculer sur la
+fenêtre effective (docs/context-window.md §4) : c'est le frein délibéré de l'owner.
+
 Le plancher cède à son tour à la moitié du seuil, parce qu'un plancher n'est pas une garantie : sur
 une fenêtre assez étroite, 20 000 est *plus* que le seuil, toute la conversation tient dans son
 propre tail, `planCompaction` ne trouve jamais rien à compacter et l'historique finit jeté par
@@ -75,6 +84,15 @@ propre tail, `planCompaction` ne trouve jamais rien à compacter et l'historique
 
 La valeur configurée reste le plafond en toutes circonstances, plancher compris : demander moins de
 20 000 est une réponse délibérée à une fenêtre étroite.
+
+Un cas limite, mesuré, vient de ce partage : le seuil de la porte et le tail ne se calculent plus
+sur la même fenêtre. Sur une session dont la fenêtre effective tombe très en dessous de la
+déclarée -- un override à 64 000 sur un modèle qui déclare 1 M -- la porte s'ouvre à **47 616**
+tokens (64 000 × 0,744) et le tail en garde **64 000** : une conversation qui a franchi le seuil
+tient encore entière dans le tail, la passe refuse (`Nothing to compact: the whole conversation
+fits in the 64000-token verbatim tail`) et le seul frein restant est la troncature par
+`trimToContextWindow`. Mesuré : une conversation de 53 283 tokens rend ce refus, là où le tail de
+20 000 qu'une fenêtre capée gardait y trouvait 14 entrées à replier.
 
 ### Ce que l'owner en voit
 
@@ -427,21 +445,19 @@ vers laquelle on vient de basculer.
 
 `/compact <instructions>` ajoute un focus au prompt et force un recalcul : jamais de résumé armé.
 
-**La fenêtre.** La commande résout la fenêtre du modèle **déclarée, entière**
-(`resolveFullContextWindow`), et n'en dérive pas moins : ni le choix Context de la session, ni le
-`contextCap` d'une route de tag, ni le `context.cap` global, ni une exemption ne la resserrent.
-`llm.limit.context` reste le dernier recours quand le modèle n'en déclare aucune, jamais un
-plafond au-dessus d'une fenêtre déclarée. C'est une décision de l'owner, mesurée sur son propre
-fil : les plafonds freinent les portes automatiques (c'est leur seuil de déclenchement), une
-passe explicite n'a rien à freiner, et un découpage taillé sur une fenêtre capée replie des tours
-que le modèle aurait pu garder. Le tail de la commande (`commandTailBudget`) est donc dimensionné
-sur cette fenêtre pleine, tandis que les portes automatiques et la spéculation gardent le leur
-(`tailBudgetFor`, fenêtre effective, override et caps inclus) : deux politiques, deux fonctions
-nommées, une ligne d'écart dans `sessions/compaction.ts`.
-
-Les deux passent par la même passe (`compactSession` / `compactSessionForCommand`, l'une prenant
-le tail de l'autre) : ce qui diffère entre elles est le tail, pas le hold, le signal, le résumeur
-ni la frontière.
+**La fenêtre.** Le découpage d'une compaction -- automatique ou commande -- se calcule sur la
+fenêtre du modèle **déclarée, entière** (`resolveFullContextWindow`, `tailBudgetFor`), et n'en
+dérive pas moins : ni le choix Context de la session, ni le `contextCap` d'une route de tag, ni le
+`context.cap` global, ni une exemption ne resserrent le tail. `llm.limit.context` reste le dernier
+recours quand le modèle n'en déclare aucune, jamais un plafond au-dessus d'une fenêtre déclarée.
+Ces plafonds gardent leur rôle, et c'est celui du **déclenchement** : la porte (`bridge.ts`) les
+lit toujours -- seuil, fenêtre effective, bande spéculative, occupation affichée -- parce qu'elle
+décide *quand* un run se compacte. Ce qu'ils ne décident plus, c'est *combien de verbatim* une
+compaction garde : un split taillé sur une fenêtre capée replie des tours que le modèle aurait pu
+garder, et une compaction automatique sur un modèle qui déclare 1 M garde 64 000 tokens, pas les
+49 152 qu'une lecture capée à 512k donnait. Une politique, une fonction (`tailBudgetFor`), le même
+tail pour les deux chemins ; les deux passent par la même passe (`compactSession`), et ce qui les
+sépare n'est que ce que l'appelant apporte : le hold, le signal, les instructions.
 
 ### Ce qu'une compaction affiche
 

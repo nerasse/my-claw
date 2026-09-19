@@ -203,15 +203,16 @@ session override  >  agent cap  >  capExempt  >  global cap
 A numeric session override wins in both directions, including over an exemption: the
 conversation has said the most recent and most specific thing.
 
-### One caller reads none of it: `/compact`
+### The compaction split reads none of it
 
-The manual compaction resolves the declared window **whole**, through `resolveFullContextWindow`
-(`src/llm/context-window.ts`): no session override, no tag-route `contextCap`, no agent or global
-cap, no exemption. `llm.limit.context` remains the last resort for a model that declares no
-window of its own, never a ceiling over one. The reason is in `docs/compaction.md` §6: the caps
-are what brake automatic runs, and an explicit pass has nothing to brake. Every other reader --
-the run's own `contextWindow`, the auto-compaction gate, `/status`, the menus -- keeps the
-effective window and its precedence untouched.
+Every compaction pass resolves the declared window **whole** for its verbatim tail, through
+`resolveFullContextWindow` (`src/llm/context-window.ts`): no session override, no tag-route
+`contextCap`, no agent or global cap, no exemption. `llm.limit.context` remains the last resort
+for a model that declares no window of its own, never a ceiling over one. The reason is in
+`docs/compaction.md`: the caps are what brake the **trigger** -- they decide when a run compacts --
+and a split sized through a capped window folds turns the model could have kept. Every other
+reader -- the run's own `contextWindow`, the auto-compaction gate, `/status`, the menus -- keeps
+the effective window and its precedence untouched.
 
 ## 4. Trigger
 

@@ -658,3 +658,56 @@ test("a stopped pass never moves the boundary: the prompt is exactly what it was
   // And the prompt the model would get is unchanged, message for message.
   assert.deepEqual(promptOf(entries, log.leaf()), promptBefore);
 });
+
+/**
+ * The split ignores what the gate obeys -- docs/compaction.md.
+ *
+ * A session's ceilings -- its Context choice, a tag route's cap -- are the gate's brakes: they
+ * decide *when* a run compacts. They never decide how much verbatim survives one: this automatic
+ * pass sizes its tail on the model's declared window, whole, exactly as `/compact` does. One
+ * policy, one function (`tailBudgetFor`); the command's file pins the same side, the gate's is
+ * pinned by `tests/agent/bridge-context.test.ts`.
+ */
+function declaredWindowConfig(over?: Partial<MyClawConfig>): MyClawConfig {
+  return {
+    whitelist: [],
+    blacklist: [],
+    channels: {},
+    llm: {
+      defaultProvider: "test",
+      defaultModel: "big-model",
+      apiKey: "k",
+      vision: false,
+      // The global fallback sits below the model's own declaration, so a reader that fell back
+      // to it would show up in the tail.
+      limit: { context: 200_000, output: 4096 },
+      providers: { test: { baseUrl: "https://test.example.com", apiKeyEnv: "TEST_KEY" } },
+      models: [{ id: "big-model", label: "Big", provider: "test", limit: { context: 1_000_000 } }],
+    },
+    agents: {},
+    webSearch: { baseUrl: "", language: "en" },
+    ...over,
+  } as unknown as MyClawConfig;
+}
+
+test("the automatic tail ignores the session's context override", () => {
+  const config = declaredWindowConfig();
+  const session = sessionMeta();
+  session.modelOverride = "big-model";
+  session.contextOverride = 200_000;
+
+  // 0.12 x 0.8 x 1 000 000 = 96000, over the 64 000 ceiling. A capped reading would take the
+  // 200 000 override down to the 20 000 floor.
+  assert.equal(tailBudgetFor(config, session), 64_000);
+
+  session.contextOverride = "full";
+  assert.equal(tailBudgetFor(config, session), 64_000);
+});
+
+test("the automatic tail ignores a tag's contextCap", () => {
+  const config = declaredWindowConfig({ tags: { cheap: { model: "big-model", contextCap: 200_000 } } });
+  const session = sessionMeta();
+  session.modelOverride = "tag:cheap";
+
+  assert.equal(tailBudgetFor(config, session), 64_000);
+});

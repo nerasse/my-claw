@@ -15,7 +15,7 @@ import type { LegacySessionData } from "../src/sessions/store.ts";
 import { MessageRouter } from "../src/core/router.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
-import { commandTailBudget, planCompaction, tailBudgetFor } from "../src/sessions/compaction.ts";
+import { planCompaction, tailBudgetFor } from "../src/sessions/compaction.ts";
 import { resolveFullContextWindow } from "../src/llm/context-window.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
 import { sseFromCompletion } from "./helpers/sse.ts";
@@ -432,13 +432,13 @@ test("a compaction that never rewrote anything announces no boundary", async () 
 });
 
 /**
- * The window `/compact` resolves -- docs/compaction.md.
+ * The window a compaction sizes its split on -- docs/compaction.md.
  *
- * The command is an explicit order, and the owner freed it from every ceiling: the session's
- * Context choice, a tag's cap, the standing cap. Those exist to brake automatic runs, whose
- * threshold is computed on the window the session actually runs under; a split made from a
- * capped window folds turns the model could have kept. The two readings are one line apart
- * (`commandTailBudget` vs `tailBudgetFor`), and this block pins the command's side.
+ * The split reads the model's declared window, whole: the session's Context choice, a tag's cap
+ * and the standing cap size the *trigger* instead -- they decide when a run compacts, never how
+ * much verbatim survives. Both paths read one function (`tailBudgetFor`), and this block pins
+ * the split's side from the command's file; the gate's is pinned by
+ * `tests/agent/bridge-context.test.ts`.
  */
 function fullWindowConfig(over?: Partial<MyClawConfig>): MyClawConfig {
   return {
@@ -471,12 +471,12 @@ test("the /compact tail ignores the session's context override", () => {
   session.modelOverride = "big-model";
   session.contextOverride = 200_000;
 
-  // 0.12 x 0.8 x 1 000 000 = 96000, over the 64 000 ceiling. In the automatic policy's hands the
-  // 200 000 override caps the window to the 20 000 floor -- the reading being refused here.
-  assert.equal(commandTailBudget(config, session), 64_000);
+  // 0.12 x 0.8 x 1 000 000 = 96000, over the 64 000 ceiling. A capped reading -- the 200 000
+  // override leaves the 20 000 floor -- is the one being refused here.
+  assert.equal(tailBudgetFor(config, session), 64_000);
 
   session.contextOverride = "full";
-  assert.equal(commandTailBudget(config, session), 64_000);
+  assert.equal(tailBudgetFor(config, session), 64_000);
 });
 
 test("the /compact tail ignores a tag's contextCap", () => {
@@ -484,7 +484,7 @@ test("the /compact tail ignores a tag's contextCap", () => {
   const session = makeSession("s-window-tag-cap");
   session.modelOverride = "tag:cheap";
 
-  assert.equal(commandTailBudget(config, session), 64_000);
+  assert.equal(tailBudgetFor(config, session), 64_000);
 });
 
 test("the /compact window is the one the model declares, whole", () => {
@@ -507,27 +507,27 @@ test("the /compact tail ignores the standing context cap", () => {
   const session = makeSession("s-window-cap");
   session.modelOverride = "big-model";
 
-  assert.equal(commandTailBudget(config, session), 64_000);
+  assert.equal(tailBudgetFor(config, session), 64_000);
 });
 
-test("a /compact runs its pass on the full window, not the session's capped one", async () => {
+test("a /compact runs its pass on the declared window, not the session's capped one", async () => {
   const config = fullWindowConfig();
   const session = makeSession("s-window-pass");
   session.modelOverride = "big-model";
   session.contextOverride = 200_000;
   const setup = await setupSessionLog("s-window-pass");
-  // ~36k tokens: over the 20 000 floor a capped window keeps, under the 64 000 the declared one
-  // keeps -- so the capped reading has a middle to summarise and the full one does not.
+  // ~36k tokens: over the 20 000 floor a tail used to bottom out at, under the 64 000 the
+  // declared window keeps -- so a pass reading a smaller tail would fold this conversation
+  // instead of refusing it.
   for (let i = 0; i < 15; i++) {
     setup.log.append({ type: "user", prompt: true, text: `turn ${i * 2} ${"filler ".repeat(600)}` });
     setup.log.append({ type: "phase", prompt: true, text: `turn ${i * 2 + 1} ${"filler ".repeat(600)}`, runId: `run-${i}` });
   }
   await setup.log.flush();
 
-  // What the capped window would have folded, had the command inherited it: the fixture is known
-  // to tell the two policies apart only if this plan has a middle at all.
-  const capped = planCompaction(setup.log, tailBudgetFor(config, session));
-  assert.equal(capped.ok, true, "the fixture must discriminate: the capped window has a middle");
+  // The fixture discriminates only if a 20k tail still has a middle here.
+  const small = planCompaction(setup.log, 20_000);
+  assert.equal(small.ok, true, "the fixture must discriminate: under a 20k tail there is a middle");
 
   const mock = mockFetch(async () => summaryResponse(SUMMARY));
   try {

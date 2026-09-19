@@ -169,3 +169,76 @@ test("bridge: context.autoCompact.enabled=false never compacts", async () => {
   const compactionEntry = entries.find((e) => e.type === "compaction");
   assert.equal(compactionEntry, undefined, "no compaction entry when disabled");
 });
+
+/**
+ * What the tail ignores, the gate obeys -- docs/compaction.md.
+ *
+ * A session's ceilings (its Context choice, a tag route's contextCap) are the gate's brakes: they
+ * decide when a run compacts. They must keep braking now that the split no longer reads them, so
+ * this block pins the gate's side -- `tests/compaction.test.ts` pins the split's.
+ *
+ * `history(10)` weighs about 14.6k tokens estimated: over the ~3.6k threshold a 20k window opens
+ * at, under the 80k the declared 100k window opens at.
+ */
+async function runAndCountCompactions(
+  config: MyClawConfig,
+  session: LegacySessionData,
+): Promise<{ compactionCalls: number; llmCalls: number }> {
+  runRegistry.clear();
+  const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(session.id);
+  let compactionCalls = 0;
+  let llmCalls = 0;
+  const mock = mockFetch(async (_u, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ role: string; content: string }> };
+    if (typeof body.messages[0]?.content === "string" && body.messages[0].content.includes("You summarize a conversation")) {
+      compactionCalls += 1;
+      return sseResponse("Summary of the prior work: steps 0-9 executed bash and completed successfully.");
+    }
+    llmCalls += 1;
+    return llm({ content: "final answer" });
+  });
+  try {
+    await bridge.handleMessage(msg("m1", "continue"), session, signal);
+  } finally {
+    mock.restore(); end(); runRegistry.clear();
+  }
+  return { compactionCalls, llmCalls };
+}
+
+test("bridge: the gate compacts on the session's context override", async () => {
+  const config = baseConfig();
+  config.llm.limit = { context: 100_000 };
+  appendMessages(log, history(10));
+  await log.flush();
+
+  const session = sessionMeta();
+  session.contextOverride = 20_000;
+  const { compactionCalls, llmCalls } = await runAndCountCompactions(config, session);
+  assert.equal(compactionCalls, 1);
+  assert.equal(llmCalls, 1);
+});
+
+test("bridge: the same history stays under the declared window's threshold", async () => {
+  const config = baseConfig();
+  config.llm.limit = { context: 100_000 };
+  appendMessages(log, history(10));
+  await log.flush();
+
+  const { compactionCalls, llmCalls } = await runAndCountCompactions(config, sessionMeta());
+  assert.equal(compactionCalls, 0, "the fixture must stay under the declared window's own threshold");
+  assert.equal(llmCalls, 1);
+});
+
+test("bridge: the gate compacts on a tag's contextCap", async () => {
+  const config = baseConfig();
+  config.llm.limit = { context: 100_000 };
+  config.tags = { cheap: { route: [{ model: "test-model", contextCap: 20_000 }] } };
+  appendMessages(log, history(10));
+  await log.flush();
+
+  const session = sessionMeta();
+  session.modelOverride = "tag:cheap";
+  const { compactionCalls } = await runAndCountCompactions(config, session);
+  assert.equal(compactionCalls, 1);
+});
