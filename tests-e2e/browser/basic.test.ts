@@ -83,6 +83,9 @@ describe.skipIf(!E2E_ENABLED)("Browser E2E", () => {
           `<!DOCTYPE html><html><body><a id="dl" href="/file" style="display:block;width:150px;height:28px">Download</a></body></html>`,
           { headers: { "Content-Type": "text/html" } },
         ),
+        "/api/json": new Response(JSON.stringify({ hello: "world" }), {
+          headers: { "Content-Type": "application/json" },
+        }),
         "/file": new Response("hello", {
           headers: {
             "Content-Type": "application/octet-stream",
@@ -335,6 +338,29 @@ describe.skipIf(!E2E_ENABLED)("Browser E2E", () => {
     const { readFile } = await import("node:fs/promises");
     const head = (await readFile(path)).subarray(0, 5).toString("latin1");
     assert.strictEqual(head, "%PDF-", "the file must actually be a PDF");
+  });
+
+  test("reload returns a fresh page, and text reads it", async () => {
+    const page = await client.navigate(`${baseUrl}/button`);
+    await client.click(page.pageId, page.snapshot.refs[0]!);
+    const clicked = await client.text(page.pageId);
+    assert.match(clicked.text, /clicked/, "the click is visible on the page");
+
+    const reloaded = await client.reload(page.pageId);
+    assert.ok(reloaded.snapshot.refs.length > 0, "a real reload re-stamps refs");
+    const after = await client.text(page.pageId);
+    assert.doesNotMatch(after.text, /clicked/, "a reload hands back the page as loaded, not as left");
+  });
+
+  test("fetch issues the request from the page itself", async () => {
+    const page = await client.navigate(`${baseUrl}/button`);
+    const ok = await client.fetchInPage(page.pageId, { url: "/api/json" });
+    assert.strictEqual(ok.status, 200);
+    assert.match(ok.body, /hello/);
+    assert.match(ok.contentType, /application\/json/);
+
+    const missing = await client.fetchInPage(page.pageId, { url: "/api/does-not-exist" });
+    assert.strictEqual(missing.status, 404, "a non-2xx comes back as a result, not a thrown error");
   });
 
   test("multi-tab lifecycle: open two, focus one, close one", async () => {

@@ -55,6 +55,20 @@ export interface BrowserEvalResult {
   value: string;
 }
 
+/** A request issued by the page itself (cookies, same-origin rules), never by the tool. */
+export interface BrowserFetchResult {
+  url: string;
+  status: number;
+  contentType: string;
+  truncated: boolean;
+  body: string;
+}
+
+export interface BrowserTextResult {
+  truncated: boolean;
+  text: string;
+}
+
 export interface BrowserCdpResult {
   result: string;
 }

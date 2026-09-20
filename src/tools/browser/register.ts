@@ -13,7 +13,7 @@ import {
   createBrowserUploadFileTool,
   createBrowserWaitForTool,
 } from "./actions.ts";
-import { createBrowserFindTool, createBrowserNetworkTool, createBrowserResponseTool } from "./inspect.ts";
+import { createBrowserFindTool, createBrowserNetworkTool, createBrowserResponseTool, createBrowserFetchTool, createBrowserTextTool } from "./inspect.ts";
 import {
   type BrowserLowLevelOptions,
   createBrowserCdpTool,
@@ -27,6 +27,7 @@ import {
   createBrowserFocusTabTool,
   createBrowserListTabsTool,
   createBrowserNavigateTool,
+  createBrowserReloadTool,
   createBrowserScreenshotTool,
   createBrowserSnapshotTool,
 } from "./navigation.ts";
@@ -50,10 +51,13 @@ export function registerBrowserTools(registry: ToolRegistry, config: MyClawConfi
   };
   const tools = [
     createBrowserNavigateTool(client, pageState),
+    createBrowserReloadTool(client, pageState),
     createBrowserSnapshotTool(client, pageState),
     createBrowserFindTool(client, pageState),
     createBrowserNetworkTool(client, pageState),
     createBrowserResponseTool(client, pageState),
+    createBrowserFetchTool(client, pageState),
+    createBrowserTextTool(client, pageState),
     createBrowserClickTool(client, pageState),
     createBrowserTypeTool(client, pageState),
     createBrowserSelectOptionTool(client, pageState),

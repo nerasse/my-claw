@@ -4,6 +4,7 @@ import type {
   BrowserClickAtResult,
   BrowserDownloadResult,
   BrowserEvalResult,
+  BrowserFetchResult,
   BrowserFindResult,
   BrowserResponseBody,
   BrowserResponseList,
@@ -11,6 +12,7 @@ import type {
   BrowserScreenshot,
   BrowserSnapshot,
   BrowserTabInfo,
+  BrowserTextResult,
   BrowserWaitResult,
 } from "./types.ts";
 
@@ -23,6 +25,7 @@ const DEFAULT_VIEWPORT = { width: 1920, height: 1080 };
 const DEFAULT_TIMEOUTS_MS: Record<string, number> = {
   default: 30000,
   navigate: 45000,
+  reload: 45000,
   screenshot: 45000,
   upload: 60000,
   "select-option": 45000,
@@ -124,6 +127,23 @@ export class BrowserClient {
 
   async snapshot(pageId: string): Promise<BrowserSnapshot> {
     return this.call<BrowserSnapshot>("snapshot", { pageId });
+  }
+
+  async reload(pageId: string): Promise<{ snapshot: BrowserSnapshot; url: string }> {
+    return this.call<{ snapshot: BrowserSnapshot; url: string }>("reload", { pageId });
+  }
+
+  /** Runs in the page's context: the session's cookies ride along and the site's own
+   *  same-origin rules apply. `browser_network`/`browser_response` only re-read. */
+  async fetchInPage(
+    pageId: string,
+    opts: { url: string; method?: string; headers?: Record<string, string>; body?: string },
+  ): Promise<BrowserFetchResult> {
+    return this.call<BrowserFetchResult>("fetch", { pageId, ...opts });
+  }
+
+  async text(pageId: string, maxChars?: number): Promise<BrowserTextResult> {
+    return this.call<BrowserTextResult>("text", { pageId, maxChars });
   }
 
   async find(pageId: string, query: string): Promise<BrowserFindResult> {

@@ -1,6 +1,15 @@
-import { type Tool, type ToolResult, str, strOpt, num } from "../types.ts";
+import { type Tool, type ToolResult, str, strOpt, num, numOpt } from "../types.ts";
 import type { BrowserClient } from "../../browser/client.ts";
 import { type BrowserPageState, getPageId } from "./state.ts";
+
+function headersOf(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const out: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw === "string") out[key] = raw;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
 
 /** Reading tools: search the snapshot, and read what the page fetched for itself.
  *
@@ -94,6 +103,69 @@ export function createBrowserResponseTool(client: BrowserClient, state: BrowserP
         const result = await client.responseBody(getPageId(state), id);
         const note = result.truncated ? "\n[body truncated]" : "";
         return { success: true, output: `${result.status} ${result.url}\n${result.body}${note}` };
+      } catch (e) {
+        return { success: false, output: "", error: String(e) };
+      }
+    },
+  };
+}
+
+export function createBrowserFetchTool(client: BrowserClient, state: BrowserPageState): Tool {
+  return {
+    name: "browser_fetch",
+    description:
+      "Issue an HTTP request FROM THE PAGE (same origin, session cookies included) and get the response body. Use it to hit the site's own API directly instead of scraping the rendered DOM: browser_network/browser_response only re-read what the page already fetched, this one asks. A non-2xx status comes back as a result, not an error.",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Absolute URL, or a path resolved against the current page" },
+        method: { type: "string", description: "GET (default), POST, PUT..." },
+        headers: { type: "object", description: "Optional request headers, as a plain object of strings" },
+        body: { type: "string", description: "Optional request body for POST/PUT" },
+      },
+      required: ["url"],
+    },
+    async execute(args): Promise<ToolResult> {
+      const url = strOpt(args, "url");
+      if (!url) return { success: false, output: "", error: "browser_fetch needs a url." };
+      const method = strOpt(args, "method");
+      const body = strOpt(args, "body");
+      const headers = headersOf(args["headers"]);
+      try {
+        const result = await client.fetchInPage(getPageId(state), {
+          url,
+          ...(method ? { method } : {}),
+          ...(body ? { body } : {}),
+          ...(headers ? { headers } : {}),
+        });
+        const type = result.contentType ? ` ${result.contentType}` : "";
+        const payload = result.body.length === 0 ? "\n(empty body)" : `\n${result.body}`;
+        const note = result.truncated ? " [truncated]" : "";
+        return { success: true, output: `HTTP ${result.status}${type} ${result.url}${note}${payload}` };
+      } catch (e) {
+        return { success: false, output: "", error: String(e) };
+      }
+    },
+  };
+}
+
+export function createBrowserTextTool(client: BrowserClient, state: BrowserPageState): Tool {
+  return {
+    name: "browser_text",
+    description:
+      "The visible text of the page (and its iframes), which the accessibility tree does not carry. Use it to read prose, values or canvas-backed labels that have no ref, instead of writing JavaScript to reach document.body.innerText.",
+    parameters: {
+      type: "object",
+      properties: {
+        max_chars: { type: "number", description: "Cap the returned text (default 20000)" },
+      },
+    },
+    async execute(args): Promise<ToolResult> {
+      const maxChars = numOpt(args, "max_chars");
+      try {
+        const result = await client.text(getPageId(state), maxChars);
+        if (!result.text.trim()) return { success: true, output: "The page has no visible text." };
+        return { success: true, output: result.text };
       } catch (e) {
         return { success: false, output: "", error: String(e) };
       }

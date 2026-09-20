@@ -51,6 +51,23 @@ export function createBrowserSnapshotTool(client: BrowserClient, state: BrowserP
   };
 }
 
+export function createBrowserReloadTool(client: BrowserClient, state: BrowserPageState): Tool {
+  return {
+    name: "browser_reload",
+    description:
+      "Reload the CURRENT page and get a fresh snapshot. Use it when the page is showing stale state (a dashboard whose data moved on) instead of navigating to the same URL again, which loses the tab's context. Returns a snapshot with new refs.",
+    parameters: { type: "object", properties: {} },
+    async execute(): Promise<ToolResult> {
+      try {
+        const result = await client.reload(getPageId(state));
+        return { success: true, output: formatSnapshot(result.snapshot) };
+      } catch (e) {
+        return { success: false, output: "", error: String(e) };
+      }
+    },
+  };
+}
+
 export function createBrowserScreenshotTool(client: BrowserClient, state: BrowserPageState): Tool {
   return {
     name: "browser_screenshot",

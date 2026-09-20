@@ -66,6 +66,9 @@ app see the runs it creates like any other one-shot.
 | Tool | Purpose |
 |---|---|
 | `browser_navigate(url)` | Open URL, return snapshot with refs |
+| `browser_reload()` | Reload the current page in place, return a fresh snapshot |
+| `browser_text(max_chars?)` | The visible text of the page and its iframes (what the a11y tree does not carry) |
+| `browser_fetch(url, method?, headers?, body?)` | Issue a request **from the page** (same origin, session cookies) and read the body |
 | `browser_snapshot()` | Accessibility tree with `[__ref=N]` |
 | `browser_click(ref)` | Click element by ref |
 | `browser_type(ref, text)` | Fill field by ref |
@@ -89,6 +92,12 @@ app see the runs it creates like any other one-shot.
 | `browser_close_tab(index)` | Close tab |
 | `browser_done(summary, needs_human?)` | Record the outcome for the caller (summary, human takeover), then the agent answers with the summary |
 | `delegate_browser_task(url, instructions)` | Any other agent → a run of the browser agent. Screenshots auto-attached to response |
+
+**Why `reload`, `text` and `fetch` are first-class.** A survey of the 132 browser runs up to
+2026-09-20 found `browser_eval` was the single most-called tool (1103 calls, 114 of 132 runs) with
+only a 3% error rate: the model was not flailing, it was doing three things the toolbox did not
+offer — a `fetch` to the site's own API, `location.reload`, and reading `document.body.innerText`.
+Those three are now tools of their own, so `eval` keeps its place as the top rung of the ladder.
 
 **Scoping.** The `browser_*` tools are the `browser` tool base (`ToolRegistry.getForAgent("browser")`,
 a closed set: no MCP, no plugin, no skills) and every other base (`main`, `general`, `research`,

@@ -63,8 +63,69 @@ export const handlers = {
     return { pageId, snapshot: await snapshotPage(page), url: page.url() };
   },
 
+  // Reloads in place. A page the site re-renders on load (a dashboard that fetched stale state)
+  // needs this more than a navigation, and there was no primitive for it: the agent wrote eval.
+  async reload(body) {
+    const page = getPage(body.pageId);
+    await page.reload({ waitUntil: "domcontentloaded", timeout: 30000 });
+    await page.waitForLoadState("load", { timeout: 8000 }).catch(() => undefined);
+    return { snapshot: await snapshotPage(page), url: page.url() };
+  },
+
   async snapshot(body) {
     return await snapshotPage(getPage(body.pageId));
+  },
+
+  // A request the PAGE makes, in the page's own context, so it carries the session's cookies
+  // and obeys the same origin rules the site's scripts do. This is the one thing
+  // responses/responseBody cannot do: they re-read what the page already fetched, never ask.
+  async fetch(body) {
+    const page = getPage(body.pageId);
+    const url = String(body.url ?? "");
+    if (!url) throw new Error("fetch needs a url");
+    const method = String(body.method ?? "GET").toUpperCase();
+    const result = await page.evaluate(
+      async ({ url, method, headers, payload }) => {
+        const target = new URL(url, location.href).toString();
+        const res = await fetch(target, {
+          method,
+          headers: headers ?? undefined,
+          body: payload ?? undefined,
+        });
+        return {
+          url: target,
+          status: res.status,
+          contentType: res.headers.get("content-type") ?? "",
+          body: await res.text(),
+        };
+      },
+      { url, method, headers: body.headers ?? null, payload: body.body ?? null },
+    );
+    const truncated = result.body.length > RESPONSE_BODY_MAX;
+    return {
+      url: result.url,
+      status: result.status,
+      contentType: result.contentType,
+      truncated,
+      body: truncated ? `${result.body.slice(0, RESPONSE_BODY_MAX)}...[truncated]` : result.body,
+    };
+  },
+
+  // The visible text, which the accessibility tree does not carry and the agent otherwise
+  // reaches for with a hand-rolled `document.body.innerText` through eval.
+  async text(body) {
+    const page = getPage(body.pageId);
+    const cap = Math.min(Math.max(Number(body.maxChars) || MAX_LOW_LEVEL_OUTPUT, 1), 200000);
+    const blocks = [];
+    for (const frame of page.frames()) {
+      const value = await frame
+        .evaluate(() => (document.body ? document.body.innerText : ""))
+        .catch(() => "");
+      if (!value || !value.trim()) continue;
+      blocks.push(frame === page.mainFrame() ? value : `[iframe ${frame.url().slice(0, 120)}]\n${value}`);
+    }
+    const joined = blocks.join("\n\n");
+    return { truncated: joined.length > cap, text: joined.length > cap ? `${joined.slice(0, cap)}...[truncated]` : joined };
   },
 
   // The JSON the page fetched for itself, listed newest first. Answers "where does this data
