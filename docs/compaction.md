@@ -216,7 +216,7 @@ contenu.
   phrase coupée devenait le plancher définitif de la conversation, et ce qui manquait était Next
   Steps.
 
-**Un flux vide n'est pas un plafond, et c'est le seul cas qui est repris.** Jusqu'au 19/09/2026 le
+**Un flux coupé n'est pas un plafond, et c'est le seul cas qui est repris.** Jusqu'au 19/09/2026 le
 garde se déclenchait sur `incomplete`, qui n'est que `finish_reason !== "stop"` sur une réponse sans
 texte : une passerelle qui n'avait rien streamé du tout s'annonçait « the summary hit the output
 ceiling and is incomplete ». Mesuré sur le fil qui a déclenché ça (`opencode_go/deepseek-flash`
@@ -224,20 +224,32 @@ derrière opencode zen, `opencode.ai/zen/go/v1`) : deux `/compact`, 39 s et 78 s
 et 0 en sortie** — le message a envoyé le propriétaire chercher une limite qui n'existait pas. Le
 message dit maintenant ce que le fil a porté : `finish_reason` reçu, et si un usage est arrivé.
 
-Trois formes, et pas une de plus :
+**Ce qui distingue un verdict d'une coupure est le `finish_reason`, jamais la vacuité.** Le
+20/09/2026, le `/compact` de la session courante a échoué deux fois de suite sur le même
+fil : 2,4 Mo de `reasoning_content` — le modèle pensait encore — puis la socket qui se ferme à
+40 s, sans chunk de fin, sans `[DONE]`, sans usage. Le garde lisait « quelque chose est sorti »
+et annonçait *the model returned an empty summary* : un verdict de modèle pour une connexion
+morte, et la reprise sautée. La tentative suivante a écrit un résumé de 59 694 caractères en 124 s.
+Le même angle mort cachait pire : une coupure qui tombe **après** du texte passait le garde et
+était stockée — le plancher de la conversation devenait un résumé sans fin, exactement ce que le
+garde de plafond refuse quand le fournisseur dit pourquoi il s'est arrêté.
+
+Quatre formes, pas une de plus :
 
 | ce que le fil a porté | message | reprise |
 |---|---|---|
 | troncature (`length` / `max_tokens` / `incomplete`) **avec** du texte ou des tokens | `output ceiling` | non — un résumé tronqué ne devient jamais un checkpoint |
-| un `stop` propre, ou des tokens/fragments sans texte | `empty summary` | non — le modèle a répondu, ou quelque chose est sorti |
+| un `stop` propre, contenu vide | `empty summary` | non — le modèle a conclu, et il a conclu qu'il n'écrivait rien |
+| **aucun `finish_reason`** — vide, après du texte, ou après des fragments de raisonnement | `closed the stream` | **oui, une fois** — et rien n'est stocké |
 | non `stop`, **aucun fragment, aucun usage, contenu vide** | `empty stream`, avec le `finish_reason` reçu | **oui, une fois** |
 
 La reprise est décidée dans `summarizeForCompaction`, là où l'échec est constaté — pas une seconde
 politique de transport : les transports reprennent déjà les statuts et les transitoires, et un HTTP
-200 qui ne streame rien n'est ni l'un ni l'autre. Une seule reprise, jamais une boucle : le second
-échec est franc. L'aléa est réel — 4 échecs vides sur 18 compactions deepseek-flash mesurées, et la
-même requête a rendu 6 689 tokens 30 secondes plus tard. Un résumé **tronqué** ne devient toujours
-jamais un checkpoint : la reprise ne s'applique qu'au flux vide.
+200 coupé en plein flux n'est ni l'un ni l'autre. Une seule reprise, jamais une boucle : le second
+échec est franc. L'aléa est réel — 4 échecs vides sur 18 compactions deepseek-flash mesurées, la
+même requête qui rend 6 689 tokens 30 secondes plus tard, et les deux coupures du 20/09 dont la
+seconde est passée. Un résumé **tronqué** ne devient toujours jamais un checkpoint : ni la
+troncature annoncée, ni la coupure silencieuse.
 
 ### Le budget de sortie : aucun
 

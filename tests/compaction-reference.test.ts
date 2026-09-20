@@ -86,6 +86,33 @@ function summarizer(reply: (body: string) => object): { bodies: string[]; restor
   return { bodies, restore: () => mock.restore() };
 }
 
+/** The same, for a reply that is a body of its own -- a cut stream, most of the time. */
+function summarizerStream(reply: (body: string) => Response): { bodies: string[]; restore: () => void } {
+  const bodies: string[] = [];
+  const mock = mockFetch(async (_url, init) => {
+    const raw = String(init?.body ?? "{}");
+    bodies.push(raw);
+    return reply(raw) as never;
+  });
+  return { bodies, restore: () => mock.restore() };
+}
+
+/**
+ * A stream the provider never ended: fragments, then the socket closes. No finish chunk, no
+ * `[DONE]`, no usage -- which is what the measured cut looked like (2026-09-20): 2.4 MB of
+ * `reasoning_content` and nothing else, the model still thinking when the connection dropped.
+ */
+function cutStream(parts: { reasoning?: string; content?: string }): Response {
+  const frames: string[] = [];
+  const pieces = (text: string, field: string): string[] =>
+    (text.match(/[\s\S]{1,48}/g) ?? []).map(
+      (piece) => `data: ${JSON.stringify({ choices: [{ delta: { [field]: piece } }] })}\n\n`,
+    );
+  frames.push(...pieces(parts.reasoning ?? "", "reasoning_content"));
+  frames.push(...pieces(parts.content ?? "", "content"));
+  return new Response(frames.join(""), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+}
+
 function answer(content: string, extra?: Record<string, unknown>): object {
   return { choices: [{ message: { content }, ...(extra ?? {}) }] };
 }
@@ -296,6 +323,101 @@ test("the one retry can land it: the second call's summary becomes the boundary"
     mock.restore();
   }
   assert.ok(contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"), "the retry's summary is stored");
+});
+
+/**
+ * A cut is not a verdict, and `finish_reason` is the only thing on the wire that tells them apart.
+ *
+ * Measured 2026-09-20 on `opencode_go/deepseek-v4.1-flash` behind opencode zen: the /compact that
+ * refused to land came back with 2.4 MB of `reasoning_content`, no finish chunk, no `[DONE]`, and
+ * the stream died 40 s in -- the model was still thinking. The guard called it "the model returned
+ * an empty summary", because something *had* come out, and skipped the retry that would have saved
+ * it: the next attempt wrote a 59 694-character summary in 124 s.
+ */
+test("a stream cut mid-reasoning is a cut, not an empty model, and earns the retry", async () => {
+  conversation(8);
+  await log.flush();
+
+  const mock = summarizerStream(() => cutStream({ reasoning: "Je pèse les options ".repeat(20) }));
+  try {
+    const result = await compactSession(config(), sess);
+    assert.equal(result.ok, false);
+    assert.match(result.reason ?? "", /closed the stream/);
+    assert.doesNotMatch(result.reason ?? "", /empty summary/);
+    assert.equal(mock.bodies.length, 2, "a cut is an aléa: one retry, and only one");
+  } finally {
+    mock.restore();
+  }
+  assert.equal(contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"), false);
+});
+
+test("the retry lands the summary the cut interrupted", async () => {
+  conversation(8);
+  await log.flush();
+
+  let calls = 0;
+  const mock = summarizerStream(() => {
+    calls += 1;
+    if (calls === 1) return cutStream({ reasoning: "Encore une vérification ".repeat(20) });
+    return sseFromCompletion(answer("Le résumé que la coupure avait interrompu, écrit au second essai."));
+  });
+  try {
+    const result = await compactSession(config(), sess);
+    assert.equal(result.ok, true, result.reason ?? "");
+    assert.equal(calls, 2);
+    assert.ok(result.summary?.includes("interrompu"));
+  } finally {
+    mock.restore();
+  }
+  assert.ok(contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"));
+});
+
+/**
+ * The other half of the same root: a cut that lands *after* some text used to pass the gate and be
+ * stored, so the conversation's floor became a summary missing its end -- what the ceiling guard
+ * refuses when the provider says why it stopped. Nothing is stored now, and the retry gets its
+ * chance first.
+ */
+test("a cut after some text is refused too: a summary without an end never becomes a checkpoint", async () => {
+  conversation(8);
+  await log.flush();
+
+  const partial = "Résumé partiel, écrit avant que la connexion ne tombe, et qui n'a jamais de fin. ".repeat(3);
+  const mock = summarizerStream(() => cutStream({ content: partial }));
+  try {
+    const result = await compactSession(config(), sess);
+    assert.equal(result.ok, false);
+    assert.match(result.reason ?? "", /closed the stream/);
+    assert.equal(mock.bodies.length, 2);
+  } finally {
+    mock.restore();
+  }
+  assert.equal(
+    contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"),
+    false,
+    "the floor stayed where it was",
+  );
+});
+
+/**
+ * And the boundary of the rule: a provider that *did* conclude, having written nothing but
+ * thinking, is the model's own answer. The cut rule keys on `finish_reason`, never on emptiness.
+ */
+test("a clean stop that wrote only reasoning keeps its own message, and no retry", async () => {
+  conversation(8);
+  await log.flush();
+
+  const mock = summarizer(() => ({
+    choices: [{ message: { content: "", reasoning_content: "j'ai réfléchi et je n'ai rien écrit" }, finish_reason: "stop" }],
+  }));
+  try {
+    const result = await compactSession(config(), sess);
+    assert.equal(result.ok, false);
+    assert.match(result.reason ?? "", /empty summary/);
+    assert.equal(mock.bodies.length, 1, "the provider concluded: that is an answer, not an aléa");
+  } finally {
+    mock.restore();
+  }
 });
 
 /**

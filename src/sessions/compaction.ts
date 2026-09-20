@@ -322,10 +322,10 @@ export type SummaryResult =
   | { ok: true; summary: string; elapsedMs: number }
   | { ok: false; reason: string };
 
-/** One summarizer call, before the retry decision. `emptyStream` is what earns the one retry. */
+/** One summarizer call, before the retry decision. `retryable` is what earns the one retry. */
 type SummaryAttempt =
   | { ok: true; summary: string; elapsedMs: number }
-  | { ok: false; reason: string; emptyStream: boolean };
+  | { ok: false; reason: string; retryable: boolean };
 
 /**
  * What one call actually came back with, and what to call it.
@@ -343,7 +343,7 @@ type SummaryAttempt =
  */
 function classifySummaryResponse(
   response: LlmResponse,
-): { ok: true; summary: string } | { ok: false; reason: string; emptyStream: boolean } {
+): { ok: true; summary: string } | { ok: false; reason: string; retryable: boolean } {
   const summary = response.content.trim();
   const completionTokens = response.usage?.completionTokens ?? 0;
   const finishReason = response.finishReason ?? "none";
@@ -352,28 +352,51 @@ function classifySummaryResponse(
     return {
       ok: false,
       reason: `The summary hit the output ceiling and is incomplete (finish_reason: ${finishReason}).`,
-      emptyStream: false,
+      retryable: false,
+    };
+  }
+
+  /**
+   * The provider concluded the response, or the stream was cut. That is the question, and it
+   * replaces "did anything come out of it": `finish_reason` is the only thing on the wire that
+   * says the model stopped writing on purpose, and a stream that ends without one died where it
+   * was -- whatever fragments it carried before the socket closed, reasoning being what it carries
+   * most.
+   *
+   * Measured 2026-09-20 (`opencode_go/deepseek-v4.1-flash` behind opencode zen): one /compact came
+   * back with 2.4 MB of `reasoning_content`, no finish chunk, no `[DONE]`, 40 s in -- the model was
+   * still thinking when the connection dropped -- and was announced as *the model returned an empty
+   * summary*, which skipped the one retry that would have saved it. The next attempt wrote a
+   * 59 694-character summary in 124 s.
+   *
+   * It also closes the silent half: a cut that lands after some text used to pass the gate and be
+   * stored, so the conversation's floor became a summary missing its end -- the exact thing the
+   * ceiling guard refuses when the provider says why it stopped.
+   */
+  if (response.finishReason === undefined) {
+    return {
+      ok: false,
+      reason: "The provider closed the stream before the summary was written (no finish_reason).",
+      retryable: true,
     };
   }
 
   if (!summary) {
-    // Three shapes, told apart by what the wire actually carried. A clean `stop` with no text is
-    // the model's own answer. A non-stop reason with no fragment, no usage and no text at all is a
-    // gateway that rendered nothing -- that one is retried once by the caller, because it is an
-    // aléa and not a property of the request. Anything else empty is the model saying nothing
-    // where the conversation needed a summary.
+    // A clean `stop` with no text is the model's own answer. A non-stop reason with no fragment, no
+    // usage and no text at all is a gateway that rendered nothing -- an aléa too, its own wording,
+    // and the caller retries it once.
     if (response.usage === undefined && !response.reasoning && response.finishReason !== "stop") {
       return {
         ok: false,
         reason: `The provider returned an empty stream (no content, no usage, finish_reason: ${finishReason}).`,
-        emptyStream: true,
+        retryable: true,
       };
     }
-    return { ok: false, reason: `The model returned an empty summary (finish_reason: ${finishReason}).`, emptyStream: false };
+    return { ok: false, reason: `The model returned an empty summary (finish_reason: ${finishReason}).`, retryable: false };
   }
-  if (summary.length < 50) return { ok: false, reason: "The model returned a summary that is too short.", emptyStream: false };
+  if (summary.length < 50) return { ok: false, reason: "The model returned a summary that is too short.", retryable: false };
   if (REFUSAL_PATTERNS.some((pattern) => pattern.test(summary))) {
-    return { ok: false, reason: "The model refused to generate a summary.", emptyStream: false };
+    return { ok: false, reason: "The model refused to generate a summary.", retryable: false };
   }
   return { ok: true, summary };
 }
@@ -481,11 +504,12 @@ export async function summarizeForCompaction(
   };
 
   let attempt = await attemptOnce();
-  // One retry, and one only, earned by an empty stream. Decided here, where the failure is seen,
-  // and not a transport policy: the transports already retry statuses and transients, and a 200
-  // that streams nothing is neither. The aléa is measured -- 4 empty streams in 18 deepseek-flash
-  // compactions behind opencode zen, and the same call answered 6 689 tokens 30 s later.
-  if (!attempt.ok && attempt.emptyStream) attempt = await attemptOnce();
+  // One retry, and one only, earned by a stream that never concluded. Decided here, where the
+  // failure is seen, and not a transport policy: the transports already retry statuses and
+  // transients, and a 200 that is cut mid-stream is neither. The aléa is measured -- 4 empty
+  // streams in 18 deepseek-flash compactions behind opencode zen, the same call answering 6 689
+  // tokens 30 s later, and two more cut mid-reasoning on 2026-09-20, one of which the retry landed.
+  if (!attempt.ok && attempt.retryable) attempt = await attemptOnce();
   if (!attempt.ok) return { ok: false, reason: attempt.reason };
 
   // The anchor is computed over the whole branch, not over `middle`: a path the tail still shows is
