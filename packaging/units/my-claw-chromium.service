@@ -11,7 +11,7 @@ ExecStartPre=-/bin/sh -c 'for pid in $(pgrep -u {{USER}} -f "chromium.*9222" 2>/
 # No --no-sandbox: the renderer sandbox is the one boundary between a page the agent was told to
 # open and this host, and it works here (unprivileged user namespaces are enabled). It was on the
 # command line as a habit, not for a reason -- verified by running this exact line without it.
-ExecStart=/usr/bin/chromium --disable-gpu --disable-dev-shm-usage --remote-debugging-port=9222 --window-size=1920,1080 about:blank
+ExecStart=/usr/bin/chromium --use-gl=angle --use-angle=swiftshader --disable-dev-shm-usage --lang=fr-FR --accept-lang=fr-FR,fr --remote-debugging-port=9222 --window-size=1920,1080 about:blank
 Restart=always
 RestartSec=5
 

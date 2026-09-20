@@ -128,6 +128,31 @@ solves the blocker and replies "continue".
 > the agent, never a regex on page text. Keyword scanning false-positives on normal login
 > pages.
 
+## Fingerprint
+
+A browser that is driven is not a browser nobody drives, and the difference is measurable. On
+2026-09-20 the 10 human handoffs of the job-application workflow were replayed and every one was
+a CAPTCHA or an OTP at **submission** -- never a field the agent could not fill. The toolbox was
+not the problem, the browser was, in three ways that were confirmed by measurement rather than
+assumed:
+
+- **WebGL was dead.** The unit ran Chromium with `--disable-gpu`, so `canvas.getContext('webgl')`,
+  `webgl2` and `experimental-webgl` all returned `null`. No consumer browser has no WebGL at all.
+  Replaced by `--use-gl=angle --use-angle=swiftshader`: WebGL comes back (renderer
+  `ANGLE (... SwiftShader driver)`), verified on a witness Chromium first and then on the live one.
+- **The locale contradicted the timezone.** `navigator.languages` was `en-US,en` while the clock
+  read `Europe/Paris`. `--lang=fr-FR --accept-lang=fr-FR,fr` makes the two agree.
+- **The driver leaked.** Brotector's `runtime.enabled` test watches `Error.prototype.name` getters:
+  it counts how often the CDP client's console serialization reaches into the page. Measured with no
+  client attached at all: **2** (the browser's own baseline, read through `/json/list` and the page
+  title, so no Runtime was enabled). `playwright-core`: **5**. **patchright** (the patched driver that
+  executes in isolated contexts to avoid `Runtime.enable`): **2**, i.e. indistinguishable from a
+  browser nobody is driving. Adopting it is the remaining fix.
+
+What was already clean, measured: `navigator.webdriver` is `false`, and no Playwright global
+(`__pwInitScripts`, `__playwright__binding__`) is injected -- because Chromium is launched by
+systemd and Playwright only attaches over CDP, never launches it.
+
 ## Guardrails
 
 - **Renderer sandbox on**: the unit runs Chromium **without** `--no-sandbox`. That flag had been
