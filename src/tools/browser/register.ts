@@ -1,5 +1,6 @@
 import type { MyClawConfig } from "../../core/config.ts";
 import type { ToolRegistry } from "../registry.ts";
+import { createBrowserActTool } from "./act.ts";
 import {
   createBrowserClickAtTool,
   createBrowserClickTool,
@@ -63,6 +64,7 @@ export function registerBrowserTools(registry: ToolRegistry, config: MyClawConfi
     createBrowserDragTool(client, pageState),
     createBrowserClickAtTool(client, pageState),
     createBrowserWaitForTool(client, pageState),
+    createBrowserActTool(client, pageState, config.workspace),
     createBrowserHandleDialogTool(client, pageState),
     createBrowserDownloadTool(client, pageState, lowLevel),
     createBrowserPdfTool(client, pageState, lowLevel),

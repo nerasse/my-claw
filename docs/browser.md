@@ -77,6 +77,7 @@ app see the runs it creates like any other one-shot.
 | `browser_drag(from_ref, to_ref)` | Drag and drop (sliders, reorderable lists, drop zones) |
 | `browser_click_at(x, y)` | Click by position, as **fractions** of the viewport. Reaches anything with no ref: canvas, WebGL, maps |
 | `browser_wait_for(text?, ref?, timeout_ms?)` | Wait for text/ref/delay instead of re-snapshotting in a loop |
+| `browser_act(steps, stop_on_error?)` | Run a sequence of actions in ONE call, one snapshot at the end. Stops at the first failing step, which the report names |
 | `browser_handle_dialog(accept, prompt_text?)` | Decide the answer to the NEXT native dialog (one-shot; auto-accept otherwise) |
 | `browser_download(timeout_ms?)` | Save a downloaded file into the sandboxed download dir, return its path |
 | `browser_pdf(path?)` | Save the page as a PDF (headful-safe: goes through CDP `Page.printToPDF`) |
