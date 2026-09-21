@@ -91,6 +91,9 @@ export interface WebSearchConfig {
   baseUrl?: string;
   token?: string;
   language?: string;
+  // The wall of one search, in ms (20s by default). It is this tool's own budget, not the run's:
+  // letting it expire fails the search, it does not stop the run.
+  timeoutMs?: number;
 }
 
 export interface BrowserConfig {

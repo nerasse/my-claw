@@ -1,6 +1,7 @@
 import { type Tool, type ToolResult, str, strOpt, num } from "./types.ts";
 import { formatError } from "../utils/errors.ts";
 import { rethrowIfAborted } from "../core/aborted.ts";
+import { requestWall } from "../utils/deadline.ts";
 import type { WebSearchConfig } from "../core/config.ts";
 
 const DEFAULT_TIMEOUT_MS = 20000;
@@ -146,15 +147,15 @@ export function createWebSearchTool(config?: WebSearchConfig): Tool {
 
       const signal = args["__signal"] as AbortSignal | undefined;
       rethrowIfAborted(undefined, signal);
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
-      const reqSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+      // The wall names itself: a Stop and this budget abort the same request, and the two mean
+      // opposite things (docs/stop.md).
+      const wall = requestWall(signal, config?.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
       try {
         const response = await fetch(url, {
           method: "GET",
           headers,
-          signal: reqSignal,
+          signal: wall.signal,
         });
 
         if (!response.ok) {
@@ -207,13 +208,18 @@ export function createWebSearchTool(config?: WebSearchConfig): Tool {
 
         return { success: true, output: formatResults(results) };
       } catch (err) {
+        // A Stop first: the run is over, and no message about this search matters any more.
         rethrowIfAborted(err, signal);
-        if (err instanceof Error && err.name === "AbortError") {
-          return { success: false, output: "", error: "Web search timed out after 20 seconds." };
+        if (wall.expired()) {
+          return {
+            success: false,
+            output: "",
+            error: `Web search timed out after ${wall.seconds} seconds. Do NOT retry web_search now -- answer from your own knowledge, fetch a known URL, or tell the user search is temporarily unavailable.`,
+          };
         }
         return { success: false, output: "", error: formatError("Web search failed", err) };
       } finally {
-        clearTimeout(timeout);
+        wall.clear();
       }
     },
   };

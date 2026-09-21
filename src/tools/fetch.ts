@@ -1,6 +1,7 @@
 import { type Tool, type ToolResult, num, str, strOpt } from "./types.ts";
 import { formatError } from "../utils/errors.ts";
 import { rethrowIfAborted } from "../core/aborted.ts";
+import { requestWall, type RequestWall } from "../utils/deadline.ts";
 import { hooks } from "../hooks/index.ts";
 
 // A raw HTML page (scripts, styles, inline CSS) can be hundreds of KB of noise that the
@@ -11,6 +12,9 @@ const MAX_FETCH_CHARS = 50_000;
 // Hard ceiling on bytes pulled into memory before windowing. response.text() would buffer the
 // whole body (hundreds of MB for a bad URL) before a single char is trimmed; stop reading early.
 const MAX_FETCH_BYTES = 8 * 1024 * 1024;
+
+/** How long one hop waits for response headers, by default. See requestWall. */
+const FETCH_TIMEOUT_MS = 30_000;
 
 async function readCapped(response: Response): Promise<string> {
   const body = response.body;
@@ -132,7 +136,14 @@ export function isAllowedScheme(raw: string): boolean {
   }
 }
 
-export const fetchTool: Tool = {
+export interface FetchToolOptions {
+  /** The wall of one hop. Injectable so the timeout path can be tested without waiting 30s. */
+  timeoutMs?: number;
+}
+
+export function createFetchTool(options: FetchToolOptions = {}): Tool {
+  const timeoutMs = options.timeoutMs ?? FETCH_TIMEOUT_MS;
+  return {
   name: "fetch",
   description:
     "Make an HTTP request. HTML responses are converted to readable text. Large responses " +
@@ -161,25 +172,27 @@ export const fetchTool: Tool = {
     }
     const signal = args["__signal"] as AbortSignal | undefined;
     rethrowIfAborted(undefined, signal);
+    // 301/302/303 conventionally become GET (drop the body); 307/308 MUST preserve the method
+    // and body, or a POST behind such a redirect silently turns into an empty GET.
+    let currentUrl = url;
+    let currentMethod = strOpt(args, "method") ?? "GET";
+    let currentBody = strOpt(args, "body");
+    // The wall of the hop that failed, so the catch can say which of the two ended it.
+    let wall: RequestWall | undefined;
     try {
       const MAX_REDIRECTS = 5;
-      let currentUrl = url;
-      // 301/302/303 conventionally become GET (drop the body); 307/308 MUST preserve the method
-      // and body, or a POST behind such a redirect silently turns into an empty GET.
-      let currentMethod = strOpt(args, "method") ?? "GET";
-      let currentBody = strOpt(args, "body");
 
       for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 30_000);
-        const reqSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+        // One wall per hop, and it names itself: a Stop and this budget abort the same request,
+        // and telling them apart is the whole verdict of the run (docs/stop.md).
+        wall = requestWall(signal, timeoutMs);
         const response = await fetch(currentUrl, {
           method: currentMethod,
           body: currentBody,
           redirect: "manual",
-          signal: reqSignal,
+          signal: wall.signal,
         });
-        clearTimeout(timer);
+        wall.clear();
 
         if (response.status >= 300 && response.status < 400) {
           const location = response.headers.get("location");
@@ -217,8 +230,20 @@ export const fetchTool: Tool = {
 
       return { success: false, output: "", error: "Too many redirects." };
     } catch (e) {
+      // A Stop first: the run is over, and no message about this request matters any more.
       rethrowIfAborted(e, signal);
+      if (wall?.expired()) {
+        return {
+          success: false,
+          output: "",
+          error: `Fetch timed out after ${wall.seconds} seconds waiting for ${currentUrl} to respond. The host is slow or holding the connection open: do not retry the same URL blindly, look for the information elsewhere.`,
+        };
+      }
       return { success: false, output: "", error: formatError(`Failed to fetch "${url}"`, e) };
     }
   },
-};
+  };
+}
+
+/** The registry's fetch tool: the default wall. */
+export const fetchTool: Tool = createFetchTool();

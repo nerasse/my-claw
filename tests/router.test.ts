@@ -5,6 +5,7 @@ import { SessionManager } from "../src/sessions/manager.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
 import type { SessionData } from "../src/sessions/store.ts";
 import { hooks } from "../src/hooks/index.ts";
+import { runRegistry } from "../src/core/run-registry.ts";
 import { AbortedError } from "../src/core/aborted.ts";
 
 function createMessage(userId = "u1"): UnifiedMessage {
@@ -293,13 +294,50 @@ test("a run that throws still writes what the session already holds", async () =
   }
 });
 
+test("an abort raised while the run is alive is a failure, not a stop", async () => {
+  // Measured 2026-09-21: a hung `fetch` whose own 30s budget fired arrived as an AbortedError while
+  // the run's signal was untouched, and the router announced "run stopped by user" for a run
+  // nobody had stopped. Two sibling sub-agents then ran 5 and 9 more minutes. docs/stop.md.
+  const sessionManager = new SessionManager();
+  const router = new MessageRouter(sessionManager, {
+    async handleMessage() { throw new AbortedError(); },
+    async handleMessageStreaming() { throw new Error("unused"); },
+    getResponseAttachments() { return []; },
+  } as never);
+
+  const seen: string[] = [];
+  const onAborted = ({ message }: { message: UnifiedMessage }) => { seen.push(`aborted:${message.id}`); };
+  const onError = ({ message }: { message: UnifiedMessage }) => { seen.push(`error:${message.id}`); };
+  hooks.on("message:route:aborted", onAborted);
+  hooks.on("message:route:error", onError);
+  try {
+    const sessionId = SessionManager.resolveSessionId("my-claw-app", "dm", "c1", "not-a-stop");
+    try {
+      await assert.rejects(() => router.route(createMessage("not-a-stop")), AbortedError);
+      assert.deepEqual(seen, ["error:m1"], "the caller's run was never stopped, so it failed");
+    } finally {
+      await sessionManager.deleteSession(sessionId);
+    }
+  } finally {
+    hooks.off("message:route:aborted", onAborted);
+    hooks.off("message:route:error", onError);
+  }
+});
+
 test("a stopped run is announced as aborted, the one ending the router used to swallow", async () => {
   // The router returns undefined on a stop rather than throwing, so the only way a channel could
   // tell a stopped run from a finished one was to guess; the app called it "done". The hook is the
   // run's own ending, emitted once, on the abort path only.
   const sessionManager = new SessionManager();
+  // A stop, for real: the signal that carries it is the router's own, which is what `isAbort`
+  // decides on. An engine that aborted on its own would not stop the owner's run (see the next
+  // test).
+  const sessionId = SessionManager.resolveSessionId("my-claw-app", "dm", "c1", "stop-user");
   const router = new MessageRouter(sessionManager, {
-    async handleMessage() { throw new AbortedError(); },
+    async handleMessage() {
+      runRegistry.stop(sessionId);
+      throw new AbortedError();
+    },
     async handleMessageStreaming() { throw new Error("unused"); },
     getResponseAttachments() { return []; },
   } as never);

@@ -1,7 +1,7 @@
 import { type Tool, type ToolResult, str } from "../types.ts";
 import type { MyClawConfig } from "../../core/config.ts";
 import type { UnifiedMessage } from "../../channels/types.ts";
-import { rethrowIfAborted } from "../../core/aborted.ts";
+import { isAbort, rethrowIfAborted } from "../../core/aborted.ts";
 import type { SubAgentRegistry } from "../../subagents/registry.ts";
 import type { SubAgentRunner, SubAgentStream } from "../../subagents/runner.ts";
 import { DEFAULT_NOVNC_URL, takeBrowserOutcome, type BrowserSession } from "./session.ts";
@@ -99,7 +99,12 @@ export function createDelegateBrowserTool(
         }
         return { success: true, output: summary, attachments };
       } catch (e) {
+        // Same rule as spawn/send: the caller's Stop is the caller's, and a delegated run that was
+        // stopped on its own says that instead (docs/stop.md).
         rethrowIfAborted(e, signal);
+        if (isAbort(e)) {
+          return { success: false, output: "", error: "The delegated browser run was stopped before it answered. Tell the user, and say what it had already done." };
+        }
         return { success: false, output: "", error: String(e) };
       }
     },

@@ -226,4 +226,25 @@ describe("web_search tool", () => {
       restore();
     }
   });
+
+  test("its own wall is a timeout, not the run's stop", async () => {
+    const { restore } = mockFetch(
+      (_input, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          signal?.addEventListener("abort", () => reject(signal.reason ?? new DOMException("aborted", "AbortError")));
+        }),
+    );
+    try {
+      const tool = createWebSearchTool({ baseUrl: "https://search.kssimi.fr", timeoutMs: 20 });
+      const run = new AbortController();
+      const result = await tool.execute({ query: "hello", __signal: run.signal });
+
+      assert.equal(result.success, false);
+      assert.match(result.error ?? "", /timed out after 0.02 seconds/);
+      assert.equal(run.signal.aborted, false, "the run was never stopped");
+    } finally {
+      restore();
+    }
+  });
 });

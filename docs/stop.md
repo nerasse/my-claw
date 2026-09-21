@@ -145,6 +145,49 @@ nothing to stop, and nothing at all when a stop is already in flight (see "One s
 The cancelled run delivers no message (the router returns nothing on abort). `/status` shows the
 live run tree (`Active run: main, researcher[1]`).
 
+### A stop is a stop of *this* run
+
+Measured 2026-09-21, on a research thread: a sub-agent's `fetch` hung, the tool's own 30s budget
+fired, and the whole run ended as "run stopped by user". Nobody had stopped anything:
+
+| time | what happened |
+|---|---|
+| 09:11:17.665 | the sub-agent fires 4 `fetch` calls; one never answers |
+| 09:11:47.704 | it dies "aborted" -- **30.039 s** later, which is exactly the tool's own wall |
+| 09:11:49.737 | the **parent** run dies "aborted" |
+| 09:11:58.198 | the router writes "run stopped by user" -- the Stop nobody gave |
+| 09:16:41 / 09:20:11 | its **two siblings** finish, 5 and 9 minutes later, and write into the log after `run_end` |
+
+The proof that no stop happened is in the survivors: the three sub-agents are children of the
+*same* signal (`runner.ts`), so a real Stop would have cut all three. Two of them ran on.
+
+Four shapes arrive as an "abort" while the run's signal is perfectly alive, and none of them is a
+stop:
+
+| what arrives | what it is | what it must do |
+|---|---|---|
+| a tool's own wall (`fetch` 30s, `web_search` 20s) | a host that does not answer | an **error result**, naming the budget |
+| a dead socket (`AbortError`) | the network | the transport's own retry/classification |
+| a sub-agent stopped on its own | *that* agent's card | an **error result** for its caller |
+| the run's signal | the owner's Stop | the end of the run |
+
+The rule that replaced the shape-matching: **`isAbort(err, signal)` answers with the signal**
+(`src/core/aborted.ts`), because every `AbortedError` this codebase raises is raised under
+`if (signal?.aborted)` of that same signal. Without a signal there is nothing to derive the answer
+from, and the shape is all that is left.
+
+Each wall names itself (`src/utils/deadline.ts`, `requestWall`): the timer aborts a controller of
+its own, the request carries `AbortSignal.any([own, run])`, and `expired()` -- true for this wall
+and never for a Stop -- is the only question a caller asks. A `Stop` still cuts the request
+through the composite. `web_search`'s "timed out" branch used to be unreachable for exactly this
+reason: `rethrowIfAborted` ran before it and swallowed its own budget.
+
+And the batch is waited for **in full** (`Promise.allSettled`, `src/agent/bridge.ts`): one call
+failing is a result, the other calls were asked for by the same turn and their answers are still
+wanted, and the model decides what to do about the failure on its next turn. Waiting in full also
+means a run that ends -- whatever ends it -- has none of its own calls still in flight, which is
+what makes an entry after `run_end` impossible rather than merely unlikely.
+
 ## Hooks
 
 `agent:run:aborted` (per run, main and sub-agents) and `subagent:aborted` fire on stop.

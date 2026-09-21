@@ -10,8 +10,20 @@ export class AbortedError extends Error {
 }
 
 export function isAbort(err: unknown, signal?: AbortSignal): boolean {
+  // When a signal is given, it is the only authority, because every `AbortedError` this codebase
+  // raises is raised under `if (signal?.aborted)` of that same signal: a stop is exactly "the
+  // signal of the run being asked about is aborted".
+  //
+  // The shape of the error is not evidence. A tool's own budget, a socket that died and a
+  // sub-agent stopped on its own all arrive as `AbortError` (or as an `AbortedError` raised for
+  // *their* signal) while the run's own signal is perfectly alive, and reading those as a user
+  // stop is measured, not theoretical: on 2026-09-21 a `fetch` that hung past its own 30s budget
+  // ended a research run as "run stopped by user". Nobody had stopped anything. The parent's two
+  // sibling sub-agents ran 5 and 9 more minutes, their results landed after the run's `run_end`,
+  // and the log needed a dead-branch repair. docs/stop.md.
+  if (signal) return signal.aborted;
+  // No signal at all: a caller that cannot ask has only the shape to go on.
   if (err instanceof AbortedError) return true;
-  if (signal?.aborted) return true;
   return err instanceof DOMException && err.name === "AbortError";
 }
 

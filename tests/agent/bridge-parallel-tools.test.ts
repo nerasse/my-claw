@@ -7,6 +7,7 @@ import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
+import { AbortedError } from "../../src/core/aborted.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 import { deleteSession, type LegacySessionData } from "../../src/sessions/store.ts";
@@ -417,3 +418,73 @@ test("parallel tool calls: one failure does not block others", async () => {
     end();
   }
 });
+
+test("a batch is waited for in full: a run that ends leaves none of its own calls in flight", async () => {
+  // `Promise.all` settled on the first rejection and abandoned the rest of the batch. Measured
+  // 2026-09-21: two sub-agents of the same batch ran 5 and 9 minutes past their parent's end and
+  // wrote into its log after `run_end` (which then needed a dead-branch repair). The batch is now
+  // waited for in full, so what a run started is over before the run is.
+  let unstoppableFinished = false;
+  const registry = new ToolRegistry();
+
+  // The stop is issued from inside the batch, which is where it lands in the real thing: the run
+  // is stopped while its calls are in flight, not before the first turn.
+  registry.register({
+    name: "honours_stop",
+    description: "rejects as soon as the run is stopped",
+    parameters: {},
+    async execute(args) {
+      const signal = args["__signal"] as AbortSignal;
+      runRegistry.stop(SESSION_ID);
+      if (!signal.aborted) {
+        await new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }));
+      }
+      throw new AbortedError();
+    },
+  });
+
+  registry.register({
+    name: "ignores_stop",
+    description: "ploughs on whatever the signal says",
+    parameters: {},
+    async execute() {
+      await new Promise((r) => setTimeout(r, 150));
+      unstoppableFinished = true;
+      return { success: true, output: "done anyway" };
+    },
+  });
+
+  const bridge = new AgentBridge(config, registry, new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+  const fetchMock = mockFetch(async () =>
+    new Response(
+      JSON.stringify({
+        choices: [{
+          message: {
+            content: "",
+            tool_calls: [
+              { id: "tc1", function: { name: "honours_stop", arguments: "{}" } },
+              { id: "tc2", function: { name: "ignores_stop", arguments: "{}" } },
+            ],
+          },
+        }],
+        usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    ) as never,
+  );
+
+  try {
+    // The first call rejects at once (its own stop), the second only finishes 150ms later.
+    const call = bridge.handleMessage(createMessage(), createSession(), signal);
+    await assert.rejects(() => call);
+    assert.equal(
+      unstoppableFinished,
+      true,
+      "the abandoned call must have landed before the run did",
+    );
+  } finally {
+    end();
+    fetchMock.restore();
+  }
+}, 30_000);

@@ -16,6 +16,20 @@ test("isAbort: detects AbortedError, aborted signal, and DOM AbortError", () => 
   assert.equal(isAbort(undefined, new AbortController().signal), false);
 });
 
+test("isAbort: with a signal, only that signal decides", () => {
+  // The three shapes a failure arrives in while the run is perfectly alive: a tool's own wall, a
+  // socket that died, and a sub-agent stopped on its own. Reading any of them as a user stop is
+  // what ended a run nobody had stopped (2026-09-21).
+  const run = new AbortController();
+  assert.equal(isAbort(new AbortedError(), run.signal), false);
+  assert.equal(isAbort(new DOMException("timed out", "TimeoutError"), run.signal), false);
+  assert.equal(isAbort(new DOMException("aborted", "AbortError"), run.signal), false);
+  assert.equal(isAbort(new Error("socket closed"), run.signal), false);
+
+  run.abort();
+  assert.equal(isAbort(new Error("anything at all"), run.signal), true, "the aborted signal is the authority");
+});
+
 test("rethrowIfAborted: throws AbortedError on abort, no-op otherwise", () => {
   assert.throws(() => rethrowIfAborted(new DOMException("a", "AbortError")), AbortedError);
   const c = new AbortController();

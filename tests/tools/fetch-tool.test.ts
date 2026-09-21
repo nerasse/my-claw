@@ -1,7 +1,19 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { fetchTool, htmlToText, processFetchBody, isJsRenderedShell } from "../../src/tools/fetch.ts";
+import { fetchTool, createFetchTool, htmlToText, processFetchBody, isJsRenderedShell } from "../../src/tools/fetch.ts";
+import { AbortedError } from "../../src/core/aborted.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+
+/** A host that accepts the connection and never answers: the incident's first domino. */
+function neverAnswers(): { restore(): void } {
+  return mockFetch(
+    (_input, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener("abort", () => reject(signal.reason ?? new DOMException("aborted", "AbortError")));
+      }),
+  );
+}
 
 
 /**
@@ -240,6 +252,36 @@ test("fetch: 3xx without Location returns a clear error (not 'too many redirects
     const result = await fetchTool.execute({ url: "https://example.com/x" });
     assert.equal(result.success, false);
     assert.match(result.error ?? "", /no Location header/i);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("fetch: its own wall is a timeout, not the run's stop", async () => {
+  // Measured 2026-09-21: this exact shape ended a research run as "run stopped by user", took a
+  // sub-agent card down as "aborted" and left two sibling sub-agents running for 5 and 9 minutes.
+  const mock = neverAnswers();
+  try {
+    const tool = createFetchTool({ timeoutMs: 20 });
+    const run = new AbortController();
+    const result = await tool.execute({ url: "https://slow.example.com/", __signal: run.signal });
+
+    assert.equal(result.success, false, "a wall that fires is a failure result");
+    assert.match(result.error ?? "", /timed out after 0.02 seconds/);
+    assert.equal(run.signal.aborted, false, "and the run is untouched");
+  } finally {
+    mock.restore();
+  }
+});
+
+test("fetch: a real Stop still cuts the request and leaves as an abort", async () => {
+  const mock = neverAnswers();
+  try {
+    const tool = createFetchTool({ timeoutMs: 60_000 });
+    const run = new AbortController();
+    const call = tool.execute({ url: "https://slow.example.com/", __signal: run.signal });
+    run.abort();
+    await assert.rejects(() => call, AbortedError);
   } finally {
     mock.restore();
   }

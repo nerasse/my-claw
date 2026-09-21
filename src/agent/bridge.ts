@@ -951,9 +951,20 @@ export class AgentBridge implements AgentBackend {
           return await settle(tc, result, durationMs);
         };
 
-        const settled = response.toolCalls.length > 1
-          ? await Promise.all(response.toolCalls.map(executeOne))
-          : [await executeOne(response.toolCalls[0]!)];
+        // One call failing is a result, not the end of the batch: the other calls were asked for
+        // by the same turn, their answers are still wanted, and what to do about the failure is
+        // the model's decision on its next turn. The batch is therefore waited for in full.
+        //
+        // `Promise.all` used to settle on the first rejection and abandon its siblings: measured
+        // 2026-09-21, two sub-agents ran 5 and 9 minutes past their parent's end and wrote into
+        // its log *after* `run_end`, which then needed a dead-branch repair. Waiting in full also
+        // means a run that ends here has no work of its own still in flight, whatever ends it.
+        const outcomes = await Promise.allSettled(response.toolCalls.map((tc) => executeOne(tc)));
+        const failed = outcomes.find((outcome) => outcome.status === "rejected");
+        if (failed?.status === "rejected") throw failed.reason;
+        const settled = outcomes.map(
+          (outcome) => (outcome as PromiseFulfilledResult<Awaited<ReturnType<typeof executeOne>>>).value,
+        );
 
         for (const { tc, result, durationMs, transformedResult } of settled) {
           toolExecutions += 1;
