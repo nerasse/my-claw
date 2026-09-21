@@ -1,8 +1,9 @@
 import { describe, test, expect } from "bun:test";
-import { applyPromptCache, chatCompletion, type ChatMessage } from "../../src/llm/provider.ts";
+import { applyPromptCache, chatCompletion, chatCompletionStream, type ChatMessage } from "../../src/llm/provider.ts";
 import { resolveLlmConfig } from "../../src/llm/resolver.ts";
 import type { LlmConfig } from "../../src/core/config.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { sseResponse } from "../helpers/sse.ts";
 
 const EPHEMERAL = { type: "ephemeral" };
 
@@ -184,5 +185,90 @@ describe("prompt_cache_key by model family", () => {
   test("no key without the provider opt-in, and none without a session", async () => {
     expect((await capture({ model: "gpt-5.6-luna", promptCache: false, cacheKey: "s" }))["prompt_cache_key"]).toBeUndefined();
     expect((await capture({ model: "gpt-5.6-luna", promptCache: true }))["prompt_cache_key"]).toBeUndefined();
+  });
+});
+
+describe("an endpoint that refuses the cached content shape", () => {
+  const base = { baseUrl: "https://refusing.example.com", model: "glm-5.3", apiKey: "k" };
+  const messages: ChatMessage[] = [
+    { role: "system", content: "SYS" },
+    { role: "user", content: "hi" },
+  ];
+  const REFUSAL = '{"error":{"type":"invalid_request_error","message":"4 request validation errors: Input should be a valid string, field: \'messages[0].content.str\'"}}';
+
+  function answering(): { bodies: Array<Record<string, unknown>>; restore: () => void } {
+    const bodies: Array<Record<string, unknown>> = [];
+    const mock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(init?.body as string) as Record<string, unknown>;
+      bodies.push(body);
+      // Strict validation, like the upstream that refused the parts form: a string content is
+      // fine, a content array is not.
+      const first = (body["messages"] as Array<{ content: unknown }>)[0]!;
+      if (Array.isArray(first.content)) {
+        return new Response(REFUSAL, { status: 400, headers: { "Content-Type": "application/json" } });
+      }
+      // The streaming transport reads SSE; a finished JSON body is a null stream to it.
+      return body["stream"] === true
+        ? sseResponse("ok")
+        : new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    return { bodies, restore: () => mock.restore() };
+  }
+
+  test("is resent without the hints, and the answer lands", async () => {
+    // Measured 2026-09-21: `opencode_go/glm-5.3` answers 400 to the parts form our cache hints
+    // produce, while the same provider's deepseek models take it. The request was fine.
+    const { bodies, restore } = answering();
+    try {
+      const response = await chatCompletion({ ...base, promptCache: true }, messages);
+      expect(response.content).toBe("ok");
+      expect(bodies).toHaveLength(2);
+      expect(JSON.stringify(bodies[0])).toContain("cache_control");
+      expect(JSON.stringify(bodies[1])).not.toContain("cache_control");
+      expect((bodies[1]!["messages"] as Array<{ content: unknown }>)[0]!.content).toBe("SYS");
+    } finally {
+      restore();
+    }
+  });
+
+  test("is remembered: the next call sends the plain form straight away", async () => {
+    const { bodies, restore } = answering();
+    try {
+      await chatCompletion({ ...base, promptCache: true }, messages);
+      const before = bodies.length;
+      await chatCompletion({ ...base, promptCache: true }, messages);
+      // One request, not two: the round trip is paid once per model, not once per call.
+      expect(bodies.length - before).toBe(1);
+      expect(JSON.stringify(bodies[bodies.length - 1])).not.toContain("cache_control");
+    } finally {
+      restore();
+    }
+  });
+
+  test("the streaming path does the same", async () => {
+    const { bodies, restore } = answering();
+    try {
+      const tokens: string[] = [];
+      const response = await chatCompletionStream({ ...base, promptCache: true }, messages, (t) => void tokens.push(t));
+      expect(response.content).toBe("ok");
+      expect(bodies).toHaveLength(2);
+      expect(JSON.stringify(bodies[1])).not.toContain("cache_control");
+    } finally {
+      restore();
+    }
+  });
+
+  test("a 400 that is not about the shape is left alone", async () => {
+    const bodies: Array<Record<string, unknown>> = [];
+    const mock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(init?.body as string));
+      return new Response('{"error":{"message":"model does not exist"}}', { status: 400, headers: { "Content-Type": "application/json" } });
+    });
+    try {
+      await expect(chatCompletion({ ...base, promptCache: true }, messages)).rejects.toThrow(/does not exist/);
+      expect(bodies).toHaveLength(1);
+    } finally {
+      mock.restore();
+    }
   });
 });

@@ -422,17 +422,48 @@ export function applyPromptCache(messages: ChatMessage[], self?: { backend: stri
   return wire;
 }
 
+/**
+ * Endpoints that refused the content-part form, per model.
+ *
+ * `promptCache` promotes a message's content to `[{type:"text", text, cache_control}]`, because a
+ * cache breakpoint lives on a part. Some upstreams validate the shape strictly and answer 400 --
+ * "Input should be a valid string, field: 'messages[0].content.str'" -- which is what a research
+ * pass died on four times on 2026-09-21 (`opencode_go/glm-5.3`), while the same provider's
+ * deepseek models take the same request happily.
+ *
+ * The refusal is a fact about that model, so it is remembered and the hints stop being sent for
+ * it: one failed round trip ever, instead of one per call. The memo is per process on purpose --
+ * it is a compatibility fact about a remote endpoint, not state worth persisting.
+ */
+const cacheHintsRefused = new Set<string>();
+
+function cacheKeyOf(config: ResolvedLlmConfig): string {
+  return `${config.baseUrl}|${config.apiModel ?? config.model}`;
+}
+
+/** Test seam: the memo is process-wide, and one file's refusal must not reach the next. */
+export function resetCacheHintRefusals(): void {
+  cacheHintsRefused.clear();
+}
+
+/** A 400 saying our content shape is wrong: the form the cache hints chose, not the request. */
+export function isContentShapeRefusal(status: number, detail: string): boolean {
+  if (status !== 400) return false;
+  return /content\.str|should be a valid string|is not of type 'string'|messages\[\d+\]\.content/i.test(detail);
+}
+
 function buildRequestBody(
   config: ResolvedLlmConfig,
   messages: ChatMessage[],
   tools?: unknown[],
   stream?: boolean,
+  cacheHints: boolean = config.promptCache === true,
 ): Record<string, unknown> {
 const body: Record<string, unknown> = {
   model: config.apiModel ?? config.model,
     // Always through `toWireMessage`, cache or no cache. Handing the raw `ChatMessage[]` to
     // JSON.stringify was putting `providerMeta` on the wire whenever prompt caching was off.
-    messages: config.promptCache
+    messages: cacheHints
       ? applyPromptCache(messages, chatIdentity(config))
       : messages.map((m) => toWireMessage(m, chatIdentity(config))),
   };
@@ -441,7 +472,7 @@ const body: Record<string, unknown> = {
   // prefix cache on this instead, whichever provider resells it. Gated on the same per-provider
   // opt-in as the breakpoints: it is an extra top-level field, and the opt-in is precisely the
   // owner stating this endpoint tolerates cache hints. See docs/prompt-caching.md.
-  if (config.promptCache && config.cacheKey && cacheDialectOf(config.apiModel ?? config.model) === "openai") {
+  if (cacheHints && config.cacheKey && cacheDialectOf(config.apiModel ?? config.model) === "openai") {
     body["prompt_cache_key"] = config.cacheKey;
   }
 
@@ -676,9 +707,10 @@ export async function chatCompletion(
     ...sessionAffinityHeaders(config.baseUrl, config.cacheKey, await userAgent()),
     ...config.headers,
   };
-  const bodyObject = buildRequestBody(config, messages, tools);
+  let cacheHints = config.promptCache === true && !cacheHintsRefused.has(cacheKeyOf(config));
+  let bodyObject = buildRequestBody(config, messages, tools, false, cacheHints);
   await clampOutputToPinnedEndpoint(config, bodyObject);
-  const body = JSON.stringify(bodyObject);
+  let body = JSON.stringify(bodyObject);
   const url = `${config.baseUrl}/chat/completions`;
 
   let lastErr: unknown;
@@ -710,6 +742,19 @@ export async function chatCompletion(
           ) as Error & { status?: number; stalePin?: boolean };
           err.status = response.status;
           if (pinned404) err.stalePin = true;
+
+          if (cacheHints && isContentShapeRefusal(response.status, detail)) {
+            cacheHints = false;
+            cacheHintsRefused.add(cacheKeyOf(config));
+            bodyObject = buildRequestBody(config, messages, tools, false, false);
+            body = JSON.stringify(bodyObject);
+            void log("warn", "endpoint refused the cached content shape; resending without cache hints", {
+              model: config.apiModel ?? config.model,
+              baseUrl: config.baseUrl,
+            });
+            lastErr = err;
+            continue;
+          }
 
           if (attempt < LLM_RETRY_ATTEMPTS && (isRetryableStatus(response.status) || pinned404?.retryable)) {
             const delay = retryDelayMs(attempt, parseRetryAfterMs(response));
@@ -793,9 +838,10 @@ export async function chatCompletionStream(
     ...sessionAffinityHeaders(config.baseUrl, config.cacheKey, await userAgent()),
     ...config.headers,
   };
-  const bodyObject = buildRequestBody(config, messages, tools, true);
+  let cacheHints = config.promptCache === true && !cacheHintsRefused.has(cacheKeyOf(config));
+  let bodyObject = buildRequestBody(config, messages, tools, true, cacheHints);
   await clampOutputToPinnedEndpoint(config, bodyObject);
-  const body = JSON.stringify(bodyObject);
+  let body = JSON.stringify(bodyObject);
   const url = `${config.baseUrl}/chat/completions`;
 
   let lastErr: unknown;
@@ -832,6 +878,19 @@ export async function chatCompletionStream(
         ) as Error & { status?: number; stalePin?: boolean };
         err.status = response.status;
         if (pinned404) err.stalePin = true;
+
+        if (cacheHints && isContentShapeRefusal(response.status, detail)) {
+          cacheHints = false;
+          cacheHintsRefused.add(cacheKeyOf(config));
+          bodyObject = buildRequestBody(config, messages, tools, true, false);
+          body = JSON.stringify(bodyObject);
+          void log("warn", "endpoint refused the cached content shape; resending without cache hints", {
+            model: config.apiModel ?? config.model,
+            baseUrl: config.baseUrl,
+          });
+          lastErr = err;
+          continue;
+        }
 
         if (attempt < LLM_RETRY_ATTEMPTS && !tokensDelivered && (isRetryableStatus(response.status) || pinned404?.retryable)) {
           const delay = retryDelayMs(attempt, parseRetryAfterMs(response));

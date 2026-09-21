@@ -110,6 +110,32 @@ The anthropic and implicit dialects are untouched by this: they were at 91-97% c
 production when the key was introduced, and `tests/analytics/e2e-usage.test.ts` guards that a
 non-OpenAI engine still gets its breakpoints and no key.
 
+## When the endpoint refuses the shape
+
+A cache breakpoint lives on a content *part*, so `markCacheBreakpoint` promotes a message's content
+from a string to `[{type:"text", text, cache_control}]`. Some upstreams validate that shape strictly
+and answer 400 to the whole request:
+
+```
+LLM stream request failed: HTTP 400 — Error from provider (Console Go):
+Upstream request failed: [invalid_request_error] 4 request validation errors:
+Input should be a valid string, field: 'messages[0].content.str', value: [{'type': 'text', ...
+```
+
+Measured 2026-09-21, on `opencode_go/glm-5.3` — while the *same provider's* deepseek models take the
+identical request. The prompt was fine; the form our hints chose was not.
+
+The transport answers it itself: a 400 whose body names the content shape
+(`isContentShapeRefusal`) makes it **rebuild the request without any cache hints and resend it
+once**, and remember the refusal per `baseUrl|model` (`cacheHintsRefused`). The next call for that
+model goes out plain from the first byte, so the round trip is paid once ever, not once per call.
+A 400 about anything else — a model that does not exist, a request we sent wrong — is left alone and
+surfaces as itself; rerouting every 400 would hide our own bugs.
+
+The memo is per process and never persisted: it is a compatibility fact about a remote endpoint, and
+a restart is a fine place to re-learn it. `resetCacheHintRefusals()` is the test seam, wired into
+`tests/setup-globals.ts` like every other piece of module-level state.
+
 ## Auditing it
 
 `api_calls` records `backend` and `cache_dialect` per call. Neither is derivable after the fact:
