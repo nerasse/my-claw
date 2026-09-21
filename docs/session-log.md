@@ -703,8 +703,20 @@ l'intérieur d'un delta. La carte revenait en double à chaque rechargement.
 
 Donc : une entrée `tool` passe toujours **à sa propre position**, et un état ne se substitue
 qu'à une carte absente. Hisser la carte à la place de son état la ferait aussi remonter avant
-le tour qui l'a produite. Un état dont l'appel n'a jamais abouti est jeté : il n'y a pas
-encore de carte, et les frames live portent celle-là.
+le tour qui l'a produite.
+
+Un état dont la carte n'existe **nulle part** dans le log passe au contraire tel quel, et
+c'est `displayOf` qui dessine la carte depuis l'état, à sa propre position. L'ancienne règle
+(« les frames live portent celle-là ») tenait pour un client déjà connecté : une page fraîche
+n'en a aucune. Mesuré le 2026-09-21 — une passe lance trois enfants, le premier meurt au bout
+de 26 s, le plus lent tourne 8 minutes ; un rechargement dans cette fenêtre fait disparaître
+la carte morte de la page, alors que l'état est bien dans le log. Les trois entrées `tool`
+du lot n'arrivent qu'à la fin du lot (l'ordre d'appel est un invariant), d'où la fenêtre.
+
+La carte ainsi dessinée porte le même id que celle que produira l'entrée `tool`
+(`toolCardId(callId)`) : l'entrée qui arrive ensuite **remplace** la carte au lieu de s'y
+ajouter, et rien n'est dessiné deux fois. C'est aussi pour ça que l'état d'ouverture porte
+`task` : sans lui, la carte dessinée depuis l'état seul afficherait un titre sans mission.
 
 Même raison pour la pagination : le pli se fait sur `log.entries()`, jamais sur la fenêtre.
 Un enfant lancé cinquante entrées plus haut se règle ici, et replier la page seule laisse

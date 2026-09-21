@@ -211,6 +211,14 @@ export interface SpawnStateEntry extends EntryBase {
   agentType?: string;
   mode?: string;
   action?: SessionSubAgentAction;
+  /**
+   * What the child was asked to do, carried by the opening entry.
+   *
+   * The `spawn` tool entry holds it too, but that entry is written when the whole batch settles:
+   * a child that finishes early has a state and no entry for minutes, and the card a fresh page
+   * draws from the state alone would show no task at all.
+   */
+  task?: string;
   resultLength?: number;
   error?: string;
 }

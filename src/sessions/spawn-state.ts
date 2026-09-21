@@ -28,6 +28,8 @@ export interface SpawnStateUpdate {
   agentType?: string;
   mode?: string;
   action?: SessionSubAgentAction;
+  /** What the child was asked to do. Opening event only, like the identity. */
+  task?: string;
   resultLength?: number;
   error?: string;
 }
@@ -69,6 +71,7 @@ export function spawnStates(entries: readonly Entry[]): Map<string, SessionSubAg
       action: entry.action ?? current?.action ?? "spawn",
       status: entry.status,
       startedAt: current?.startedAt ?? ts,
+      ...(entry.task !== undefined ? { task: entry.task } : current?.task !== undefined ? { task: current.task } : {}),
       ...(entry.resultLength !== undefined
         ? { resultLength: entry.resultLength }
         : current?.resultLength !== undefined
@@ -99,6 +102,25 @@ export function cardOf(entries: readonly Entry[], subagentId: string): string | 
 }
 
 /**
+ * The fold, plus the cards the log already carries.
+ *
+ * A state whose card exists is drawn *there*, at the tool entry's own position; one whose card is
+ * still missing -- `spawn` returns while the child works, so the entry lands only when the whole
+ * batch settles -- has to draw itself, and this is what tells the two apart.
+ */
+export interface SpawnView {
+  states: ReadonlyMap<string, SessionSubAgentState>;
+  /** Call ids with a tool entry anywhere in the log: those cards need no stand-in. */
+  carded: ReadonlySet<string>;
+}
+
+export function spawnView(entries: readonly Entry[]): SpawnView {
+  const carded = new Set<string>();
+  for (const entry of entries) if (entry.type === "tool") carded.add(entry.callId);
+  return { states: spawnStates(entries), carded };
+}
+
+/**
  * Records one step, or declines.
  *
  * Two reasons to decline, and neither is an error. A lifecycle with no card behind it -- a child
@@ -123,6 +145,7 @@ export function appendSpawnState(entryLog: SessionLog, update: SpawnStateUpdate)
     ...(update.agentType ? { agentType: update.agentType } : {}),
     ...(update.mode ? { mode: update.mode } : {}),
     ...(update.action ? { action: update.action } : {}),
+    ...(update.task ? { task: update.task } : {}),
     ...(update.resultLength !== undefined ? { resultLength: update.resultLength } : {}),
     ...(update.error ? { error: update.error } : {}),
   });
@@ -187,6 +210,7 @@ export function recordSpawnLifecycle(logOf: (sessionId: string) => Promise<Sessi
       mode: event.mode,
       action: event.action,
       ...(event.toolCallId ? { toolCallId: event.toolCallId } : {}),
+      ...(event.task ? { task: event.task } : {}),
     });
   };
   const onComplete = (event: HookEventMap["subagent:complete"]): void => {

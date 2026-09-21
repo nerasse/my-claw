@@ -1,5 +1,6 @@
 import { describe, test, expect } from "bun:test";
 import { displayOf, mediaRefsOf, pageOf, pageBefore, runFold, runFoldPlan, windowNeedsFiles, withSpawnCards, type DisplayResolvers } from "../../../src/channels/my-claw-app/display.ts";
+import { spawnView } from "../../../src/sessions/spawn-state.ts";
 import type { Entry, Provisioned } from "../../../src/sessions/log.ts";
 import type { SessionFile } from "../../../src/channels/my-claw-app/files.ts";
 
@@ -215,7 +216,7 @@ describe("displayOf: a sub-agent's card", () => {
     // A child spawned fifty entries ago settles here, so its state entry falls outside the window
     // the page was cut to. Folding over the page alone leaves the card spinning for good.
     const entries = chain([tool("c1", { name: "spawn" })]);
-    const drawn = displayOf(entries, resolvers, 1000, new Map([["c1", spawnState()]]));
+    const drawn = displayOf(entries, resolvers, 1000, { states: new Map([["c1", spawnState()]]), carded: new Set(["c1"]) });
     expect(drawn[0]).toMatchObject({ spawn: { displayName: "dup-audit", status: "complete" } });
   });
 
@@ -231,6 +232,18 @@ describe("displayOf: a sub-agent's card", () => {
 });
 
 describe("withSpawnCards: what a delta can draw", () => {
+  test("a state whose card the log does not hold yet is passed through, not dropped", () => {
+    // Dropping it was the bug: a child that finished before its tool entry was written had a state
+    // and no card anywhere, and the live frames that used to carry it belong to a socket that a
+    // reload replaced. Measured 2026-09-21, a failed card vanished from the page for 8 minutes.
+    const state = chain([
+      { type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "error" },
+    ]);
+    const delta = withSpawnCards(state, state);
+    expect(delta).toHaveLength(1);
+    expect(delta[0]).toMatchObject({ type: "spawn_state", callId: "c1" });
+  });
+
   test("a state alone becomes the card it revised", () => {
     // The card arrived pages ago, while the child was still running. The client keys on the call id,
     // so resending it whole updates that card instead of drawing a second one.
@@ -280,10 +293,13 @@ describe("withSpawnCards: what a delta can draw", () => {
     expect(withSpawnCards(all.slice(1), all)).toEqual([all[0]!]);
   });
 
-  test("a state whose call never settled is dropped", () => {
-    // There is no card to revise yet: the tool is still running and the live frames carry it.
+  test("a state whose call never settled is handed over, not turned into a card", () => {
+    // It cannot stand in for a card -- there is none to replace, and materialising one here would
+    // draw a second card beside the tool entry when it lands. It is handed over whole instead:
+    // `displayOf` draws the card from it, once, at the state's own position, and the entry replaces
+    // it by id when it arrives.
     const state = chain([{ type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "running" }]);
-    expect(withSpawnCards(state, state)).toEqual([]);
+    expect(withSpawnCards(state, state)).toEqual(state);
   });
 
   test("a delta with no state entry is handed back untouched", () => {
@@ -994,5 +1010,61 @@ describe("windowNeedsFiles: what a served window owes its pictures", () => {
     // The economy the gate exists for: every reconnect would otherwise read the directory.
     expect(windowNeedsFiles(chain([tool("c1"), phase("etape"), runEnd()]))).toBe(false);
     expect(windowNeedsFiles([])).toBe(false);
+  });
+});
+
+describe("displayOf: a card the log does not hold yet", () => {
+  test("a child that finished before its card was written still draws one", () => {
+    // `spawn` returns while the child works, so its tool entry is written only when the whole batch
+    // settles. Measured 2026-09-21: a pass launched three children, the first failed after 26s, the
+    // slowest ran 8 minutes, and a reload in that window dropped the failed card from the page --
+    // the state was in the log, the entry was not, and a fresh page has no live frames to lean on.
+    const entries = chain([
+      user("lance la passe 14"),
+      {
+        type: "spawn_state", prompt: false, callId: "c1", subagentId: "subagent/x", status: "running",
+        displayName: "pass14-aggregateurs", agentType: "research", mode: "run", action: "spawn",
+        task: "balaye les agregateurs francais",
+      },
+      {
+        type: "spawn_state", prompt: false, callId: "c1", subagentId: "subagent/x", status: "error",
+        error: "Error: LLM stream request failed: HTTP 400 — Content Exists Risk",
+      },
+    ]);
+
+    const drawn = displayOf(entries, resolvers, 1000, spawnView(entries));
+    expect(drawn.map((e) => e.role)).toEqual(["user", "tool"]);
+    expect(drawn[1]).toMatchObject({
+      id: "t-c1",
+      name: "spawn",
+      ok: false,
+      args: { type: "research", mode: "run", task: "balaye les agregateurs francais" },
+      spawn: { displayName: "pass14-aggregateurs", status: "error" },
+    });
+  });
+
+  test("two states of one child draw one card, at the first of them", () => {
+    const entries = chain([
+      user("go"),
+      { type: "spawn_state", prompt: false, callId: "c1", subagentId: "subagent/x", status: "running", action: "spawn" },
+      { type: "spawn_state", prompt: false, callId: "c1", subagentId: "subagent/x", status: "complete", resultLength: 42 },
+    ]);
+
+    const cards = displayOf(entries, resolvers, 1000, spawnView(entries)).filter((e) => e.role === "tool");
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ spawn: { status: "complete", resultLength: 42 } });
+  });
+
+  test("a card the log carries is drawn there, with its answer, and not from its state", () => {
+    // The stand-in exists for the window before the entry lands. Once it is there it wins: it is
+    // the entry that holds the arguments and the child's answer.
+    const entries = chain([
+      { type: "spawn_state", prompt: false, callId: "c1", subagentId: "subagent/x", status: "running", action: "spawn", task: "t" },
+      tool("c1", { name: "spawn", args: { type: "research", mode: "run", task: "t" }, output: "l'answer", ok: true }),
+    ]);
+
+    const cards = displayOf(entries, resolvers, 1000, spawnView(entries)).filter((e) => e.role === "tool");
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({ output: "l'answer", ok: true });
   });
 });

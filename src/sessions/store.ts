@@ -34,6 +34,8 @@ export interface SessionSubAgentState {
   mode: string;
   action: SessionSubAgentAction;
   status: SessionSubAgentStatus;
+  /** What the child was asked to do. Opening state only: a terminal event does not know it. */
+  task?: string;
   resultLength?: number;
   error?: string;
   startedAt: string;

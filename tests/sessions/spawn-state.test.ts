@@ -2,7 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { hooks } from "../../src/hooks/index.ts";
 import { openSessionLog, type Entry, type Provisioned, type SpawnStateEntry, type ToolEntry } from "../../src/sessions/log.ts";
 import { contextEntries, promptOf } from "../../src/sessions/projection.ts";
-import { appendSpawnState, cardOf, recordSpawnLifecycle, spawnStates } from "../../src/sessions/spawn-state.ts";
+import { appendSpawnState, cardOf, recordSpawnLifecycle, spawnStates, spawnView } from "../../src/sessions/spawn-state.ts";
 import type { SessionSubAgentState } from "../../src/sessions/store.ts";
 
 let counter = 0;
@@ -337,5 +337,43 @@ describe("recordSpawnLifecycle: the bus writes into the parent's log", () => {
     } finally {
       recorder.stop();
     }
+  });
+});
+
+describe("spawnView: the fold, and which cards the log already holds", () => {
+  test("the opening state carries the task, and the fold keeps it", () => {
+    // The tool entry carries the task too, but it lands only when the whole batch settles. A card
+    // drawn from the state alone -- a reload while a sibling still runs -- would show no task at
+    // all without this (2026-09-21).
+    const entries = chain([
+      opened("call-1", "subagent/auditor", { task: "balaye les agregateurs" }),
+      settled("call-1", "subagent/auditor", { status: "error", error: "HTTP 400" }),
+    ]);
+
+    const state = spawnStates(entries).get("call-1");
+    expect(state?.task).toBe("balaye les agregateurs");
+    expect(state?.status).toBe("error");
+  });
+
+  test("a call id the log holds a tool entry for is carded; one it does not is not", () => {
+    // What tells a state that draws its own card from one whose card is drawn at the tool entry.
+    const entries = chain([
+      opened("call-1", "subagent/auditor"),
+      tool("call-1"),
+      opened("call-2", "subagent/auditor"),
+    ]);
+
+    const view = spawnView(entries);
+    expect(view.carded.has("call-1")).toBe(true);
+    expect(view.carded.has("call-2")).toBe(false);
+    expect(view.states.get("call-2")?.status).toBe("running");
+  });
+
+  test("the task survives the terminal state, which never knew it", () => {
+    const entries = chain([
+      opened("call-1", "subagent/auditor", { task: "veille CMA CGM" }),
+      settled("call-1", "subagent/auditor", { status: "complete", resultLength: 12 }),
+    ]);
+    expect(spawnStates(entries).get("call-1")?.task).toBe("veille CMA CGM");
   });
 });

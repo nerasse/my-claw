@@ -9,7 +9,7 @@ import { sessionLogOf } from "../../sessions/log-access.ts";
 import { readMeta } from "../../sessions/meta.ts";
 import { pathOf, UnknownCursorError, type Provisioned, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
 import { pageOf, pageBefore, displayOf, mediaRefsOf, runFold, runFoldPlan, withSpawnCards, windowNeedsFiles, type DisplayResolvers, type MediaRef } from "./display.ts";
-import { spawnStates } from "../../sessions/spawn-state.ts";
+import { spawnStates, spawnView } from "../../sessions/spawn-state.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/tools/display.ts";
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath, refBasename, refsWithoutCopy, trimRefPath } from "../../utils/media.ts";
@@ -513,7 +513,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // The plan reads the page alone: what folds is the work between two messages, and a message
     // is a message wherever the page boundary fell.
     const plan = fold ? runFoldPlan(window, runs) : undefined;
-    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(log.entries()), files, runs, plan);
+    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnView(log.entries()), files, runs, plan);
     return { entries, hasMore, nextBefore, ...(draft ? { draft } : {}) };
   }
 
@@ -612,7 +612,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // never fold anyway. Folding a delta would also have to reason about what the client already
     // holds, since the run it continues is half on screen.
     const plan = fold && freshWindow ? runFoldPlan(foldWindow, runs) : undefined;
-    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(allEntries), files, runs, plan);
+    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnView(allEntries), files, runs, plan);
 
     const branchLength = path.length;
     return {
@@ -670,7 +670,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // Folded over the whole branch for the same reasons a page is: a child spawned inside this run
     // may have settled long after it, and the run meta must be the one the header already shows.
     const runs = runFold(path);
-    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnStates(log.entries()), files, runs);
+    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnView(log.entries()), files, runs);
     return { entries, found: true };
   }
 

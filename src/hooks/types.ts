@@ -360,6 +360,8 @@ export interface HookEventMap {
      * wording differs.
      */
     action: "spawn" | "send";
+    /** What the child is asked to do: the spawn's task, or the message a `send` carries. */
+    task?: string;
   };
   "subagent:complete": { id: string; resultLength: number; parentSessionId: string };
   "subagent:error": { id: string; error: unknown; parentSessionId: string };

@@ -19,7 +19,8 @@ import { toolDisplayName } from "../../agent/tools/display.ts";
 import { toolCardId } from "./types.ts";
 import { parseStoredName, type SessionFile } from "./files.ts";
 import type { Entry } from "../../sessions/log.ts";
-import type { SessionAttachment, SessionSubAgentState } from "../../sessions/store.ts";
+import type { SpawnView } from "../../sessions/spawn-state.ts";
+import type { SessionAttachment } from "../../sessions/store.ts";
 import type {
   MyClawAppHistoryAttachment,
   MyClawAppHistoryEntry,
@@ -146,8 +147,10 @@ export function pageBefore(
  * what it already holds, not within one delta. The card came back doubled on every reload.
  *
  * So a tool entry always passes through at its own position, and a state only stands in for a card
- * that is absent. A state whose call never settled is dropped: there is no card yet, and the live
- * frames are still carrying that one.
+ * that is absent. A state whose card the log does not hold *at all* passes through too: it is the
+ * only thing that can draw the card, and `displayOf` draws it from the state. Dropping it here is
+ * what made a reload lose a child that had already finished -- the live frames carry those, and a
+ * fresh page has none (2026-09-21).
  */
 export function withSpawnCards(delta: readonly Entry[], all: readonly Entry[]): Entry[] {
   if (!delta.some((entry) => entry.type === "spawn_state")) return [...delta];
@@ -170,7 +173,12 @@ export function withSpawnCards(delta: readonly Entry[], all: readonly Entry[]): 
     }
     if (present.has(entry.callId)) continue;
     const card = cards.get(entry.callId);
-    if (!card) continue;
+    if (!card) {
+      // Nowhere in the log: let the state through, `displayOf` draws the card from it.
+      out.push(entry);
+      present.add(entry.callId);
+      continue;
+    }
     // Once per card, however many states revised it in this delta.
     present.add(entry.callId);
     out.push(card);
@@ -532,12 +540,14 @@ export function displayOf(
   entries: readonly Entry[],
   resolvers: DisplayResolvers,
   outputLimit: number,
-  spawn?: ReadonlyMap<string, SessionSubAgentState>,
+  spawn?: SpawnView,
   files: SessionFile[] = [],
   runs?: ReadonlyMap<string, MyClawAppRunMeta>,
   fold?: RunFoldPlan,
 ): MyClawAppHistoryEntry[] {
   const out: MyClawAppHistoryEntry[] = [];
+  // The cards this window drew from a state entry, so several states of one child draw one card.
+  const drawnFromState = new Set<string>();
 
   /**
    * What each run's tools produced, keyed by the phase that answers with it.
@@ -637,14 +647,43 @@ export function displayOf(
     }
 
     // No bubble of its own: it is an annotation on the card named by its `callId`, and it reaches
-    // the screen through the `spawn` map -- which is folded from the whole log, not from this page,
-    // because a child launched fifty entries ago finishes here.
-    if (entry.type === "spawn_state") continue;
+    // the screen through the `spawn` fold -- which covers the whole log, not this page, because a
+    // child launched fifty entries ago finishes here.
+    //
+    // When the log does not carry that card yet, the state draws it here, at its own position.
+    // `spawn` returns while the child works, so its tool entry is written only when the whole batch
+    // settles: a child that finished early has a state and no entry, and a client that connects in
+    // that window saw the card vanish -- it was carried by the live frames alone, and a fresh page
+    // has none. Measured 2026-09-21: three children, the first failed after 26s, the slowest ran 8
+    // minutes, and a reload in between dropped the failed card from the page.
+    if (entry.type === "spawn_state") {
+      const state = spawn?.states.get(entry.callId);
+      if (!state || spawn?.carded.has(entry.callId) || drawnFromState.has(entry.callId)) continue;
+      drawnFromState.add(entry.callId);
+      out.push(withRun({
+        // The same id the tool entry will produce, so the card that lands later replaces this one
+        // rather than standing beside it -- `toolCardId` is what both paths key on.
+        id: toolCardId(entry.callId) ?? entry.id,
+        role: "tool",
+        name: state.action === "send" ? "send" : "spawn",
+        args: {
+          ...(state.agentType ? { type: state.agentType } : {}),
+          ...(state.mode ? { mode: state.mode } : {}),
+          ...(state.task ? { task: state.task } : {}),
+        },
+        ok: state.status === "complete",
+        output: "",
+        truncated: false,
+        spawn: state,
+        ts,
+      }));
+      continue;
+    }
 
     if (entry.type === "tool") {
       const output = entry.output;
       const truncated = entry.truncated || output.length > outputLimit;
-      const state = spawn?.get(entry.callId) ?? entry.spawn;
+      const state = spawn?.states.get(entry.callId) ?? entry.spawn;
       out.push(withRun({
         // Keyed on the model's own call id, so this card and the live one are one card. They used
         // to differ, and a tool finishing after a reload appended a second card beside the first.

@@ -329,7 +329,7 @@ export class SubAgentRunner {
       await this.persistSession(id, session);
       await this.indexForSearch(id, session);
 
-      hooks.emit("subagent:spawn", { id, displayName, type, mode, parentSessionId, action: "spawn", ...(toolCallId ? { toolCallId } : {}) });
+      hooks.emit("subagent:spawn", { id, displayName, type, mode, parentSessionId, action: "spawn", task, ...(toolCallId ? { toolCallId } : {}) });
       const stream = streamProvider?.(id);
       const run = () => this.executeRun(id, type, resolved.dir, parentMessage, trackedSignal, model, stream, task);
       let result: string;
@@ -444,6 +444,7 @@ export class SubAgentRunner {
           parentSessionId: callerSessionId,
           toolCallId,
           action: "send",
+          task: userContent,
         });
       }
       // Resolved after the event, not before: the app channel creates the sub-agent's streamer
@@ -667,7 +668,7 @@ export class SubAgentRunner {
       await this.persistSession(id, session);
       await this.indexForSearch(id, session);
 
-      hooks.emit("subagent:spawn", { id, displayName: displayName || id.slice("subagent/".length), type, mode: "run", parentSessionId, action: "spawn", ...(toolCallId ? { toolCallId } : {}) });
+      hooks.emit("subagent:spawn", { id, displayName: displayName || id.slice("subagent/".length), type, mode: "run", parentSessionId, action: "spawn", task, ...(toolCallId ? { toolCallId } : {}) });
       const stream = streamProvider?.(id);
       this.activeCount += 1;
       try {
