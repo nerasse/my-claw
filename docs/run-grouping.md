@@ -116,6 +116,14 @@ La FlatList porte des **rows**, pas des items bruts :
   hors run par construction) reste visible ;
 - un groupe ne s'affiche que s'il contient au moins un item : deux messages collés ne
   produisent jamais un header vide.
+- **un pli d'une seule carte d'outil ne se groupe pas** : le lecteur voit la carte, pas une
+  barre à ouvrir pour la trouver. La barre dit exactement ce que la carte dit — un tool call
+  entre deux messages, c'est une carte — et c'est la carte qui était demandée (2026-09-21,
+  « quand il n'y a qu'un seul tool call, ne regroupe pas »). La row reste un groupe : c'est
+  lui qui porte la durée du run et le mot sur lequel il s'est arrêté, donc ce que la barre
+  portait est écrit **sous la carte**, sur une ligne (voir plus bas). Une phase de réflexion
+  seule, elle, reste pliée : son contenu n'est pas la carte, c'est justement le corps que
+  le pli existe pour ne pas montrer.
 
 `RunGroup` est un header repliable (chevron, nombre de tool calls, premier outil,
 durée, statut coloré en erreur/aborté), fermé par défaut : une session rouverte
@@ -123,6 +131,13 @@ commence avec tout replié. Un run a maintenant plusieurs plis : le **statut et 
 totale du run vivent sur son dernier pli** (décision owner), les autres plis n'affichent
 que leur propre contenu. Un pli sans aucun outil s'intitule « réflexion · N s » au lieu
 du « run » de repli.
+
+Un pli qui ne contient qu'une carte d'outil n'affiche **pas de barre du tout** : la carte est
+rendue directement, et la ligne de queue (durée totale du run, « Stopped »/« error ») passe
+**sous** elle, dans les mêmes mots que la barre. Le statut n'existe nulle part ailleurs dans le
+fil : il ne peut pas partir avec la barre sans disparaître du thread entier, et la durée le suit.
+Un pli d'une carte qui n'est pas le dernier du run ne porte pas cette ligne (elle est à la queue,
+une seule fois).
 
 Deux détails de contrôle, tous deux appris à l'usage :
 
