@@ -36,6 +36,10 @@ together: a job that can start an agent but not list, steer or kill it leaves or
 see.
 - `browser` — `delegate_browser_task`.
 
+That second family is the whole door: the browser agent is in `NOT_SPAWNABLE`
+(`agents/registry.ts`), so `spawn` cannot reach it and turning the switch off really does deny the
+browser rather than moving it one step away.
+
 Both are **granted unless the job turned them off** (`false`), so only `false` is stored and an
 untouched job keeps a clean shape, exactly like `silent`. A job created before the switches
 existed therefore keeps the browser it already had. The switch travels the same road as the scope
