@@ -24,17 +24,26 @@ import {
 const PAGE = "16777219";
 const CHOOSER = "16777223";
 
-function xdotoolWith(windows: Record<string, string>): {
+function xdotoolWith(
+  windows: Record<string, string>,
+  /** The ids a `key` closes: everything else survives its Escape, as a window that ignores the key. */
+  closes: string[] = [],
+): {
   calls: string[][];
   run: (args: string[]) => Promise<string>;
 } {
   const calls: string[][] = [];
+  const alive = new Map(Object.entries(windows));
   return {
     calls,
     run: async (args) => {
       calls.push(args);
-      if (args[0] === "search") return `${Object.keys(windows).join("\n")}\n`;
-      if (args[0] === "getwindowname") return windows[args[1] ?? ""] ?? "";
+      if (args[0] === "search") return `${[...alive.keys()].join("\n")}\n`;
+      if (args[0] === "getwindowname") return alive.get(args[1] ?? "") ?? "";
+      if (args[0] === "key") {
+        for (const id of closes) alive.delete(id);
+        return "";
+      }
       return "";
     },
   };
@@ -73,7 +82,10 @@ describe("unblock: recognising the windows", () => {
 
 describe("unblock: what gets done", () => {
   test("a chooser is focused first, then closed, then the browser takes the focus back", async () => {
-    const x = xdotoolWith({ [PAGE]: "Brevo - AI Native Product Engineer - Chromium", [CHOOSER]: "Open File" });
+    const x = xdotoolWith(
+      { [PAGE]: "Brevo - AI Native Product Engineer - Chromium", [CHOOSER]: "Open File" },
+      [CHOOSER],
+    );
     const outcome = await unblockDialogs(x.run);
 
     const sequences = x.calls.map((call) => call.join(" "));
@@ -87,6 +99,15 @@ describe("unblock: what gets done", () => {
     assert.deepEqual(outcome.actions, [{ action: "closed", window: "Open File" }]);
     assert.equal(outcome.message, 'closed "Open File"');
     assert.equal(outcome.ok, true);
+  });
+
+  test("a chooser that ignores the key is reported as raised, not as closed", async () => {
+    // The answer is the button's whole UX: claiming a window was closed when it is still there
+    // would send the owner back to a screen that is still dead.
+    const x = xdotoolWith({ [PAGE]: "Brevo - Chromium", [CHOOSER]: "Open File" });
+    const outcome = await unblockDialogs(x.run);
+    assert.deepEqual(outcome.actions, [{ action: "raised", window: "Open File" }]);
+    assert.equal(outcome.message, 'raised "Open File"');
   });
 
   test("another dialog is raised, never closed", async () => {
@@ -113,12 +134,12 @@ describe("unblock: what gets done", () => {
   });
 
   test("a window that dies between the search and the query is skipped, not fatal", async () => {
-    const calls: string[][] = [];
+    const alive = new Set(["10", "20"]);
     const run = async (args: string[]): Promise<string> => {
-      calls.push(args);
-      if (args[0] === "search") return "10\n20\n";
+      if (args[0] === "search") return `${[...alive].join("\n")}\n`;
       if (args[0] === "getwindowname" && args[1] === "10") throw new Error("xdotool getwindowname 10 exited with 1");
       if (args[0] === "getwindowname") return "Open File";
+      if (args[0] === "key") alive.delete("20");
       return "";
     };
     const outcome = await unblockDialogs(run);

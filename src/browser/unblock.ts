@@ -116,7 +116,14 @@ export async function unblockDialogs(run: XdotoolRunner): Promise<UnblockOutcome
     await run(["windowfocus", window.id]);
     if (isFileChooser(window.name)) {
       await run(["key", "--clearmodifiers", "Escape"]);
-      actions.push({ action: "closed", window: window.name.trim() });
+      // Whether the key closes it is the window's own business -- GTK's chooser does, and a window
+      // that ignores Escape is still one that was hiding. Asking the X server again is what keeps
+      // the answer from claiming more than what happened.
+      const left = parseWindowIds(await run(["search", "--onlyvisible", "--name", ".*"]));
+      actions.push({
+        action: left.includes(window.id) ? "raised" : "closed",
+        window: window.name.trim(),
+      });
     } else {
       actions.push({ action: "raised", window: window.name.trim() });
     }
