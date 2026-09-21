@@ -22,7 +22,33 @@ export const READ_ONLY_TOOLS = ["read", "search", "ls", "fetch", "web_search", "
 // sub-agent is a delegated worker whose results are reported by whoever spawned it, and a worker
 // that can ring the phone is a worker that can ring it fifty times.
 const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory", "cron", "workspaces", "question", "notify"];
-const CRON_EXCLUDED_TOOLS = ["cron", "spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory", "conversation_search", "workspaces", "question"];
+
+/**
+ * What the cron role is never given, however a job is configured. A job has no one to ask
+ * (`question`), no conversation to search (`conversation_search`), and one that could schedule
+ * jobs or edit skills would be a machine nobody can audit. docs/cron.md.
+ */
+const CRON_ALWAYS_EXCLUDED = ["cron", "manage_skills", "memory", "conversation_search", "workspaces", "question"];
+
+/**
+ * The two families a cron job carries a switch for. Granted unless the job turned them off: the
+ * browser already worked in a job before the switches existed, and the owner asked for sub-agents
+ * by default ("on, on"). The raw `browser_*` tools are never granted whatever happens -- the
+ * browser agent is reached through `delegate_browser_task`, one task at a time, and handing the
+ * low-level tools to a second driver would put two on one Chromium (docs/browser.md).
+ */
+export const CRON_CAPABILITIES = {
+  subagents: ["spawn", "send", "list_agents", "kill_agent", "reset_agent"],
+  browser: ["delegate_browser_task"],
+} as const;
+
+/** Names to withhold from a job given its switches. Absent means granted (the role's default). */
+export function cronCapabilityDeny(capabilities: { subagents?: boolean; browser?: boolean } | undefined): string[] {
+  return [
+    ...(capabilities?.subagents === false ? CRON_CAPABILITIES.subagents : []),
+    ...(capabilities?.browser === false ? CRON_CAPABILITIES.browser : []),
+  ];
+}
 
 /**
  * The raw browser tools drive the one shared Chromium and are the browser agent's whole toolbox.
@@ -117,7 +143,7 @@ export class ToolRegistry {
       // it now comes from the scope, which resolves to none for research unless explicitly granted.
       set = [...this.getByNames(READ_ONLY_TOOLS), ...dynamic];
     } else if (agentType === "cron") {
-      set = [...this.tools.values(), ...dynamic].filter((t) => !CRON_EXCLUDED_TOOLS.includes(t.name) && !isBrowserTool(t.name));
+      set = [...this.tools.values(), ...dynamic].filter((t) => !CRON_ALWAYS_EXCLUDED.includes(t.name) && !isBrowserTool(t.name));
     } else {
       // `general` and anything unrecognised. The orchestrator is the only agent granted the whole
       // registry, and it is named explicitly above: a name this chain does not know must land on a

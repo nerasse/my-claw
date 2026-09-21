@@ -49,6 +49,13 @@ export interface CronJob {
   mcp?: string[];
   tools?: string[];
   /**
+   * The capability switches. Absent means granted: a job created before them keeps what it had
+   * (the browser), and the owner asked for sub-agents by default. `false` is stored, `true` never
+   * is, so an untouched job keeps a clean shape -- like `silent`. See docs/cron.md.
+   */
+  subagents?: boolean;
+  browser?: boolean;
+  /**
    * Suppresses this job's push notifications, successes and failures alike. Absent = notify,
    * so an existing job keeps the behaviour it had. Distinct from the agent's own SILENT_MARKER,
    * which is a per-run decision ("nothing to report"): this one is the user's standing choice

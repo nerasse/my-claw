@@ -4773,6 +4773,8 @@ describe("scheduled jobs (jobs.*)", () => {
         ...(job.mcp ? { mcp: job.mcp } : {}),
         toolsMode,
         ...(job.tools ? { tools: job.tools } : {}),
+        subagents: job.subagents !== false,
+        browser: job.browser !== false,
         nextRunAt: job.nextRunAt,
         lastRunAt: job.lastRunAt,
         lastStatus: job.lastStatus,
@@ -4820,6 +4822,8 @@ describe("scheduled jobs (jobs.*)", () => {
           skills: fields.skills.mode === "inherit" ? undefined : fields.skills.mode === "all" ? ["*"] : (fields.skills.names ?? []),
           mcp: fields.mcp.mode === "inherit" ? undefined : fields.mcp.mode === "all" ? ["*"] : (fields.mcp.names ?? []),
           tools: fields.tools.mode === "inherit" ? undefined : fields.tools.mode === "all" ? ["*"] : (fields.tools.names ?? []),
+          ...(fields.subagents === undefined ? {} : { subagents: fields.subagents === true }),
+          ...(fields.browser === undefined ? {} : { browser: fields.browser === true }),
         };
         if (fields.id) {
           const target = jobs.find((j) => j.id === fields.id);
@@ -4981,6 +4985,49 @@ describe("scheduled jobs (jobs.*)", () => {
     assert.equal(frame["type"], "error");
     assert.equal(frame["scope"], "jobs");
     assert.equal(jobs.length, 0, "nothing was saved");
+  });
+
+  test("the capability switches ride on jobs.save, are stored as a denial, and clear back", async () => {
+    client.ws.send(JSON.stringify({
+      type: "jobs.save",
+      name: "Watcher",
+      prompt: "watch it",
+      schedule: "every 1h",
+      enabled: true,
+      skills: { mode: "inherit" },
+      mcp: { mode: "inherit" },
+      tools: { mode: "inherit" },
+      subagents: false,
+      browser: false,
+    }));
+    const deniedFrame = await nextFrame(client);
+    assert.equal(deniedFrame["type"], "jobs.list.result");
+    const denied = (deniedFrame["jobs"] as Array<Record<string, unknown>>)[0]!;
+    assert.equal(denied["subagents"], false);
+    assert.equal(denied["browser"], false);
+    // Stored as the denial only: granted is the default, so granting leaves no trace.
+    assert.equal(jobs[0]!["subagents"], false);
+    assert.equal(jobs[0]!["browser"], false);
+
+    client.ws.send(JSON.stringify({
+      type: "jobs.save",
+      id: jobs[0]!["id"],
+      name: "Watcher",
+      prompt: "watch it",
+      schedule: "every 1h",
+      enabled: true,
+      skills: { mode: "inherit" },
+      mcp: { mode: "inherit" },
+      tools: { mode: "inherit" },
+      subagents: true,
+      browser: true,
+    }));
+    const grantedFrame = await nextFrame(client);
+    const granted = (grantedFrame["jobs"] as Array<Record<string, unknown>>)[0]!;
+    assert.equal(granted["subagents"], true);
+    assert.equal(granted["browser"], true);
+    assert.equal(jobs[0]!["subagents"], undefined);
+    assert.equal(jobs[0]!["browser"], undefined);
   });
 
   test("jobs.save without prompt or schedule is refused before the store is touched", async () => {

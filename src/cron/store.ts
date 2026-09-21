@@ -176,6 +176,10 @@ export interface CreateJobParams {
   skills?: string[];
   mcp?: string[];
   tools?: string[];
+  /** The job's capability switches; `false` withholds the family, `true` clears the flag back
+   *  to granted. Absent on update means "don't touch". */
+  subagents?: boolean;
+  browser?: boolean;
   /** Suppresses the job's push notifications; delivery and output are untouched. */
   silent?: boolean;
 }
@@ -202,6 +206,9 @@ export function createJob(params: CreateJobParams): CronJob {
     ...(params.skills ? { skills: params.skills } : {}),
     ...(params.mcp ? { mcp: params.mcp } : {}),
     ...(params.tools ? { tools: params.tools } : {}),
+    // Absent rather than true: granted is the default, and an untouched job keeps a clean shape.
+    ...(params.subagents === false ? { subagents: false } : {}),
+    ...(params.browser === false ? { browser: false } : {}),
     // Absent rather than false: notifying is the default, and an untouched job keeps a clean shape.
     ...(params.silent ? { silent: true } : {}),
     nextRunAt: computeNextRun(schedule),
@@ -225,6 +232,9 @@ export interface UpdateJobParams {
   skills?: string[];
   mcp?: string[];
   tools?: string[];
+  /** The job's capability switches; absent means "don't touch", like `silent`. */
+  subagents?: boolean;
+  browser?: boolean;
   /** Suppresses the job's push notifications; delivery and output are untouched. */
   silent?: boolean;
 }
@@ -253,6 +263,10 @@ export function updateJob(jobs: CronJob[], jobId: string, updates: UpdateJobPara
   if (updates.skills !== undefined) job.skills = updates.skills;
   if (updates.mcp !== undefined) job.mcp = updates.mcp;
   if (updates.tools !== undefined) job.tools = updates.tools;
+  // Inverted versus `silent`, and it is on purpose: granted is the default here, so granting is
+  // what leaves no trace. `false` is the only value ever stored.
+  if (updates.subagents !== undefined) job.subagents = updates.subagents === false ? false : undefined;
+  if (updates.browser !== undefined) job.browser = updates.browser === false ? false : undefined;
   if (updates.silent !== undefined) job.silent = updates.silent || undefined;
   if (updates.schedule !== undefined) {
     job.schedule = parseSchedule(updates.schedule);

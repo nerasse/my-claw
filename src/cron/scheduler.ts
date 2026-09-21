@@ -194,6 +194,9 @@ export class CronScheduler {
         ...(job.mcp ? { mcp: job.mcp } : {}),
         ...(job.tools ? { tools: job.tools } : {}),
       };
+      // The job's capability switches, resolved at the one place a run's tools are built. Absent
+      // fields mean granted, so a job made before the switches keeps what it had. docs/cron.md.
+      session.scopeCapabilities = { subagents: job.subagents, browser: job.browser };
 
       const timeoutMs = this.config.cron?.timeoutMs ?? DEFAULT_CRON_TIMEOUT_MS;
       let timedOut = false;

@@ -3241,6 +3241,9 @@ export interface MyClawAppJobEntry {
   mcp?: string[];
   toolsMode: "inherit" | "all" | "list";
   tools?: string[];
+  /** Granted unless turned off: the job's own switches, resolved (see docs/cron.md). */
+  subagents: boolean;
+  browser: boolean;
   nextRunAt: string | null;
   lastRunAt: string | null;
   lastStatus: "ok" | "error" | null;
@@ -3423,6 +3426,9 @@ export interface MyClawAppJobSave {
   skills: MyClawAppJobScope;
   mcp: MyClawAppJobScope;
   tools: MyClawAppJobScope;
+  /** Sub-agents and browser: absent means "don't touch" (an older build does not send them). */
+  subagents?: boolean;
+  browser?: boolean;
 }
 
 export interface MyClawAppJobDelete {

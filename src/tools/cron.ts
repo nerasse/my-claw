@@ -1,5 +1,5 @@
 import type { Tool, ToolResult } from "../tools/types.ts";
-import { str, strOpt, bool } from "../tools/types.ts";
+import { str, strOpt, bool, boolOpt } from "../tools/types.ts";
 import { normalizeUntrusted } from "../agent/prompt/normalize-untrusted.ts";
 import type { UnifiedMessage } from "../channels/types.ts";
 import { createJob, loadJobs, saveJobs, updateJob, removeJob, parseDeliver, computeNextRun } from "../cron/store.ts";
@@ -77,6 +77,8 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
         skills: { type: "string", description: "Skills scope (create/update): 'inherit' (clear, the cron agent's list applies), 'all' or '*', 'none', or comma-separated names from the 'skills' list of cron list" },
         mcp: { type: "string", description: "MCP scope (create/update): 'inherit' (clear, the cron agent's list applies), 'all' or '*', 'none', or comma-separated server names from the 'mcp' list of cron list" },
         tools: { type: "string", description: "Tools scope (create/update): 'inherit' (clear, the cron agent's set applies), 'all' or '*', 'none', or comma-separated names from the 'tools' list of cron list. Names outside the cron baseline are dropped at run time" },
+        subagents: { type: "boolean", description: "Sub-agents (create/update): the job may spawn and steer them (spawn, send, list_agents, kill_agent, reset_agent). Granted unless set to false; a job that cannot see the agents it started leaves orphans. 'list' reports it" },
+        browser: { type: "boolean", description: "Browser (create/update): the job may open pages through delegate_browser_task, one task at a time on the shared browser. Granted unless set to false. 'list' reports it" },
         reason: { type: "string", description: "Pause reason (pause)" },
         enabled: { type: "boolean", description: "Include disabled jobs in list (list)" },
       },
@@ -117,6 +119,8 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
             skills: parseScopeInput(strOpt(args, "skills")).scope,
             mcp: parseScopeInput(strOpt(args, "mcp")).scope,
             tools: parseScopeInput(strOpt(args, "tools")).scope,
+            subagents: boolOpt(args, "subagents"),
+            browser: boolOpt(args, "browser"),
           });
           jobs.push(job);
           await saveJobs(jobs);
@@ -144,6 +148,7 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
             lines.push(`${j.id} | ${j.name} | ${j.schedule.display} | ${status} | next: ${next}`);
             lines.push(`  model: ${j.model ?? "default model"} | workspace: ${j.workspace ?? "default workspace"}`);
             lines.push(`  skills: ${scopeDisplay(j.skills)} | mcp: ${scopeDisplay(j.mcp)} | tools: ${scopeDisplay(j.tools)}`);
+            lines.push(`  sub-agents: ${j.subagents === false ? "off" : "on"} | browser: ${j.browser === false ? "off" : "on"}`);
             const removed: string[] = [];
             if (j.model && !modelIds.includes(j.model)) removed.push(`${j.model} (model)`);
             if (j.workspace && !workspaceKeys.includes(j.workspace)) removed.push(`${j.workspace} (workspace)`);
@@ -185,6 +190,9 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
           const skills = parseScopeInput(strOpt(args, "skills"));
           const mcp = parseScopeInput(strOpt(args, "mcp"));
           const tools = parseScopeInput(strOpt(args, "tools"));
+          // Tri-state, like the scopes: absent means "don't touch", not "off".
+          const subagents = boolOpt(args, "subagents");
+          const browser = boolOpt(args, "browser");
           // "inherit" means the field leaves the job, but updateJob reads undefined as "don't
           // touch": clearing has to happen before the update so the store's semantics stay.
           if (skills.present && skills.scope === undefined) {
@@ -210,6 +218,8 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
             ...(skills.present && skills.scope !== undefined ? { skills: skills.scope } : {}),
             ...(mcp.present && mcp.scope !== undefined ? { mcp: mcp.scope } : {}),
             ...(tools.present && tools.scope !== undefined ? { tools: tools.scope } : {}),
+            ...(subagents === undefined ? {} : { subagents }),
+            ...(browser === undefined ? {} : { browser }),
           });
           if (!updated) return { success: false, output: `Job not found: ${jobId}` };
           await saveJobs(jobs);

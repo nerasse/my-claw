@@ -65,3 +65,12 @@ export function bool(args: Record<string, unknown>, key: string, fallback: boole
   if (v === "false") return false;
   return fallback;
 }
+
+/** Same grammar as `bool`, but absent stays absent: "don't touch" is not "false". */
+export function boolOpt(args: Record<string, unknown>, key: string): boolean | undefined {
+  const v = args[key];
+  if (typeof v === "boolean") return v;
+  if (v === "true") return true;
+  if (v === "false") return false;
+  return undefined;
+}

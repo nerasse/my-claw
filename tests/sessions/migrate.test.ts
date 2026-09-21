@@ -158,11 +158,13 @@ describe("migrateSessions", () => {
   });
 
   test("the settings survive and the run state does not", async () => {
-    // scopeOverride, scopeEffort and invokedBy are set from the job before each run, and a cron
+    // scopeOverride, scopeCapabilities, scopeEffort and invokedBy are set from the job before
+    // each run, and a cron
     // session outlives its run: a persisted copy would outlive the settings it was taken from.
     await writeLegacy(data("t1", [userMsg("q", 1)], {
       title: "mon fil", modelOverride: "opus-5", approvedTools: ["bash"], verbose: true,
-      scopeOverride: { tools: ["bash"] }, scopeEffort: "high", invokedBy: "other",
+      scopeOverride: { tools: ["bash"] }, scopeCapabilities: { browser: false },
+      scopeEffort: "high", invokedBy: "other",
     } as Partial<LegacySessionData>));
     await migrateSessions(readLegacy);
 
@@ -170,6 +172,7 @@ describe("migrateSessions", () => {
     expect(meta).toMatchObject({ title: "mon fil", modelOverride: "opus-5", approvedTools: ["bash"], verbose: true });
     const raw = JSON.parse(await readFile(metaPath("t1"), "utf-8")) as Record<string, unknown>;
     expect(raw["scopeOverride"]).toBeUndefined();
+    expect(raw["scopeCapabilities"]).toBeUndefined();
     expect(raw["scopeEffort"]).toBeUndefined();
     expect(raw["invokedBy"]).toBeUndefined();
     // And neither is the conversation: that is the split the whole change exists for.

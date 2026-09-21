@@ -139,3 +139,44 @@ test("a pause the tick itself decides is written", async () => {
   assert.equal(after.state, "paused");
   assert.equal(after.pausedReason, "unreadable schedule");
 });
+
+test("the capability switches are stored, reported per job, and granted back by clearing them", async () => {
+  const tool = createCronTool(fakeScheduler, context());
+  const created = await tool.execute({
+    action: "create",
+    name: "Watcher",
+    prompt: "watch the thing",
+    schedule: "every 1h",
+    deliver: "local",
+    subagents: false,
+    browser: false,
+  });
+  assert.equal(created.success, true);
+
+  const jobs = await loadJobs();
+  assert.equal(jobs[0]!.subagents, false);
+  assert.equal(jobs[0]!.browser, false);
+  const listed = await tool.execute({ action: "list" });
+  assert.match(listed.output, /sub-agents: off \| browser: off/);
+
+  // Granting one back clears the flag rather than storing `true`: absent is granted, and an
+  // untouched job keeps a clean shape (same rule as `silent`).
+  const id = jobs[0]!.id;
+  const updated = await tool.execute({ action: "update", job_id: id, subagents: true });
+  assert.equal(updated.success, true);
+  const after = await loadJobs();
+  assert.equal(after[0]!.subagents, undefined);
+  assert.equal(after[0]!.browser, false);
+  const relisted = await tool.execute({ action: "list" });
+  assert.match(relisted.output, /sub-agents: on \| browser: off/);
+});
+
+test("a job created without the switches carries neither flag, and reads as granted", async () => {
+  const tool = createCronTool(fakeScheduler, context());
+  await tool.execute({ action: "create", name: "Plain", prompt: "do it", schedule: "every 2h", deliver: "local" });
+  const jobs = await loadJobs();
+  assert.equal(jobs[0]!.subagents, undefined);
+  assert.equal(jobs[0]!.browser, undefined);
+  const listed = await tool.execute({ action: "list" });
+  assert.match(listed.output, /sub-agents: on \| browser: on/);
+});

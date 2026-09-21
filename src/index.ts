@@ -2040,6 +2040,8 @@ async function main() {
             ...(job.mcp ? { mcp: job.mcp } : {}),
             toolsMode: scopeToWire(job.tools).mode,
             ...(job.tools ? { tools: job.tools } : {}),
+            subagents: job.subagents !== false,
+            browser: job.browser !== false,
             nextRunAt: job.nextRunAt,
             lastRunAt: job.lastRunAt,
             lastStatus: job.lastStatus,
@@ -2077,6 +2079,10 @@ async function main() {
           skills: scopeToStored(fields.skills),
           mcp: scopeToStored(fields.mcp),
           tools: scopeToStored(fields.tools),
+          // Absent stays absent, like `silent`: an older app build does not send these, and an
+          // edit from it must not silently grant or deny a capability.
+          ...(fields.subagents === undefined ? {} : { subagents: fields.subagents === true }),
+          ...(fields.browser === undefined ? {} : { browser: fields.browser === true }),
         };
         const jobs = await loadJobs();
         if (fields.id) {

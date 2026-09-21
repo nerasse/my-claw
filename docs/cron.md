@@ -20,7 +20,31 @@ Jobs created via chat capture `origin` automatically. Jobs created manually (edi
 
 ### Tool restriction (`agentType: "cron"`)
 
-Cron jobs get a filtered toolset. Excluded: `cron` (no recursive scheduling), `spawn/send/list_agents/kill_agent/reset_agent` (no sub-agents — they need user approval), `manage_skills` (no skill mutations), `memory` (would corrupt user representations without a user present).
+Cron jobs get a filtered toolset. Never granted, whatever a job is configured with: `cron` (no
+recursive scheduling), `manage_skills` (no skill mutations), `memory` (would corrupt user
+representations without a user present), `conversation_search` (nothing to search), `workspaces`
+and `question` (there is nobody to ask). The raw `browser_*` tools stay out too: the browser agent
+is reached through `delegate_browser_task`, one task at a time on the one shared Chromium.
+
+### Capability switches (`subagents`, `browser`)
+
+Two families sit behind a per-job switch rather than a hard exclusion, because a job is the
+orchestrator's only stand-in when nobody is watching:
+
+- `subagents` — `spawn`, `send`, `list_agents`, `kill_agent`, `reset_agent`. The whole family
+together: a job that can start an agent but not list, steer or kill it leaves orphans it cannot
+see.
+- `browser` — `delegate_browser_task`.
+
+Both are **granted unless the job turned them off** (`false`), so only `false` is stored and an
+untouched job keeps a clean shape, exactly like `silent`. A job created before the switches
+existed therefore keeps the browser it already had. The switch travels the same road as the scope
+overrides — the scheduler sets `session.scopeCapabilities` from the job before the run, and the
+bridge resolves it at the one place a run's tools are built (`getForAgent`) by withholding the
+family's names. The job's own `tools` list still intersects whatever the switches leave, and the
+`cron` tool takes `subagents`/`browser` arguments (`cron list` reports both per job). Both appear
+in the app's job editor as two switches, since a job set up from the phone must be able to reach
+them too.
 
 ### `[SILENT]` marker
 

@@ -62,7 +62,7 @@ import { runRegistry } from "../core/run-registry.ts";
 import { recordRunStart, recordRunEnd } from "../snapshots/store.ts";
 import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback, MediaStoreHook } from "./backend.ts";
 import { storeRunMedia, type StoredRunMedia } from "./media-store.ts";
-import { producesRemoteContent } from "../tools/registry.ts";
+import { producesRemoteContent, cronCapabilityDeny } from "../tools/registry.ts";
 import { normalizeUntrusted } from "./prompt/normalize-untrusted.ts";
 
 /**
@@ -448,9 +448,16 @@ export class AgentBridge implements AgentBackend {
         ? "main"
         : this.agentKind ?? "general";
     const agent = resolveAgent(this.config, this.agentRegistry, agentToolType, session.workspace, session.scopeOverride);
+    // A cron job's own switches are the same layer as its scope overrides: the role's floor is the
+    // registry's (never granted), what this job was handed is the job's. docs/cron.md.
+    const disabled = [
+      ...(this.config.tools?.disabled ?? []),
+      ...(agent.deny ?? []),
+      ...(agentToolType === "cron" ? cronCapabilityDeny(session.scopeCapabilities) : []),
+    ];
     const tools = this.toolRegistry.getForAgent(
       agent.base,
-      agent.deny ? [...(this.config.tools?.disabled ?? []), ...agent.deny] : this.config.tools?.disabled,
+      disabled,
       agent.mcp,
       agent.allow,
     );
