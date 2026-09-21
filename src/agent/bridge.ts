@@ -14,7 +14,7 @@ import type { SessionData, SessionAttachment } from "../sessions/store.ts";
 import { attributionParent, markSessionDirty } from "../sessions/store.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
 import { promptOf, contextEntries } from "../sessions/projection.ts";
-import type { Entry } from "../sessions/log.ts";
+import type { Entry, SessionLog } from "../sessions/log.ts";
 import { RunRecorder } from "./run-recorder.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
@@ -44,6 +44,7 @@ import { SkillRegistry } from "../skills/registry.ts";
 import type { AgentRegistry } from "../agents/registry.ts";
 import { resolveAgent } from "../agents/resolve.ts";
 import { log } from "../utils/logger.ts";
+import { LruMap } from "../utils/lru-map.ts";
 import { errorLogData } from "../utils/errors.ts";
 import { ToolApprovalManager } from "./approvals.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
@@ -144,10 +145,22 @@ function imageAttachmentsOf(message: UnifiedMessage): SessionAttachment[] {
 // broken tool). Every tool result is normalized to a non-empty, explicit string.
 const EMPTY_TOOL_OUTPUT = "[tool returned an empty response]";
 
+/** Injected messages whose entry is waiting to be drained. Well past one run's cap. */
+const MAX_TRACKED_INJECTIONS = 64;
 
 export class AgentBridge implements AgentBackend {
   private approvalManager: ToolApprovalManager;
   private preprocessor: MessagePreprocessor;
+  /**
+   * The injected messages whose entry is already on the log, holding the text that was written.
+   *
+   * The entry goes on the log when the turn in flight comes back, before that turn's rows: a turn
+   * that cancels a question is one the owner's message caused, and reading it above the bubble it
+   * answers is wrong. What is left for the drain is the prompt, which cannot carry the message any
+   * earlier than the tool round's results. Bounded: an id leaves as its message is drained, and the
+   * log itself is the second guard for the ones a finished run never drained.
+   */
+  private injectedEntries = new LruMap<string, string>(MAX_TRACKED_INJECTIONS);
 
   constructor(
     private config: MyClawConfig,
@@ -440,8 +453,10 @@ export class AgentBridge implements AgentBackend {
       const images = imageAttachmentsOf(message);
       const transcripts = this.preprocessor.transcriptsOf(message.id);
       // Sub-agent path: the runner already wrote the UserEntry to survive a crash before the
-      // first turn. Skip it here to avoid a duplicate.
-      if (!userEntryWritten) {
+      // first turn. Skip it here to avoid a duplicate. A bubble is written once, so a message the
+      // run already recorded as an injection -- or one a force-closed run left on the log for the
+      // run that reroutes it -- is not written again either.
+      if (!userEntryWritten && !entries.get(message.id)) {
         recorder.user({
           // The app has already drawn this bubble from chat.send. Reuse that id so a later sync
           // replaces it instead of appending a second copy.
@@ -536,7 +551,7 @@ export class AgentBridge implements AgentBackend {
         {
           for (const injected of runRegistry.drainInjections(session.id)) {
             budget.grant(injectionBonus);
-            await this.injectUserTurn(injected, chatMessages, session, Boolean(llmConfig.vision), recorder, onTurnSwitch);
+            await this.injectUserTurn(injected, chatMessages, session, Boolean(llmConfig.vision), recorder, entries, onTurnSwitch);
           }
         }
         iteration++;
@@ -691,6 +706,11 @@ export class AgentBridge implements AgentBackend {
 
         hooks.emit("agent:turn:end", { sessionId: session.id, model: llmConfig.model, iteration, hasToolCalls: Boolean(response.toolCalls?.length), finishReason: response.finishReason, incomplete: response.incomplete });
 
+        // Before a single row of this turn is recorded: a message that arrived while it was in
+        // flight has its entry written now, so the owner's bubble sits above the turn it caused.
+        // The prompt only receives it at the iteration boundary below, where a user turn is legal.
+        await this.recordInjectedEntries(session, recorder, entries);
+
         if (!response.toolCalls?.length && response.content.trim().length === 0) {
           emptyTurnRetries++;
           void log("warn", "LLM ended an empty turn; retrying instead of finishing silently", {
@@ -738,7 +758,7 @@ export class AgentBridge implements AgentBackend {
               chatMessages.push({ role: "assistant", content: transformedResponse });
               for (const m of injected) {
                 budget.grant(injectionBonus);
-                await this.injectUserTurn(m, chatMessages, session, Boolean(llmConfig.vision), recorder, onTurnSwitch);
+                await this.injectUserTurn(m, chatMessages, session, Boolean(llmConfig.vision), recorder, entries, onTurnSwitch);
               }
               continue;
             }
@@ -1068,6 +1088,39 @@ export class AgentBridge implements AgentBackend {
   }
 
   /**
+   * The text an injected message contributes, from the preprocessor and the channel's own hook.
+   */
+  private async injectedContent(injected: UnifiedMessage, session: SessionData): Promise<string> {
+    const userContent = this.preprocessor.buildUserContent(injected);
+    return (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
+  }
+
+  /**
+   * Puts the entry of every message waiting in the mailbox on the log, before this turn's rows.
+   *
+   * Called the moment the turn in flight comes back and before any of it is recorded. The turn may
+   * be the run reacting to one of those messages -- a message that jumps a question cancels it, and
+   * the reaction is the next turn -- and an entry written at the drain below would then land
+   * underneath the very rows it caused. Neither claims nor drains: the message still belongs to the
+   * prompt at the iteration boundary, which is the first point a user turn may be appended to it.
+   */
+  private async recordInjectedEntries(session: SessionData, recorder: RunRecorder, entries: SessionLog): Promise<void> {
+    for (const injected of runRegistry.peekInjections(session.id)) {
+      if (this.injectedEntries.has(injected.id) || entries.get(injected.id)) continue;
+      const text = await this.injectedContent(injected, session);
+      const images = imageAttachmentsOf(injected);
+      recorder.user({
+        // The app already drew this bubble from its own send: one identity, not two.
+        id: injected.id,
+        text,
+        ...(images.length > 0 ? { attachments: images } : {}),
+        ...(injected.location ? { location: injected.location } : {}),
+      });
+      this.injectedEntries.set(injected.id, text);
+    }
+  }
+
+  /**
    * Append a mid-run injected message as a fresh user turn (text + media), mirroring how the
    * initial message is built. STT/video preprocessing already ran before routing, so we only
    * rebuild the content here. The next LLM call sees it.
@@ -1078,23 +1131,31 @@ export class AgentBridge implements AgentBackend {
     session: SessionData,
     vision: boolean,
     recorder: RunRecorder,
+    entries: SessionLog,
     onTurnSwitch?: (message: UnifiedMessage) => Promise<void>,
   ): Promise<void> {
     if (onTurnSwitch) await onTurnSwitch(injected);
 
-    const userContent = this.preprocessor.buildUserContent(injected);
-    const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
+    // The entry usually went on the log before this turn's rows (`recordInjectedEntries`); the text
+    // is taken back from there rather than derived twice. Written here only for a message that was
+    // already waiting when the run's first turn began, and skipped when the log holds the bubble
+    // already -- a run that force-closed left one behind for the run that reroutes its message.
+    const recorded = this.injectedEntries.get(injected.id);
+    const transformedContent = recorded ?? (await this.injectedContent(injected, session));
     const images = imageAttachmentsOf(injected);
-    // The images ride on the entry as on the trigger turn: that field is what every later
-    // request and every reopened thread reads the picture back from. Without it the bubble came
-    // back as bare text and the model never saw the picture again.
-    recorder.user({
-      // An injected app message already has a bubble open under its chat.send id.
-      id: injected.id,
-      text: transformedContent,
-      ...(images.length > 0 ? { attachments: images } : {}),
-      ...(injected.location ? { location: injected.location } : {}),
-    });
+    if (recorded === undefined && !entries.get(injected.id)) {
+      // The images ride on the entry as on the trigger turn: that field is what every later
+      // request and every reopened thread reads the picture back from. Without it the bubble came
+      // back as bare text and the model never saw the picture again.
+      recorder.user({
+        // An injected app message already has a bubble open under its chat.send id.
+        id: injected.id,
+        text: transformedContent,
+        ...(images.length > 0 ? { attachments: images } : {}),
+        ...(injected.location ? { location: injected.location } : {}),
+      });
+    }
+    this.injectedEntries.delete(injected.id);
 
     // The built text, not the raw one: a picture sent without a word has an empty raw text, and
     // an empty text block beside the image is a request Anthropic refuses whole. A file that cannot

@@ -43,6 +43,27 @@ saw is drawn there as an empty bubble carrying the error text: the owner got `St
 has nothing to report is now silent, and a stop reports nothing -- `docs/my-claw-app-channel.md`, "The
 failure journal".
 
+### The entry goes on the log before the rows it caused
+
+An injected message's `user` entry used to be written at the drain -- the iteration boundary, once
+the tool round in flight had its results. That is right for the **prompt** (a user message cannot
+sit between an assistant's `tool_calls` and their results) and wrong for the **log**, which is what
+the owner reads: between the arrival and the next boundary the run can write rows of its own, and
+when the message is what caused them the bubble lands underneath them.
+
+Measured 2026-09-21, thread `4d5775e7`, answering a pending question by voice: the cancel lands at
+06:31:35, the run's reaction turn -- a phase and a `bash` call -- is written at 06:31:52, and the
+bubble at 06:31:52, behind it. `Log.append` gives every entry its `seq` in call order, the file
+order is the display order, so the inversion is permanent and a reopened thread shows it too.
+
+So the write is split from the push. `recordInjectedEntries` peeks the mailbox the moment the turn
+in flight comes back and, before anything of that turn is recorded, puts the entry on the log;
+`injectUserTurn` at the boundary then pushes to the prompt only, taking the text from what was
+written so the channel's `transform:user:content` hook still runs exactly once. A bubble is written
+once either way: the normal path skips an id the log already holds (`Log.append` throws on a
+duplicate rather than writing a second one), which is also what covers a run that force-closes and
+reroutes its message to a fresh run.
+
 ### Done reaction at run end
 
 The injected message stays "thinking" until the whole run ends, then flips to "done". Simple and honest:
@@ -70,7 +91,8 @@ exhausted), that injection is rerouted to a fresh run via `RerouteSignal`.
 ## Where
 
 - `src/core/run-registry.ts` -- the per-session injection mailbox (`enqueueInjection`,
-  `drainInjections`, `drainOrClose`, `settleMailbox`) and `RerouteSignal`.
+  `peekInjections`, `drainInjections`, `drainOrClose`, `settleMailbox`) and `RerouteSignal`.
 - `src/core/router.ts` -- enqueue branch in `route`, `settleMailbox` at the three run exits.
-- `src/agent/bridge.ts` -- drains at the iteration boundary and the final-answer point, `injectUserTurn`.
+- `src/agent/bridge.ts` -- drains at the iteration boundary and the final-answer point,
+  `recordInjectedEntries` at the turn's return, `injectUserTurn`.
 - `src/index.ts` -- `onTurnSwitch` wiring (mutable `active` streamer) + `RerouteSignal` reroute.

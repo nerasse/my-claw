@@ -237,6 +237,21 @@ class RunRegistry {
   }
 
   /**
+   * What is waiting to be addressed, without claiming it.
+   *
+   * The run records these entries the moment the turn in flight comes back, before that turn
+   * writes anything. The turn may be the run reacting to one of them -- a message that jumps a
+   * question cancels it, and the reaction is the very next turn -- and an entry written later would
+   * land underneath the rows it caused. Draining stays a separate step: the prompt cannot carry a
+   * user message until the tool round in flight has its results.
+   */
+  peekInjections(sessionId: string): UnifiedMessage[] {
+    const mb = this.mailboxes.get(sessionId);
+    if (!mb) return [];
+    return mb.pending.map((i) => i.message);
+  }
+
+  /**
    * Drain pending injections; if there are none, atomically close the mailbox (no `await`
    * around this call). Used at the run's natural end point so a message that arrived during
    * the final LLM call is still picked up; once closed, late arrivals fall back to a new run.

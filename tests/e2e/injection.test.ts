@@ -6,6 +6,8 @@ import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
+import { setSessionLogResolver, resetSessionLogResolver } from "../../src/sessions/log-access.ts";
+import type { UserEntry } from "../../src/sessions/log.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 
@@ -33,7 +35,10 @@ function noopTool() {
   return reg;
 }
 function makeRouter(reg: ToolRegistry): MessageRouter {
-  return new MessageRouter(new SessionManager(), new AgentBridge(config, reg, new SkillRegistry()), config);
+  return makeRouterWith(new SessionManager(), reg);
+}
+function makeRouterWith(manager: SessionManager, reg: ToolRegistry): MessageRouter {
+  return new MessageRouter(manager, new AgentBridge(config, reg, new SkillRegistry()), config);
 }
 function userContents(body: { messages: Array<{ role: string; content: unknown }> }): unknown[] {
   return body.messages.filter((m) => m.role === "user").map((m) => m.content);
@@ -113,6 +118,71 @@ describe("E2E mid-run injection", () => {
       expect(r?.text).toBe("hello");
     } finally {
       mock.restore(); runRegistry.clear();
+    }
+  });
+  /**
+   * The order the owner reads. A message that jumps a pending question cancels it, and the run's
+   * reaction to that cancel is the very next turn -- so an entry written at the iteration boundary
+   * lands underneath the rows the message caused, and the voice bubble reads as if it came after
+   * the answer. Measured in thread 4d5775e7 on 2026-09-21: the question cancelled at 06:31:35, the
+   * bubble written at 06:31:52, behind a phase and a bash call of the turn it had caused.
+   */
+  test("a message that arrives during a turn gets its entry above that turn's rows", async () => {
+    runRegistry.clear();
+    const manager = new SessionManager();
+    setSessionLogResolver((sessionId) => manager.logOf(sessionId));
+    const router = makeRouterWith(manager, noopTool());
+
+    let call = 0;
+    const mock = mockFetch(async () => {
+      call++;
+      if (call === 1) {
+        return sse([{ choices: [{ delta: { tool_calls: [{ index: 0, id: "tc1", function: { name: "noop", arguments: "{}" } }] } }] }]);
+      }
+      if (call === 2) {
+        // The arrival lands while this turn is in flight: after the run's last drain point, and
+        // before any row of the turn is on the log.
+        runRegistry.enqueueInjection(SESSION_ID, message("m-late", "steer"));
+        return sse([{ choices: [{ delta: { content: "reacting" } }] }]);
+      }
+      return sse([{ choices: [{ delta: { content: "done" } }] }]);
+    });
+
+    try {
+      await router.route(message("m1", "start"), { onToken: async () => {} });
+      const entries = (await manager.logOf(SESSION_ID)).entries();
+      const userAt = entries.findIndex((entry) => entry.id === "m-late");
+      const reactionAt = entries.findIndex((entry) => entry.type === "phase" && entry.text === "reacting");
+      expect(call).toBe(3);
+      expect(userAt).toBeGreaterThan(0);
+      expect(reactionAt).toBeGreaterThan(0);
+      expect(userAt).toBeLessThan(reactionAt);
+    } finally {
+      mock.restore(); runRegistry.clear(); resetSessionLogResolver();
+    }
+  });
+  /**
+   * A bubble is written once. The run now records an injected message's entry before the turn it
+   * caused, so a run that force-closes can leave that entry on the log for the run its message is
+   * rerouted to -- and `Log.append` throws on an id it already holds rather than writing a second
+   * bubble. The same guard covers a channel replaying a message it has already sent.
+   */
+  test("a message whose bubble is already on the log is not written a second time", async () => {
+    runRegistry.clear();
+    const manager = new SessionManager();
+    setSessionLogResolver((sessionId) => manager.logOf(sessionId));
+    const log = await manager.logOf(SESSION_ID);
+    log.append({ type: "user", prompt: true, text: "already here" }, "m-once");
+    const router = makeRouterWith(manager, noopTool());
+
+    const mock = mockFetch(async () => sse([{ choices: [{ delta: { content: "ok" } }] }]));
+    try {
+      await router.route(message("m-once", "already here"), { onToken: async () => {} });
+      const bubbles = log.entries().filter((entry): entry is UserEntry => entry.type === "user" && entry.id === "m-once");
+      expect(bubbles.length).toBe(1);
+      expect(bubbles[0]!.text).toBe("already here");
+    } finally {
+      mock.restore(); runRegistry.clear(); resetSessionLogResolver();
     }
   });
 });
