@@ -7,6 +7,7 @@ import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import { setSessionLogResolver, resetSessionLogResolver } from "../../src/sessions/log-access.ts";
+import { hooks } from "../../src/hooks/index.ts";
 import type { UserEntry } from "../../src/sessions/log.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
@@ -185,4 +186,63 @@ describe("E2E mid-run injection", () => {
       mock.restore(); runRegistry.clear(); resetSessionLogResolver();
     }
   });
+/**
+ * The owner, 2026-09-21: "si je renvoie un autre vocal alors que le compact n'est pas fini, ça
+ * s'additionne à la queue et ça s'envoie en une fois [...] tant qu'il y a des items en queue on va
+ * pas envoyer plusieurs fois à chacun son tour".
+ *
+ * Measured on his own threads the same evening -- thread 3fad6e60, a /compact at 19:27:28, two
+ * voice notes at 19:28:16 and 19:28:37: the first started a run when the compaction released at
+ * 19:31:52, the second waited for that whole run and took its turn at 19:48:47, twenty minutes
+ * later. Two runs, two calls, two answers.
+ */
+test("two messages released by the same compaction ride one call, not two runs", async () => {
+  runRegistry.clear();
+  const router = makeRouter(noopTool());
+  const held = runRegistry.beginCompaction(SESSION_ID);
+  if (!held) throw new Error("the compaction hold was refused");
+
+  const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+  let runs = 0;
+  const onRunStart = (): void => { runs++; };
+  hooks.on("message:route:start", onRunStart);
+  const parked = [waiter(), waiter()];
+
+  const mock = mockFetch(async (_u, init) => {
+    bodies.push(JSON.parse(String(init?.body ?? "{}")));
+    return sse([{ choices: [{ delta: { content: "addressed" } }] }]);
+  });
+
+  try {
+    const first = router.route(message("m1", "the first request"), { onToken: async () => {} });
+    const second = router.route(message("m2", "and the second one"), { onToken: async () => {} });
+    // Both are waiting on the compaction -- the event, not a sleep.
+    await Promise.all(parked.map((p) => p.wait));
+    expect(bodies).toHaveLength(0);
+
+    held.release();
+    await Promise.all([first, second]);
+
+    expect(runs).toBe(1);
+    // One call, and it carries both: the second message was in the mailbox before this run's first
+    // turn, which only works because `startRoot` keeps a mailbox the session already claimed.
+    expect(bodies).toHaveLength(1);
+    const turn = userContents(bodies[0]!);
+    expect(turn.some((c) => typeof c === "string" && c.includes("the first request"))).toBe(true);
+    expect(turn.some((c) => typeof c === "string" && c.includes("and the second one"))).toBe(true);
+  } finally {
+    hooks.off("message:route:start", onRunStart);
+    for (const p of parked) p.off();
+    mock.restore(); runRegistry.clear();
+  }
+});
+
+/** A promise that resolves when the router parks a message on a compaction, and its listener. */
+function waiter(): { wait: Promise<void>; off: () => void } {
+  let resolve!: () => void;
+  const wait = new Promise<void>((r) => { resolve = r; });
+  const handler = (): void => resolve();
+  hooks.on("message:queued", handler);
+  return { wait, off: () => hooks.off("message:queued", handler) };
+}
 });

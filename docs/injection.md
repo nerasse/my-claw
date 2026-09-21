@@ -19,6 +19,27 @@ sit between an `assistant` message with `tool_calls` and its `tool` results. Con
 (browser, sub-agent, bash) is running, the injection waits for it -- accepted trade-off. Interrupting
 mid-tool (abort+restart) was rejected: it would waste work and could re-fire side-effecting tools.
 
+### The queue is the mailbox, and the queue merges
+
+A message that cannot be delivered yet waits in one place whatever is holding the session: a run in
+flight, a session already claimed by the message ahead of it, or a `/compact` still writing. That place
+is the run's mailbox, and whichever run is next takes **everything in it at its first iteration
+boundary** -- one LLM call carrying all of them, each as its own user turn and its own bubble. Several
+messages waiting means one delivery, not one run each.
+
+The predicate is the mailbox and not "is a run registered". The session claims its mailbox when it takes
+the lock, before its run exists, so a message that lands in that window joins it; and `startRoot` keeps a
+mailbox the session already claimed instead of replacing it -- replacing it dropped exactly those
+messages.
+
+Measured 2026-09-21, thread `3fad6e60`: a `/compact` at 19:27:28, two voice notes at 19:28:16 and
+19:28:37. The first started a run when the hold released at 19:31:52; the second waited for that whole
+run and took its own turn at 19:48:47 -- twenty minutes, two runs, two answers. The owner:
+"tant qu'il y a des items en queue on va pas envoyer plusieurs fois à chacun son tour".
+
+The `/compact` hold itself is untouched: a run must not race the summarizer rewriting the transcript it
+would resume. What waits for it now joins the next run instead of queueing behind it.
+
 ### Blocking promise = free, correct reactions
 
 `router.route` for an injected message returns a promise that resolves only when the run finishes

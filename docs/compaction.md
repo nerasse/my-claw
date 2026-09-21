@@ -440,6 +440,12 @@ Le coût est réel et assumé : l'appel de fond est facturé même jeté. Il est
 run sur le transcript pré-compaction et le résumé est perdu. Sa fin ne notifie rien
 (`docs/notifications.md`) : ce qui compte est de la voir tourner, pas d'être prévenu qu'elle est finie.
 
+Ce qui attend n'est pas perdu pour autant, et ne repart pas en file chacun son tour. Un message arrivé
+pendant la tenue attend la fin du hold, puis rejoint le prochain run au lieu d'en ouvrir un à lui : la
+session réclame sa mailbox avant de prendre la file, donc deux messages relâchés par le même compact
+partent dans **un seul run et un seul appel** (`docs/injection.md`). Mesuré le 2026-09-21 sur le fil
+`3fad6e60` : deux vocaux relâchés ensemble faisaient deux runs à 17 minutes d'écart.
+
 **Stop.** Le signal du hold est celui que `runRegistry.stop` aborte (`/stop`, bouton Stop de l'app),
 et c'est lui que la commande passe au résumeur : un stop atteint une compaction qui a une à deux
 minutes devant elle, la requête au modèle est coupée, rien n'est écrit, la commande répond

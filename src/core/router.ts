@@ -215,11 +215,13 @@ export class MessageRouter {
       }
     }
 
-    // Mid-run steering: if a run for this session is already in progress, inject this message into
-    // it (addressed at the next iteration boundary) instead of queueing a whole new run behind it.
-    // The returned promise resolves when the run finishes addressing it -> the adapter's existing
-    // reaction/typing/commit lifecycle (which awaits this) just works.
-    if (this.config && injectionEnabled(this.config) && !options.noInject && runRegistry.isRunning(sessionId)) {
+    // Mid-run steering: a message that finds an open mailbox is addressed by the run that owns it
+    // at its next iteration boundary -- the very next LLM call -- instead of queueing a whole run
+    // behind it. The predicate is the mailbox and not "is a run registered": a session that has just
+    // been claimed has one too (see below), and that is the whole point. The returned promise
+    // resolves when the run finishes addressing it -> the adapter's existing reaction/typing/commit
+    // lifecycle (which awaits this) just works.
+    if (this.config && injectionEnabled(this.config) && !options.noInject) {
       const injected = runRegistry.enqueueInjection(sessionId, message);
       if (injected) {
         void log("info", "message queued for injection into active run", { ...messageLogData(message), sessionId });
@@ -228,6 +230,16 @@ export class MessageRouter {
         return undefined;
       }
     }
+
+    // Claim the session before queueing behind whoever holds it.
+    //
+    // The mailbox is what says "this session is taken", and it has to be open before the lock is:
+    // whatever is waiting next -- a second message released by the same compaction, a message that
+    // arrives while this one is still starting -- belongs to the run this message is about to
+    // start, at its next call, and not to a run of its own. Measured 2026-09-21: two voice notes
+    // released by one /compact took their turns 17 minutes apart, the second waiting for the
+    // first one's whole run instead of riding its next call.
+    runRegistry.openMailbox(sessionId);
 
     const previous = this.sessionLocks.get(sessionId) ?? Promise.resolve();
     const current = previous

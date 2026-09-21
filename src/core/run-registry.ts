@@ -85,7 +85,9 @@ class RunRegistry {
     const controller = new AbortController();
     this.controllers.set(sessionId, controller);
     this.runs.set(controller.signal, []);
-    this.mailboxes.set(sessionId, { pending: [], claimed: [], accepting: true });
+    // Not a fresh mailbox: the session claims one when it takes the lock, and the messages
+    // already in it are addressed by this run's next call. Replacing it would drop them.
+    this.openMailbox(sessionId);
     return {
       signal: controller.signal,
       end: () => {
