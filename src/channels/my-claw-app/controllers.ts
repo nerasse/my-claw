@@ -143,6 +143,8 @@ export interface MyClawAppAgentsController {
   clearModel(agent: string): Promise<MyClawAppAgentsConfigResult>;
   /** Pins the vision fallback model (`llm.visionFallback`); "" removes the pin. */
   setFallback(model: string): Promise<MyClawAppAgentsConfigResult>;
+  /** Writes the provider-failure retry switch, with its schedule when the app sends one. */
+  setRetry(patch: { enabled: boolean; delaysMs?: number[] }): Promise<MyClawAppAgentsConfigResult>;
   /** Writes the `agents.<agent>.skills|mcp` override. */
   setScope(agent: string, field: "skills" | "mcp", mode: "inherit" | "all" | "list", names: string[]): Promise<MyClawAppAgentsConfigResult>;
   /** Pins `agents.<agent>.workspace`; null removes the pin. */

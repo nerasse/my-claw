@@ -612,6 +612,27 @@ export class AgentBridge implements AgentBackend {
         } catch (err) {
           rethrowIfAborted(err, signal);
           if (isOverflowError(err) && (await recoverFromOverflow({ error: errorLogData(err) }))) continue;
+          // A call that never answered is still a call. Analytics wrote a row only once a response
+          // landed, so a provider outage left no trace at all: `errors` read zero through an
+          // evening of dead runs while two bubbles said otherwise (2026-09-20). Same shape as the
+          // success row below, zeroed, so an outage is countable and its cost is visible.
+          recordApiCall({
+            sessionId: session.id,
+            parentSessionId: attributionParent(session),
+            platform: message.platform,
+            model: usageModelOf(llmConfig),
+            baseUrl: llmConfig.baseUrl,
+            streaming,
+            caller: this.depth === 0 ? "orchestrator" : "subagent",
+            promptTokens: 0,
+            completionTokens: 0,
+            totalTokens: 0,
+            toolCalls: 0,
+            iteration,
+            durationMs: Date.now() - llmStartedAt,
+            error: String((err as Error | undefined)?.message ?? err).slice(0, 500),
+            ...cacheAttributionOf(llmConfig),
+          });
           throw err;
         }
         const llmDurationMs = Date.now() - llmStartedAt;

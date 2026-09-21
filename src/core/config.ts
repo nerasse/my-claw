@@ -250,6 +250,9 @@ export interface LlmModelConfig {
   timeoutMs?: number;
   // Global default reasoning effort applied when a model/session does not set its own.
   effort?: EffortLevel;
+  // When a model call that failed *on the far side* is tried again before the run gives up.
+  // See docs/provider-failures.md.
+  providerRetry?: ProviderRetryConfig;
   // Model id to reroute a run to when the resolved model cannot take image input. Provider
   // agnostic by design: the switch happens before the request instead of relying on
   // proxy-side fallbacks.
@@ -284,6 +287,34 @@ export interface TagConfig {
   model?: string;
   effort?: EffortLevel;
   contextCap?: number;
+}
+
+/**
+ * When a model call that failed *on the far side* is tried again, before the run gives up.
+ *
+ * The schedule is the point. A lane whose own upstream is having a bad minute clears on its own,
+ * and a run that has already spent ten minutes and twenty-six tool calls should not die over it.
+ * Waiting is also the cheaper move: rerouting throws away the prompt cache the conversation has
+ * been building at that endpoint, and the next candidate is a different, more expensive model.
+ *
+ * `enabled: false` sends the failure straight to the route failover, which is what every release
+ * before this one did. The retries are bounded and in order -- there is no loop and no growth.
+ */
+export interface ProviderRetryConfig {
+  enabled?: boolean;
+  /** Waits between attempts, in order. Absent means DEFAULT_PROVIDER_RETRY_DELAYS_MS. */
+  delaysMs?: number[];
+}
+
+export const DEFAULT_PROVIDER_RETRY_DELAYS_MS: readonly number[] = [30_000, 60_000, 120_000];
+
+/** The waits a run owes an outage-class failure, empty when the owner turned retries off. */
+export function providerRetryDelays(llm: LlmConfig | undefined): number[] {
+  const retry = llm?.providerRetry;
+  if (retry?.enabled === false) return [];
+  const declared = retry?.delaysMs;
+  if (!Array.isArray(declared)) return [...DEFAULT_PROVIDER_RETRY_DELAYS_MS];
+  return declared.filter((ms) => typeof ms === "number" && Number.isFinite(ms) && ms > 0);
 }
 
 /** Return the route stored by a tag, upgrading the legacy single-model shape in memory. */

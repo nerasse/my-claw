@@ -1,4 +1,4 @@
-import { resolveAgentLlm, tagNameOf, type MyClawConfig, type ResolvedLlmConfig } from "../core/config.ts";
+import { resolveAgentLlm, tagNameOf, providerRetryDelays, type MyClawConfig, type ResolvedLlmConfig } from "../core/config.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData } from "../sessions/store.ts";
 import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback, MediaStoreHook } from "./backend.ts";
@@ -10,6 +10,7 @@ import { withoutEndpoint } from "../llm/model-ref.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import { log } from "../utils/logger.ts";
+import { sleep } from "../core/aborted.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import type { AgentRegistry } from "../agents/registry.ts";
@@ -21,10 +22,21 @@ import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 // exactly like the retry loop refuses to count them toward the circuit breaker.
 const OUTAGE_STATUSES = new Set([402, 408, 425, 429, 500, 502, 503, 504, 529]);
 const OUTAGE_TEXT = /ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|UND_ERR_|fetch failed|overloaded|rate limit|quota|credit|balance|subscription/i;
+/**
+ * The body saying, in its own words, that the fault is on the far side.
+ *
+ * A gateway has no status of its own for "my upstream answered with something that was not JSON",
+ * so it reaches for whatever its edge returns -- OpenCode Go sends a **403** for exactly that, and
+ * 403 is where this predicate used to stop reading. The message is the evidence and the status is
+ * an accident of the edge, so the message wins. Measured 2026-09-20: a ten-minute run with
+ * twenty-six tool calls died on it while a healthy second route candidate sat unused.
+ */
+const UPSTREAM_FAULT = /\[server_error\]|upstream response was not valid json|upstream request failed|bad gateway|invalid upstream|upstream (?:error|failure|timeout)/i;
 
 function isOutageClass(err: unknown): boolean {
   const status = (err as { status?: number } | undefined)?.status;
   const message = String((err as Error | undefined)?.message ?? err ?? "");
+  if (UPSTREAM_FAULT.test(message)) return true;
   if (typeof status === "number") {
     if (OUTAGE_STATUSES.has(status) || (status >= 500 && status < 600)) return true;
     if (status === 401) return true;
@@ -163,7 +175,7 @@ export class BackendDispatcher implements AgentBackend {
 
   handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal): Promise<string> {
     return this.runWithFallback(message, session, (backend, modelId, modelOverride, replay) =>
-      backend.handleMessage(message, session, signal, modelId, modelOverride, replay));
+      backend.handleMessage(message, session, signal, modelId, modelOverride, replay), { signal });
   }
 
   handleMessageStreaming(
@@ -199,6 +211,7 @@ export class BackendDispatcher implements AgentBackend {
       (backend, resolvedModelId, modelOverride, replay) =>
         backend.handleMessageStreaming(message, session, gate, onToolUse, signal, onTurnSwitch, resolvedModelId, guardedReasoning, guardedToolStart, modelOverride, replay),
       {
+        signal,
         anyOutputStarted: () => outputStarted,
         // The streaming channel shows the note live; the returned text (persisted as the
         // reply) carries it too, so the live bubble and the history stay in agreement.
@@ -220,7 +233,7 @@ export class BackendDispatcher implements AgentBackend {
     message: UnifiedMessage,
     session: SessionData,
     run: (backend: AgentBackend, modelId?: string, modelOverride?: RunModelOverride, userEntryWritten?: boolean) => Promise<string>,
-    options: { anyOutputStarted?: () => boolean; onFallbackNote?: (note: string) => Promise<void> } = {},
+    options: { signal?: AbortSignal; anyOutputStarted?: () => boolean; onFallbackNote?: (note: string) => Promise<void> } = {},
   ): Promise<string> {
     const { resolved, defaultResolved, globalDefaultResolved } = this.resolvePair(message, session);
     const notes: string[] = [];
@@ -295,8 +308,46 @@ export class BackendDispatcher implements AgentBackend {
       return notes.length > 0 ? `${notes.join("\n\n")}\n\n${result}` : result;
     } catch (firstError) {
       let error: unknown = firstError;
+      // The waits this run still owes a far-side failure, and the target each one goes back to.
+      // One budget per run: a schedule that rearmed at every candidate would be a loop.
+      const waits = providerRetryDelays(this.config.llm);
+      let target: { model: string | undefined; override: RunModelOverride | undefined; config: ResolvedLlmConfig } = {
+        model: route ? resolved.model : undefined,
+        override: route ? candidateOverride(route.candidates[route.selectedIndex] ?? {}) : undefined,
+        config: resolved,
+      };
       while (true) {
         if (options.anyOutputStarted?.() || !isOutageClass(error)) fail(error);
+
+        // The same target first, on the owner's schedule. A far-side fault usually clears on its
+        // own, and moving on costs the prompt cache this conversation has been building at that
+        // endpoint and lands on a different, more expensive model. The turn is already in the log,
+        // hence the replay flag: without it the second attempt appends it under the same id and
+        // dies on our own bookkeeping.
+        if (waits.length > 0) {
+          const delay = waits.shift()!;
+          const reason = String((error as Error | undefined)?.message ?? error).slice(0, 200);
+          const note = `[retry] ${currentModel} failed on the provider's side (${reason}); trying again in ${Math.round(delay / 1000)}s.`;
+          notes.push(note);
+          void log("warn", "provider retry scheduled", {
+            sessionId: session.id,
+            messageId: message.id,
+            model: currentModel,
+            provider: currentProvider,
+            delayMs: delay,
+            waitsLeft: waits.length,
+            reason,
+          });
+          if (options.onFallbackNote) await options.onFallbackNote(note);
+          await sleep(delay, options.signal);
+          try {
+            result = await runCandidate(target.model, target.override, target.config, true);
+            return notes.length > 0 ? `${notes.join("\n\n")}\n\n${result}` : result;
+          } catch (retryError) {
+            error = retryError;
+            continue;
+          }
+        }
 
         let nextModel: string | undefined;
         let nextOverride: RunModelOverride | undefined;
@@ -337,6 +388,7 @@ export class BackendDispatcher implements AgentBackend {
           transitionLabel = "configured default";
         }
 
+        target = { model: nextModel, override: nextOverride, config: targetConfig };
         const failedModel = currentModel;
         const failedProvider = currentProvider;
         const reason = String((error as Error | undefined)?.message ?? error).slice(0, 200);

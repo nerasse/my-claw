@@ -3076,6 +3076,7 @@ describe("agents frames", () => {
     defaultEffort: "high",
     effortLevels: ["low", "medium", "high"],
     fallback: "fast-1",
+    retry: { enabled: true, delaysMs: [30_000, 60_000, 120_000] },
     providers: [{ key: "prov-a", type: "openai", discover: true, models: 2, keyEnv: "PROV_A_KEY", keyPresent: true }],
     agents: [
       { key: "orchestrator", label: "Orchestrator", description: "The agent you talk to", model: "fast-1", pinned: false, inheritsFrom: "global" },
@@ -3096,6 +3097,7 @@ describe("agents frames", () => {
       }),
       clearModel: async (agent) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => ({ ...a, pinned: false })) }),
       setFallback: async (model) => ({ ...SNAPSHOT, fallback: model }),
+      setRetry: async (patch) => ({ ...SNAPSHOT, retry: { enabled: patch.enabled, delaysMs: patch.delaysMs ?? SNAPSHOT.retry.delaysMs } }),
       setScope: async (agent, field, mode, names) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => (a.key === agent ? { ...a, [field]: mode === "inherit" ? null : mode === "all" ? ["*"] : names } : a)) }),
       setWorkspace: async (agent, workspace) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => (a.key === agent ? { ...a, workspace } : a)) }),
       setMaxIterations: async (agent, value) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => (a.key === agent ? { ...a, maxIterations: value } : a)) }),
@@ -3223,6 +3225,7 @@ describe("agents frames", () => {
       setModel: async () => SNAPSHOT,
       clearModel: async () => SNAPSHOT,
       setFallback: async () => SNAPSHOT,
+      setRetry: async () => SNAPSHOT,
       setScope: async () => SNAPSHOT,
       setWorkspace: async () => SNAPSHOT,
       setMaxIterations: async () => SNAPSHOT,
@@ -3288,6 +3291,9 @@ describe("agents frames", () => {
         throw new Error("nope");
       },
       setFallback: async () => {
+        throw new Error("nope");
+      },
+      setRetry: async () => {
         throw new Error("nope");
       },
       setScope: async () => {

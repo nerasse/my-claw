@@ -181,6 +181,7 @@ import {
   handleAgentFileSet,
   handleAgentsConfigGet,
   handleAgentsContextCapSet,
+  handleAgentsRetrySet,
   handleAgentsFallbackSet,
   handleAgentsIterationsSet,
   handleAgentsModelClear,
@@ -1675,6 +1676,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "agents.contextcap.set":
         this.detach(handleAgentsContextCapSet(this.settingsDeps(), ws, frame), "handleAgentsContextCapSet");
+        break;
+      case "agents.retry.set":
+        this.detach(handleAgentsRetrySet(this.settingsDeps(), ws, frame), "handleAgentsRetrySet");
         break;
       case "agents.file.get":
         this.detach(handleAgentFileGet(this.settingsDeps(), ws, frame), "handleAgentFileGet");

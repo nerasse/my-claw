@@ -29,6 +29,7 @@ import type {
   MyClawAppAgentsConfigGet,
   MyClawAppAgentsContextCapSet,
   MyClawAppAgentsFallbackSet,
+  MyClawAppAgentsRetrySet,
   MyClawAppAgentsIterationsSet,
   MyClawAppAgentsModelClear,
   MyClawAppAgentsModelSet,
@@ -556,6 +557,33 @@ export async function handleAgentsFallbackSet(
     d.broadcastFrame(ws.data.owner, await d.agents.setFallback(frame.model));
   } catch (err) {
     await d.refuse(ws, "agents", "agents.fallback.set failed", { model: frame.model, error: String(err) });
+  }
+}
+
+/**
+ * The provider-failure retry switch. `enabled` is read as a boolean rather than as truthiness: a
+ * client that sent nothing must not silently turn retries off, so the frame is refused instead.
+ */
+export async function handleAgentsRetrySet(
+  d: MyClawAppSettingsDeps,
+  ws: ServerWebSocket<MyClawAppSessionData>,
+  frame: MyClawAppAgentsRetrySet,
+): Promise<void> {
+  if (!d.agents) {
+    await d.refuse(ws, "agents", "agent defaults unavailable");
+    return;
+  }
+  if (typeof frame.enabled !== "boolean") {
+    await d.refuse(ws, "agents", "invalid retry switch", { enabled: frame.enabled });
+    return;
+  }
+  try {
+    d.broadcastFrame(ws.data.owner, await d.agents.setRetry({
+      enabled: frame.enabled,
+      ...(Array.isArray(frame.delaysMs) ? { delaysMs: frame.delaysMs } : {}),
+    }));
+  } catch (err) {
+    await d.refuse(ws, "agents", "agents.retry.set failed", { enabled: frame.enabled, error: String(err) });
   }
 }
 

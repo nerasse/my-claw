@@ -1,6 +1,6 @@
 import { readFile, stat, mkdir } from "node:fs/promises";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
-import { CONFIG_PATH, tagNameOf, tagRouteOf, type EffortLevel, type TagConfig, type TagRouteCandidate } from "./config.ts";
+import { CONFIG_PATH, DEFAULT_PROVIDER_RETRY_DELAYS_MS, tagNameOf, tagRouteOf, type EffortLevel, type ProviderRetryConfig, type TagConfig, type TagRouteCandidate } from "./config.ts";
 import { parseModelRef } from "../llm/model-ref.ts";
 import { PROMPT_FILES } from "../agent/prompt/files.ts";
 import { snapshot, journal, artifactId } from "./config-store.ts";
@@ -18,7 +18,7 @@ import { snapshot, journal, artifactId } from "./config-store.ts";
  */
 
 export type ConfigEditResult =
-  | { ok: true; previous: { model?: string; provider?: string; effort?: EffortLevel; fallback?: string } }
+  | { ok: true; previous: { model?: string; provider?: string; effort?: EffortLevel; fallback?: string; retry?: ProviderRetryConfig } }
   | { ok: false; error: string };
 
 const INDENT = 2;
@@ -313,6 +313,41 @@ export async function setDefaultModel(
   await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant défaut global ${modelId}` });
   await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
   await journal("edit", artifactId(CONFIG_PATH), { defaultModel: modelId, provider: provider ?? null, effort: effort === "clear" ? null : (effort ?? null) });
+  return { ok: true, previous };
+}
+
+/**
+ * The provider-failure retry schedule (`llm.providerRetry`).
+ *
+ * Off is written as `enabled: false` rather than by deleting the section: "off" is a decision the
+ * owner made, and the default is on, so deleting it would turn retries back on at the next reload.
+ * On is written by removing the key, which keeps a config that runs the default free of a section
+ * that only restates it.
+ */
+export async function setProviderRetry(patch: { enabled?: boolean; delaysMs?: number[] }): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const llm = objectAt(read.data, "llm");
+  const current = (llm["providerRetry"] ?? {}) as { enabled?: boolean; delaysMs?: number[] };
+  const previous = {
+    retry: {
+      enabled: current.enabled !== false,
+      delaysMs: Array.isArray(current.delaysMs) ? [...current.delaysMs] : [...DEFAULT_PROVIDER_RETRY_DELAYS_MS],
+    },
+  };
+
+  const enabled = patch.enabled ?? current.enabled !== false;
+  const delaysMs = patch.delaysMs ?? current.delaysMs;
+  const next: Record<string, unknown> = {};
+  if (!enabled) next["enabled"] = false;
+  if (Array.isArray(delaysMs) && delaysMs.length > 0) next["delaysMs"] = delaysMs;
+  if (Object.keys(next).length === 0) delete llm["providerRetry"];
+  else llm["providerRetry"] = next;
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant retry provider ${enabled ? "on" : "off"}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { providerRetry: next });
   return { ok: true, previous };
 }
 

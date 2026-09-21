@@ -5,6 +5,7 @@ import {
   setAgentModel,
   setDefaultModel,
   setVisionFallback,
+  setProviderRetry,
   clearAgentModel,
   setAgentScope,
   setAgentWorkspace,
@@ -124,6 +125,28 @@ describe("setVisionFallback", () => {
     await writeConfigFile({ ...FILE, llm: { ...FILE.llm, visionFallback: "opus" } });
     await setVisionFallback("");
     expect((await readConfigFile()).llm.visionFallback).toBeUndefined();
+  });
+});
+
+describe("setProviderRetry", () => {
+  test("off is written as a decision, so a reload cannot turn retries back on", async () => {
+    await writeConfigFile();
+    const result = await setProviderRetry({ enabled: false });
+    expect(result.ok).toBe(true);
+    expect((await readConfigFile()).llm.providerRetry).toEqual({ enabled: false });
+  });
+
+  test("on leaves no section behind when it carries nothing but the default", async () => {
+    await writeConfigFile({ ...FILE, llm: { ...FILE.llm, providerRetry: { enabled: false } } });
+    await setProviderRetry({ enabled: true });
+    expect((await readConfigFile()).llm.providerRetry).toBeUndefined();
+  });
+
+  test("a schedule survives the switch being turned back on", async () => {
+    await writeConfigFile();
+    await setProviderRetry({ enabled: false, delaysMs: [5000] });
+    await setProviderRetry({ enabled: true });
+    expect((await readConfigFile()).llm.providerRetry).toEqual({ delaysMs: [5000] });
   });
 });
 

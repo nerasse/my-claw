@@ -9,6 +9,7 @@ import {
   resolveAgentMcp,
   scopeAllows,
   findUnknownScopeEntries,
+  providerRetryDelays,
   readConfigFromDisk,
   loadConfig,
   MY_CLAW_DIR,
@@ -243,4 +244,19 @@ test("scope validation: a valid config and a wildcard produce nothing", () => {
 test("scope validation: an empty list has nothing to report", () => {
   const config = withAgents({ research: { skills: [], mcp: [] } });
   assert.deepEqual(findUnknownScopeEntries(config, { skills: ["real"], mcpServers: ["srv"] }), []);
+});
+
+test("the retry schedule is on by default, off only when it was turned off", () => {
+  assert.deepEqual(providerRetryDelays(undefined), [30_000, 60_000, 120_000]);
+  assert.deepEqual(providerRetryDelays({}), [30_000, 60_000, 120_000]);
+  assert.deepEqual(providerRetryDelays({ providerRetry: { enabled: false } }), []);
+  // `enabled: false` wins over a declared schedule: the switch is the decision, the list is a
+  // detail of it.
+  assert.deepEqual(providerRetryDelays({ providerRetry: { enabled: false, delaysMs: [1] } }), []);
+});
+
+test("a declared schedule is used as given, and junk is dropped rather than waited on", () => {
+  assert.deepEqual(providerRetryDelays({ providerRetry: { delaysMs: [1000, 2000] } }), [1000, 2000]);
+  assert.deepEqual(providerRetryDelays({ providerRetry: { delaysMs: [1000, 0, -5, Number.NaN] } }), [1000]);
+  assert.deepEqual(providerRetryDelays({ providerRetry: { delaysMs: [] } }), []);
 });

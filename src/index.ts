@@ -28,6 +28,7 @@ import {
   CONFIG_PATH,
   MY_CLAW_DIR,
   parseConfig,
+  providerRetryDelays,
   resolveContextCap,
   resolveWorkspaceDir,
   resolveWorkspaceKey,
@@ -174,6 +175,7 @@ import {
   clearAgentModel,
   setAgentModel,
   setVisionFallback,
+  setProviderRetry,
   setAgentScope,
   setAgentWorkspace,
   setAgentMaxIterations,
@@ -1273,6 +1275,12 @@ async function main() {
         defaultEffort: config.llm.effort ?? "",
         effortLevels: EFFORT_LEVELS,
         fallback: config.llm.visionFallback ?? "",
+        // The schedule is sent resolved, so the page renders what will actually be waited for and
+        // has no copy of the default to drift from (docs/provider-failures.md).
+        retry: {
+          enabled: config.llm.providerRetry?.enabled !== false,
+          delaysMs: providerRetryDelays(config.llm),
+        },
         providers: [
           // The virtual "Tags" provider rows at the top of the app's provider list: one entry
           // for the reserved `Default` tag plus one per configured tag (docs/tags.md). The app
@@ -1426,6 +1434,11 @@ async function main() {
         const result = await setVisionFallback(modelId);
         if (!result.ok) throw new Error(result.error);
         return writeAgentsConfig(`fallback image ${modelId || "aucun"}`);
+      },
+      setRetry: async (patch) => {
+        const result = await setProviderRetry(patch);
+        if (!result.ok) throw new Error(result.error);
+        return writeAgentsConfig(`retry provider ${patch.enabled ? "on" : "off"}`);
       },
       setScope: async (agent, field, mode, names) => {
         if (!writableAgent(agent)) throw new Error(`unknown agent: ${agent}`);

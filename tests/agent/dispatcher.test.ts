@@ -25,6 +25,10 @@ function mixedConfig(): MyClawConfig {
       ],
       defaultProvider: "litellm",
       defaultModel: "mimo",
+      // Off here on purpose: these tests are about the route failover, and the default schedule
+      // would make every one of them wait thirty seconds to prove the same thing. The schedule has
+      // its own tests below, where the waits are milliseconds.
+      providerRetry: { enabled: false },
     },
     agents: {}, memory: { enabled: false },
   };
@@ -238,6 +242,84 @@ test("a 4xx refuses without rerouting", async () => {
 
   await assert.rejects(() => dispatcher.handleMessage(msg("m1"), session("s1", "claude-sonnet-5")), /out of credits/);
   assert.deepEqual(calls, [{ backend: "home", modelId: undefined }]);
+});
+
+/**
+ * The body of an OpenCode Go 403, measured 2026-09-20. Its `[server_error]` and "Upstream response
+ * was not valid JSON" are the gateway saying its own upstream answered with something it could not
+ * read: nothing about our request. The message is the evidence, the status is an accident of the
+ * edge that returned it -- and read as "forbidden", this one killed a ten-minute run with
+ * twenty-six tool calls while a healthy second candidate sat unused.
+ */
+function upstreamFault(): Error & { status?: number } {
+  const err = new Error(
+    "LLM stream request failed: HTTP 403 — Error from provider (Console Go): Upstream request failed: [server_error] Upstream response was not valid JSON",
+  ) as Error & { status?: number };
+  err.status = 403;
+  return err;
+}
+
+test("a 403 that names a far-side fault is an outage, not a refusal", async () => {
+  const config = mixedConfig();
+  const calls: RunCall[] = [];
+  const home = {
+    handleMessage: async (_m: UnifiedMessage, _s: LegacySessionData, _sig?: AbortSignal, modelId?: string) => {
+      calls.push({ backend: "home", modelId });
+      if (modelId === undefined) throw upstreamFault();
+      return `home:${modelId}`;
+    },
+  } as unknown as AgentBridge;
+  const dispatcher = new BackendDispatcher(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home });
+
+  const text = await dispatcher.handleMessage(msg("m-fault"), session("s-fault", "claude-sonnet-5"));
+  assert.match(text, /\[fallback\]/);
+  assert.match(text, /home:mimo/);
+  assert.deepEqual(calls.map((call) => call.modelId), [undefined, "mimo"]);
+});
+
+test("a far-side fault waits on the configured schedule, on the same model, before any reroute", async () => {
+  const config = mixedConfig();
+  config.llm.providerRetry = { delaysMs: [1000] };
+  const calls: string[] = [];
+  let attempts = 0;
+  const home = {
+    handleMessage: async (_m: UnifiedMessage, _s: LegacySessionData, _sig?: AbortSignal, modelId?: string) => {
+      calls.push(modelId ?? "default");
+      attempts += 1;
+      if (attempts === 1) throw upstreamFault();
+      return `home:${modelId ?? "default"}`;
+    },
+  } as unknown as AgentBridge;
+  const dispatcher = new BackendDispatcher(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home });
+
+  const text = await dispatcher.handleMessage(msg("m-wait"), session("s-wait"));
+  assert.match(text, /\[retry\]/);
+  assert.match(text, /trying again in 1s/);
+  assert.match(text, /home:default$/);
+  // The SAME model twice: a lane having a bad minute is what the wait is for, and the next
+  // candidate is another model, another price and none of the prompt cache.
+  assert.deepEqual(calls, ["default", "default"]);
+});
+
+test("the schedule is spent once per run, then the route takes over", async () => {
+  const config = mixedConfig();
+  config.llm.providerRetry = { delaysMs: [1, 1] };
+  const calls: string[] = [];
+  const home = {
+    handleMessage: async (_m: UnifiedMessage, _s: LegacySessionData, _sig?: AbortSignal, modelId?: string) => {
+      calls.push(modelId ?? "default");
+      if (modelId === undefined) throw upstreamFault();
+      return `home:${modelId}`;
+    },
+  } as unknown as AgentBridge;
+  const dispatcher = new BackendDispatcher(config, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home });
+
+  const text = await dispatcher.handleMessage(msg("m-spent"), session("s-spent", "claude-sonnet-5"));
+  assert.match(text, /home:mimo/);
+  // Three attempts on the session's own model -- the first, plus the two waits -- and only then
+  // the global default. A session override resolves inside the home engine, so it travels as no
+  // modelId at all; the reroute is the one that names a model.
+  assert.deepEqual(calls, ["default", "default", "default", "mimo"]);
 });
 
 // Streaming reroute: the first attempt dies mid-stream, the run replays on the default with the

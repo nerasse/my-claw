@@ -719,6 +719,17 @@ export interface MyClawAppAgentsContextCapSet {
   value: number | null;
 }
 
+/**
+ * The provider-failure retry switch, and its schedule when the app sends one: `llm.providerRetry`.
+ * The section is `llm`-level and not per-agent -- the schedule is a property of waiting on a broken
+ * provider, not of the agent that happens to be talking to it.
+ */
+export interface MyClawAppAgentsRetrySet {
+  type: "agents.retry.set";
+  enabled: boolean;
+  delaysMs?: number[];
+}
+
 /** Opens one file-defined agent for editing. Refused for a reserved role (no file). */
 export interface MyClawAppAgentFileGet {
   type: "agents.file.get";
@@ -1049,6 +1060,7 @@ export type MyClawAppClientFrame =
   | MyClawAppAgentsWorkspaceSet
   | MyClawAppAgentsIterationsSet
   | MyClawAppAgentsContextCapSet
+  | MyClawAppAgentsRetrySet
   | MyClawAppAgentFileGet
   | MyClawAppAgentFileSet
   | MyClawAppAgentFileCreate
@@ -2338,6 +2350,12 @@ export interface MyClawAppAgentsConfigResult {
    * when the resolved model cannot take images (llm.visionFallback). "" when none is set.
    */
   fallback: string;
+  /**
+   * When a model call that failed on the far side is tried again before the run gives up, and the
+   * waits it uses. `delaysMs` is already resolved: the app renders the schedule and never has to
+   * know the default (docs/provider-failures.md).
+   */
+  retry: { enabled: boolean; delaysMs: number[] };
   providers: MyClawAppProviderInfo[];
   agents: MyClawAppAgentInfo[];
 }
