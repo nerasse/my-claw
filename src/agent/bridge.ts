@@ -7,6 +7,7 @@ import {
   autoCompactEnabled,
   autoCompactSpeculative,
   resolveAutoCompactThreshold,
+  providerRetryDelays,
 } from "../core/config.ts";
 import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
@@ -20,7 +21,9 @@ import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ProviderMeta } from "../llm/provider.ts";
 import { llmComplete, llmCompleteStream } from "../llm/transport.ts";
-import { resolveRunModel, type RunModelOverride } from "../llm/run-model.ts";
+import { resolveRunModel, type RunModel, type RunModelOverride } from "../llm/run-model.ts";
+import { isProviderOutage } from "../llm/outage.ts";
+import { providerFallbackTargets } from "../llm/provider-fallback.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
@@ -54,13 +57,23 @@ import { StagnationMeter } from "./stagnation.ts";
 import { NestedAgentsCollector, recordNestedInjection } from "./prompt/nested-agents.ts";
 import { recall } from "../memory/index.ts";
 import { hooks } from "../hooks/index.ts";
-import { AbortedError, isAbort, rethrowIfAborted } from "../core/aborted.ts";
+import { AbortedError, isAbort, rethrowIfAborted, sleep } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
 import { recordRunStart, recordRunEnd } from "../snapshots/store.ts";
 import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback, MediaStoreHook } from "./backend.ts";
 import { storeRunMedia, type StoredRunMedia } from "./media-store.ts";
 import { producesRemoteContent } from "../tools/registry.ts";
 import { normalizeUntrusted } from "./prompt/normalize-untrusted.ts";
+
+/**
+ * A note the reader owes for a retry or a reroute, in front of the answer.
+ *
+ * The live stream gets the same note as it happens, so the bubble and the history say the same
+ * thing -- the channel replaces the streamed bubble with this text when the run ends.
+ */
+function withFallbackNotes(text: string, notes: readonly string[]): string {
+  return notes.length > 0 ? `${notes.join("\n\n")}\n\n${text}` : text;
+}
 
 // The home loop is provider-agnostic except for these two transport calls: codex-backed models
 // speak the OpenAI Responses API (docs/codex-backend.md), anthropic-backed ones the Messages API
@@ -263,6 +276,122 @@ export class AgentBridge implements AgentBackend {
 
   private mediaStore?: MediaStoreHook;
 
+  /**
+   * One model call, with a provider failure handled: the waits this run owes, then the run's
+   * fallback targets in order -- and the run adopts whichever target answers.
+   *
+   * A failure *between* two calls, or before the failing call wrote anything, costs the run
+   * nothing but the wait: its messages, its tool results and its log are intact, so it continues
+   * on another provider instead of dying mid-task. That is the case that mattered: a research
+   * child killed on its ninth call took its whole pass down while healthy providers sat unused
+   * (2026-09-21).
+   *
+   * A failure *after* this call wrote something is not reroutable -- the text is on screen, and
+   * replaying it would say it twice.
+   *
+   * The schedule is spent once per run and each target is tried once: a chain that rearmed at
+   * every attempt would be a loop. Everything here is the provider's fault; an overflow has its
+   * own recovery, and a request we sent wrong is our bug and must surface as itself.
+   */
+  private async callModel(params: {
+    config: ResolvedLlmConfig;
+    call: (config: ResolvedLlmConfig) => Promise<LlmResponse>;
+    emitted: () => boolean;
+    waits: number[];
+    attempted: Set<string>;
+    notes: string[];
+    runModel?: RunModel;
+    session: SessionData;
+    message: UnifiedMessage;
+    agentToolType: string;
+    iteration: number;
+    streaming: boolean;
+    signal?: AbortSignal;
+    onToken?: TokenCallback;
+  }): Promise<{ response: LlmResponse; config: ResolvedLlmConfig }> {
+    let config = params.config;
+    let targets: ReturnType<typeof providerFallbackTargets> | undefined;
+
+    for (;;) {
+      const startedAt = Date.now();
+      try {
+        const response = await params.call(config);
+        return { response, config };
+      } catch (err) {
+        rethrowIfAborted(err, params.signal);
+        if (isOverflowError(err) || params.emitted() || !isProviderOutage(err)) throw err;
+
+        const reason = String((err as Error | undefined)?.message ?? err).slice(0, 200);
+        const failed = { model: config.model, provider: config.provider };
+        const wait = params.waits.shift();
+        if (wait !== undefined) {
+          this.recordFailedCall({ ...params, config, durationMs: Date.now() - startedAt, error: err });
+          await this.noteFallback(
+            `[retry] ${failed.model} failed on the provider's side (${reason}); trying again in ${Math.round(wait / 1000)}s.`,
+            params,
+          );
+          await sleep(wait, params.signal);
+          continue;
+        }
+
+        targets ??= providerFallbackTargets({
+          config: this.config,
+          agent: params.agentToolType,
+          ...(params.runModel?.route ? { route: params.runModel.route } : {}),
+          current: failed,
+          hasImages: params.message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
+          attempted: params.attempted,
+        });
+        const next = targets.shift();
+        if (!next) throw err;
+
+        this.recordFailedCall({ ...params, config, durationMs: Date.now() - startedAt, error: err });
+        params.attempted.add(next.model);
+        config = { ...next.config, cacheKey: next.config.cacheKey ?? params.session.id };
+        await this.noteFallback(
+          `[fallback] ${failed.model} via ${failed.provider ?? "provider"} is unavailable (${reason}). This run used ${next.model} instead (${next.label}); it returns to ${failed.model} once the provider recovers.`,
+          params,
+        );
+      }
+    }
+  }
+
+  /** The note goes to the reader twice: live, and in front of the answer the history keeps. */
+  private async noteFallback(note: string, params: { notes: string[]; onToken?: TokenCallback }): Promise<void> {
+    params.notes.push(note);
+    void log("warn", "provider fallback", { note });
+    if (params.onToken) await params.onToken(`${note}\n\n`);
+  }
+
+  /** A call that never answered is still a call: analytics counts it, and so does its cost. */
+  private recordFailedCall(params: {
+    config: ResolvedLlmConfig;
+    session: SessionData;
+    message: UnifiedMessage;
+    streaming: boolean;
+    iteration: number;
+    durationMs: number;
+    error: unknown;
+  }): void {
+    recordApiCall({
+      sessionId: params.session.id,
+      parentSessionId: attributionParent(params.session),
+      platform: params.message.platform,
+      model: usageModelOf(params.config),
+      baseUrl: params.config.baseUrl,
+      streaming: params.streaming,
+      caller: this.depth === 0 ? "orchestrator" : "subagent",
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+      toolCalls: 0,
+      iteration: params.iteration,
+      durationMs: params.durationMs,
+      error: String((params.error as Error | undefined)?.message ?? params.error).slice(0, 500),
+      ...cacheAttributionOf(params.config),
+    });
+  }
+
   async handleMessage(
     message: UnifiedMessage,
     session: SessionData,
@@ -348,7 +477,12 @@ export class AgentBridge implements AgentBackend {
     // The conversation is what the prefix cache is stable across, so the session names it. A
     // sub-agent carries its own id on purpose: it has its own system prompt, so sharing the
     // parent's key would point two different prefixes at one cache entry.
-    const llmConfig: ResolvedLlmConfig = { ...resolvedModel, cacheKey: resolvedModel.cacheKey ?? session.id };
+    let llmConfig: ResolvedLlmConfig = { ...resolvedModel, cacheKey: resolvedModel.cacheKey ?? session.id };
+    // What this run may do when the provider itself fails: the waits it owes (spent once, in
+    // order), the models it already tried, and the notes it owes the reader for both.
+    const providerWaits = providerRetryDelays(this.config.llm);
+    const attemptedModels = new Set<string>([llmConfig.model]);
+    const fallbackNotes: string[] = [];
     // A sub-agent is its own run and warns for its own chain; the dedupe by message id keeps the
     // orchestrator's run to a single notice even though it resolves here as well.
     if (runModel) announceModelFallback(runModel, message, agentToolType);
@@ -608,22 +742,66 @@ export class AgentBridge implements AgentBackend {
         };
 
         let response: LlmResponse;
+        // Anything the failing call already wrote -- a token, a reasoning delta -- is text the
+        // owner can see, and a retry on another provider would write it twice. Read per attempt.
+        let callEmitted = false;
+        const markEmitted = (): void => {
+          callEmitted = true;
+        };
+        const tokenSink = onToken
+          ? async (token: string): Promise<void> => {
+              markEmitted();
+              await onToken(token);
+            }
+          : undefined;
+        const reasoningGuard = reasoningSink
+          ? {
+              onText: async (delta: string): Promise<void> => {
+                markEmitted();
+                await reasoningSink.onText?.(delta);
+              },
+              onTokens: async (estimated: number): Promise<void> => {
+                markEmitted();
+                await reasoningSink.onTokens?.(estimated);
+              },
+            }
+          : undefined;
         try {
-          response = onToken
-            ? await completeStream(
-                llmConfig,
-                chatMessages,
-                onToken,
-                openaiTools.length > 0 ? openaiTools : undefined,
-                signal,
-                reasoningSink,
-              )
-            : await complete(
-                llmConfig,
-                chatMessages,
-                openaiTools.length > 0 ? openaiTools : undefined,
-                signal,
-              );
+          const attempt = await this.callModel({
+            config: llmConfig,
+            call: (config) =>
+              tokenSink
+                ? completeStream(
+                    config,
+                    chatMessages,
+                    tokenSink,
+                    openaiTools.length > 0 ? openaiTools : undefined,
+                    signal,
+                    reasoningGuard,
+                  )
+                : complete(
+                    config,
+                    chatMessages,
+                    openaiTools.length > 0 ? openaiTools : undefined,
+                    signal,
+                  ),
+            emitted: () => callEmitted,
+            waits: providerWaits,
+            attempted: attemptedModels,
+            notes: fallbackNotes,
+            runModel,
+            session,
+            message,
+            agentToolType,
+            iteration,
+            streaming,
+            signal,
+            onToken,
+          });
+          // The run adopts whichever target answered: its context window, its vision, its usage
+          // rows and its cache key all follow from here, for every turn that is left.
+          llmConfig = attempt.config;
+          response = attempt.response;
         } catch (err) {
           rethrowIfAborted(err, signal);
           if (isOverflowError(err) && (await recoverFromOverflow({ error: errorLogData(err) }))) continue;
@@ -791,7 +969,7 @@ export class AgentBridge implements AgentBackend {
           });
           const media = await this.mediaForMarker(message, session);
           recorder.runEnd("done", media.paths, media.ids);
-          return transformedResponse;
+          return withFallbackNotes(transformedResponse, fallbackNotes);
         }
 
         void log("info", "agent requested tool calls", {
@@ -1016,7 +1194,8 @@ export class AgentBridge implements AgentBackend {
         maxIterations: budget.total,
         toolExecutions,
       });
-      return await this.handleMaxIterations(chatMessages, session, message, llmConfig, agentToolType, startedAt, toolExecutions, iteration, budget, recorder, signal);
+      const summary = await this.handleMaxIterations(chatMessages, session, message, llmConfig, agentToolType, startedAt, toolExecutions, iteration, budget, recorder, signal);
+      return withFallbackNotes(summary, fallbackNotes);
     } catch (err) {
       if (isAbort(err, signal)) {
         hooks.emit("agent:run:aborted", {

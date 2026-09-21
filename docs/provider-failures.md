@@ -1,7 +1,8 @@
 # A provider failure does not end the run
 
-What happens when a model call dies for a reason that is not the request's fault, and why the run
-waits rather than moving on.
+What happens when a model call dies for a reason that is not the request's fault: the run waits,
+then finishes on another provider -- and it does so **where the call is made**, so a sub-agent gets
+the same treatment as the conversation, and a run that has already worked does not start over.
 
 ## The failure this was written for
 
@@ -21,11 +22,52 @@ It killed a ten-minute run that had made twenty-six tool calls, while a healthy 
 candidate (`anthropic/claude-opus-5`) sat unused. Both failures in that thread — 19:02 and 19:12 UTC
 — died the same way.
 
-## Two defects, and the fix for each
+## The second failure this was written for
 
-### 1. The status decided, and the body was not read
+Measured 2026-09-21, thread `3fad6e60-53a3-4fd7-90de-07df412ce32d`, pass 14 of a job search. One
+sub-agent of three died on its ninth call:
 
-`isOutageClass` (`src/agent/dispatcher.ts`) classified a `403` as auth-or-permission, matched
+```
+LLM stream request failed: HTTP 400 — Error from provider (Console Go):
+Upstream request failed: [invalid_request_error] Content Exists Risk
+```
+
+Its eight tool calls had succeeded (two reads, six fetches of aggregator sites). The parent retried
+the pass three times, on three other models, and hit three other walls: `402` from OpenRouter
+("you requested up to 131072 tokens, but can only afford 54608"), a `400` naming a shape we sent
+wrong (`messages[0].content.str` wants a string, we sent a parts array), and the same moderation
+refusal again. It then gave up on the volet and did the work itself, which is what a pass costs when
+the fallback does not exist: 48 calls, 9.0M tokens, ~$0.21, after a "stop" nobody asked for.
+
+Two things were missing, and both are about *where* the failure was handled.
+
+### The handling lived one layer too high
+
+It sat in `BackendDispatcher.runWithFallback` (`src/agent/dispatcher.ts`), which serves routed
+messages only. Two consequences, both measured:
+
+- **A sub-agent never saw it.** `SubAgentRunner` builds its own `AgentBridge` and calls it directly
+  (`src/subagents/runner.ts`), so a child had the provider's own three attempts and nothing else.
+  The child above died with healthy providers sitting unused.
+- **A run that had already worked could not use it.** The dispatcher's fallback *replays* the run
+  from its first token, which is only safe before anything was written: it guards on
+  `anyOutputStarted` and, past that point, a failure was final. A child on its ninth call is exactly
+  past that point -- and replaying it would redo every tool it ran, side effects included.
+
+The handling now lives in the bridge, where the call is made (`callModel`,
+`src/agent/bridge.ts`), and it **never replays**: the run's messages, its tool results and its log
+are intact, so a failure between two calls costs the wait and nothing else. The run adopts whichever
+target answers -- its context window, its vision, its usage rows and its cache key follow from
+there, for every turn that is left.
+
+What is *not* reroutable is a failure **after the failing call wrote something**: a token or a
+reasoning delta is text the owner can see, and retrying it on another provider would say it twice.
+That is read per attempt, not per run, which is why the old `anyOutputStarted` guard is gone: a run
+that has answered three turns may still fall back on the fourth call.
+
+### 2. The status decided, and the body was not read
+
+`isOutageClass` classified a `403` as auth-or-permission, matched
 against the message text. The message above matches none of those words, so the failure was read as
 a deliberate refusal and thrown. Retry (`src/llm/retry.ts`) did not cover 403 either, so nothing
 tried again.
@@ -73,6 +115,36 @@ The run now owes an outage-class failure a schedule, `llm.providerRetry`:
 exactly what every release before this one did. Nothing settles that per agent — waiting on a broken
 provider is a property of the provider, not of the agent talking to it.
 
+## Where the run goes: the owner's own configuration
+
+There is no new setting. A `tag:` with a `route` **is** a chain, and `providerFallbackTargets`
+(`src/llm/provider-fallback.ts`) reads it in order:
+
+1. **The route's remaining candidates**, skipping the one that just failed, any marked unavailable
+   before the run, and anything this run already tried. A candidate the resolver refuses is skipped
+   rather than fatal.
+2. **The tag's global default**, when the route says `fallbackToGlobalDefault`.
+3. **The agent's configured default**, for a run that is not on a route -- and only when the run is
+   not already there. A run on its default has no target, because the target would be the model
+   that just failed; the schedule is all it gets, and the failure is then real.
+
+One schedule per run (`llm.providerRetry`), then one visit per target. A chain that rearmed at every
+attempt would be a loop.
+
+## What counts as the provider's own failure
+
+`src/llm/outage.ts`, one answer for every path that talks to a model:
+
+- **Outage-class**: `402 408 425 429 500-504 520-524 529`, a network fault, a 401 (a key problem on
+  *that* provider), a 404 naming a model or endpoint that no longer exists, and the `[server_error]`
+  family a gateway returns when its own upstream breaks.
+- **A policy refusal**: a 4xx whose body says the provider will not carry this content
+  (`Content Exists Risk`, `content policy`, `moderation`, `flagged`, ...). Another provider's policy
+  differs and the same prompt usually goes through.
+- **Not included**: a `400` naming a shape we sent wrong. That is our bug, and rerouting it would
+  hide it behind a model that happens to tolerate the shape -- measured the same evening, when
+  `glm-5.3` refused the parts array our system prompt was sent as.
+
 ## The switch, on the phone
 
 `agents.config.result` carries `retry: { enabled, delaysMs }`, already resolved, so the app renders
@@ -98,10 +170,18 @@ error text — so an outage is countable and its cost is visible.
 
 ## Tests
 
-- `tests/agent/dispatcher.test.ts` — the measured 403 is an outage and reroutes; a far-side fault
-  waits on the configured schedule **on the same model** before any reroute; the schedule is spent
-  once per run and the route takes over after it. The shared config in that file turns retries off,
-  so the failover tests keep proving the failover without waiting thirty seconds for it.
+- `tests/agent/bridge-provider-fallback.test.ts` — the run waits then finishes on the configured
+  default; a failure **between two calls** keeps the work it already did (the tool ran once, and the
+  run continued from its result); a policy refusal reroutes; a `400` naming our own shape does not;
+  a failure after the call wrote something does not either; a route walks its remaining candidates
+  then the tag's global default; the owner's turn is written once; a run already on its default gets
+  the schedule and nothing else. The failures there are `402` and `400` on purpose: a `503` would be
+  retried three times by the provider layer, blurring every model sequence the tests assert.
+- `tests/llm/outage.test.ts` — what is the provider's fault and what is ours.
+- `tests/llm/provider-fallback.test.ts` — the order of the targets, and the case that must stay
+  empty.
+- `tests/agent/dispatcher.test.ts` — resolution and engine choice only now; the failure handling
+  moved out of it, and so did its tests.
 - `tests/config.test.ts` — the default schedule, `enabled: false` beating a declared list, junk
   dropped.
 - `tests/core/config-edit.test.ts` — off is written, on leaves nothing behind, a schedule survives.

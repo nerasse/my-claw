@@ -19,7 +19,9 @@ const SESSION_ID = "test-injection";
 
 const config: MyClawConfig = {
   whitelist: ["u1"], blacklist: [], channels: {},
-  llm: { provider: "x", baseUrl: "https://example.com", model: "test-model" },
+  // Retries off: these tests are about what a run keeps when it fails, and the default schedule
+  // would make every one of them wait thirty seconds to prove the same thing.
+  llm: { provider: "x", baseUrl: "https://example.com", model: "test-model", providerRetry: { enabled: false } },
   agents: {}, memory: { enabled: false },
 };
 
