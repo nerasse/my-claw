@@ -114,6 +114,9 @@ export interface BrowserConfig {
   vncPasswordFile?: string;
   // systemd units the browser page reports on, when they are not this repo's own names.
   units?: string[];
+  // The X display the unlocking commands talk to (:99 by default, the one
+  // my-claw-chromium.service runs on). See docs/browser-page.md.
+  display?: string;
 }
 
 export interface LlmProviderConfig {

@@ -1,6 +1,6 @@
 import type { Server, ServerWebSocket } from "bun";
 import { basename } from "node:path";
-import { handleBrowserInfo } from "./browser-handlers.ts";
+import { handleBrowserInfo, handleBrowserUnblock } from "./browser-handlers.ts";
 import type { BrowserConfig } from "../../core/config.ts";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type {
@@ -1757,6 +1757,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
           type: "device.pair.result",
           ok: deny(frame.code, ws.data.deviceId),
         });
+        break;
+      case "browser.unblock":
+        this.detach(handleBrowserUnblock({
+          browser: this.browser,
+          sendFrame: (target, f) => this.sendFrame(target, f),
+          refuse: (target, scope, message, data) => this.refuse(target, scope, message, data),
+        }, ws), "handleBrowserUnblock");
         break;
       case "browser.info":
         this.detach(handleBrowserInfo({

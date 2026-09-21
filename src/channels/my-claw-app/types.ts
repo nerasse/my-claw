@@ -979,6 +979,7 @@ export interface MyClawAppDeviceRevoke {
 
 export type MyClawAppClientFrame =
   | MyClawAppBrowserInfo
+  | MyClawAppBrowserUnblock
   | MyClawAppChatSend
   | MyClawAppLocationPreview
   | MyClawAppSessionList
@@ -3573,6 +3574,27 @@ export interface MyClawAppBrowserTab {
   url: string;
 }
 
+/**
+ * The way out of a dialog that took the session hostage: raise whatever is hiding behind the
+ * browser window, close a file chooser nobody asked for, put the browser back in front.
+ */
+export interface MyClawAppBrowserUnblock {
+  type: "browser.unblock";
+}
+
+export interface MyClawAppBrowserUnblockAction {
+  action: "closed" | "raised";
+  window: string;
+}
+
+export interface MyClawAppBrowserUnblockResult {
+  type: "browser.unblock.result";
+  ok: boolean;
+  /** One line for the page to show as-is: what was closed, raised, or that nothing was stuck. */
+  message: string;
+  actions: MyClawAppBrowserUnblockAction[];
+}
+
 export interface MyClawAppBrowserInfoResult {
   type: "browser.info.result";
   enabled: boolean;
@@ -3591,6 +3613,7 @@ export interface MyClawAppBrowserInfoResult {
 export type MyClawAppServerFrame =
   | MyClawAppPong
   | MyClawAppBrowserInfoResult
+  | MyClawAppBrowserUnblockResult
   | MyClawAppChatMessage
   | MyClawAppChatUser
   | MyClawAppChatCompaction

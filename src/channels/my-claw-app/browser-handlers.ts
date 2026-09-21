@@ -2,6 +2,7 @@ import type { ServerWebSocket } from "bun";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { readVncPassword } from "../../browser/vnc.ts";
+import { XdotoolMissingError, unblockDialogs, xdotoolRunner } from "../../browser/unblock.ts";
 import { BrowserClient } from "../../browser/client.ts";
 import { DEFAULT_SIDECAR_URL } from "../../tools/browser/session.ts";
 import type { BrowserConfig } from "../../core/config.ts";
@@ -24,6 +25,9 @@ const DEFAULT_UNITS = [
 ];
 
 const DEFAULT_VNC_PORT = 5900;
+
+/** The X display the browser runs on, which is what this repo's own installer creates. */
+const DEFAULT_DISPLAY = ":99";
 
 export interface MyClawAppBrowserDeps {
   readonly browser?: BrowserConfig;
@@ -114,5 +118,38 @@ export async function handleBrowserInfo(
     });
   } catch (err) {
     await d.refuse(ws, "browser", "browser.info failed", { error: String(err) });
+  }
+}
+
+/**
+ * Unstick a VNC session whose clicks have been eaten by a native dialog.
+ *
+ * Measured 2026-09-21: a GTK file chooser opened behind the browser window -- no window manager on
+ * that display, so nothing raised it -- and its modal grab left every click dead with nothing on
+ * screen to explain it. The page's button lands here, and the answer is text to show as-is: what
+ * was closed, what was raised, or that nothing was stuck.
+ *
+ * A refused frame is for the failures this cannot name; a missing xdotool has a fix, so it is
+ * reported in the result instead. See src/browser/unblock.ts and docs/browser-page.md.
+ */
+export async function handleBrowserUnblock(
+  d: MyClawAppBrowserDeps,
+  ws: ServerWebSocket<MyClawAppSessionData>,
+): Promise<void> {
+  const display = d.browser?.display ?? DEFAULT_DISPLAY;
+  try {
+    const outcome = await unblockDialogs(xdotoolRunner(display));
+    d.sendFrame(ws, {
+      type: "browser.unblock.result",
+      ok: outcome.ok,
+      message: outcome.message,
+      actions: outcome.actions,
+    });
+  } catch (err) {
+    if (err instanceof XdotoolMissingError) {
+      d.sendFrame(ws, { type: "browser.unblock.result", ok: false, message: err.message, actions: [] });
+      return;
+    }
+    await d.refuse(ws, "browser", "browser.unblock failed", { error: String(err) });
   }
 }
