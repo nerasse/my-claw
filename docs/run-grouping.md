@@ -125,19 +125,31 @@ La FlatList porte des **rows**, pas des items bruts :
   seule, elle, reste pliée : son contenu n'est pas la carte, c'est justement le corps que
   le pli existe pour ne pas montrer.
 
-`RunGroup` est un header repliable (chevron, nombre de tool calls, premier outil,
-durée, statut coloré en erreur/aborté), fermé par défaut : une session rouverte
-commence avec tout replié. Un run a maintenant plusieurs plis : le **statut et la durée
-totale du run vivent sur son dernier pli** (décision owner), les autres plis n'affichent
-que leur propre contenu. Un pli sans aucun outil s'intitule « réflexion · N s » au lieu
-du « run » de repli.
+`RunGroup` est un header repliable (chevron, nombre de tool calls, premier outil),
+fermé par défaut : une session rouverte commence avec tout replié. Le titre décrit **le
+pli et rien d'autre** : aucune durée n'y figure jamais. Un pli sans aucun outil s'intitule
+« N thoughts » au lieu du « run » de repli.
 
-Un pli qui ne contient qu'une carte d'outil n'affiche **pas de barre du tout** : la carte est
-rendue directement, et la ligne de queue (durée totale du run, « Stopped »/« error ») passe
-**sous** elle, dans les mêmes mots que la barre. Le statut n'existe nulle part ailleurs dans le
-fil : il ne peut pas partir avec la barre sans disparaître du thread entier, et la durée le suit.
-Un pli d'une carte qui n'est pas le dernier du run ne porte pas cette ligne (elle est à la queue,
-une seule fois).
+La durée totale du run et son statut sont des faits **du run**, pas du pli, et ils ont
+désormais leur propre empreinte (`RunFoot`, décision owner du 2026-09-22) : une ligne
+faint `run · 2 h 33 min` (plus ` · Stopped`/` · error`), **une seule fois, à la fin du
+run**. Elle vivait dans le titre du dernier pli, où « 3 tool calls · memory · 2 h 33 min »
+se lisait comme la durée du pli lui-même (« on a l'impression que c'est le temps du
+dernier regroupement ») ; le mot `run` dit ce que la mesure couvre. Trois emplacements,
+selon la dernière chose que le run a dessinée :
+
+1. **sous son dernier message** : la signature de la réponse sur laquelle il s'est clos,
+   sur le même rang que le bouton `⋯`, toujours à droite ;
+2. **sous son dernier pli**, quand il est mort en plein travail : une ligne à part sous
+   le pli (jamais dans son titre) ;
+3. **en rangée seule**, quand sa queue n'est ni un message ni un pli (une notice, une
+   pensée), ou quand le run n'a **rien dessiné du tout** : l'empreinte est alors son
+   unique trace dans le fil, à la place où le travail aurait été.
+
+Un pli qui ne contient qu'une carte d'outil n'affiche **pas de barre du tout** : la carte
+est rendue directement, et l'empreinte, quand ce pli est la fin du run, passe sous elle.
+Un pli d'une carte qui n'est pas la fin du run ne porte rien (le span serait dit une fois
+par pli).
 
 Deux détails de contrôle, tous deux appris à l'usage :
 

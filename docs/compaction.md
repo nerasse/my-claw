@@ -291,6 +291,12 @@ Contrairement au thinking, un span nul est écrit : là-bas un zéro veut dire q
 n'est jamais arrivé, ici il veut dire qu'un résumé a été produit instantanément. Le canal le porte
 tel quel, et l'app ne dessine rien quand le champ est absent -- une frontière d'avant la mesure.
 
+Le temps s'affiche **sur la règle de la boundary elle-même** (« Context compacted · 3 turns
+summarized · 1 min 20 s »), et sur sa jumelle stoppée (« Compaction stopped · 3 turns kept · 12 s »).
+Il était l'accessoire minuscule du pli « Summary » : invisible tant que le résumé replié n'était
+pas regardé, et absent d'une compaction stoppée qui n'a pas de résumé -- la règle est la seule
+ligne que toutes les boundaries dessinent (décision owner du 2026-09-22).
+
 La somme des deux moitiés, la spéculation incluse : un résumé armé en arrière-plan garde la durée de
 son propre appel, pas celle du moment où il est réclamé.
 

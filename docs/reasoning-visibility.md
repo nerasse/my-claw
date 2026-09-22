@@ -169,10 +169,15 @@ The span is measured where the deltas arrive, not guessed from neighbouring time
 that goes straight to a tool call after thinking closes its span when the segmenter is read, and a
 span of zero is not written at all rather than stored as `0`.
 
-The app draws it with two decimals, unlike a tool duration. A phase can last a tenth of a second,
-and `formatDuration`'s whole seconds rounded one to `0s`, which reads as a phase that never
-happened. `tests/channels/reasoning-segments.test.ts` pins the measurement, `display.test.ts` the
-frame that carries it, and the app's `reasoningLine.test.tsx` the rendering.
+The app draws it with the span format every counter in the thread shares (`formatSpan`,
+2026-09-22): milliseconds under a second, one decimal from one to ten seconds (`2.3 s`), whole
+seconds, then `2 min 33 s`, then `2 h 33 min`. This line used to keep two decimals forever while
+three other formatters said the same span differently, and a long phase read `1m 33.00s` -- "des
+chiffres après la virgule alors que le truc a duré 30 minutes". The sub-second rung keeps the
+thing the decimals were first bought for: a 4 ms phase reads `4 ms`, never `0s` (a phase that
+never happened) and never `0.1 s` (twentyfold the truth). `tests/channels/reasoning-segments.test.ts`
+pins the measurement, `display.test.ts` the frame that carries it, and the app's
+`reasoningLine.test.tsx` the rendering.
 
 A hook that rewrites the answer (`transform:agent:response`) drops the cuts: they are positions in
 text that no longer exists, and a cut in the wrong place is worse than no cut.
