@@ -64,25 +64,39 @@ saw is drawn there as an empty bubble carrying the error text: the owner got `St
 has nothing to report is now silent, and a stop reports nothing -- `docs/my-claw-app-channel.md`, "The
 failure journal".
 
-### The entry goes on the log before the rows it caused
+### The entry goes on the log at the drain, where the model reads it
 
-An injected message's `user` entry used to be written at the drain -- the iteration boundary, once
-the tool round in flight had its results. That is right for the **prompt** (a user message cannot
-sit between an assistant's `tool_calls` and their results) and wrong for the **log**, which is what
-the owner reads: between the arrival and the next boundary the run can write rows of its own, and
-when the message is what caused them the bubble lands underneath them.
+An injected message's `user` entry is written at the drain -- the iteration boundary, once the tool
+round in flight has its results -- by `injectUserTurn`, the same call that pushes it to the prompt.
+Three surfaces take that one position:
 
-Measured 2026-09-21, thread `4d5775e7`, answering a pending question by voice: the cancel lands at
-06:31:35, the run's reaction turn -- a phase and a `bash` call -- is written at 06:31:52, and the
-bubble at 06:31:52, behind it. `Log.append` gives every entry its `seq` in call order, the file
-order is the display order, so the inversion is permanent and a reopened thread shows it too.
+- the **prompt**: a user message cannot sit between an assistant's `tool_calls` and their results,
+  so the boundary is the earliest place it is legal;
+- the **app**, live: a parked send holds the bottom of the thread until its ack (fired at the
+  drain), and every row the run emits meanwhile is inserted above it (`insertionIndex` in the
+  app's `chat.ts`);
+- the **log**, which is what a reopened thread replays.
 
-So the write is split from the push. `recordInjectedEntries` peeks the mailbox the moment the turn
-in flight comes back and, before anything of that turn is recorded, puts the entry on the log;
-`injectUserTurn` at the boundary then pushes to the prompt only, taking the text from what was
-written so the channel's `transform:user:content` hook still runs exactly once. A bubble is written
-once either way: the normal path skips an id the log already holds (`Log.append` throws on a
-duplicate rather than writing a second one), which is also what covers a run that force-closes and
+From 2026-09-21 to 2026-09-22 the log disagreed (9aacf30): the entry was written the moment the turn
+in flight came back, above that turn's rows, on the reasoning that the turn was the message's
+reaction. That held for one case -- a voice answer that cancels a pending question, whose reaction
+turn started after the send -- and was wrong for every other: a turn that started before the
+message and merely came back after it. Measured on thread `fbe927c6`, 2026-09-22 23:04: a voice note
+sent while the model was writing "Compris..." and calling two `bash` was drawn below those two
+cards live, and above the phase on reload (`seq 30569` user, `30570` phase). The owner's decision:
+one rule everywhere, the drain.
+
+What that costs is the question case: the run's reaction to a cancel ("The user cancelled the
+questions") sits above the voice that cancelled it, in live and on reload alike. The alternative
+-- a causal rule, the bubble before the first turn started after the send -- needs the server to
+tell the app where the bubble goes and the bubble to jump when the turn comes back; not taken.
+
+The entry carries what the trigger turn's does: its images, its location, and its `transcripts`
+(`preprocessor.transcriptsOf`). The injected path used to drop the transcripts, and a voice note
+sent mid-run came back from a reload as a bare waveform (`seq 30569`, same thread).
+
+A bubble is written once: `injectUserTurn` skips an id the log already holds (`Log.append` throws on
+a duplicate rather than writing a second one), which is what covers a run that force-closes and
 reroutes its message to a fresh run.
 
 ### Done reaction at run end

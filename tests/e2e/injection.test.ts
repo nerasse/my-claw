@@ -122,13 +122,16 @@ describe("E2E mid-run injection", () => {
     }
   });
   /**
-   * The order the owner reads. A message that jumps a pending question cancels it, and the run's
-   * reaction to that cancel is the very next turn -- so an entry written at the iteration boundary
-   * lands underneath the rows the message caused, and the voice bubble reads as if it came after
-   * the answer. Measured in thread 4d5775e7 on 2026-09-21: the question cancelled at 06:31:35, the
-   * bubble written at 06:31:52, behind a phase and a bash call of the turn it had caused.
+   * The order the owner reads is the order the model read: at the drain.
+   *
+   * The app parks a send at the bottom of the thread until its ack, and every row the run emits
+   * meanwhile lands above it; the model reads it at the next iteration boundary. The log is the
+   * replay of that screen, so the entry takes the same place. It used to be written at the return
+   * of the turn in flight (9aacf30), above that turn's rows, and a reopened thread showed the
+   * owner's voice note above a phase and two bash calls that had started before it was sent --
+   * the opposite of what the same thread had shown live (thread fbe927c6, 2026-09-22 23:04).
    */
-  test("a message that arrives during a turn gets its entry above that turn's rows", async () => {
+  test("a message that arrives during a final answer is written after it, before the turn it opens", async () => {
     runRegistry.clear();
     const manager = new SessionManager();
     setSessionLogResolver((sessionId) => manager.logOf(sessionId));
@@ -141,8 +144,7 @@ describe("E2E mid-run injection", () => {
         return sse([{ choices: [{ delta: { tool_calls: [{ index: 0, id: "tc1", function: { name: "noop", arguments: "{}" } }] } }] }]);
       }
       if (call === 2) {
-        // The arrival lands while this turn is in flight: after the run's last drain point, and
-        // before any row of the turn is on the log.
+        // The arrival lands while this turn is in flight: after the run's last drain point.
         runRegistry.enqueueInjection(SESSION_ID, message("m-late", "steer"));
         return sse([{ choices: [{ delta: { content: "reacting" } }] }]);
       }
@@ -154,19 +156,92 @@ describe("E2E mid-run injection", () => {
       const entries = (await manager.logOf(SESSION_ID)).entries();
       const userAt = entries.findIndex((entry) => entry.id === "m-late");
       const reactionAt = entries.findIndex((entry) => entry.type === "phase" && entry.text === "reacting");
+      const doneAt = entries.findIndex((entry) => entry.type === "phase" && entry.text === "done");
       expect(call).toBe(3);
-      expect(userAt).toBeGreaterThan(0);
       expect(reactionAt).toBeGreaterThan(0);
-      expect(userAt).toBeLessThan(reactionAt);
+      expect(userAt).toBeGreaterThan(reactionAt);
+      expect(userAt).toBeLessThan(doneAt);
+    } finally {
+      mock.restore(); runRegistry.clear(); resetSessionLogResolver();
+    }
+  });
+
+  /**
+   * The case measured on 2026-09-22: the turn in flight calls tools. Its phase and its tool rows
+   * are all above the message, which is read at the boundary once their results are in.
+   */
+  test("a message that arrives during a turn that calls tools is written after those tools", async () => {
+    runRegistry.clear();
+    const manager = new SessionManager();
+    setSessionLogResolver((sessionId) => manager.logOf(sessionId));
+    const router = makeRouterWith(manager, noopTool());
+
+    let call = 0;
+    const mock = mockFetch(async () => {
+      call++;
+      if (call === 1) {
+        runRegistry.enqueueInjection(SESSION_ID, message("m-mid", "et d'ailleurs"));
+        return sse([
+          { choices: [{ delta: { content: "Compris" } }] },
+          { choices: [{ delta: { tool_calls: [{ index: 0, id: "tc1", function: { name: "noop", arguments: "{}" } }] } }] },
+        ]);
+      }
+      return sse([{ choices: [{ delta: { content: "next" } }] }]);
+    });
+
+    try {
+      await router.route(message("m1", "start"), { onToken: async () => {} });
+      const entries = (await manager.logOf(SESSION_ID)).entries();
+      const phaseAt = entries.findIndex((entry) => entry.type === "phase" && entry.text === "Compris");
+      const toolAt = entries.findIndex((entry) => entry.type === "tool");
+      const userAt = entries.findIndex((entry) => entry.id === "m-mid");
+      const nextAt = entries.findIndex((entry) => entry.type === "phase" && entry.text === "next");
+      expect(phaseAt).toBeGreaterThan(0);
+      expect(toolAt).toBeGreaterThan(phaseAt);
+      expect(userAt).toBeGreaterThan(toolAt);
+      expect(nextAt).toBeGreaterThan(userAt);
+    } finally {
+      mock.restore(); runRegistry.clear(); resetSessionLogResolver();
+    }
+  });
+
+  /**
+   * The voice note sent mid-run kept its waveform and lost its words on reload: the trigger turn
+   * wrote `transcripts`, the injected one did not (thread fbe927c6, 2026-09-22, seq 30569).
+   */
+  test("an injected voice note keeps its transcript on the log", async () => {
+    runRegistry.clear();
+    const manager = new SessionManager();
+    setSessionLogResolver((sessionId) => manager.logOf(sessionId));
+    const bridge = new AgentBridge(config, noopTool(), new SkillRegistry());
+    const preprocessor = (bridge as unknown as { preprocessor: { transcriptsOf: (id: string) => Array<{ path: string; text: string }> } }).preprocessor;
+    const original = preprocessor.transcriptsOf.bind(preprocessor);
+    preprocessor.transcriptsOf = (id) => (id === "m-voice" ? [{ path: "/files/voice.m4a", text: "vérifie les headers" }] : original(id));
+    const router = new MessageRouter(manager, bridge, config);
+
+    let call = 0;
+    const mock = mockFetch(async () => {
+      call++;
+      if (call === 1) {
+        runRegistry.enqueueInjection(SESSION_ID, message("m-voice", "[Audio]: vérifie les headers"));
+        return sse([{ choices: [{ delta: { tool_calls: [{ index: 0, id: "tc1", function: { name: "noop", arguments: "{}" } }] } }] }]);
+      }
+      return sse([{ choices: [{ delta: { content: "ok" } }] }]);
+    });
+
+    try {
+      await router.route(message("m1", "start"), { onToken: async () => {} });
+      const voice = (await manager.logOf(SESSION_ID)).entries().find((entry): entry is UserEntry => entry.id === "m-voice");
+      expect(voice?.transcripts).toEqual({ "/files/voice.m4a": "vérifie les headers" });
     } finally {
       mock.restore(); runRegistry.clear(); resetSessionLogResolver();
     }
   });
   /**
-   * A bubble is written once. The run now records an injected message's entry before the turn it
-   * caused, so a run that force-closes can leave that entry on the log for the run its message is
-   * rerouted to -- and `Log.append` throws on an id it already holds rather than writing a second
-   * bubble. The same guard covers a channel replaying a message it has already sent.
+   * A bubble is written once. A run that force-closes can leave an injected entry on the log for
+   * the run its message is rerouted to -- and `Log.append` throws on an id it already holds rather
+   * than writing a second bubble. The same guard covers a channel replaying a message it has
+   * already sent.
    */
   test("a message whose bubble is already on the log is not written a second time", async () => {
     runRegistry.clear();
