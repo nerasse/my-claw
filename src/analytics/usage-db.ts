@@ -100,10 +100,19 @@ function getDb(): Database {
   ensureColumn(db, "api_calls", "cost_billed", "INTEGER");
   ensureColumn(db, "api_calls", "cost_approximate", "INTEGER");
   ensureColumn(db, "api_calls", "cost_source", "TEXT");
+  // Where the call ran from and what it was filed as, both at call time. A conversation changes
+  // workspace (applies from the next run) and gets re-filed (a folder is a place) -- a column is
+  // the only way the history survives either move. Both NULL on rows older than these columns:
+  // an invented workspace is worse than an unknown one. The rollup key has neither, so a filter
+  // set to one of them drops the rollup like `session_id` does. docs/stats-page.md.
+  ensureColumn(db, "api_calls", "workspace", "TEXT");
+  ensureColumn(db, "api_calls", "folder_id", "TEXT");
 
   // Must come after ensureColumn: an index on a column the table does not have yet would throw,
   // and inside the block above it would take the whole statement down with it.
   db.exec("CREATE INDEX IF NOT EXISTS idx_api_calls_parent ON api_calls (parent_session_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_api_calls_workspace ON api_calls (workspace)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_api_calls_folder ON api_calls (folder_id)");
 
   return db;
 }
@@ -159,6 +168,13 @@ export interface ApiCallRecord {
   backend?: string;
   cacheDialect?: string;
 
+  // Where the call ran from: a workspace key of config.workspaces, "default", or a directory
+  // outside all of them. Absent on rows written before the column existed.
+  workspace?: string;
+  // The folder of the conversation this call is billed to, as of the call. Never a session's
+  // current folder: moving a conversation re-files its future, not its past.
+  folderId?: string;
+
   error?: string;
 }
 
@@ -211,13 +227,13 @@ export function recordApiCall(record: ApiCallRecord): void {
           session_id, parent_session_id, platform, model, base_url, streaming, caller,
           prompt_tokens, completion_tokens, total_tokens, cache_read_tokens, cache_write_tokens,
           tool_calls, iteration, duration_ms, proxy_cost_usd, upstream_api_base, backend,
-          cache_dialect, error,
+          cache_dialect, error, workspace, folder_id,
           cost_usd, cost_billed, cost_approximate, cost_source
         ) VALUES (
           $session_id, $parent_session_id, $platform, $model, $base_url, $streaming, $caller,
           $prompt_tokens, $completion_tokens, $total_tokens, $cache_read_tokens, $cache_write_tokens,
           $tool_calls, $iteration, $duration_ms, $proxy_cost_usd, $upstream_api_base, $backend,
-          $cache_dialect, $error,
+          $cache_dialect, $error, $workspace, $folder_id,
           $cost_usd, $cost_billed, $cost_approximate, $cost_source
         )
       `);
@@ -245,6 +261,8 @@ export function recordApiCall(record: ApiCallRecord): void {
       $backend: record.backend ?? null,
       $cache_dialect: record.cacheDialect ?? null,
       $error: record.error ?? null,
+      $workspace: record.workspace ?? null,
+      $folder_id: record.folderId ?? null,
       $cost_usd: cost?.usd ?? null,
       $cost_billed: cost === undefined ? null : cost.billed ? 1 : 0,
       $cost_approximate: cost === undefined ? null : cost.approximate ? 1 : 0,

@@ -117,6 +117,13 @@ rather than asserting the claim.
 write time and arrives here inside `cost_usd`; measured on the live database, no row has ever
 carried one.
 
+Two columns more, both about *where the call happened* and both written at call time:
+`workspace` (a `config.workspaces` key, `default`, or a directory belonging to none of them) and
+`folder_id` (the folder the paying conversation was filed in when the call ran). A conversation
+switches workspace and gets re-filed, so only a column keeps the past where it was. Both are NULL
+on rows written before they existed, and the filters name those populations instead of hiding them
+-- see "Where a call is filed" below.
+
 ### The purge prices what it condemns
 
 The rule at the purge, per group:
@@ -210,7 +217,7 @@ is why the page costs four round trips to SQLite and not eight.
 
 ## Filtering
 
-One filter, six dimensions, applied **in SQL before the aggregation**. That is the whole design: a
+One filter, eight dimensions, applied **in SQL before the aggregation**. That is the whole design: a
 filtered report is a smaller population, not a smaller answer to the same question, so the totals
 are recomputed over the rows that survive and every view describes the same rows.
 
@@ -221,12 +228,18 @@ is folded from what is left.
 
 | Dimension | Column | Notes |
 | --- | --- | --- |
+| `workspace` | `workspace` | where the call ran from: a workspace key, `default`, or `(unknown)` for the rows before the column |
+| `folderId` | `folder_id` | the folder the call was filed as at call time, `(none)` for the unfolder ones |
 | `model` | `model` | exact, endpoint pin included: `z-ai/glm-5.2@streamlake/fp8` is one bill |
 | `provider` | `base_url` | the host. The page draws a pin where the model carries one, and a pin is not a column -- the `model` filter already narrows to it |
 | `caller` | `caller` | orchestrator, subagent, browser, compaction |
 | `sessionId` | `session_id` | one conversation |
 | `errorsOnly` | `error IS NOT NULL` | the calls that failed, not the routes that failed once |
 | `unpricedOnly` | `cost_usd IS NULL` | the calls no rung could price |
+
+The two sentinels are matched as `IS NULL`, never as a string: the pre-column history and the calls
+nobody filed are populations worth asking after, and a filter that cannot select them has no way
+back to a quarter of the window.
 
 `errorsOnly` and `unpricedOnly` are row predicates for a reason worth stating: the group-level
 version of the same filter would report the whole spend of a route with one error on it, which is a
@@ -235,12 +248,33 @@ different number wearing the same name.
 ### A filter the rollup cannot answer drops it
 
 `usage_monthly` is keyed by `(month, model, base_url, platform, caller)`. Three of the dimensions
-above are columns of it; three are not -- no session on that key, and `errors`/`unpriced_calls` are
-counters rather than rows, so "only the failures" is not a question a monthly fold can answer.
+above are columns of it; five are not -- no session, no workspace and no folder on that key, and
+`errors`/`unpriced_calls` are counters rather than rows, so "only the failures" is not a question a
+monthly fold can answer.
 
-Those three drop the rollup (`filterReachesRollup`), and `rollupIncluded` goes false with them. The
+Those five drop the rollup (`filterReachesRollup`), and `rollupIncluded` goes false with them. The
 alternative -- adding months no filter ever touched -- would make a filtered page report history it
-had excluded, which is worse than reporting less.
+had excluded, which is worse than reporting less. (Extending the rollup key instead was priced and
+refused: it rebuilds the table, and every folded month predates the two columns, so it would gain
+nothing but `(unknown)`.)
+
+### Where a call is filed
+
+The owner, 2026-09-22: "il faut traquer les requetes depuis quel workspace" and "un filtre par
+dossier [...] un snapshot par appel". Both fields answer at call time:
+
+- **`workspace`** is where the run works, named as its config key (`workspaceNameForDir`): the
+  directory a sub-agent was spawned into maps to the workspace whose tree holds it -- a worker
+  pinned to `/home/me/dev/my-claw` runs work of `dev` -- and anything outside every workspace keeps
+  its raw path. Read per call, so a switch ("applies from the next run onward") is exact.
+- **`folder_id`** is the folder of the **paying** conversation (`usageFolderOf`): a chat's folder
+  holds its whole spend, delegation included. For the payer itself that is its own live `folderId`,
+  so a filing gesture mid-run applies to the calls after it; for a worker run it is the folder the
+  drive that started the work saw, stamped beside `invokedBy` at every spawn/send -- a worker is
+  never filed as itself, even if it ever carried the field.
+
+A row therefore never moves when the owner re-files or switches: the future moves, the past stays
+where it was spent.
 
 ### The option lists ignore the filter
 

@@ -62,14 +62,14 @@ test("a deleted conversation keeps every call the report counted", async () => {
   }
 
   const infoOf = async (id: string) => ((await manager.read(id)) ? {} : undefined);
-  const before = await statsReport({ config, period: "30d", sessionInfo: infoOf });
+  const before = await statsReport({ config, period: "30d", sessionInfo: infoOf, folders: [] });
   const rowBefore = before.sessions.find((row) => row.sessionId === sessionId);
   assert.equal(rowBefore?.calls, 3, "the conversation is in the ranking before the delete");
   assert.equal(rowBefore?.deleted, false);
 
   await manager.deleteSession(sessionId);
 
-  const after = await statsReport({ config, period: "30d", sessionInfo: infoOf });
+  const after = await statsReport({ config, period: "30d", sessionInfo: infoOf, folders: [] });
   const rowAfter = after.sessions.find((row) => row.sessionId === sessionId);
   assert.equal(after.totals.calls, before.totals.calls, "the totals keep the deleted conversation's calls");
   assert.equal(rowAfter?.calls, 3, "the ranking keeps its row");

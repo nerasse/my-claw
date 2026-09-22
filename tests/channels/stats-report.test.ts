@@ -76,9 +76,12 @@ beforeEach(() => {
 interface CallOver {
   at?: string;
   sessionId?: string;
+  parentSessionId?: string;
   model?: string;
   baseUrl?: string;
   caller?: "orchestrator" | "subagent" | "browser";
+  workspace?: string;
+  folderId?: string;
   error?: string;
   promptTokens?: number;
   cacheReadTokens?: number;
@@ -89,12 +92,14 @@ function call(over: CallOver = {}): void {
   const sessionId = over.sessionId ?? "my-claw-app/thread/o/one";
   recordApiCall({
     sessionId,
-    parentSessionId: sessionId,
+    parentSessionId: over.parentSessionId ?? sessionId,
     platform: "my-claw-app",
     model: over.model ?? "glm-5.2",
     baseUrl: over.baseUrl ?? "https://openrouter.ai/api/v1",
     streaming: true,
     caller: over.caller ?? "orchestrator",
+    ...(over.workspace === undefined ? {} : { workspace: over.workspace }),
+    ...(over.folderId === undefined ? {} : { folderId: over.folderId }),
     promptTokens: over.promptTokens ?? 1_000_000,
     completionTokens: 0,
     totalTokens: over.promptTokens ?? 1_000_000,
@@ -111,7 +116,7 @@ function call(over: CallOver = {}): void {
 /** Sessions the store still holds, by id: everything else reads as deleted, which is the point. */
 function report(
   live: Record<string, { title?: string }> = {},
-  over: { period?: MyClawAppStatsPeriod; config?: MyClawConfig; kimi?: number; filter?: StatsFilter } = {},
+  over: { period?: MyClawAppStatsPeriod; config?: MyClawConfig; kimi?: number; filter?: StatsFilter; folders?: Array<{ id: string; name: string }> } = {},
 ): Promise<MyClawAppStatsPayload> {
   return statsReport({
     config: over.config ?? config,
@@ -119,6 +124,7 @@ function report(
     filter: over.filter ?? {},
     pricing: pricing(over.kimi),
     sessionInfo: async (sessionId) => live[sessionId],
+    folders: over.folders ?? [{ id: "folder-career", name: "career" }],
   });
 }
 
@@ -631,4 +637,80 @@ test("a filter a month cannot answer turns the horizon off rather than claiming 
   const bySession = await report({}, { filter: { sessionId: "new" } });
   expect(bySession.rollupIncluded).toBe(false);
   expect(bySession.totals.calls).toBe(1);
+});
+
+/**
+ * The two filing dimensions, recorded at call time so a workspace switch or a re-filed
+ * conversation keeps its past where it was. The owner, 2026-09-22: "il faut traquer les requetes
+ * depuis quel workspace" and "un filtre par dossier [...] un snapshot par appel".
+ */
+test("the workspace and the folder ride on the row, and both narrow the report", async () => {
+  call({ sessionId: "a", workspace: "dev", folderId: "folder-career" });
+  call({ sessionId: "b", workspace: "career", folderId: "folder-career", promptTokens: 5 });
+  call({ sessionId: "c", workspace: "dev", promptTokens: 7 });
+
+  const byWorkspace = await report({}, { filter: { workspace: "dev" } });
+  expect(byWorkspace.totals.calls).toBe(2);
+  expect(byWorkspace.sessions.map((r) => r.sessionId).sort()).toEqual(["a", "c"]);
+
+  const byFolder = await report({}, { filter: { folderId: "folder-career" } });
+  expect(byFolder.totals.calls).toBe(2);
+  expect(byFolder.sessions.map((r) => r.sessionId).sort()).toEqual(["a", "b"]);
+});
+
+test("the sentinels select what no workspace and no folder hold", async () => {
+  // No columns at all: the shape of every row written before the tracking existed.
+  call({ sessionId: "old" });
+  call({ sessionId: "unfiled", workspace: "dev" });
+
+  const unknown = await report({}, { filter: { workspace: "(unknown)" } });
+  expect(unknown.totals.calls).toBe(1);
+  expect(unknown.sessions.map((r) => r.sessionId)).toEqual(["old"]);
+
+  const noFolder = await report({}, { filter: { folderId: "(none)" } });
+  expect(noFolder.totals.calls).toBe(2);
+});
+
+test("a workspace or folder filter drops the monthly rollup, and says so", async () => {
+  call({ at: "2026-01-05T10:00:00.000Z", sessionId: "old" });
+  foldBefore("2026-04-01T00:00:00.000Z");
+  call({ workspace: "dev", folderId: "folder-career" });
+
+  // Unfiltered, the totals reach behind the wall through the rollup.
+  const all = await report();
+  expect(all.rollupIncluded).toBe(true);
+
+  // The rollup key has no workspace and no folder in it: a filter on one of them cannot be asked
+  // of a folded month, so the month is dropped and the page stops claiming the horizon.
+  for (const filter of [{ workspace: "dev" }, { folderId: "folder-career" }] as StatsFilter[]) {
+    const narrowed = await report({}, { filter });
+    expect(narrowed.rollupIncluded).toBe(false);
+    expect(narrowed.totals.calls).toBe(1);
+    expect(narrowed.totalsSince).toBe("2026-01");
+  }
+});
+
+test("a delegated run is flagged, so the page files it under delegated runs", async () => {
+  call({ sessionId: "chat" });
+  call({ sessionId: "subagent/run-1", parentSessionId: "chat", caller: "subagent" });
+
+  const stats = await report();
+  const own = stats.sessions.find((r) => r.sessionId === "chat");
+  const worker = stats.sessions.find((r) => r.sessionId === "subagent/run-1");
+  expect(own?.delegated).toBe(false);
+  expect(worker?.delegated).toBe(true);
+});
+
+test("the facets name the workspaces and the folders of the window", async () => {
+  call({ sessionId: "a", workspace: "dev", folderId: "folder-career" });
+  call({ sessionId: "b" });
+
+  const stats = await report({}, { folders: [{ id: "folder-career", name: "career" }, { id: "gone", name: "old name" }] });
+  expect(stats.facets.workspaces).toEqual(["(unknown)", "dev"]);
+  // Named from the channel's store; the "(none)" calls need no name, and a folder the store no
+  // longer holds says so rather than showing a bare uuid.
+  expect(stats.facets.folders).toEqual([
+    { folderId: "(none)", label: "(none)" },
+    { folderId: "folder-career", label: "career" },
+  ]);
 });

@@ -6,7 +6,7 @@ import { llmCompleteStream } from "../llm/transport.ts";
 import { tryResolveRunModel } from "../llm/run-model.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import type { SessionData } from "./store.ts";
-import { agentTypeOf, attributionParent } from "./store.ts";
+import { agentTypeOf, attributionParent, usageFolderOf, usageWorkspaceOf } from "./store.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
 import { cacheAttributionOf } from "../llm/cache-policy.ts";
 import { hooks } from "../hooks/index.ts";
@@ -487,6 +487,8 @@ export async function summarizeForCompaction(
       baseUrl: llmConfig.baseUrl,
       streaming: false,
       caller,
+      workspace: usageWorkspaceOf(config, session),
+      folderId: usageFolderOf(session),
       promptTokens: response.usage?.promptTokens ?? 0,
       completionTokens: response.usage?.completionTokens ?? 0,
       totalTokens: response.usage?.totalTokens ?? 0,

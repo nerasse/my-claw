@@ -2,7 +2,7 @@ import { readFile, mkdir, rename as fsRename, unlink, readdir, rm, rmdir, stat }
 import { readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, dirname } from "node:path";
-import { MY_CLAW_DIR } from "../core/config.ts";
+import { MY_CLAW_DIR, resolveWorkspaceKey, workspaceNameForDir, type MyClawConfig } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { ENTRIES_FILE, META_FILE, holdsSession, sessionDir } from "./log.ts";
@@ -267,6 +267,29 @@ export function attributionParent(session: SessionData): string {
   return session.invokedBy || session.meta?.parentSessionId || session.id;
 }
 
+/**
+ * The folder every call of this session is filed as, at call time.
+ *
+ * A row is filed like the conversation that pays for it: a chat's folder holds its whole spend,
+ * delegation included. For the payer itself that is its own live `folderId` -- read at call time,
+ * so a filing gesture mid-run applies to the calls that follow it. For a delegated run it is the
+ * folder its last drive saw, stamped by the runner beside `invokedBy`.
+ */
+export function usageFolderOf(session: SessionData): string | undefined {
+  return attributionParent(session) === session.id ? session.folderId : session.parentFolderId;
+}
+
+/**
+ * The workspace every call of this session is counted under: where the run's work happens, named
+ * as its config key. A sub-agent carries the directory it was spawned into (`meta.workspaceDir`,
+ * the same one its bridge is pinned to); any other session runs in its own workspace key's
+ * directory. Read at call time, so a workspace switch is exact from the run it applies to.
+ */
+export function usageWorkspaceOf(config: MyClawConfig, session: SessionData): string {
+  const dir = session.meta?.workspaceDir ?? resolveWorkspaceKey(config, session.workspace);
+  return workspaceNameForDir(config, dir);
+}
+
 export interface TokenUsage {
   promptTokens: number;
   completionTokens: number;
@@ -394,6 +417,10 @@ export interface SessionData {
   // global sub-agent can be driven from a chat other than the one that created it, so the creator
   // in `meta` is only a fallback: attribution follows whoever asked for this run.
   invokedBy?: string;
+  // Folder of the conversation this agent works for, as of the drive that started the work (set
+  // beside `invokedBy`, runtime-only like it). The payer's own `folderId` is not readable from
+  // here, and a run's calls are filed as the drawer files their payer -- docs/stats-page.md.
+  parentFolderId?: string;
   tokenUsage?: TokenUsage;
   /**
    * Nested AGENTS.md this conversation's runs actually injected, in discovery order. The collector

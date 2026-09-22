@@ -12,6 +12,8 @@ import { VoiceManager, SttPipeline } from "../src/voice/index.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
 import { deleteSession, loadSession } from "../src/sessions/store.ts";
+import { analyticsDb } from "../src/analytics/usage-db.ts";
+import { writeMeta, STORAGE_VERSION } from "../src/sessions/meta.ts";
 import { openSessionLog, type PhaseEntry, type UserEntry } from "../src/sessions/log.ts";
 import { mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
@@ -759,6 +761,62 @@ test("the caller list obeys the visibility rule", async () => {
     assert.equal(await runner.callersOf("subagent/does-not-exist", OWNER), undefined);
 
     await deleteSession(secret.id);
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+/**
+ * The filing of a delegated run, stamped at the drive that starts the work: the folder its payer
+ * is in at that moment, re-read on every drive so a re-filed conversation moves its future work
+ * with it. What the run's calls then record is `usageFolderOf`, whose rule lives in
+ * tests/analytics/usage-attribution.test.ts -- this test is the stamp itself.
+ */
+test("a run is filed as its payer's folder, re-stamped at every drive", async () => {
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const CREATOR = "matrix/room/!filing-creator:test";
+  const DRIVER = "telegram/dm/555222";
+  const now = new Date().toISOString();
+  const filed = (id: string, folderId: string) =>
+    writeMeta(id, {
+      id,
+      platform: "matrix",
+      chatType: "dm",
+      createdAt: now,
+      lastActiveAt: now,
+      storageVersion: STORAGE_VERSION,
+      leafId: null,
+      folderId,
+    });
+  await filed(CREATOR, "folder-career");
+  await filed(DRIVER, "folder-dev");
+
+  const fetchMock = mockFetch(async () => new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), { status: 200 }) as never);
+  // The stamp is runtime state (like `invokedBy`) and the row is where it has to land: what is
+  // asserted is the `folder_id` each run's calls were recorded with.
+  const filedFolders = (sessionId: string): string[] =>
+    (analyticsDb().prepare("SELECT folder_id FROM api_calls WHERE session_id = ?").all(sessionId) as Array<{ folder_id: string | null }>).map((r) => r.folder_id ?? "(none)");
+  try {
+    const { id } = await runner.spawn({
+      displayName: "filing",
+      type: "research",
+      mode: "session",
+      task: "init",
+      parentMessage: createMessage(),
+      existingIds: await reg.listExistingIds(),
+      generateId: (n, e) => reg.generateId(n, e),
+      parentSessionId: CREATOR,
+      visibility: "global",
+    });
+    const spawned = filedFolders(id);
+    assert.ok(spawned.length > 0, "the spawn run recorded calls");
+    assert.deepEqual([...new Set(spawned)], ["folder-career"]);
+
+    await runner.send(id, "do more", undefined, createMessage(), reg, DRIVER);
+    // The drive re-stamps: this run's calls are filed as the folder the driver was in, not the one
+    // the creator was in when the agent was born.
+    assert.deepEqual([...new Set(filedFolders(id))], ["folder-career", "folder-dev"]);
   } finally {
     fetchMock.restore();
   }

@@ -346,10 +346,16 @@ export interface MyClawAppSubAgentsController {
  * Injected rather than built in the adapter: the report needs the whole config, the price table and
  * the session store, none of which the channel holds. It takes no thread and no owner, because it
  * is about the install and not about a conversation -- there is one owner, and scoping a total to
- * one of his threads would answer a different question than the one the page asks.
+ * one of his threads would answer a different question than the one the page asks. The folder
+ * names are the one thing it cannot know: they live in the channel's own store, and a folder id
+ * without its name is a number to nobody.
  */
 export interface MyClawAppStatsController {
-  report(period: MyClawAppStatsPeriod, filter: MyClawAppStatsFilter): Promise<MyClawAppStatsPayload>;
+  report(
+    period: MyClawAppStatsPeriod,
+    filter: MyClawAppStatsFilter,
+    folders: Array<{ id: string; name: string }>,
+  ): Promise<MyClawAppStatsPayload>;
 }
 
 /**

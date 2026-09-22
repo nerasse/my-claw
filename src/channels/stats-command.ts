@@ -9,6 +9,7 @@ import {
   usageByModel,
   usageBySession,
   usageFacets,
+  NO_FOLDER,
   type StatsFilter,
   type UsageGroup,
 } from "../analytics/usage-stats.ts";
@@ -23,6 +24,7 @@ import type {
   MyClawAppStatsCache,
   MyClawAppStatsCallerRow,
   MyClawAppStatsDayRow,
+  MyClawAppStatsFacetFolder,
   MyClawAppStatsFacets,
   MyClawAppStatsFacetSession,
   MyClawAppStatsFilter,
@@ -64,6 +66,12 @@ export interface StatsParams {
    * there are three hundred of them.
    */
   sessionInfo(sessionId: string): Promise<{ title?: string } | undefined>;
+  /**
+   * The owner's folders, so a `folder_id` on a row can be named. Read from the channel's store,
+   * which is the only place the names live; an id whose folder is gone is labelled as such by the
+   * report rather than dropped -- its rows still spent money.
+   */
+  folders: Array<{ id: string; name: string }>;
 }
 
 function emptyTotals(): MyClawAppStatsTotals {
@@ -289,15 +297,21 @@ async function labelsOf(sessionIds: string[], infoOf: StatsParams["sessionInfo"]
  * and a cross-database query would tie the analytics to an archive that can be absent. An archive
  * that has nothing leaves the id standing -- an invented title is worse than an ugly one.
  */
-async function sessionRows(rows: Array<Priced<UsageGroup & { sessionId: string; firstAt: string; lastAt: string }>>, infoOf: StatsParams["sessionInfo"]): Promise<MyClawAppStatsSessionRow[]> {
-  const folded = new Map<string, { totals: MyClawAppStatsTotals; firstAt: string; lastAt: string }>();
+async function sessionRows(rows: Array<Priced<UsageGroup & { sessionId: string; parentSessionId: string; firstAt: string; lastAt: string }>>, infoOf: StatsParams["sessionInfo"]): Promise<MyClawAppStatsSessionRow[]> {
+  const folded = new Map<string, { totals: MyClawAppStatsTotals; firstAt: string; lastAt: string; delegated: boolean }>();
   for (const row of rows) {
     const held = folded.get(row.group.sessionId);
     if (!held) {
-      folded.set(row.group.sessionId, { totals: { ...row.totals }, firstAt: row.group.firstAt, lastAt: row.group.lastAt });
+      folded.set(row.group.sessionId, {
+        totals: { ...row.totals },
+        firstAt: row.group.firstAt,
+        lastAt: row.group.lastAt,
+        delegated: row.group.parentSessionId !== row.group.sessionId,
+      });
       continue;
     }
     add(held.totals, row.totals);
+    if (row.group.parentSessionId !== row.group.sessionId) held.delegated = true;
     if (row.group.firstAt < held.firstAt) held.firstAt = row.group.firstAt;
     if (row.group.lastAt > held.lastAt) held.lastAt = row.group.lastAt;
   }
@@ -307,7 +321,7 @@ async function sessionRows(rows: Array<Priced<UsageGroup & { sessionId: string; 
   for (const [sessionId, held] of folded) {
     const named = labels.get(sessionId);
     if (named === undefined) continue;
-    out.push({ sessionId, ...named, firstAt: held.firstAt, lastAt: held.lastAt, ...held.totals });
+    out.push({ sessionId, ...named, delegated: held.delegated, firstAt: held.firstAt, lastAt: held.lastAt, ...held.totals });
   }
   return out.sort(bySpend);
 }
@@ -356,6 +370,7 @@ export async function statsReport(p: StatsParams): Promise<MyClawAppStatsPayload
   const sessions = await sessionRows(price(usageBySession(p.period, filter), p.pricing), p.sessionInfo);
   const callers = callerRows(price(usageByCaller(p.period, filter), p.pricing));
   const horizon = usageHorizon();
+  const facets = await facetsOf(p, filter, models, sessions, callers);
 
   return {
     period: p.period,
@@ -373,7 +388,7 @@ export async function statsReport(p: StatsParams): Promise<MyClawAppStatsPayload
     cache: cacheOf(totals),
     callers,
     reconciliation: reconciliationRows(p.config, models),
-    facets: await facetsOf(p, filter, models, sessions, callers),
+    facets,
   };
 }
 
@@ -400,15 +415,25 @@ async function facetsOf(
   sessions: MyClawAppStatsSessionRow[],
   callers: MyClawAppStatsCallerRow[],
 ): Promise<MyClawAppStatsFacets> {
+  // The two new dimensions are never folded from the rows above: a UsageGroup carries no workspace
+  // and no folder, and adding one to every aggregate would weigh down queries that never ask for
+  // them. The two DISTINCTs are indexed and cost about a fifth of one aggregate (see the note on
+  // `usageFacets`), and they are needed whatever the filter, so they are read unconditionally.
+  const all = usageFacets(p.period);
+  const folderLabel = new Map(p.folders.map((folder) => [folder.id, folder.name]));
+  const folders: MyClawAppStatsFacetFolder[] = all.folderIds
+    .map((folderId) => ({ folderId, label: folderId === NO_FOLDER ? NO_FOLDER : folderLabel.get(folderId) ?? "(deleted)" }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+  const scopes = { workspaces: all.workspaces, folders };
   if (!filterNarrows(filter)) {
     return {
       models: sortedKeys(models.map((row) => row.group.model)),
       providers: sortedKeys(models.map((row) => row.group.baseUrl)),
       callers: sortedKeys(callers.map((row) => row.caller)),
       sessions: sessions.map(facetSession).sort((a, b) => a.label.localeCompare(b.label)),
+      ...scopes,
     };
   }
-  const all = usageFacets(p.period);
   const labels = await labelsOf(all.sessionIds, p.sessionInfo);
   return {
     models: all.models,
@@ -418,5 +443,6 @@ async function facetsOf(
       const named = labels.get(sessionId);
       return named === undefined ? [] : [{ sessionId, ...named }];
     }),
+    ...scopes,
   };
 }

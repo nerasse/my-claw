@@ -951,6 +951,27 @@ export function workspaceKeyForDir(config: MyClawConfig, dir: string | undefined
   return undefined;
 }
 
+/**
+ * The name a directory is counted under in the usage analytics: its workspace key, "default" for
+ * the default workspace, or the raw directory when it belongs to none of them.
+ *
+ * Unlike `workspaceKeyForDir`, a directory *inside* a workspace's tree is that workspace's: a
+ * sub-agent pinned to `/home/me/dev/my-claw` runs work of the `dev` workspace, and counting it as
+ * "default" -- which is what a strict key match would say -- puts the spend in the wrong column of
+ * the statistics page. Longest root wins so nested workspaces stay apart. docs/stats-page.md.
+ */
+export function workspaceNameForDir(config: MyClawConfig, dir: string): string {
+  const exact = workspaceKeyForDir(config, dir);
+  if (exact) return exact;
+  if (dir === resolveWorkspaceDir(config.workspace)) return "default";
+  let best: { key: string; length: number } | undefined;
+  for (const [key, root] of Object.entries(config.workspaces ?? {})) {
+    if (!dir.startsWith(root + "/")) continue;
+    if (!best || root.length > best.length) best = { key, length: root.length };
+  }
+  return best?.key ?? dir;
+}
+
 /** Agent entries pointing at a workspace key that does not exist. Reported at boot like an
  *  unknown scope entry: a typo would otherwise pin an agent to nothing and fail at run time. */
 export function findUnknownAgentWorkspaces(config: MyClawConfig): Array<{ path: string; key: string }> {

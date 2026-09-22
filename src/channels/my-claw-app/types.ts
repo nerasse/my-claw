@@ -2732,6 +2732,10 @@ export interface MyClawAppStatsFilter {
   provider?: string;
   caller?: string;
   sessionId?: string;
+  /** Where the call ran from: a workspace key, "default", or the sentinel for rows that predate the column. */
+  workspace?: string;
+  /** The folder the call was filed as at call time, or the sentinel for "no folder". */
+  folderId?: string;
   errorsOnly?: boolean;
   unpricedOnly?: boolean;
 }
@@ -2748,6 +2752,16 @@ export interface MyClawAppStatsFacets {
   providers: string[];
   callers: string[];
   sessions: MyClawAppStatsFacetSession[];
+  /** Where the window's calls ran from, sentinel for the unknown included. */
+  workspaces: string[];
+  /** The folders the window's calls were filed as, named. */
+  folders: MyClawAppStatsFacetFolder[];
+}
+
+/** One folder as the filter sheet offers it: the id the filter matches, and what to call it. */
+export interface MyClawAppStatsFacetFolder {
+  folderId: string;
+  label: string;
 }
 
 /** A conversation as the filter sheet offers it: the same label the ranking uses. */
@@ -2807,6 +2821,11 @@ export interface MyClawAppStatsSessionRow extends MyClawAppStatsTotals {
   labelSource: MyClawAppStatsLabelSource;
   /** The session is gone from disk. Its rows are not, and this is what says so. */
   deleted: boolean;
+  /**
+   * A run of a sub-agent or the browser, not a conversation of the drawer. Split out so the page
+   * can file it under "delegated runs" instead of counting 364 workers as 364 chats.
+   */
+  delegated: boolean;
   firstAt: string;
   lastAt: string;
 }

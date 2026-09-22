@@ -12,7 +12,7 @@ import {
 import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
 import type { SessionData, SessionAttachment } from "../sessions/store.ts";
-import { attributionParent, markSessionDirty } from "../sessions/store.ts";
+import { attributionParent, markSessionDirty, usageFolderOf, usageWorkspaceOf } from "../sessions/store.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
 import { promptOf, contextEntries } from "../sessions/projection.ts";
 import type { Entry, SessionLog } from "../sessions/log.ts";
@@ -381,6 +381,8 @@ export class AgentBridge implements AgentBackend {
       baseUrl: params.config.baseUrl,
       streaming: params.streaming,
       caller: this.depth === 0 ? "orchestrator" : "subagent",
+      workspace: usageWorkspaceOf(this.config, params.session),
+      folderId: usageFolderOf(params.session),
       promptTokens: 0,
       completionTokens: 0,
       totalTokens: 0,
@@ -824,6 +826,8 @@ export class AgentBridge implements AgentBackend {
             baseUrl: llmConfig.baseUrl,
             streaming,
             caller: this.depth === 0 ? "orchestrator" : "subagent",
+            workspace: usageWorkspaceOf(this.config, session),
+            folderId: usageFolderOf(session),
             promptTokens: 0,
             completionTokens: 0,
             totalTokens: 0,
@@ -876,6 +880,8 @@ export class AgentBridge implements AgentBackend {
           baseUrl: llmConfig.baseUrl,
           streaming,
           caller: this.depth === 0 ? "orchestrator" : "subagent",
+          workspace: usageWorkspaceOf(this.config, session),
+          folderId: usageFolderOf(session),
           promptTokens: response.usage?.promptTokens ?? 0,
           completionTokens: response.usage?.completionTokens ?? 0,
           totalTokens: response.usage?.totalTokens ?? 0,
@@ -1419,6 +1425,8 @@ export class AgentBridge implements AgentBackend {
       baseUrl: llmConfig.baseUrl,
       streaming: false,
       caller: this.depth === 0 ? "orchestrator" : "subagent",
+      workspace: usageWorkspaceOf(this.config, session),
+      folderId: usageFolderOf(session),
       promptTokens: summaryResponse.usage?.promptTokens ?? 0,
       completionTokens: summaryResponse.usage?.completionTokens ?? 0,
       totalTokens: summaryResponse.usage?.totalTokens ?? 0,

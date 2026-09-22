@@ -71,6 +71,8 @@ function statsFilterOf(raw: unknown): MyClawAppStatsFilter | null {
       case "provider":
       case "caller":
       case "sessionId":
+      case "workspace":
+      case "folderId":
         if (typeof value !== "string" || value.length === 0) return null;
         out[key] = value;
         break;
@@ -2595,7 +2597,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     try {
-      this.sendFrame(ws, { type: "stats.result", stats: await this.stats.report(frame.period, filter) });
+      this.sendFrame(ws, {
+        type: "stats.result",
+        stats: await this.stats.report(frame.period, filter, (await this.store.folders(ws.data.owner)).map((f) => ({ id: f.id, name: f.name }))),
+      });
     } catch (err) {
       await this.refuse(ws, "stats", "stats.get failed", { error: String(err) });
     }

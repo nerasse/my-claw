@@ -71,6 +71,8 @@ function imagesOf(attachments: Attachment[] | undefined): SessionAttachment[] {
 export interface SubAgentCaller {
   sessionId: string;
   workspaceKey?: string;
+  /** The folder the caller is filed in right now, stamped onto the agent's calls. docs/stats-page.md. */
+  folderId?: string;
 }
 
 /**
@@ -248,6 +250,7 @@ export class SubAgentRunner {
     return {
       sessionId: callerSessionId,
       ...(session?.workspace ? { workspaceKey: session.workspace } : {}),
+      ...(session?.folderId ? { folderId: session.folderId } : {}),
     };
   }
 
@@ -315,6 +318,7 @@ export class SubAgentRunner {
 
     const session = this.createSession(id, parentMessage.platform, parentMessage.chatType, meta, resolved.key);
     session.invokedBy = parentSessionId;
+    session.parentFolderId = spawnedFrom.folderId;
     recordSubAgentCaller(session, parentSessionId);
     // Write the user turn to the log before the run starts: a crash before the first bridge
     // turn must still show the question that was asked.
@@ -331,7 +335,7 @@ export class SubAgentRunner {
 
       hooks.emit("subagent:spawn", { id, displayName, type, mode, parentSessionId, action: "spawn", task, ...(toolCallId ? { toolCallId } : {}) });
       const stream = streamProvider?.(id);
-      const run = () => this.executeRun(id, type, resolved.dir, parentMessage, trackedSignal, model, stream, task);
+      const run = () => this.executeRun(session, type, resolved.dir, parentMessage, trackedSignal, model, stream, task);
       let result: string;
       try {
         result = await (enqueue ? enqueue(id, run) : run());
@@ -400,7 +404,8 @@ export class SubAgentRunner {
       if (!session || !session.meta) {
         return `Error: sub-agent ${id} not found.`;
       }
-      if (!isReachableFrom(session.meta, await this.resolveCaller(callerSessionId))) {
+      const caller = await this.resolveCaller(callerSessionId);
+      if (!isReachableFrom(session.meta, caller)) {
         return `Error: sub-agent ${id} not found.`;
       }
 
@@ -428,6 +433,7 @@ export class SubAgentRunner {
       // A global agent can be driven from a chat other than its creator, so this run's tokens
       // belong to whoever sent this message, not to whoever spawned the agent.
       session.invokedBy = callerSessionId;
+      session.parentFolderId = caller.folderId;
       // Who this agent is working for, which neither the creator nor the last driver answers: a
       // global agent serves several conversations and the owner needs the list to hand an answer
       // back to one of them.
@@ -645,6 +651,7 @@ export class SubAgentRunner {
     // like a chat, so deleting it would make the roster promise something it cannot deliver. It
     // stays private -- an unnamed agent must not leak past the conversation that asked for it --
     // and dies with its parent conversation (deleteChildrenOf).
+    const spawnedFrom = await this.resolveCaller(parentSessionId);
     const session = this.createSession(id, parentMessage.platform, parentMessage.chatType, {
       displayName: displayName || id.slice("subagent/".length),
       type,
@@ -654,6 +661,7 @@ export class SubAgentRunner {
       createdAt: new Date().toISOString(),
     }, workspaceKey);
     session.invokedBy = parentSessionId;
+    session.parentFolderId = spawnedFrom.folderId;
     recordSubAgentCaller(session, parentSessionId);
     // Write the user turn to the log before the run starts: a crash before the first bridge
     // turn must still show the question that was asked.
@@ -686,7 +694,7 @@ export class SubAgentRunner {
   }
 
   private async executeRun(
-    id: string,
+    session: SessionData,
     type: SubAgentType,
     workspaceDir: string | undefined,
     parentMessage: UnifiedMessage,
@@ -695,13 +703,10 @@ export class SubAgentRunner {
     stream?: SubAgentStream,
     userText?: string,
   ): Promise<string> {
-    // `loadSession` also returns null on a truncated file, and the non-null assertion turned that
-    // into a TypeError the model received as an opaque tool error.
-    const session = await loadSession(id);
-    if (!session) {
-      void log("error", "sub-agent session unreadable", { id });
-      return `Error: sub-agent ${id} not found.`;
-    }
+    // The caller's own session object, never a reload: `invokedBy` and `parentFolderId` are runtime
+    // state stamped at the drive, and a fresh copy from disk would drop exactly the two fields the
+    // run's filing and its bill are read from.
+    const id = session.id;
     try {
       return await this.executeRunWithSession(session, type, workspaceDir, parentMessage, signal, model, stream, undefined, userText);
     } finally {

@@ -69,6 +69,8 @@ export interface UsageGroup {
 
 export interface UsageSessionGroup extends UsageGroup {
   sessionId: string;
+  /** Who paid for these calls: the session itself for a conversation, its driver for a worker. */
+  parentSessionId: string;
   firstAt: string;
   lastAt: string;
 }
@@ -88,6 +90,8 @@ export interface UsageFacets {
   providers: string[];
   callers: string[];
   sessionIds: string[];
+  workspaces: string[];
+  folderIds: string[];
 }
 
 /**
@@ -104,16 +108,23 @@ export interface UsageFacets {
 export function usageFacets(period: UsagePeriod): UsageFacets {
   try {
     const cutoff = periodCutoff(period);
-    const values = (column: string): string[] =>
+    const values = (column: string, nullAs: string): string[] =>
       (db()
         .prepare(`SELECT DISTINCT ${column} AS value FROM api_calls ${where(cutoff, {})}`)
-        .all(bind(cutoff, {})) as Array<{ value: string }>)
-        .map((row) => row.value)
+        .all(bind(cutoff, {})) as Array<{ value: string | null }>)
+        .map((row) => row.value ?? nullAs)
         .sort((a, b) => a.localeCompare(b));
-    return { models: values("model"), providers: values("base_url"), callers: values("caller"), sessionIds: values("session_id") };
+    return {
+      models: values("model", ""),
+      providers: values("base_url", ""),
+      callers: values("caller", ""),
+      sessionIds: values("session_id", ""),
+      workspaces: values("workspace", UNKNOWN_WORKSPACE),
+      folderIds: values("folder_id", NO_FOLDER),
+    };
   } catch (err) {
     void log("warn", "analytics usageFacets failed", { error: String(err) });
-    return { models: [], providers: [], callers: [], sessionIds: [] };
+    return { models: [], providers: [], callers: [], sessionIds: [], workspaces: [], folderIds: [] };
   }
 }
 
@@ -139,9 +150,24 @@ export interface StatsFilter {
   provider?: string;
   caller?: string;
   sessionId?: string;
+  /** Where the call ran from: a workspace key, "default", or `UNKNOWN_WORKSPACE`. */
+  workspace?: string;
+  /** The folder the call was filed as at call time, or `NO_FOLDER`. */
+  folderId?: string;
   errorsOnly?: boolean;
   unpricedOnly?: boolean;
 }
+
+/**
+ * What a NULL is called in the two new dimensions.
+ *
+ * Both are offered as values rather than as holes: the rows written before the columns existed
+ * (workspace) and the calls nobody filed (folder) are populations worth asking after, and a
+ * filter that cannot select them has no way back to a quarter of the history. Neither name can be
+ * produced by the writers -- a workspace is a config key, a `default`, or a directory.
+ */
+export const UNKNOWN_WORKSPACE = "(unknown)";
+export const NO_FOLDER = "(none)";
 
 /** True when the filter narrows anything: the one thing that makes the extra passes worth it. */
 export function filterNarrows(filter: StatsFilter): boolean {
@@ -159,7 +185,13 @@ export function filterNarrows(filter: StatsFilter): boolean {
  * showing.
  */
 export function filterReachesRollup(filter: StatsFilter): boolean {
-  return filter.sessionId === undefined && filter.errorsOnly !== true && filter.unpricedOnly !== true;
+  return (
+    filter.sessionId === undefined &&
+    filter.workspace === undefined &&
+    filter.folderId === undefined &&
+    filter.errorsOnly !== true &&
+    filter.unpricedOnly !== true
+  );
 }
 
 /**
@@ -265,6 +297,18 @@ function predicate(cutoff: string | null, filter: StatsFilter): { sql: string[];
     sql.push("session_id = $sessionId");
     params.$sessionId = filter.sessionId;
   }
+  // The two dimensions a NULL is a value in: matched as a hole rather than as a string, or a
+  // whole population (the pre-column history, the unfolder conversations) would be unfilterable.
+  if (filter.workspace === UNKNOWN_WORKSPACE) sql.push("workspace IS NULL");
+  else if (filter.workspace !== undefined) {
+    sql.push("workspace = $workspace");
+    params.$workspace = filter.workspace;
+  }
+  if (filter.folderId === NO_FOLDER) sql.push("folder_id IS NULL");
+  else if (filter.folderId !== undefined) {
+    sql.push("folder_id = $folderId");
+    params.$folderId = filter.folderId;
+  }
   if (filter.errorsOnly === true) sql.push("error IS NOT NULL");
   if (filter.unpricedOnly === true) sql.push("cost_usd IS NULL");
   return { sql, params };
@@ -359,11 +403,11 @@ export function usageBySession(period: UsagePeriod, filter: StatsFilter): UsageS
     const cutoff = periodCutoff(period);
     const rows = db()
       .prepare(
-        `SELECT session_id AS sessionId, MIN(timestamp) AS firstAt, MAX(timestamp) AS lastAt, ${LIVE_COLUMNS}
+        `SELECT session_id AS sessionId, MIN(timestamp) AS firstAt, MAX(timestamp) AS lastAt, MAX(parent_session_id) AS parentSessionId, ${LIVE_COLUMNS}
          FROM api_calls ${where(cutoff, filter)}
          GROUP BY session_id, model, base_url`,
       )
-      .all(bind(cutoff, filter)) as Array<RawGroup & { sessionId: string; firstAt: string; lastAt: string }>;
+      .all(bind(cutoff, filter)) as Array<RawGroup & { sessionId: string; parentSessionId: string; firstAt: string; lastAt: string }>;
     return rows.map((row) => ({ ...row, origin: "live" as const }));
   } catch (err) {
     void log("warn", "analytics usageBySession failed", { error: String(err) });
