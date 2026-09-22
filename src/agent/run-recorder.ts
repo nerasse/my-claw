@@ -65,6 +65,8 @@ export interface RecordedToolCall {
   output: string;
   ok: boolean;
   durationMs?: number;
+  /** Images the tool deposited into the model's context, already narrowed to image + path. */
+  attachments?: SessionAttachment[];
 }
 
 /**
@@ -252,6 +254,7 @@ export class RunRecorder {
       truncated: spilled.truncated,
       ok: call.ok,
       ...(call.durationMs !== undefined ? { durationMs: call.durationMs } : {}),
+      ...(call.attachments?.length ? { attachments: call.attachments } : {}),
       // No sub-agent state here, and it is not an omission: a `spawn` returns while its child runs,
       // so this entry is written before there is anything terminal to record. `spawn_state` entries
       // carry the lifecycle -- src/sessions/spawn-state.ts.

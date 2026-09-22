@@ -186,7 +186,10 @@ export type ChatMessage =
        */
       providerMeta?: ProviderMeta;
     }
-  | { role: "tool"; tool_call_id: string; content: string };
+  // Content parts on a tool message are how a tool's images reach the model (a `read` of a PNG,
+  // a screenshot): OpenAI-compatible endpoints take the same text/image_url part shape as user
+  // messages, Anthropic folds them inside the tool_result block. A string stays the common case.
+  | { role: "tool"; tool_call_id: string; content: string | ChatMessageContent[] };
 
 export interface LlmUsage {
   // Every input token, cached ones included. Providers disagree on whether their own prompt

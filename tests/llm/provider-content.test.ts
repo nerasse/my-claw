@@ -143,3 +143,36 @@ describe("chatCompletionStream", () => {
     }
   });
 });
+
+test("a tool message carries its content parts unchanged (a tool's images ride along)", async () => {
+  // OpenAI-compatible endpoints take the same text/image_url part shape on a tool message as on a
+  // user message. Rewriting parts to a string here would blind the model to what the tool read.
+  let body: Record<string, unknown> | undefined;
+  const mock = mockFetch(async (_u, init) => {
+    body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  });
+  try {
+    await chatCompletion(config, [
+      { role: "user", content: "look" },
+      { role: "assistant", content: "", tool_calls: [{ id: "tc1", type: "function", function: { name: "read", arguments: "{}" } }] },
+      {
+        role: "tool",
+        tool_call_id: "tc1",
+        content: [
+          { type: "text", text: "Image read successfully" },
+          { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+        ],
+      },
+    ]);
+    const messages = (body as { messages: Array<{ role: string; content: unknown }> }).messages;
+    const tool = messages.find((m) => m.role === "tool")!;
+    expect(Array.isArray(tool.content)).toBe(true);
+    expect((tool.content as Array<{ type: string }>).map((p) => p.type)).toEqual(["text", "image_url"]);
+  } finally {
+    mock.restore();
+  }
+});

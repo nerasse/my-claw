@@ -98,6 +98,12 @@ export interface ToolEntry extends EntryBase {
   outputPath?: string;
   truncated: boolean;
   ok: boolean;
+  /**
+   * Images the tool put in front of the model -- a `read` of a PNG, a browser screenshot. The
+   * bytes stay on disk and are encoded per prompt build, like a user's own attachment
+   * (2026-09-22: agents could not see an image they themselves read).
+   */
+  attachments?: SessionAttachment[];
   durationMs?: number;
   /**
    * Sub-agent state as it stood when a pre-log session was imported, and only then: the shape kept

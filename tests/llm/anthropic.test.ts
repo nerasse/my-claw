@@ -377,3 +377,27 @@ test("the final turn carries the conversation cache breakpoint, not the middle o
     }
   }
 });
+
+test("a tool's images ride inside its own tool_result", () => {
+  // The block exists for exactly this: what the tool put in front of the model belongs to the
+  // call, mapped through the same text/image shapes a user turn uses (2026-09-22).
+  const messages: ChatMessage[] = [
+    { role: "system", content: "sys" },
+    { role: "user", content: "look" },
+    { role: "assistant", content: "", tool_calls: [{ id: "c1", type: "function", function: { name: "read", arguments: '{"path":"shot.png"}' } }] },
+    {
+      role: "tool",
+      tool_call_id: "c1",
+      content: [
+        { type: "text", text: "Image read successfully: shot.png" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+      ],
+    },
+  ];
+  const { turns } = buildRequest(messages);
+  const toolResult = turns[2]!.content[0] as { type: string; content: unknown };
+  assert.equal(toolResult.type, "tool_result");
+  const blocks = toolResult.content as Array<{ type: string; text?: string; source?: { media_type?: string } }>;
+  assert.deepEqual(blocks.map((b) => b.type), ["text", "image"]);
+  assert.equal(blocks[1]!.source?.media_type, "image/png");
+});

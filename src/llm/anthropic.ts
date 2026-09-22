@@ -155,7 +155,7 @@ interface AnthropicToolUseBlock {
 interface AnthropicToolResultBlock {
   type: "tool_result";
   tool_use_id: string;
-  content: string;
+  content: string | AnthropicBlock[];
   cache_control?: typeof CACHE_1H;
 }
 interface AnthropicThinkingBlock {
@@ -331,9 +331,22 @@ function buildRequest(messages: ChatMessage[], self?: ReplayIdentity): { system:
         push("assistant", blocks);
         break;
       }
-      case "tool":
-        push("user", [{ type: "tool_result", tool_use_id: msg.tool_call_id, content: msg.content }]);
+      case "tool": {
+        // A tool's images belong inside its own tool_result -- that is what the block is for --
+        // mapped through the same text/image shapes a user turn uses.
+        const content: string | AnthropicBlock[] =
+          typeof msg.content === "string"
+            ? msg.content
+            : msg.content.flatMap((p): AnthropicBlock[] =>
+                p.type === "text"
+                  ? p.text.trim()
+                    ? [{ type: "text", text: p.text }]
+                    : []
+                  : [imageBlock(p.image_url.url)],
+              );
+        push("user", [{ type: "tool_result", tool_use_id: msg.tool_call_id, content }]);
         break;
+      }
     }
   }
 

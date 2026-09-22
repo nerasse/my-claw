@@ -151,3 +151,33 @@ test("codex omits the key when no conversation named one", async () => {
   const body = JSON.parse(String(capturedInit?.body)) as Record<string, any>;
   assert.equal("prompt_cache_key" in body, false);
 });
+
+test("a tool's images ride its function_call_output as output items", async () => {
+  writeAuth();
+  let body: Record<string, unknown> | undefined;
+  mock = mockFetch(async (_u, init) => {
+    body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+    return sseResponse([
+      { type: "response.output_item.done", output_index: 0, item: { type: "message", role: "assistant", content: [{ type: "output_text", text: "seen" }] } },
+      { type: "response.completed" },
+    ]);
+  });
+  await codexResponse(config, [
+    { role: "system", content: "sys" },
+    { role: "user", content: "look" },
+    { role: "assistant", content: "", tool_calls: [{ id: "call_1", type: "function", function: { name: "read", arguments: "{}" } }] },
+    {
+      role: "tool",
+      tool_call_id: "call_1",
+      content: [
+        { type: "text", text: "Image read successfully" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+      ],
+    },
+  ]);
+  const input = (body as { input: Array<Record<string, unknown>> }).input;
+  const out = input.find((i) => i["type"] === "function_call_output") as { output: unknown };
+  const items = out.output as Array<{ type: string; text?: string; image_url?: string }>;
+  assert.deepEqual(items.map((i) => i.type), ["input_text", "input_image"]);
+  assert.equal(items[1]!.image_url, "data:image/png;base64,AAAA");
+});

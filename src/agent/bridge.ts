@@ -10,7 +10,7 @@ import {
   providerRetryDelays,
 } from "../core/config.ts";
 import type { SubAgentType } from "../subagents/types.ts";
-import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
+import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage, Attachment } from "../channels/types.ts";
 import type { SessionData, SessionAttachment } from "../sessions/store.ts";
 import { attributionParent, markSessionDirty, usageFolderOf, usageWorkspaceOf } from "../sessions/store.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
@@ -140,6 +140,9 @@ function runLogData(message: UnifiedMessage, session: SessionData): Record<strin
 // How many of the most recent images ride along with every request. They are resent on each
 // turn, so this is a per-turn tax, not a one-off: a photo is worth ~1-2K tokens.
 const MAX_HISTORY_IMAGES = 4;
+// Tool images get their own budget so a run that captures screenshots cannot evict the picture
+// the owner sent. Both are spent most-recent-first.
+const MAX_HISTORY_TOOL_IMAGES = 4;
 
 // Turns a run has to add before the mid-run gate tries again after a summarization that changed
 // nothing (a history too short to split, a refused summary, a provider error). Without it a run
@@ -1025,7 +1028,7 @@ export class AgentBridge implements AgentBackend {
         // prompt has to, and a replay reads better for it.
         const settle = async (
           tc: typeof response.toolCalls[number],
-          result: { content: string; success: boolean },
+          result: { content: string; success: boolean; attachments?: Attachment[] },
           durationMs: number,
         ) => {
           let transformedResult = (await hooks.transform("transform:tool:result", {
@@ -1171,6 +1174,12 @@ export class AgentBridge implements AgentBackend {
           // Recorded before the message is built, and the message comes back from the recording:
           // the whole output is archived first, then the two views are cut from it. The other order
           // is what once wrote a "full output" file that was itself truncated -- src/sessions/tool-output.ts.
+          // A tool's images (a `read` of a PNG, a screenshot) are narrowed here and travel with
+          // the entry and the live message: both views must be able to show the model what the
+          // tool put in front of it (2026-09-22).
+          const toolImages = (result.attachments ?? [])
+            .filter((a) => a.type === "image" && Boolean(a.path))
+            .map((a) => ({ type: "image" as const, path: a.path!, ...(a.mimeType ? { mimeType: a.mimeType } : {}) }));
           const recorded = await recorder.tool({
             callId: tc.id,
             name: tc.name,
@@ -1178,9 +1187,17 @@ export class AgentBridge implements AgentBackend {
             output: recordedOutput,
             ok: result.success,
             ...(durationMs !== undefined ? { durationMs } : {}),
+            ...(toolImages.length > 0 ? { attachments: toolImages } : {}),
           });
           stagnation.observe(recorded.message);
-          chatMessages.push({ role: "tool", tool_call_id: tc.id, content: recorded.message });
+          chatMessages.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content:
+              toolImages.length > 0
+                ? await imageContentFrom(recorded.message, toolImages.map((a) => a.path))
+                : recorded.message,
+          });
         }
       }
 
@@ -1485,7 +1502,7 @@ export class AgentBridge implements AgentBackend {
     // The exact tool set offered to the model this run. Passed rather than recomputed so the set
     // that can be executed is the same object the prompt and the API payload were built from.
     available: Tool[];
-  }): Promise<{ content: string; success: boolean }> {
+  }): Promise<{ content: string; success: boolean; attachments?: Attachment[] }> {
     if (params.signal?.aborted) throw new AbortedError();
     // Resolved against the set this agent was offered, never the whole registry. A global lookup
     // executed anything the model named, which defeated three documented controls at once: the
@@ -1556,6 +1573,7 @@ export class AgentBridge implements AgentBackend {
         return {
           success: true,
           content: result.output.trim().length > 0 ? result.output : EMPTY_TOOL_OUTPUT,
+          ...(result.attachments?.length ? { attachments: result.attachments } : {}),
         };
       }
       const detail = (result.error ?? result.output).trim();
@@ -1785,6 +1803,31 @@ export class AgentBridge implements AgentBackend {
       if (images > 0) {
         chatMessages[turn.chatIndex] = { role: "user", content };
         attached += images;
+      }
+    }
+
+    // Tool images, matched by call id rather than by position: a tool message is identified by
+    // its own `tool_call_id`, so the pairing cannot drift the way counting user slots once did.
+    const toolTurns: Array<{ chatIndex: number; text: string; paths: string[] }> = [];
+    for (const entry of path) {
+      if (entry.type !== "tool") continue;
+      const tool = entry as Extract<Entry, { type: "tool" }>;
+      const paths = (tool.attachments ?? []).map((a) => a.path);
+      if (paths.length === 0) continue;
+      const chatIndex = chatMessages.findIndex((m) => m.role === "tool" && m.tool_call_id === tool.callId);
+      if (chatIndex >= 0) toolTurns.push({ chatIndex, text: tool.output, paths });
+    }
+    let toolBudget = MAX_HISTORY_TOOL_IMAGES;
+    for (const turn of toolTurns.reverse()) {
+      if (toolBudget <= 0) break;
+      const paths = turn.paths.slice(-toolBudget);
+      toolBudget -= paths.length;
+      const target = chatMessages[turn.chatIndex];
+      if (target?.role !== "tool") continue;
+      const content = await imageContentFrom(turn.text, paths);
+      if (content.some((part) => part.type === "image_url")) {
+        chatMessages[turn.chatIndex] = { role: "tool", tool_call_id: target.tool_call_id, content };
+        attached += content.filter((part) => part.type === "image_url").length;
       }
     }
     return attached;

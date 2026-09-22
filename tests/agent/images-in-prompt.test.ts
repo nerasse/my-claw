@@ -172,3 +172,68 @@ describe("images in the prompt", () => {
     }
   });
 });
+
+/**
+ * A tool's own images (2026-09-22: the owner found that an agent cannot load a picture into its
+ * context -- an attachment only arrived when a human sent it). Two paths must agree: the live
+ * message the settle loop pushes, and the prompt a later run rebuilds from the log entry. Both put
+ * the image on the tool's own message, matched by call id.
+ */
+describe("images a tool read", () => {
+  test("a tool's image rides its tool message, live and rebuilt", async () => {
+    runRegistry.clear();
+    const setup = await setupSessionLog(SESSION_ID);
+    const reg = noopTools();
+    const path = await anImage();
+    reg.register({
+      name: "shooter",
+      description: "captures a screenshot",
+      parameters: {},
+      async execute() {
+        return {
+          success: true,
+          output: "Image read successfully: shot.png (image/png, 1 KB).",
+          attachments: [{ type: "image", path, mimeType: "image/png" }],
+        };
+      },
+    });
+    const router = new MessageRouter(new SessionManager(), new AgentBridge(config, reg, new SkillRegistry()), config);
+    const bodies: Body[] = [];
+    let call = 0;
+    const mock = mockFetch(async (_u, init) => {
+      bodies.push(JSON.parse(String(init?.body ?? "{}")) as Body);
+      call++;
+      if (call === 1) {
+        return llm({ content: "", tool_calls: [{ id: "tc-shot", function: { name: "shooter", arguments: "{}" } }] });
+      }
+      return llm({ content: "seen" });
+    });
+    try {
+      const r1 = await router.route(message("m1", "look at the screen"));
+      expect(r1?.text).toBe("seen");
+
+      const toolContentOf = (body: Body): string | Part[] => {
+        const tool = body.messages.find((m) => m.role === "tool");
+        expect(tool).toBeTruthy();
+        return tool!.content;
+      };
+      const live = toolContentOf(bodies[1]!);
+      expect(Array.isArray(live)).toBe(true);
+      // The text keeps its place on the message, the picture beside it.
+      expect((live as Part[]).some((p) => p.type === "text" && (p.text ?? "").includes("Image read successfully"))).toBe(true);
+      const liveImages = imageParts(live);
+      expect(liveImages.length).toBe(1);
+      expect(liveImages[0]?.image_url?.url.startsWith("data:image/png;base64,")).toBe(true);
+
+      // A later run rebuilds the prompt from the log: the entry still carries the image, and the
+      // pairing is by call id, so the tool message gets it back.
+      await router.route(message("m2", "and now?"));
+      const rebuilt = toolContentOf(bodies[2]!);
+      expect(imageParts(rebuilt).length).toBe(1);
+    } finally {
+      mock.restore();
+      runRegistry.clear();
+      setup.cleanup();
+    }
+  });
+});

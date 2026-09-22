@@ -189,6 +189,20 @@ describe("RunRecorder: tools", () => {
     expect(entry).toMatchObject({ type: "tool", callId: "c1", name: "bash", args: { command: "ls" }, output: "ok", ok: true, durationMs: 12 });
   });
 
+  test("a tool's images are persisted on the entry, so a rebuilt prompt can show them again", async () => {
+    const recorder = new RunRecorder(entries);
+    const { entry } = await recorder.tool(
+      call("c1", { attachments: [{ type: "image", path: "/tmp/shot.png", mimeType: "image/png" }] }),
+    );
+    expect(entry.attachments).toEqual([{ type: "image", path: "/tmp/shot.png", mimeType: "image/png" }]);
+  });
+
+  test("a tool with no image writes no attachments field", async () => {
+    const recorder = new RunRecorder(entries);
+    const { entry } = await recorder.tool(call("c1"));
+    expect(entry.attachments).toBeUndefined();
+  });
+
   test("a tool belongs to the turn that asked for it", async () => {
     const recorder = new RunRecorder(entries);
     const [phase] = recorder.turn({ content: "je regarde" });

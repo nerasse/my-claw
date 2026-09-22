@@ -35,7 +35,7 @@ type ResponsesInputItem =
   | { role: "user" | "assistant"; content: string | ResponsesUserPart[] }
   | { type: "reasoning"; id: string; encrypted_content?: string; summary: [] }
   | { type: "function_call"; call_id: string; name: string; arguments: string }
-  | { type: "function_call_output"; call_id: string; output: string };
+  | { type: "function_call_output"; call_id: string; output: string | ResponsesUserPart[] };
 
 interface ResponsesTool {
   type: "function";
@@ -124,7 +124,16 @@ function buildInput(
         break;
       }
       case "tool":
-        input.push({ type: "function_call_output", call_id: msg.tool_call_id, output: msg.content });
+        input.push({
+          type: "function_call_output",
+          call_id: msg.tool_call_id,
+          output:
+            typeof msg.content === "string"
+              ? msg.content
+              : msg.content.map((p): ResponsesUserPart =>
+                  p.type === "text" ? { type: "input_text", text: p.text } : { type: "input_image", detail: "auto", image_url: p.image_url.url },
+                ),
+        });
         break;
     }
   }

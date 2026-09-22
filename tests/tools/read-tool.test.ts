@@ -65,3 +65,62 @@ test("read: caps output at 100KB with a truncation notice", async () => {
   assert.match(result.output, /truncated at 100000 chars/);
   await rm(dir, { recursive: true, force: true });
 });
+
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
+
+test("read: an image returns itself as an attachment, sniffed by magic bytes", async () => {
+  await mkdir(TMP, { recursive: true });
+  // No extension anywhere: a screenshot under a generated name is still an image, and the bytes
+  // are the only honest witness. The model gets the image itself, not mojibake from a utf-8 read.
+  const file = join(TMP, "shot-100037562");
+  await writeFile(file, PNG);
+  try {
+    const result = await readTool.execute({ path: file });
+    assert.equal(result.success, true);
+    assert.ok(result.output.startsWith("Image read successfully:"), result.output);
+    assert.deepEqual(result.attachments, [{ type: "image", path: file, mimeType: "image/png" }]);
+  } finally {
+    await rm(TMP, { recursive: true, force: true });
+  }
+});
+
+test("read: a text file named .png is read as text -- the magic bytes decide", async () => {
+  await mkdir(TMP, { recursive: true });
+  const file = join(TMP, "notes.png");
+  await writeFile(file, "planning notes, not a picture");
+  try {
+    const result = await readTool.execute({ path: file });
+    assert.equal(result.success, true);
+    assert.equal(result.output, "planning notes, not a picture");
+    assert.equal(result.attachments, undefined);
+  } finally {
+    await rm(TMP, { recursive: true, force: true });
+  }
+});
+
+test("read: a jpeg is sniffed too, and named as its real mime", async () => {
+  await mkdir(TMP, { recursive: true });
+  const file = join(TMP, "photo.bin");
+  await writeFile(file, Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0, 0, 0, 0, 0]));
+  try {
+    const result = await readTool.execute({ path: file });
+    assert.equal(result.success, true);
+    assert.deepEqual(result.attachments, [{ type: "image", path: file, mimeType: "image/jpeg" }]);
+  } finally {
+    await rm(TMP, { recursive: true, force: true });
+  }
+});
+
+test("read: a binary that is no image is refused in words", async () => {
+  await mkdir(TMP, { recursive: true });
+  const file = join(TMP, "archive.zip");
+  await writeFile(file, Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00]));
+  try {
+    const result = await readTool.execute({ path: file });
+    assert.equal(result.success, false);
+    assert.ok(result.output.includes("Binary file"), result.output);
+    assert.equal(result.attachments, undefined);
+  } finally {
+    await rm(TMP, { recursive: true, force: true });
+  }
+});
