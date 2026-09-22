@@ -188,3 +188,24 @@ describe("removeModel", () => {
     expect(result).toEqual({ ok: false, error: 'No model declared with the id "never-declared"' });
   });
 });
+
+describe("upsertModel: the reasoning field", () => {
+  test("stores the field a model reads its own reasoning back from", async () => {
+    await writeConfigFile();
+    const result = await upsertModel({ id: "litellm/mimo-v2.6-pro", provider: "litellm", reasoningField: "reasoning_content" });
+    expect(result.ok).toBe(true);
+    const file = await readConfigFile();
+    // The family default covers MiMo on its own; stating it is how the owner pins it for a model
+    // no table and no family describes.
+    expect(file.llm.models[1].reasoningField).toBe("reasoning_content");
+  });
+
+  test("refuses a field no transport knows how to send", async () => {
+    await writeConfigFile();
+    const result = await upsertModel({ id: "litellm/x", provider: "litellm", reasoningField: "thinking" as never });
+    expect(result.ok).toBe(false);
+    expect(result.ok ? "" : result.error).toContain("Unknown reasoning field");
+    const file = await readConfigFile();
+    expect(file.llm.models).toHaveLength(1);
+  });
+});

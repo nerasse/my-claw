@@ -1931,6 +1931,16 @@ export interface MyClawAppModelOption {
   /** The model's own full context window, so the app can offer ceilings under it and no higher. */
   context?: number;
   /**
+   * The answer budget the model was given, resolved: a declaration, a table, or a family default.
+   * Carried so the edit form shows what runs rather than an empty field the next save would clear.
+   */
+  output?: number;
+  /**
+   * The message field this model reads its own prior reasoning back from, resolved the same way.
+   * Absent means nothing is replayed for it (docs/reasoning-replay.md).
+   */
+  reasoningField?: "reasoning_content" | "reasoning_details";
+  /**
    * The request budget this model declares, in milliseconds, absent when it declares none (the
    * transport default then applies). Carried so the declaration form shows what is stored instead
    * of an empty field over a real setting. See docs/llm-timeout.md.

@@ -8,6 +8,7 @@ import { fetchAnthropicModels } from "./anthropic-models.ts";
 import { providerBaseUrl } from "./resolver.ts";
 import { cachedOpenRouterModel, cachedOpenRouterEndpointLimits, isOpenRouterBaseUrl } from "./openrouter-endpoints.ts";
 import type { ModelMetadata } from "./pricing.ts";
+import { familyDefaultsOf } from "./families.ts";
 
 // The model catalog is fully dynamic: no disk cache. See the ModelCatalog constructor.
 const DISCOVER_TIMEOUT_MS = 15_000;
@@ -170,7 +171,10 @@ export function applyModelMetadata(
     const openRouterApiId = pinnedEndpointOf(apiId) ? apiId.slice(0, apiId.lastIndexOf("@")) : apiId;
     return cachedOpenRouterModel(openRouterApiId) !== undefined;
   });
-  if (!table && !hasCachedOpenRouter) return models;
+  // The family rung needs neither source: it is the reason `litellm/mimo-v2.6-pro` gets a
+  // reasoning field at all, and it has to survive a boot with no table downloaded yet.
+  const hasFamily = models.some((m) => familyDefaultsOf(m.apiId ?? m.id) !== undefined);
+  if (!table && !hasCachedOpenRouter && !hasFamily) return models;
 
   return models.map((m) => {
     const provider = m.provider ? providers[m.provider] : undefined;
@@ -231,6 +235,17 @@ export function applyModelMetadata(
           next.limit = { ...next.limit, output: meta.outputLimit };
         }
         if (next.reasoningField === undefined && meta.reasoningField !== undefined) next.reasoningField = meta.reasoningField;
+      }
+    }
+
+    // The family speaks last. Everything above described the model where it could; this fills what
+    // is still empty, which is the whole case for a reseller that publishes nothing.
+    const family = familyDefaultsOf(apiId);
+    if (family) {
+      if (next.reasoningField === undefined && family.reasoningField !== undefined) next.reasoningField = family.reasoningField;
+      if (next.vision === undefined && family.vision !== undefined) next.vision = family.vision;
+      if (next.limit?.output === undefined && family.limit?.output !== undefined) {
+        next.limit = { ...next.limit, output: family.limit.output };
       }
     }
     return next;

@@ -237,6 +237,34 @@ which is already how the models.dev table behaves with its 24-hour copy on disk.
 failed still leaves an empty catalogue, and every caller reads that as "no evidence" exactly as
 before.
 
+### R12 — A family's own facts, and only where nobody else spoke
+
+Some facts are the model's, and no endpoint publishes them *for us*. A reseller lists an id and
+nothing else; models.dev describes only the providers it knows; and a local gateway like litellm is
+in neither. Measured 2026-09-21, `litellm/mimo-v2.6-pro` resolved with **no metadata at all** — the
+field its reasoning has to be replayed in, the output budget its thinking eats into, and its
+ability to take an image were all left to a hand-written declaration, and the owner had declared
+the one field that does nothing on that path (`thinkingTypes`, Anthropic-only).
+
+`src/llm/families.ts` is the last rung: a small ordered table from an id pattern to defaults, read
+by `applyModelMetadata` *after* OpenRouter and models.dev. Rules:
+
+- **Fills, never overwrites.** A declaration, an OpenRouter row or a models.dev row wins; the family
+  speaks only into an empty field. That is what makes it safe to keep: `opencode_go/mimo-v2.5-pro`
+  keeps the table's own `128000` output, and a declared `reasoning_details` stays.
+- **Keyed on the model's name, not the reference.** The provider prefix and any marketplace
+  namespace are stripped first, so `litellm/mimo-v2.6-pro` and `opencode-go/mimo-v2.6-pro` are the
+  same model. Case-insensitive, and the separator is load-bearing: `mimosa-1` is not a MiMo.
+- **Only facts that hold for every member.** The pass-back field is `reasoning_content` across
+  versions and every published row that names one names it; vision is **not** a family fact
+  (`mimo-v2-pro` and `mimo-v2-flash` are text-only) and is scoped to the v2.6 tiers, which are
+  multimodal in all three of their published rows.
+- **It does not need the table.** The enrichment's bootstrap guard returns early when neither source
+  has data; the family is included in that guard, because a boot with nothing downloaded is exactly
+  when it is the only thing left.
+
+What it is not: a place to hardcode a price. Prices are the endpoint's and stay where they are.
+
 ## Verification criteria
 
 1. `deepseek-v4-flash` on `opencode_go` offers exactly `low, high, max` — not the global six.
@@ -266,3 +294,6 @@ before.
     digit with, and keeps its own catalogue row when one is loaded.
 16. A short form the owner declared still resolves to its family, and an aged OpenRouter cache
     still describes its models.
+17. A MiMo on a provider no table describes gets `reasoning_content`, `vision` (v2.6 only) and a
+    `131072` output budget, with no table downloaded at all; a declaration and a table both
+    outrank it, and a model outside the family is left untouched.

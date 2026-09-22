@@ -1,6 +1,6 @@
 import { readFile, stat, mkdir } from "node:fs/promises";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
-import { CONFIG_PATH, DEFAULT_PROVIDER_RETRY_DELAYS_MS, tagNameOf, tagRouteOf, type EffortLevel, type ProviderRetryConfig, type TagConfig, type TagRouteCandidate } from "./config.ts";
+import { CONFIG_PATH, DEFAULT_PROVIDER_RETRY_DELAYS_MS, tagNameOf, tagRouteOf, type EffortLevel, type ProviderRetryConfig, type ReasoningField, type TagConfig, type TagRouteCandidate } from "./config.ts";
 import { parseModelRef } from "../llm/model-ref.ts";
 import { PROMPT_FILES } from "../agent/prompt/files.ts";
 import { snapshot, journal, artifactId } from "./config-store.ts";
@@ -1044,6 +1044,12 @@ export interface ModelDeclaration {
   supportsEffort?: boolean;
   supportedEffortLevels?: EffortLevel[];
   thinkingTypes?: { adaptive: boolean; enabled: boolean };
+  /**
+   * OpenAI-compatible models only: the message field this model reads its own prior reasoning back
+   * from. Discovery fills it from models.dev where it can, and a family default covers the models
+   * no table describes (docs/model-metadata.md); this is how the owner states it for the rest.
+   */
+  reasoningField?: ReasoningField;
   /** Milliseconds allowed with no byte back. `0` disarms the timer -- docs/llm-timeout.md. */
   timeoutMs?: number;
 }
@@ -1103,6 +1109,9 @@ function modelDeclarationError(entry: ModelDeclaration, providers: Record<string
       return "thinkingTypes needs both adaptive and enabled";
     }
   }
+  if (entry.reasoningField !== undefined && entry.reasoningField !== "reasoning_content" && entry.reasoningField !== "reasoning_details") {
+    return `Unknown reasoning field: ${String(entry.reasoningField)}`;
+  }
   return null;
 }
 
@@ -1139,6 +1148,7 @@ export async function upsertModel(entry: ModelDeclaration): Promise<ConfigEditRe
   }
   if (entry.supportedEffortLevels?.length) stored["supportedEffortLevels"] = entry.supportedEffortLevels;
   if (entry.thinkingTypes) stored["thinkingTypes"] = entry.thinkingTypes;
+  if (entry.reasoningField) stored["reasoningField"] = entry.reasoningField;
   const limit: Record<string, number> = {};
   if (entry.limit?.context) limit["context"] = entry.limit.context;
   if (entry.limit?.output) limit["output"] = entry.limit.output;

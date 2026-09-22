@@ -1036,7 +1036,11 @@ async function main() {
               reason: describeAvailability(availability),
             }];
           }),
-          models: modelPicker.options().map((m) => ({
+          models: modelPicker.options().map((m) => {
+            // One lookup per option: everything the form shows about a model that is not already
+            // on the picker option itself comes from here.
+            const entry = config.llm.models?.find((model) => model.id === m.id);
+            return {
             id: m.id,
             label: m.label,
             ...(m.group ? { group: m.group } : {}),
@@ -1056,9 +1060,13 @@ async function main() {
             })(),
             // Whether the model accepts image input: the fallback picker needs it to offer only
             // models the resolver would actually reroute to. Mirrors the resolver's own guard.
-            ...(config.llm.models?.find((model) => model.id === m.id)?.vision === undefined
-              ? {}
-              : { vision: config.llm.models.find((model) => model.id === m.id)!.vision! }),
+            ...(entry?.vision === undefined ? {} : { vision: entry.vision }),
+            // What this model reads its own prior reasoning back from, and the answer budget it
+            // was given. Both ride along so the edit form shows what actually runs -- a family
+            // default included (docs/model-metadata.md) -- instead of an empty field over a real
+            // setting that the next save would then clear.
+            ...(entry?.reasoningField === undefined ? {} : { reasoningField: entry.reasoningField }),
+            ...(entry?.limit?.output === undefined ? {} : { output: entry.limit.output }),
             // Whether a routing step is worth offering at all. Read from the provider key rather
             // than by resolving each of several hundred models; `model.endpoints` answers for real.
             ...(m.provider !== undefined && routable.has(m.provider) ? { routes: true } : {}),
@@ -1068,10 +1076,9 @@ async function main() {
             ...(discovered.has(m.id) ? { discovered: true } : {}),
             // The request budget this model declares, so the form shows what is stored rather than
             // an empty field over a real setting. `0` is a value here (docs/llm-timeout.md).
-            ...(config.llm.models?.find((model) => model.id === m.id)?.timeoutMs === undefined
-              ? {}
-              : { timeoutMs: config.llm.models.find((model) => model.id === m.id)!.timeoutMs! }),
-          })),
+            ...(entry?.timeoutMs === undefined ? {} : { timeoutMs: entry.timeoutMs }),
+            };
+          }),
           defaultModel: config.llm.defaultModel ?? config.llm.model ?? "",
         };
       },
