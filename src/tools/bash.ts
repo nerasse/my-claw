@@ -4,6 +4,7 @@ import { type Tool, type ToolResult, type ToolProgress, str, strOpt, num } from 
 import { formatError } from "../utils/errors.ts";
 import { rethrowIfAborted } from "../core/aborted.ts";
 import { hooks } from "../hooks/index.ts";
+import type { BashConfig } from "../core/config.ts";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_OUTPUT_BYTES = 1_048_576;
@@ -47,6 +48,99 @@ let passthrough = DEFAULT_PASSTHROUGH;
  */
 export function setBashEnvPassthrough(names: string[] | undefined): void {
   passthrough = names ?? DEFAULT_PASSTHROUGH;
+}
+
+/** "8 GiB", in the words the config uses. */
+export function memoryLabel(bytes: number): string {
+  const gib = bytes / (1024 * 1024 * 1024);
+  return `${gib % 1 === 0 ? gib : gib.toFixed(1)} GiB`;
+}
+
+/** The box one call runs in. Defaults chosen for this host: 8 GiB of 11 GiB for one command,
+ * 2 GiB of swap (the rest is the server's reserve), 512 tasks. See docs/bash-limits.md. */
+export interface BashLimits {
+  memoryMaxBytes: number;
+  swapMaxBytes: number;
+  tasksMax: number;
+  cgroup: boolean;
+}
+
+const DEFAULT_MEMORY_MAX_BYTES = 8 * 1024 * 1024 * 1024;
+const DEFAULT_SWAP_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+const DEFAULT_TASKS_MAX = 512;
+
+let limits: BashLimits = {
+  memoryMaxBytes: DEFAULT_MEMORY_MAX_BYTES,
+  swapMaxBytes: DEFAULT_SWAP_MAX_BYTES,
+  tasksMax: DEFAULT_TASKS_MAX,
+  cgroup: true,
+};
+
+/** Follows a hot-reloaded `tools.bash`, like the env passthrough above. */
+export function setBashLimits(config?: BashConfig): void {
+  limits = {
+    memoryMaxBytes: config?.memoryMaxBytes ?? DEFAULT_MEMORY_MAX_BYTES,
+    swapMaxBytes: config?.swapMaxBytes ?? DEFAULT_SWAP_MAX_BYTES,
+    tasksMax: config?.tasksMax ?? DEFAULT_TASKS_MAX,
+    cgroup: config?.cgroup ?? true,
+  };
+}
+
+/**
+ * Whether this host can run `systemd-run --user --scope`, asked once per process.
+ *
+ * A container with no user bus says no and every call runs bare, exactly as before -- that is
+ * what the CI runner is. The probe is also what keeps a missing `systemd-run` binary from
+ * turning every tool call into an ENOENT.
+ */
+let scopeAvailable: boolean | null = null;
+
+export function resetBashScopeProbe(): void {
+  scopeAvailable = null;
+}
+
+function probeScope(): boolean {
+  if (scopeAvailable !== null) return scopeAvailable;
+  try {
+    scopeAvailable = Bun.spawnSync(["systemd-run", "--user", "--scope", "--quiet", "/bin/true"]).exitCode === 0;
+  } catch {
+    scopeAvailable = false;
+  }
+  return scopeAvailable;
+}
+
+/**
+ * What to exec for one call.
+ *
+ * In a scope the command sits behind `systemd-run`: the cgroup counts the command and every
+ * process it spawns, and kills them at the ceiling instead of letting the kernel's OOM killer
+ * pick the server (2026-09-22: it did -- `oom_score_adj 200` made the server the preferred
+ * victim). The inner shell raises its own oom_score_adj to 1000 first: a positive adjustment is
+ * all an unprivileged process may write, and it makes the children die before the server even if
+ * a global OOM finds no scope to blame. The command itself rides along as `$0`, never
+ * interpolated, so quoting survives the round trip.
+ */
+export function bashArgvFor(command: string, withScope: boolean, forLimits: BashLimits = limits): string[] {
+  const bare = ["setsid", "bash", "-c", command];
+  if (!forLimits.cgroup || !withScope) return bare;
+  return [
+    "setsid",
+    "systemd-run",
+    "--user",
+    "--scope",
+    "--quiet",
+    "--collect",
+    "-p",
+    `MemoryMax=${forLimits.memoryMaxBytes > 0 ? forLimits.memoryMaxBytes : "infinity"}`,
+    "-p",
+    `MemorySwapMax=${forLimits.swapMaxBytes > 0 ? forLimits.swapMaxBytes : 0}`,
+    "-p",
+    `TasksMax=${forLimits.tasksMax > 0 ? forLimits.tasksMax : "infinity"}`,
+    "bash",
+    "-c",
+    'echo 1000 > /proc/self/oom_score_adj 2>/dev/null; exec bash -c "$0"',
+    command,
+  ];
 }
 
 /**
@@ -118,7 +212,10 @@ export const bashTool: Tool = {
     try {
       // setsid runs the command as its own process-group leader (pgid == pid), so we can kill the
       // whole tree (children included) with a negative-pid signal -- no orphaned grandchildren.
-      const proc = Bun.spawn(["setsid", "bash", "-c", command], {
+      // Inside a systemd scope when the host has one: the memory ceiling is the whole point
+      // (docs/bash-limits.md).
+      const scoped = limits.cgroup && probeScope();
+      const proc = Bun.spawn(bashArgvFor(command, scoped), {
         stdout: "pipe",
         stderr: "pipe",
         cwd,
@@ -131,7 +228,9 @@ export const bashTool: Tool = {
 
       // SIGTERM alone hangs forever on a command that traps it (trap '' TERM) or is stuck in D
       // state; escalate to SIGKILL after a grace period, same as the abort path.
+      let wallHit = false;
       const killWithEscalation = () => {
+        wallHit = true;
         killGroup("SIGTERM");
         setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS).unref?.();
       };
@@ -198,6 +297,23 @@ export const bashTool: Tool = {
       hooks.emit("tool:bash:execute", { command, exitCode, durationMs: Date.now() - startedAt });
       if (exitCode === 0) {
         return { success: true, output };
+      }
+      // A wall, a memory ceiling and an external kill all end in SIGKILL; only the first two are
+      // ours to explain, and saying "memory limit" for a 45-minute timeout would be a lie.
+      if (wallHit) {
+        const waited = timeoutMs < 60_000 ? `${Math.round(timeoutMs / 1000)} s` : `${Math.round(timeoutMs / 60_000)} min`;
+        return { success: false, output, error: `Command timed out after ${waited} and was killed.` };
+      }
+      if (proc.signalCode === "SIGKILL" || exitCode === 137) {
+        const ceiling =
+          scoped && limits.memoryMaxBytes > 0
+            ? `: the command hit its memory limit (${memoryLabel(limits.memoryMaxBytes)})`
+            : "";
+        return {
+          success: false,
+          output,
+          error: `Killed (SIGKILL)${ceiling}, or killed externally. Raise tools.bash.memoryMaxBytes in config.json to allow more.`,
+        };
       }
       return {
         success: false,

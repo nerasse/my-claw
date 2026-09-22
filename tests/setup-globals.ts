@@ -4,6 +4,7 @@
 // later preload guarantees the temp dir is already in place.
 import { beforeEach } from "bun:test";
 import { resetCacheHintRefusals, resetCircuitBreaker } from "../src/llm/provider.ts";
+import { resetBashScopeProbe, setBashLimits } from "../src/tools/bash.ts";
 import { resetPromptFileCache } from "../src/agent/prompt/loader.ts";
 import { resetSkillVectorCache } from "../src/skills/retrieval.ts";
 import { clearRecallCache } from "../src/memory/cache.ts";
@@ -27,6 +28,7 @@ import { setSharedPricing } from "../src/llm/pricing.ts";
 import { closeApprovalStore } from "../src/approvals/store.ts";
 import { questionManager } from "../src/questions/manager.ts";
 import { resetSpeculations } from "../src/sessions/compaction-speculative.ts";
+import { resetEnvFileHotReload } from "../src/core/config.ts";
 
 // Module-level state in src/ outlives a single test file, so anything a test writes here is
 // readable by every file that runs after it. Order-dependent pass/fail is the result, and a
@@ -101,4 +103,11 @@ beforeEach(() => {
   // The approvals DB handle is module-level and MY_CLAW_DIR moves per run: a retained handle
   // would keep writing into the previous file's temp dir, or read its rows back.
   closeApprovalStore();
+  // The .env hot-reload mtime cache would carry one file's edit over the next one: a later test
+  // would see its own .env already "applied" and never re-read it.
+  resetEnvFileHotReload();
 });
+
+// The bash scope probe and its limits are module state shared by every test file.
+resetBashScopeProbe();
+setBashLimits(undefined);

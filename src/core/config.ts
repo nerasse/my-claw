@@ -87,6 +87,28 @@ export interface VoiceConfig {
   tts?: VoiceTtsConfig;
 }
 
+/** The box one bash tool call runs in -- docs/bash-limits.md. */
+export interface BashConfig {
+  /**
+   * Memory ceiling for the command and everything it spawns (a cargo build, its rustc children),
+   * enforced as a cgroup: the call dies at the ceiling instead of taking the server with it.
+   * `0` disables the ceiling (the scope's other limits still apply).
+   */
+  memoryMaxBytes?: number;
+  /**
+   * Swap one call may use. `0` means none at all, which is the point: the machine's swap is the
+   * server's reserve, and a command that lives in swap is a command that should have died.
+   */
+  swapMaxBytes?: number;
+  /** Task ceiling, the fork-bomb guard. `0` disables it. */
+  tasksMax?: number;
+  /**
+   * Run each call in a systemd scope at all (default true). Off runs the bare spawn of always,
+   * which is also what happens automatically on a host with no user systemd bus (a CI runner).
+   */
+  cgroup?: boolean;
+}
+
 export interface WebSearchConfig {
   baseUrl?: string;
   token?: string;
@@ -638,6 +660,8 @@ export interface ToolsConfig {
    * the services the skills drive, which is what this list is for.
    */
   bashEnvPassthrough?: string[];
+  /** Where one bash call may live -- docs/bash-limits.md. */
+  bash?: BashConfig;
   /**
    * Load owner-authored tool modules from `$MY_CLAW_DIR/tools.d/` at runtime. Off by
    * default: loading arbitrary code is an in-process RCE surface. See
