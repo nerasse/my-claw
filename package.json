@@ -1,6 +1,6 @@
 {
   "name": "my-claw",
-  "version": "0.7.49",
+  "version": "0.7.50",
   "description": "Personal AI agent orchestrator built on top of pi-mono",
   "module": "src/index.ts",
   "type": "module",
