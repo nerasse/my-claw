@@ -5,7 +5,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
-import { CLAUDE_USER_AGENT } from "./anthropic-release.ts";
+import { claudeUserAgent } from "./anthropic-release.ts";
 
 // The Claude subscription credentials. Two kinds live here, in one 0600 file:
 //   - `oauth`: access + refresh from the PKCE flow below, access valid ~8 h, refreshed in place;
@@ -163,7 +163,7 @@ async function postToken(body: Record<string, string>): Promise<TokenResponse> {
     headers: {
       "content-type": "application/json",
       accept: "application/json",
-      "user-agent": CLAUDE_USER_AGENT,
+      "user-agent": claudeUserAgent(),
     },
     body: JSON.stringify({ ...body, client_id: CLIENT_ID }),
   });

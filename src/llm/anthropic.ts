@@ -5,7 +5,7 @@ import { AbortedError, sleep } from "../core/aborted.ts";
 import { isRetryableStatus, retryDelayMs, parseRetryAfterMs } from "./retry.ts";
 import { log } from "../utils/logger.ts";
 import { anthropicAuthHeaders } from "./anthropic-auth.ts";
-import { CLI_RELEASE, CLAUDE_USER_AGENT } from "./anthropic-release.ts";
+import { claudeRelease, claudeUserAgent } from "./anthropic-release.ts";
 import { checkCircuitBreaker, recordCircuitFailure, recordCircuitSuccess, countsTowardBreaker } from "./provider.ts";
 import { OWNER_STEERING_NOTE } from "../agent/owner-steering.ts";
 import { clampEffortToLadder } from "./effort-ladder.ts";
@@ -21,7 +21,8 @@ const MAX_ATTEMPTS = 3;
  */
 const FALLBACK_OUTPUT_LIMIT = 128_000;
 
-// Order matters: reproduced verbatim from docs/captures/claude-cli-2.1.261.json.
+// Order matters: reproduced verbatim from docs/captures/claude-cli-2.1.280.json (identical to the
+// 2.1.261 list, measured).
 const BETAS = [
   "oauth-2025-04-20",
   "interleaved-thinking-2025-05-14",
@@ -36,7 +37,8 @@ const BETAS = [
 const IDENTITY_BLOCK = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 
 /**
- * Whether to ask for the reasoning text or only for its token count.
+ * Whether to ask for the reasoning text or only for its token count. Read per request: the lever
+ * lives beside the version one in `.env`, and both must apply to the next call of a run in flight.
  *
  * `true` sends `display: "summarized"`, so thinking arrives as `thinking_delta` events and reaches
  * the reasoning sink exactly as the Codex transport's `response.reasoning_text.delta` does. That is
@@ -49,7 +51,10 @@ const IDENTITY_BLOCK = "You are a Claude agent, built on Anthropic's Claude Agen
  * returned `{thinking_tokens: 57}` with an empty thinking block, `"summarized"` returned 54 with the
  * text. `ANTHROPIC_HIDE_THINKING=1` restores the captured shape without a rebuild.
  */
-const STREAM_THINKING = process.env["ANTHROPIC_HIDE_THINKING"] !== "1";
+function streamThinking(): boolean {
+  claudeRelease();
+  return process.env["ANTHROPIC_HIDE_THINKING"] !== "1";
+}
 
 
 // One id per process, exactly like the CLI: it is a client-side correlation handle, and a fresh
@@ -86,8 +91,9 @@ function billingSuffix(sampleText: string, version: string): string {
 }
 
 function billingHeader(sampleText: string): string {
-  const suffix = billingSuffix(sampleText, CLI_RELEASE.version);
-  return `x-anthropic-billing-header: cc_version=${CLI_RELEASE.version}.${suffix}; cc_entrypoint=sdk-cli;`;
+  const { version } = claudeRelease();
+  const suffix = billingSuffix(sampleText, version);
+  return `x-anthropic-billing-header: cc_version=${version}.${suffix}; cc_entrypoint=sdk-cli;`;
 }
 
 // `<system-reminder>` blocks are the wire form of what the CLI's transcript flags `isMeta`, and
@@ -234,7 +240,7 @@ function demotedThinking(t: ThinkingBlock): AnthropicBlock[] {
  * an endpoint that misbehaves -- and unlike the env var it replaces, that switch is hot-reloadable
  * and sits in the app. See docs/reasoning-replay.md.
  *
- * Note it is deliberately *not* tied to `STREAM_THINKING`: the signature is identical whether the
+ * Note it is deliberately *not* tied to `streamThinking()`: the signature is identical whether the
  * display is summarized or omitted, so an omitted block round-trips exactly as well.
  */
 interface ReplayIdentity {
@@ -612,7 +618,7 @@ function thinkingFor(
   // Named in both directions on purpose. Leaving the field out is not neutral: `omitted` is already
   // the default on Opus 5, Sonnet 5, Fable 5 and Opus 4.7/4.8, so an absent field returns empty
   // thinking blocks on exactly the models we care about.
-  const display = { display: STREAM_THINKING ? ("summarized" as const) : ("omitted" as const) };
+  const display = { display: streamThinking() ? ("summarized" as const) : ("omitted" as const) };
   if (types.adaptive) return { type: "adaptive", ...display };
   // Extended-thinking-only models still need a number. The client's own formula, from the 2.1.206
   // bundle: the model's output ceiling minus one, clamped to at least 1024.
@@ -767,16 +773,16 @@ async function runAnthropic(
           "anthropic-dangerous-direct-browser-access": "true",
           "content-type": "application/json",
           accept: "application/json",
-          "user-agent": CLAUDE_USER_AGENT,
+          "user-agent": claudeUserAgent(),
           "x-app": "cli",
           "x-claude-code-session-id": SESSION_ID,
           "x-stainless-arch": "x64",
           "x-stainless-lang": "js",
           "x-stainless-os": "Linux",
-          "x-stainless-package-version": CLI_RELEASE.stainlessPackage,
+          "x-stainless-package-version": claudeRelease().stainlessPackage,
           "x-stainless-retry-count": String(attempt - 1),
           "x-stainless-runtime": "node",
-          "x-stainless-runtime-version": CLI_RELEASE.nodeVersion,
+          "x-stainless-runtime-version": claudeRelease().nodeVersion,
           // Announcing a wall we do not apply is worse than announcing none, so the header
           // carries the effective budget and is omitted when there is no timer at all.
           ...(budget > 0 ? { "x-stainless-timeout": String(budget / 1000) } : {}),

@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { __testing } from "../../src/llm/anthropic.ts";
-import { CLI_RELEASE, CLAUDE_USER_AGENT } from "../../src/llm/anthropic-release.ts";
+import { claudeRelease, claudeUserAgent } from "../../src/llm/anthropic-release.ts";
 import type { ChatMessage } from "../../src/llm/provider.ts";
 
-const { buildBody } = __testing;
+const { buildBody, billingHeader } = __testing;
 
 /**
  * Parity gate 1 of docs/anthropic-backend.md P2: the payload we build must match the shape of the
@@ -21,7 +21,7 @@ interface Capture {
   request: {
     headers: Record<string, string>;
     body: {
-      system: Array<{ type: string; cache_control: { type: string; ttl: string } | null; bytes: number }>;
+      system: Array<{ type: string; cache_control: { type: string; ttl: string } | null; bytes: number; first_line?: string }>;
       tools?: Array<{ name: string; has_cache_control: boolean }>;
       thinking?: Record<string, unknown>;
       context_management?: unknown;
@@ -33,7 +33,7 @@ interface Capture {
 }
 
 const capture = JSON.parse(
-  readFileSync(join(import.meta.dir, "../../docs/captures/claude-cli-2.1.261.json"), "utf8"),
+  readFileSync(join(import.meta.dir, "../../docs/captures/claude-cli-2.1.280.json"), "utf8"),
 ) as Capture;
 
 const messages: ChatMessage[] = [
@@ -78,6 +78,15 @@ test("the billing header block is byte-identical in length to the captured one",
   // field was added or dropped, which is exactly what we want to hear about.
   const ours = body["system"] as Array<{ text: string }>;
   assert.equal(Buffer.byteLength(ours[0]!.text), capture.request.body.system[0]!.bytes);
+});
+
+test("the billing signature is the captured one, to the last hex digit", () => {
+  // The capture's own sampled text -- its first non-meta user turn, `jOn` in the bundle -- and the
+  // header the real client signed it with. The formula is salt + characters 4,7,20 + the claimed
+  // version, hashed and cut to three hex digits (`UOn`/`jOn`/`fSe`, read again in the 2.1.280
+  // bundle and unchanged since 2.1.206). A salt, a position or a concat order drifting would sign
+  // a header the account has never seen; this pins the real client's own vector.
+  assert.equal(billingHeader("Reply with the single word OK."), capture.request.body.system[0]!.first_line);
 });
 
 test("no tool declaration carries a cache breakpoint, as in the capture", () => {
@@ -167,11 +176,12 @@ const SENT_HEADERS = new Set([
  */
 test("the pinned client identity is the captured client identity", () => {
   const h = capture.request.headers;
-  assert.equal(CLAUDE_USER_AGENT, h["user-agent"]);
-  assert.equal(CLI_RELEASE.stainlessPackage, h["x-stainless-package-version"]);
-  assert.equal(CLI_RELEASE.nodeVersion, h["x-stainless-runtime-version"]);
+  const release = claudeRelease();
+  assert.equal(claudeUserAgent(), h["user-agent"]);
+  assert.equal(release.stainlessPackage, h["x-stainless-package-version"]);
+  assert.equal(release.nodeVersion, h["x-stainless-runtime-version"]);
   // The billing header carries the same release, so a half-refresh contradicts itself in-band.
-  assert.ok(h["user-agent"]!.includes(CLI_RELEASE.version));
+  assert.ok(h["user-agent"]!.includes(release.version));
 });
 
 test("the beta list is the captured list, in the captured order", () => {

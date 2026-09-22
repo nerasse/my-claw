@@ -200,6 +200,7 @@ import {
 } from "./core/config-edit.ts";
 import type { ConfigEditResult } from "./core/config-edit.ts";
 import { envKeys, setEnvValue, renameEnvKey, removeEnvKey } from "./core/env-edit.ts";
+import { claudeClaim } from "./llm/anthropic-release.ts";
 import {
   readAgentFile,
   writeAgentFile,
@@ -1603,6 +1604,7 @@ async function main() {
             .filter(([, provider]) => provider.apiKeyEnv !== undefined)
             .map(([key, provider]) => [key, provider.apiKeyEnv!]),
         ),
+        claudeClaim: claudeClaim(),
       };
     };
     myClawApp.onProvidersController({

@@ -3780,6 +3780,12 @@ export interface MyClawAppProviderEnvResult {
   present: string[];
   /** provider key -> the env name it reads (apiKeyEnv). */
   usedBy: Record<string, string>;
+  /**
+   * What a Claude subscription request claims as its client version, and where the number comes
+   * from. The claim is not a secret (the values are the wire identity, not `.env` contents), and
+   * the provider page edits it through `providers.env.set` on `ANTHROPIC_CLI_VERSION`.
+   */
+  claudeClaim: { version: string; pinned: string; overridden: boolean };
 }
 
 /**

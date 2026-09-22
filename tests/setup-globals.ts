@@ -28,6 +28,7 @@ import { setSharedPricing } from "../src/llm/pricing.ts";
 import { closeApprovalStore } from "../src/approvals/store.ts";
 import { questionManager } from "../src/questions/manager.ts";
 import { resetSpeculations } from "../src/sessions/compaction-speculative.ts";
+import { resetEnvFileHotReload } from "../src/core/config.ts";
 
 // Module-level state in src/ outlives a single test file, so anything a test writes here is
 // readable by every file that runs after it. Order-dependent pass/fail is the result, and a
@@ -104,6 +105,7 @@ beforeEach(() => {
   closeApprovalStore();
   // The .env hot-reload mtime cache would carry one file's edit over the next one: a later test
   // would see its own .env already "applied" and never re-read it.
+  resetEnvFileHotReload();
 });
 
 // The bash scope probe and its limits are module state shared by every test file.

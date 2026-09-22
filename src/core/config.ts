@@ -1,4 +1,5 @@
 import { readFile, mkdir, copyFile, access } from "node:fs/promises";
+import { readFileSync, statSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -1077,28 +1078,67 @@ export const MY_CLAW_DIR = process.env["MY_CLAW_DIR"] ?? join(homedir(), ".my-cl
  * present is left alone. On hot-reload (forceRefresh=true) the file becomes
  * authoritative so an edited secret overwrites the stale in-memory value —
  * without this, a rotated token would survive until the next process restart.
- * Only secrets read fresh per run (CLAUDE_CODE_OAUTH_TOKEN, consumed by the
- * Claude SDK backend which rebuilds env + respawns the CLI every run) take
- * effect immediately.
+ *
+ * The file is re-read at the next resolution after it changes (`refreshEnvFile`),
+ * so an edit takes effect mid-run, on the next request of the turn in flight —
+ * never at the end of the run and never after a restart. Only keys read at module
+ * load elsewhere stay frozen; the Claude client identity (the levers in
+ * anthropic-release.ts) is resolved per request and therefore hot.
  */
+let envFileMtime = 0;
+
+function applyEnvText(text: string, forceRefresh: boolean): void {
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq === -1) continue;
+    const key = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim();
+    if (key && value && (forceRefresh || process.env[key] === undefined)) {
+      process.env[key] = value;
+    }
+  }
+}
+
 export async function loadEnv(forceRefresh = false): Promise<void> {
   const envPath = join(MY_CLAW_DIR, ".env");
   try {
     const text = await readFile(envPath, "utf-8");
-    for (const line of text.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const eq = trimmed.indexOf("=");
-      if (eq === -1) continue;
-      const key = trimmed.slice(0, eq).trim();
-      const value = trimmed.slice(eq + 1).trim();
-      if (key && value && (forceRefresh || process.env[key] === undefined)) {
-        process.env[key] = value;
-      }
-    }
+    applyEnvText(text, forceRefresh);
+    envFileMtime = statSync(envPath).mtimeMs;
   } catch {
     // .env absent; continue with existing env.
   }
+}
+
+/**
+ * The same file, re-applied the moment its mtime moves. Boot records the mtime it
+ * loaded from, so the boot rules (shell wins) hold until someone actually edits
+ * the file, and an edit is authoritative from the next call on. A removed line
+ * keeps its in-memory value: deleting a key is not expressible here, and unsetting
+ * a secret on a hunch is worse than leaving it until the next restart.
+ */
+export function refreshEnvFile(): void {
+  const envPath = join(MY_CLAW_DIR, ".env");
+  let mtime = 0;
+  try {
+    mtime = statSync(envPath).mtimeMs;
+  } catch {
+    return;
+  }
+  if (mtime === envFileMtime) return;
+  try {
+    applyEnvText(readFileSync(envPath, "utf-8"), true);
+  } catch {
+    // Deleted between stat and read: nothing to apply.
+  }
+  envFileMtime = mtime;
+}
+
+/** Test seam: forget which mtime the file was applied from. */
+export function resetEnvFileHotReload(): void {
+  envFileMtime = 0;
 }
 
 function applySecretOverrides(config: MyClawConfig): void {
