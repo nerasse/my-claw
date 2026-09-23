@@ -230,23 +230,50 @@ interface HistoryPhase {
   content: string;
 }
 
-function mediaRefAttachments(refs: MediaRef[], files: SessionFile[]): MyClawAppHistoryAttachment[] {
+/**
+ * One attachment per content: a turn's refs first (the files its answer names), then the run's own
+ * media -- and never the same bytes twice.
+ *
+ * A run stores what its tools produced and its answer often delivers the very same file with
+ * `MEDIA:` after copying it out of the tool's scratch dir. Two refs, two copies by the store's
+ * contract, and the bubble drew the voice note twice -- one player with its duration and one
+ * without (2026-09-23, the starter-kit thread). `duplicates` is the store's verdict on which ids
+ * are one content; the first ref to reach one wins (the answer's name), and what the run attached
+ * behind it falls away. A run's media the answer does *not* name stays: screenshots a tool
+ * produced beside a PDF the agent delivered ride the same bubble and are not each other's
+ * duplicate.
+ */
+export function mediaRefAttachments(
+  refs: MediaRef[],
+  files: SessionFile[],
+  duplicates: ReadonlyMap<string, string> = new Map(),
+): MyClawAppHistoryAttachment[] {
   const used = new Set<string>();
+  const drawn = new Set<string>();
   const out: MyClawAppHistoryAttachment[] = [];
+  const claim = (id: string): boolean => {
+    if (used.has(id)) return false;
+    const content = duplicates.get(id) ?? id;
+    if (drawn.has(content)) return false;
+    used.add(id);
+    drawn.add(content);
+    return true;
+  };
   for (const ref of refs) {
     const name = refBasename(ref.path);
     // The log paired this ref with the copy the run made: the id is what the device fetches, and
     // the type and the name ride the path itself, so no directory is read at all. It also resolves
     // from any thread of the owner, which is the half a filename match in one directory misses.
     if (ref.id) {
+      if (!claim(ref.id)) continue;
       out.push({ id: ref.id, type: mediaTypeForPath(ref.path), filename: name });
-      used.add(ref.id);
       continue;
     }
     // listInThread sorts newest first: a regenerated file replaces the previous copy.
-    const file = files.find((f) => f.filename === name && !used.has(f.id));
+    const file = files.find((f) => f.filename === name && !used.has(f.id) && !(drawn.has(duplicates.get(f.id) ?? f.id)));
     if (file) {
       used.add(file.id);
+      drawn.add(duplicates.get(file.id) ?? file.id);
       out.push({
         id: file.id,
         type: file.type,
@@ -290,11 +317,11 @@ function sessionAttachmentsToHistory(
 }
 
 /** Build display resolvers for a thread's files. */
-function makeResolvers(files: SessionFile[]): DisplayResolvers {
+function makeResolvers(files: SessionFile[], duplicates: ReadonlyMap<string, string>): DisplayResolvers {
   return {
     attachmentsOf: (attachments) => sessionAttachmentsToHistory(attachments, files),
     attachmentsOfBlock: (entries) => historyAttachments(entries, files),
-    mediaOf: (refs) => mediaRefAttachments(refs, files),
+    mediaOf: (refs) => mediaRefAttachments(refs, files, duplicates),
   };
 }
 
@@ -435,6 +462,23 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
    * saying "deleted" about bytes nobody lost, for good. While the file is still where the agent
    * wrote it, one stat and one copy put that right (2026-09-16).
    */
+  /**
+   * The display resolvers for a window: the copies it can resolve to, and which of them are one
+   * content under two names. Healed refs land first so the comparison sees them (the answer's
+   * `MEDIA:` copy is usually written while the run's own is older).
+   */
+  private async resolversFor(
+    owner: string,
+    threadId: string,
+    window: readonly Entry[],
+  ): Promise<{ resolvers: DisplayResolvers; files: SessionFile[] }> {
+    const stored = windowNeedsFiles(window) ? await this.files.list(owner, threadId) : [];
+    const healed = stored.length > 0 ? await this.recoverRefs(owner, threadId, window, stored) : [];
+    const files = healed.length > 0 ? [...stored, ...healed] : stored;
+    const duplicates = files.length > 0 ? await this.files.duplicatesAmong(owner, threadId) : new Map<string, string>();
+    return { resolvers: makeResolvers(files, duplicates), files };
+  }
+
   private async recoverRefs(
     owner: string,
     threadId: string,
@@ -499,10 +543,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // List thread files for attachment resolution: what a media ref resolves to, asked of the
     // refs themselves -- a tool's pictures ride the run's end marker, with no `MEDIA:` anywhere
     // (2026-09-15).
-    const stored = windowNeedsFiles(window) ? await this.files.list(owner, threadId) : [];
-    const healed = stored.length > 0 ? await this.recoverRefs(owner, threadId, window, stored) : [];
-    const files = healed.length > 0 ? [...stored, ...healed] : stored;
-    const resolvers = makeResolvers(files);
+    const { resolvers, files } = await this.resolversFor(owner, threadId, window);
 
     // Folded over the whole log, not over the page: a child spawned on page 3 settles on page 1,
     // and a card whose state entry fell outside the window would replay as a spinner for good.
@@ -598,10 +639,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     delta = withSpawnCards(delta, allEntries);
 
     // Resolve attachments for display
-    const stored = windowNeedsFiles(delta) ? await this.files.list(owner, threadId) : [];
-    const healed = stored.length > 0 ? await this.recoverRefs(owner, threadId, delta, stored) : [];
-    const files = healed.length > 0 ? [...stored, ...healed] : stored;
-    const resolvers = makeResolvers(files);
+    const { resolvers, files } = await this.resolversFor(owner, threadId, delta);
     // The run fold covers the whole current branch, so entries of a delta that starts mid-run
     // still carry their run: the client folds them under the right header even when the
     // `run_start` marker itself predates the cursor.
@@ -663,10 +701,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     if (end - start + 1 > RUN_ITEMS_LIMIT) return { entries: [], found: false };
 
     const window = path.slice(start, end + 1);
-    const stored = windowNeedsFiles(window) ? await this.files.list(owner, threadId) : [];
-    const healed = stored.length > 0 ? await this.recoverRefs(owner, threadId, window, stored) : [];
-    const files = healed.length > 0 ? [...stored, ...healed] : stored;
-    const resolvers = makeResolvers(files);
+    const { resolvers, files } = await this.resolversFor(owner, threadId, window);
     // Folded over the whole branch for the same reasons a page is: a child spawned inside this run
     // may have settled long after it, and the run meta must be the one the header already shows.
     const runs = runFold(path);

@@ -1,5 +1,6 @@
 import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { createWriteStream } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { basename, extname, join } from "node:path";
@@ -41,6 +42,17 @@ export function parseStoredName(entry: string): { id: string; filename: string }
 }
 
 const DEFAULT_WARN_SIZE = 50 * 1024 * 1024;
+
+async function hashFile(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(path);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("end", () => resolve());
+    stream.on("error", reject);
+  });
+  return hash.digest("hex");
+}
 
 const TYPE_BY_MIME: Record<string, SessionFile["type"]> = {
   "image/": "image",
@@ -139,6 +151,43 @@ export class SessionFileStore {
   async list(owner: string, threadId: string): Promise<SessionFile[]> {
     const dir = filesDirFor(owner, threadId);
     return this.listInThread(dir);
+  }
+
+  /**
+   * Which stored ids are the same bytes under another name, within one conversation.
+   *
+   * A run stores what its tools produced and its answer often delivers the very same file with
+   * `MEDIA:` after copying it out of the tool's scratch dir -- the voice note of 2026-09-23, drawn
+   * twice in one bubble: `output.mp3` (the run's copy) and `reponse-vocale-my-claw.mp3` (the one
+   * its answer named). The store keeps both, by contract: one copy per named file, so each ref
+   * still pairs with its own copy by name. What must not happen is the *display* drawing one
+   * content twice, so identity is settled here once and the readers dedupe on it.
+   *
+   * Maps every id that repeats an earlier one (the listing is newest-first) to the id that holds
+   * the content. Only files of the same size can match, which keeps this to one hash per copy of a
+   * size that repeats at all.
+   */
+  async duplicatesAmong(owner: string, threadId: string): Promise<Map<string, string>> {
+    const dir = filesDirFor(owner, threadId);
+    const files = await this.listInThread(dir);
+    const canonical = new Map<string, string>();
+    const bySize = new Map<number, Array<{ id: string; storedName: string }>>();
+    for (const file of files) {
+      const group = bySize.get(file.sizeBytes) ?? [];
+      group.push({ id: file.id, storedName: file.storedName });
+      bySize.set(file.sizeBytes, group);
+    }
+    for (const group of bySize.values()) {
+      if (group.length < 2) continue;
+      const firstOf = new Map<string, string>();
+      for (const file of group) {
+        const digest = await hashFile(filePathFor(owner, threadId, file.storedName)).catch(() => file.id);
+        const seen = firstOf.get(digest);
+        if (seen) canonical.set(file.id, seen);
+        else firstOf.set(digest, file.id);
+      }
+    }
+    return canonical;
   }
 
   /** Total size of one conversation's attachments, computed on demand. */

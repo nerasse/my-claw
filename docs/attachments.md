@@ -133,3 +133,25 @@ The conversation a copy belongs to is the one that shows it: a sub-agent's run s
 thread that asked for it (`MyClawAppSessionStore.ownerThreadOf`, which follows the session's
 `invokedBy` -- recorded by the runner, and the reason this works while a run is alive). Nothing
 about the store changes for the reader: an id is found from any thread of its owner either way.
+
+## One player per content (2026-09-23)
+
+What a turn shows is its answer's own refs first, then the media its tools attached to the run's
+end marker (`displayOf` concatenates the two). Those two can name one content twice: a run's TTS
+produces `output.mp3`, the answer copies it out of the tool's scratch dir and delivers it with
+`MEDIA:reponse-vocale-my-claw.mp3`, and the store keeps both copies by the contract above -- one
+copy per named file, so every ref still pairs with its own. The bubble then drew the voice note
+twice, one player with its duration and one without (measured on the starter-kit thread).
+
+The store answers the identity question once: `SessionFileStore.duplicatesAmong` resolves which
+ids of a conversation hold the same bytes (size, then sha256). `mediaRefAttachments` draws a
+content once -- the first ref to reach it wins, which is the name the answer gave it -- and the
+copy the run attached behind it falls away. Nothing else falls with it: the browser captures a
+tool produced beside a PDF the agent delivered are not that PDF's duplicate and ride the same
+bubble as before (thread 3fad6e60 carries those by the handful).
+
+The live frame needs no such filter: it trusts explicit `MEDIA:` refs over programmatic
+attachments outright (`MyClawAppAdapter.send`). That coarser rule also drops a run's *unnamed*
+media whenever the answer names any, which the log keeps: a turn that delivered a PDF while its
+tools captured screenshots shows the captures only on a reload. Worth aligning one day; the
+display is the side that showed a duplicate, and this is what fixes it.
