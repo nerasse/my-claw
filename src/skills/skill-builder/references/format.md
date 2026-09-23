@@ -51,6 +51,34 @@ List files in `references/` with one-line descriptions of what each contains.
 
 Short example of expected input/output, or point to `examples/`.
 
+## SKILL.md Template
+
+The four sections in order: What (2-3 sentences under the title), When to Use, Quick Workflow,
+References. Keep the template in the skill you write; this one is the shape, not the content.
+
+```markdown
+---
+name: my-skill
+description: One-line description for the skills list
+---
+
+## When to Use
+
+- Trigger condition 1
+- Trigger condition 2
+
+## Quick Workflow
+
+1. Step one
+2. Step two
+3. Step three
+
+## References
+
+- Detailed format: read `references/format.md`
+- Best practices: read `references/best-practices.md`
+```
+
 ## Length Limits
 
 | Component | Recommended Max |

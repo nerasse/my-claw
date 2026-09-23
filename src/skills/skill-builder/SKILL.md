@@ -30,50 +30,31 @@ skill-name/
 
 Keep SKILL.md under 80 lines. Move deep detail to `references/` files.
 
-SKILL.md should contain:
-1. **What** the skill does (2-3 sentences)
-2. **When** to use it (triggers)
-3. **Quick workflow** (the 80/20 path)
-4. **References** to deeper docs
-
-The agent reads SKILL.md first, then pulls references only when needed.
+SKILL.md holds four things: **what** the skill does (2-3 sentences), **when** to use it (triggers),
+the **quick workflow** (the 80/20 path), and **pointers** to deeper docs. The agent reads SKILL.md
+first, then pulls a reference only when needed.
 
 ## Writing SKILL.md
 
-```markdown
----
-name: my-skill
-description: One-line description for the skills list
----
-
-## When to Use
-
-- Trigger condition 1
-- Trigger condition 2
-
-## Quick Workflow
-
-1. Step one
-2. Step two
-3. Step three
-
-## References
-
-- Detailed format: read `references/format.md`
-- Best practices: read `references/best-practices.md`
-```
+Frontmatter is `name` + one-line `description` (single-line fields only). The body template with
+the four sections in order: read `references/format.md`.
 
 ## Referencing Files
 
-Use relative paths from the skill root. The agent resolves them automatically.
-
-For scripts, use the `${SKILL_DIR}` placeholder. It is replaced with the absolute skill directory path when the skill is loaded:
+Paths are relative to the skill root and the agent resolves them automatically. A script needs
+its absolute path: use the `${SKILL_DIR}` placeholder, replaced at load time.
 
 ```markdown
 Run the helper: `bash python3 ${SKILL_DIR}/scripts/helper.py`
 ```
 
-The agent sees the resolved absolute path and can execute it directly.
+## Secrets and Credentials
+
+Two homes for secrets, never a third: key=value secrets (API keys, OAuth tokens, passwords) in
+`~/.my-claw/.env` (0600), file secrets (keystores, keyfiles, cookie jars) in `~/.my-claw/secrets/`
+(0700). Reuse the key names already in use. Never in the skill directory, the workspace, or a repo.
+
+Details: read `references/best-practices.md` (Secrets and Credentials).
 
 ## Creating a Skill
 
