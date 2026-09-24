@@ -1,68 +1,54 @@
 import { BrowserClient } from "../../browser/client.ts";
 import type { MyClawConfig } from "../../core/config.ts";
 import { type Tool, type ToolResult } from "../types.ts";
-import { createBrowserPageState, type BrowserPageState } from "./state.ts";
+import { BrowserWindows } from "./windows.ts";
 
 export const DEFAULT_NOVNC_URL = "http://localhost:6080";
 export const DEFAULT_SIDECAR_URL = "http://127.0.0.1:9223";
 
 /**
- * The one browser, as the tools see it.
+ * The one browser, as the tools see it: one client for every run, and the windows those runs hold.
  *
- * There is a single Chromium behind the sidecar and every browser agent run drives it in turn
- * (`enqueueBrowserTask`), so the client and the page pointer are one shared pair rather than one
- * per run: the queue is what keeps two runs off each other's tab, and the pair is what lets a run
- * started by `send` (the owner continuing in the browser agent's own thread) find the browser
- * without a task handing it one. `cleanup()` closes the pages the run opened and forgets the page
- * pointer, so the next run starts on a fresh sidecar session.
+ * Runs are not queued. Each works in windows of its own, taken by the first tool that names a free
+ * one and given back when the run ends, so any number of them drive the one Chromium at once
+ * without sharing a tab -- docs/browser-windows.md.
  */
 export class BrowserSession {
   readonly client: BrowserClient;
-  readonly pageState: BrowserPageState = createBrowserPageState();
+  readonly windows: BrowserWindows;
 
   constructor(private config: MyClawConfig) {
     this.client = new BrowserClient(this.sidecarUrl(), config.browser?.viewport, config.browser?.timeoutsMs);
+    this.windows = new BrowserWindows(this.client);
   }
 
   sidecarUrl(): string {
     return this.config.browser?.sidecarUrl ?? DEFAULT_SIDECAR_URL;
   }
 
-  /** Closes what the run opened and re-reads the config, so the next run starts clean on the sidecar the live config names. */
-  async cleanup(): Promise<void> {
-    this.pageState.currentPageId = null;
-    await this.client.cleanup().catch(() => undefined);
+  /** A browser run starts: the live config reaches the client, and the run gets an empty set of windows. */
+  beginRun(sessionId: string, parentSessionId?: string): void {
     this.client.reconfigure(this.sidecarUrl(), this.config.browser?.viewport, this.config.browser?.timeoutsMs);
+    this.windows.beginRun(sessionId, parentSessionId);
+  }
+
+  /** A browser run is over, however it ended. A human handoff keeps its windows for its conversation. */
+  endRun(sessionId: string): void {
+    this.windows.endRun(sessionId, outcomes.get(sessionId)?.needsHuman === true);
   }
 
   /**
-   * The tabs already open in the shared browser, as a section of the task. The agent is told to
-   * reuse them instead of opening duplicates; the list has to come from the run's start, not from
-   * a tool the agent would have to think of calling first.
+   * The windows and tabs of the shared browser, as a section of the task: where to work is the
+   * first decision of a run, and it has to be made from what is open, not from a tool the agent
+   * would have to think of calling first.
    */
-  async describeOpenTabs(): Promise<string> {
-    let tabs: Awaited<ReturnType<BrowserClient["listTabs"]>>;
+  async describeWindows(): Promise<string> {
     try {
-      tabs = await this.client.listTabs();
+      return await this.windows.describe();
     } catch {
-      return "## Open browser tabs\n(could not read the current tabs)";
+      return "## Browser windows\n(could not read the browser's windows: browser_list_windows will retry)";
     }
-    if (tabs.length === 0) {
-      return "## Open browser tabs\nNone yet — the browser has no open tabs.";
-    }
-    const lines = tabs.map((t, i) => `[${i}] ${t.title ? `${t.title} — ` : ""}${t.url}`);
-    return `## Open browser tabs\nThese are already open in the shared browser. Reuse a relevant one with browser_focus_tab; do not open duplicates or clobber unrelated tabs.\n${lines.join("\n")}`;
   }
-}
-
-// One Chromium: parallel browser runs used to fight over tabs, focus and refs and corrupt each
-// other, so they are serialized here, whoever started them (a delegated task or a send).
-let browserTaskQueue: Promise<unknown> = Promise.resolve();
-
-export function enqueueBrowserTask<T>(run: () => Promise<T>): Promise<T> {
-  const result = browserTaskQueue.then(run, run);
-  browserTaskQueue = result.catch(() => undefined);
-  return result;
 }
 
 /**

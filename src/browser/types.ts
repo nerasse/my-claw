@@ -21,6 +21,19 @@ export interface BrowserTabInfo {
   title: string;
 }
 
+/** A tab of a window. `openerPageId` is the page whose click opened it, if any. */
+export interface BrowserTabView {
+  pageId: string;
+  url: string;
+  title: string;
+  openerPageId?: string;
+}
+
+export interface BrowserWindowView {
+  windowId: number;
+  tabs: BrowserTabView[];
+}
+
 /** How the sidecar actually performed an action. Surfaced to the agent because the path
  *  taken (native select vs keyboard fallback) tells it how much to trust the result. */
 export interface BrowserActionInfo {

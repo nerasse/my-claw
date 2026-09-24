@@ -1,22 +1,25 @@
 // Operations exposed over HTTP. One export per endpoint name; the server only routes.
-import crypto from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   CDP_URL,
+  adopt,
   allPages,
+  browserSession,
   dropPage,
   ensureContext,
-  existingIdForPage,
   getPage,
-  getSession,
-  idForPage,
+  hasChooser,
+  idOf,
   isConnected,
+  pageForTarget,
   popDownload,
   recordedResponses,
   RESPONSE_BODY_MAX,
-  sessions,
   setDialogOverride,
+  takeChooser,
+  windowOf,
+  withFocus,
 } from "./browser.mjs";
 import { injectRefLabels, removeRefLabels, resolveRef, screenshotPath, snapshotPage } from "./snapshot.mjs";
 
@@ -34,53 +37,130 @@ const CDP_DENIED = [
   /^Network\.(setCookie|setCookies|getCookies|getAllCookies|clearBrowserCookies|setExtraHTTPHeaders)/i,
 ];
 
-export const handlers = {
-  async session(body) {
-    const sessionId = crypto.randomUUID();
-    sessions.set(sessionId, { viewport: body.viewport, currentPageId: null });
-    return { sessionId };
-  },
+async function settle(page, url) {
+  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+  // SPAs (Instagram, TikTok...) are still blank at domcontentloaded: give the JS a
+  // chance to render before snapshotting, without hanging on never-idle pages.
+  await page.waitForLoadState("load", { timeout: 8000 }).catch(() => undefined);
+}
 
-  // Reuses the given tab (reusePageId) unless newTab is set, so a task navigating
-  // several times stays in ONE tab instead of spawning one per action.
+/** A new tab in the given window. CDP has no parameter for it: a new target opens in the window
+ *  that has the focus, so a tab of this one is brought forward first, and the pair is one step for
+ *  whoever else moves the focus (docs/browser-windows.md). The window is checked afterwards. */
+async function openTabIn(ctx, windowId) {
+  return withFocus(async () => {
+    let anchor;
+    for (const page of ctx.pages()) {
+      const pageId = await adopt(page).catch(() => undefined);
+      if (pageId && (await windowOf(pageId).catch(() => undefined)) === windowId) {
+        anchor = page;
+        break;
+      }
+    }
+    if (!anchor) throw new Error(`Window ${windowId} has no tab left to open one beside.`);
+    await anchor.bringToFront();
+    const cdp = await browserSession();
+    const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
+    const page = await pageForTarget(ctx, targetId);
+    const landed = await windowOf(targetId);
+    if (landed !== windowId) {
+      await page.close().catch(() => undefined);
+      throw new Error(`The new tab opened in another window (${landed}, not ${windowId}); nothing was left open.`);
+    }
+    return page;
+  });
+}
+
+export const handlers = {
+  // Navigates the given tab (pageId) in place unless newTab is set, so a task navigating several
+  // times stays in ONE tab. A new tab opens in the window named by windowId, never wherever the
+  // focus happens to be: another run may be working in the window that has it.
   async navigate(body) {
-    const session = getSession(body.sessionId);
-    const ctx = await ensureContext(session.viewport);
+    const ctx = await ensureContext();
+    const reuse = !body.newTab && body.pageId ? allPages.get(body.pageId) : undefined;
     let page;
-    const reuse = !body.newTab && body.reusePageId && allPages.get(body.reusePageId);
     if (reuse && !reuse.isClosed()) {
       page = reuse;
+    } else if (body.windowId !== undefined && body.windowId !== null) {
+      page = await openTabIn(ctx, Number(body.windowId));
     } else {
-      // Reuse target vanished (user closed the tab): open a fresh one rather than throwing.
       page = await ctx.newPage();
     }
-    const pageId = idForPage(page); // registers close/dialog handlers on first sight
-    session.currentPageId = pageId;
-    await page.goto(body.url, { waitUntil: "domcontentloaded", timeout: 30000 });
-    // SPAs (Instagram, TikTok...) are still blank at domcontentloaded: give the JS a
-    // chance to render before snapshotting, without hanging on never-idle pages.
-    await page.waitForLoadState("load", { timeout: 8000 }).catch(() => undefined);
+    const pageId = await adopt(page);
+    await settle(page, body.url);
     return { pageId, snapshot: await snapshotPage(page), url: page.url() };
+  },
+
+  // A real window, in the one context: same profile, same logins, its own tabs and focus.
+  async "create-window"(body) {
+    const ctx = await ensureContext();
+    const cdp = await browserSession();
+    const width = Number(body.viewport?.width ?? 1920);
+    const height = Number(body.viewport?.height ?? 1080);
+    const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank", newWindow: true, width, height });
+    const page = await pageForTarget(ctx, targetId);
+    await settle(page, body.url);
+    return { windowId: await windowOf(targetId), pageId: targetId, snapshot: await snapshotPage(page), url: page.url() };
+  },
+
+  async "list-windows"() {
+    const ctx = await ensureContext();
+    const windows = new Map();
+    for (const page of ctx.pages()) {
+      if (page.isClosed()) continue;
+      let pageId;
+      let windowId;
+      try {
+        pageId = await adopt(page);
+        windowId = await windowOf(pageId);
+      } catch {
+        continue; // closed between the listing and the lookup
+      }
+      const opener = await page.opener().catch(() => null);
+      const openerPageId = opener ? idOf(opener) : undefined;
+      const tab = { pageId, url: page.url(), title: await page.title().catch(() => ""), ...(openerPageId ? { openerPageId } : {}) };
+      const tabs = windows.get(windowId) ?? [];
+      tabs.push(tab);
+      windows.set(windowId, tabs);
+    }
+    return { windows: [...windows].map(([windowId, tabs]) => ({ windowId, tabs })) };
+  },
+
+  async "close-window"(body) {
+    const ctx = await ensureContext();
+    const windowId = Number(body.windowId);
+    for (const page of ctx.pages()) {
+      const pageId = await adopt(page).catch(() => undefined);
+      if (!pageId || (await windowOf(pageId).catch(() => undefined)) !== windowId) continue;
+      await page.close().catch(() => undefined);
+      dropPage(pageId);
+    }
+    return {};
   },
 
   // Reloads in place. A page the site re-renders on load (a dashboard that fetched stale state)
   // needs this more than a navigation, and there was no primitive for it: the agent wrote eval.
   async reload(body) {
-    const page = getPage(body.pageId);
+    const page = await getPage(body.pageId);
     await page.reload({ waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForLoadState("load", { timeout: 8000 }).catch(() => undefined);
     return { snapshot: await snapshotPage(page), url: page.url() };
   },
 
   async snapshot(body) {
-    return await snapshotPage(getPage(body.pageId));
+    const snapshot = await snapshotPage(await getPage(body.pageId));
+    if (!hasChooser(body.pageId)) return snapshot;
+    return {
+      ...snapshot,
+      raw: `${snapshot.raw}\n\n[A file chooser is open on this page, waiting for a file: call browser_upload_file with the path.]`,
+    };
   },
 
   // A request the PAGE makes, in the page's own context, so it carries the session's cookies
   // and obeys the same origin rules the site's scripts do. This is the one thing
   // responses/responseBody cannot do: they re-read what the page already fetched, never ask.
   async fetch(body) {
-    const page = getPage(body.pageId);
+    const page = await getPage(body.pageId);
     const url = String(body.url ?? "");
     if (!url) throw new Error("fetch needs a url");
     const method = String(body.method ?? "GET").toUpperCase();
@@ -114,7 +194,7 @@ export const handlers = {
   // The visible text, which the accessibility tree does not carry and the agent otherwise
   // reaches for with a hand-rolled `document.body.innerText` through eval.
   async text(body) {
-    const page = getPage(body.pageId);
+    const page = await getPage(body.pageId);
     const cap = Math.min(Math.max(Number(body.maxChars) || MAX_LOW_LEVEL_OUTPUT, 1), 200000);
     const blocks = [];
     for (const frame of page.frames()) {
@@ -132,7 +212,7 @@ export const handlers = {
   // come from" without a single selector, which is the one strategy that survives a redesign.
   async responses(body) {
     const filter = body.filter ? String(body.filter).toLowerCase() : null;
-    getPage(body.pageId); // rejects an unknown or closed tab before reporting an empty log as fact
+    await getPage(body.pageId); // rejects an unknown or closed tab before reporting an empty log as fact
     const seen = recordedResponses(body.pageId);
     const matched = filter ? seen.filter((r) => r.url.toLowerCase().includes(filter)) : seen;
     return {
@@ -147,7 +227,7 @@ export const handlers = {
   // One recorded body, by the id `responses` gave. Read here rather than at capture time so a
   // body that the page has since discarded fails loudly on the call that wanted it.
   async responseBody(body) {
-    getPage(body.pageId);
+    await getPage(body.pageId);
     const record = recordedResponses(body.pageId).find((r) => r.id === Number(body.responseId));
     if (!record) throw new Error(`No recorded response ${body.responseId} on this page. Call responses first.`);
     let text;
@@ -169,7 +249,7 @@ export const handlers = {
   async find(body) {
     const query = String(body.query ?? "").toLowerCase();
     if (!query) throw new Error("find needs a query");
-    const page = getPage(body.pageId);
+    const page = await getPage(body.pageId);
     const { raw } = await snapshotPage(page);
     const hits = raw.split("\n").filter((line) => line.toLowerCase().includes(query));
     return {
@@ -181,25 +261,25 @@ export const handlers = {
   },
 
   async click(body) {
-    const { locator } = await resolveRef(getPage(body.pageId), body.ref);
+    const { locator } = await resolveRef(await getPage(body.pageId), body.ref);
     await locator.click();
     return {};
   },
 
   async type(body) {
-    const { locator } = await resolveRef(getPage(body.pageId), body.ref);
+    const { locator } = await resolveRef(await getPage(body.pageId), body.ref);
     await locator.fill(body.text);
     return {};
   },
 
   async hover(body) {
-    const { locator } = await resolveRef(getPage(body.pageId), body.ref);
+    const { locator } = await resolveRef(await getPage(body.pageId), body.ref);
     await locator.hover();
     return {};
   },
 
   async drag(body) {
-    const page = getPage(body.pageId);
+    const page = await getPage(body.pageId);
     const from = await resolveRef(page, body.fromRef);
     const to = await resolveRef(page, body.toRef);
     await from.locator.dragTo(to.locator);
@@ -210,7 +290,7 @@ export const handlers = {
   // before reaching the model, so pixel coordinates read off an image would land in the
   // wrong place. Fractions survive any resize.
   async "click-at"(body) {
-    const page = getPage(body.pageId);
+    const page = await getPage(body.pageId);
     const x = Number(body.x);
     const y = Number(body.y);
     if (!(x >= 0 && x <= 1 && y >= 0 && y <= 1)) {
@@ -226,7 +306,7 @@ export const handlers = {
   },
 
   async "wait-for"(body) {
-    const page = getPage(body.pageId);
+    const page = await getPage(body.pageId);
     const timeout = Math.min(Number(body.timeoutMs ?? 10000), 30000);
     if (body.text) {
       await page.getByText(String(body.text)).first().waitFor({ state: "visible", timeout });
@@ -246,9 +326,15 @@ export const handlers = {
   // almost always hidden (opacity:0 / display:none), so it usually carries no ref at all —
   // hence ref is optional and the page-wide input lookup is the workhorse, not the fallback.
   async upload(body) {
-    const page = getPage(body.pageId);
+    const page = await getPage(body.pageId);
     const paths = body.paths;
     const tried = [];
+
+    const opened = takeChooser(body.pageId);
+    if (opened) {
+      await opened.setFiles(paths);
+      return { via: "open-chooser" };
+    }
 
     if (body.ref !== undefined && body.ref !== null) {
       const { locator: target } = await resolveRef(page, body.ref);
@@ -267,6 +353,7 @@ export const handlers = {
           page.waitForEvent("filechooser", { timeout: 8000 }),
           target.click(),
         ]);
+        takeChooser(body.pageId); // the permanent listener saw the same chooser: it is answered
         await chooser.setFiles(paths);
         return { via: "filechooser" };
       } catch (e) {
@@ -286,7 +373,7 @@ export const handlers = {
 
   // Native <select> and custom comboboxes are two different problems wearing the same hat.
   async "select-option"(body) {
-    const page = getPage(body.pageId);
+    const page = await getPage(body.pageId);
     const { locator: target, frame } = await resolveRef(page, body.ref);
     const value = String(body.value);
     const tag = await target.evaluate((el) => el.tagName.toLowerCase()).catch(() => "");
@@ -326,7 +413,7 @@ export const handlers = {
   },
 
   async "press-key"(body) {
-    const page = getPage(body.pageId);
+    const page = await getPage(body.pageId);
     if (body.ref !== undefined && body.ref !== null) {
       const { locator } = await resolveRef(page, body.ref);
       await locator.press(String(body.key));
@@ -337,7 +424,7 @@ export const handlers = {
   },
 
   async scroll(body) {
-    const page = getPage(body.pageId);
+    const page = await getPage(body.pageId);
     if (body.ref !== undefined && body.ref !== null) {
       const { locator } = await resolveRef(page, body.ref);
       await locator.scrollIntoViewIfNeeded();
@@ -354,7 +441,7 @@ export const handlers = {
   },
 
   async screenshot(body) {
-    const page = getPage(body.pageId);
+    const page = await getPage(body.pageId);
     // Blank-screenshot guard: wait for the network to settle and give the compositor a
     // beat before capturing; both bounded so a busy page cannot stall the capture.
     await page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => undefined);
@@ -381,11 +468,12 @@ export const handlers = {
     return { type: "image", path, mimeType: "image/png", viewport };
   },
 
-  async tabs(body) {
-    const ctx = await ensureContext(getSession(body.sessionId).viewport);
+  // Every tab, flat: the app's Browser page lists them. Agents read list-windows.
+  async tabs() {
+    const ctx = await ensureContext();
     const tabs = await Promise.all(
-      ctx.pages().map(async (p, i) => ({
-        id: String(i),
+      ctx.pages().map(async (p) => ({
+        id: await adopt(p).catch(() => ""),
         url: p.url(),
         title: await p.title().catch(() => ""),
       })),
@@ -393,24 +481,17 @@ export const handlers = {
     return { tabs };
   },
 
+  // Shows the tab in its window. Behind the focus lock: it moves what the next new tab opens after.
   async "focus-tab"(body) {
-    const session = getSession(body.sessionId);
-    const ctx = await ensureContext(session.viewport);
-    const page = ctx.pages()[body.index];
-    if (!page) throw new Error(`Tab ${body.index} not found.`);
-    await page.bringToFront();
-    const pageId = idForPage(page);
-    session.currentPageId = pageId;
-    return { pageId, url: page.url() };
+    const page = await getPage(body.pageId);
+    await withFocus(() => page.bringToFront());
+    return { pageId: body.pageId, url: page.url() };
   },
 
   async "close-tab"(body) {
-    const ctx = await ensureContext(getSession(body.sessionId).viewport);
-    const page = ctx.pages()[body.index];
-    if (!page) throw new Error(`Tab ${body.index} not found.`);
+    const page = await getPage(body.pageId);
     await page.close();
-    const pageId = existingIdForPage(page);
-    if (pageId) dropPage(pageId);
+    dropPage(body.pageId);
     return {};
   },
 
@@ -419,7 +500,7 @@ export const handlers = {
   // The caller passes a statement body, not an expression, so `return` is required. Being
   // strict about it beats guessing between the two forms and silently returning undefined.
   async evaluate(body) {
-    const page = getPage(body.pageId);
+    const page = await getPage(body.pageId);
     const value = await page.evaluate(`(async () => { ${body.js} })()`);
     const encoded = JSON.stringify(value ?? null);
     return {
@@ -435,7 +516,7 @@ export const handlers = {
     if (CDP_DENIED.some((pattern) => pattern.test(method))) {
       throw new Error(`CDP method ${method} is permanently blocked (session credentials / other targets).`);
     }
-    const page = getPage(body.pageId);
+    const page = await getPage(body.pageId);
     const session = await page.context().newCDPSession(page);
     try {
       const result = await session.send(method, body.params ?? {});
@@ -451,13 +532,13 @@ export const handlers = {
   // Applies to the NEXT dialog on this page only; auto-accept resumes afterwards so an
   // unanswered native dialog can never freeze the page.
   async "handle-dialog"(body) {
-    getPage(body.pageId); // fail fast on an unknown page
+    await getPage(body.pageId); // fail fast on an unknown page
     setDialogOverride(body.pageId, Boolean(body.accept), body.promptText);
     return { armed: true, accept: Boolean(body.accept) };
   },
 
   async "download-wait"(body) {
-    getPage(body.pageId); // fail fast: a stale pageId would otherwise burn the whole timeout
+    await getPage(body.pageId); // fail fast: a stale pageId would otherwise burn the whole timeout
     const timeout = Math.min(Number(body.timeoutMs ?? 30000), 120000);
     const deadline = Date.now() + timeout;
     let download = popDownload(body.pageId);
@@ -475,7 +556,7 @@ export const handlers = {
 
   // page.pdf() is headless-only and this Chromium runs headful on Xvfb, so go through CDP.
   async pdf(body) {
-    const page = getPage(body.pageId);
+    const page = await getPage(body.pageId);
     const session = await page.context().newCDPSession(page);
     try {
       const { data } = await session.send("Page.printToPDF", { printBackground: true });
@@ -485,13 +566,6 @@ export const handlers = {
     } finally {
       await session.detach().catch(() => undefined);
     }
-  },
-
-  // Ends the task's session bookkeeping only. Tabs are intentionally LEFT OPEN so
-  // the shared browser persists for the next task/message; nothing is closed here.
-  async cleanup(body) {
-    sessions.delete(body.sessionId);
-    return {};
   },
 
   async health() {

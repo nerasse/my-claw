@@ -23,14 +23,13 @@ import {
   createBrowserPdfTool,
   isCdpMethodAllowed,
   createBrowserScreenshotTool,
-  createBrowserListTabsTool,
+  createBrowserListWindowsTool,
   createBrowserFocusTabTool,
   createBrowserCloseTabTool,
-  createBrowserPageState,
-  enqueueBrowserTask,
 } from "../../src/tools/browser/index.ts";
 import type { BrowserClient } from "../../src/browser/client.ts";
 import { createMock } from "../helpers/mock.ts";
+import { oneTab } from "../helpers/browser-windows.ts";
 
 function createMockClient(): BrowserClient {
   const snapshot = { raw: 'button "OK" [__ref="5"]', refs: [5] };
@@ -54,151 +53,120 @@ function createMockClient(): BrowserClient {
     scroll: createMock(() => Promise.resolve()),
     screenshot: createMock(() => Promise.resolve({ type: "image", path: "/tmp/test.png", mimeType: "image/png" })),
     screenshotWithLabels: createMock(() => Promise.resolve({ type: "image", path: "/tmp/test.png", mimeType: "image/png" })),
-    listTabs: createMock(() => Promise.resolve([{ id: "0", url: "https://example.com", title: "" }])),
-    focusTab: createMock(() => Promise.resolve("p1")),
-    closeTab: createMock(() => Promise.resolve()),
-    cleanup: createMock(() => Promise.resolve()),
+    listTabs: createMock(() => Promise.resolve([{ id: "p1", url: "https://example.com", title: "" }])),
   } as unknown as BrowserClient;
 }
 
 describe("browser tools", () => {
   test("navigate takes localhost, like any other host", async () => {
-    const tool = createBrowserNavigateTool(createMockClient(), createBrowserPageState());
-    const result = await tool.execute({ url: "http://localhost:8080" });
+    const tool = createBrowserNavigateTool(createMockClient(), oneTab().pages);
+    const result = await tool.execute({ window: 1, __sessionId: "run", url: "http://localhost:8080" });
     assert.strictEqual(result.success, true);
   });
 
   test("navigate rejects file protocol", async () => {
-    const tool = createBrowserNavigateTool(createMockClient(), createBrowserPageState());
-    const result = await tool.execute({ url: "file:///etc/passwd" });
+    const tool = createBrowserNavigateTool(createMockClient(), oneTab().pages);
+    const result = await tool.execute({ window: 1, __sessionId: "run", url: "file:///etc/passwd" });
     assert.strictEqual(result.success, false);
     assert.ok(result.error?.includes("file://"));
   });
 
-  test("navigate succeeds with valid url and sets the current page", async () => {
-    const state = createBrowserPageState();
-    const tool = createBrowserNavigateTool(createMockClient(), state);
-    const result = await tool.execute({ url: "https://example.com" });
+  test("navigate reuses the run's tab in its window, and the page it lands on becomes the current one", async () => {
+    const client = createMockClient();
+    const { pages, call } = oneTab("p0");
+    const tool = createBrowserNavigateTool(client, pages);
+    const result = await tool.execute(call({ url: "https://example.com" }));
     assert.strictEqual(result.success, true);
     assert.ok(result.output.includes("OK"));
-    assert.strictEqual(state.currentPageId, "p1");
+    const sent = (client.navigate as unknown as { calls: { arguments: unknown[] }[] }).calls[0]?.arguments[1];
+    assert.deepStrictEqual(sent, { pageId: "p0", windowId: 1 });
+    assert.strictEqual(await pages.page(call()), "p1");
   });
 
-  test("snapshot requires active page", async () => {
-    const tool = createBrowserSnapshotTool(createMockClient(), createBrowserPageState());
-    const result = await tool.execute({});
-    assert.strictEqual(result.success, false);
-    assert.ok(result.error?.includes("No active browser page"));
+  test("navigate with new_tab opens the tab in the named window, never wherever the focus is", async () => {
+    const client = createMockClient();
+    const { pages, call } = oneTab("p0");
+    await createBrowserNavigateTool(client, pages).execute(call({ url: "https://example.com", new_tab: true }));
+    const sent = (client.navigate as unknown as { calls: { arguments: unknown[] }[] }).calls[0]?.arguments[1];
+    assert.deepStrictEqual(sent, { windowId: 1, newTab: true });
   });
 
-  test("click requires active page", async () => {
-    const tool = createBrowserClickTool(createMockClient(), createBrowserPageState());
-    const result = await tool.execute({ ref: 5 });
-    assert.strictEqual(result.success, false);
-    assert.ok(result.error?.includes("No active browser page"));
+  test("snapshot, click and type need a window", async () => {
+    const client = createMockClient();
+    const { pages } = oneTab();
+    for (const [tool, args] of [
+      [createBrowserSnapshotTool(client, pages), {}],
+      [createBrowserClickTool(client, pages), { ref: 5 }],
+      [createBrowserTypeTool(client, pages), { ref: 3, text: "hello" }],
+    ] as const) {
+      const result = await tool.execute({ __sessionId: "run", ...args });
+      assert.strictEqual(result.success, false, `${tool.name} must refuse without a window`);
+      assert.ok(result.error?.includes("Name the window"));
+    }
+    assert.strictEqual((client.click as unknown as { calls: unknown[] }).calls.length, 0);
   });
 
-  test("type requires active page", async () => {
-    const tool = createBrowserTypeTool(createMockClient(), createBrowserPageState());
-    const result = await tool.execute({ ref: 3, text: "hello" });
-    assert.strictEqual(result.success, false);
-    assert.ok(result.error?.includes("No active browser page"));
+  test("every page tool declares the window it acts in as required", async () => {
+    const client = createMockClient();
+    const { pages } = oneTab();
+    for (const tool of [createBrowserSnapshotTool(client, pages), createBrowserClickTool(client, pages), createBrowserTypeTool(client, pages)]) {
+      const params = tool.parameters as { required?: string[]; properties: Record<string, unknown> };
+      assert.ok(params.required?.includes("window"), tool.name);
+      assert.ok("window" in params.properties, tool.name);
+    }
   });
 
   test("click uses the current page id", async () => {
     const client = createMockClient();
-    const state = createBrowserPageState();
-    state.currentPageId = "p7";
+    const state = oneTab("p7").pages;
     const tool = createBrowserClickTool(client, state);
-    const result = await tool.execute({ ref: 5 });
+    const result = await tool.execute({ window: 1, __sessionId: "run", ref: 5 });
     assert.strictEqual(result.success, true);
     assert.strictEqual((client.click as unknown as { calls: { arguments: unknown[] }[] }).calls[0]?.arguments[0], "p7");
   });
 
   test("screenshot returns attachment", async () => {
-    const state = createBrowserPageState();
-    state.currentPageId = "p1";
+    const state = oneTab("p1").pages;
     const tool = createBrowserScreenshotTool(createMockClient(), state);
-    const result = await tool.execute({ full_page: true });
+    const result = await tool.execute({ window: 1, __sessionId: "run", full_page: true });
     assert.strictEqual(result.success, true);
     assert.ok(result.attachments);
     assert.strictEqual(result.attachments![0]!.type, "image");
   });
 
-  test("list_tabs returns tab list", async () => {
-    const tool = createBrowserListTabsTool(createMockClient());
-    const result = await tool.execute({});
+  test("list_windows shows the windows with their tabs, and whose they are", async () => {
+    const { pages, call } = oneTab();
+    const result = await createBrowserListWindowsTool(pages).execute(call());
     assert.strictEqual(result.success, true);
+    assert.ok(result.output.includes("Window 1 (free)"));
+    assert.ok(result.output.includes("[1] https://example.com"));
   });
 
-  test("focus_tab switches to tab and updates the state", async () => {
-    const state = createBrowserPageState();
-    const tool = createBrowserFocusTabTool(createMockClient(), state);
-    const result = await tool.execute({ index: 0 });
+  test("focus_tab makes the tab the run's current one in its window", async () => {
+    const client = createMockClient();
+    const { pages, call } = oneTab("p1");
+    const result = await createBrowserFocusTabTool(client, pages).execute(call({ tab: 1 }));
     assert.strictEqual(result.success, true);
-    assert.strictEqual(state.currentPageId, "p1");
+    assert.ok(result.output.includes("tab [1] of window 1"));
+    assert.strictEqual((client.snapshot as unknown as { calls: { arguments: unknown[] }[] }).calls[0]?.arguments[0], "p1");
   });
 
-  test("close_tab closes tab", async () => {
-    const tool = createBrowserCloseTabTool(createMockClient());
-    const result = await tool.execute({ index: 0 });
+  test("close_tab closes a tab of a window", async () => {
+    const { pages, call } = oneTab();
+    const result = await createBrowserCloseTabTool(pages).execute(call({ tab: 1 }));
     assert.strictEqual(result.success, true);
     assert.ok(result.output.includes("closed"));
   });
 
-  test("two subagents' page states are isolated (no cross-clobbering)", async () => {
-    const clientA = createMockClient();
-    const stateA = createBrowserPageState();
-    const stateB = createBrowserPageState();
-
-    const navigateA = createBrowserNavigateTool(clientA, stateA);
-    await navigateA.execute({ url: "https://example.com" });
-    assert.strictEqual(stateA.currentPageId, "p1");
-
-    // B has its own state: A's navigation must not leak into B's tools.
-    const clickB = createBrowserClickTool(createMockClient(), stateB);
-    const result = await clickB.execute({ ref: 5 });
-    assert.strictEqual(result.success, false);
-    assert.ok(result.error?.includes("No active browser page"));
-    assert.strictEqual(stateB.currentPageId, null);
-    assert.strictEqual(stateA.currentPageId, "p1");
-  });
-});
-
-describe("enqueueBrowserTask", () => {
-  test("serializes concurrent tasks (never overlapping)", async () => {
-    let running = 0;
-    let maxConcurrent = 0;
-    const order: number[] = [];
-
-    const makeTask = (id: number) => async () => {
-      running++;
-      maxConcurrent = Math.max(maxConcurrent, running);
-      await new Promise((r) => setTimeout(r, 10));
-      order.push(id);
-      running--;
-      return id;
-    };
-
-    const [r1, r2, r3] = await Promise.all([
-      enqueueBrowserTask(makeTask(1)),
-      enqueueBrowserTask(makeTask(2)),
-      enqueueBrowserTask(makeTask(3)),
-    ]);
-
-    assert.deepEqual([r1, r2, r3], [1, 2, 3]);
-    assert.deepEqual(order, [1, 2, 3], "Tasks must run in submission order");
-    assert.strictEqual(maxConcurrent, 1, "Tasks must never run concurrently");
-  });
-
-  test("a failing task does not block the queue", async () => {
-    const failing = enqueueBrowserTask(async () => {
-      throw new Error("boom");
-    });
-    await assert.rejects(failing, /boom/);
-
-    const next = await enqueueBrowserTask(async () => "after-failure");
-    assert.strictEqual(next, "after-failure");
+  test("two runs never share a window: the second is sent elsewhere, the first is untouched", async () => {
+    const client = createMockClient();
+    const { pages } = oneTab("p1");
+    const clickA = await createBrowserClickTool(client, pages).execute({ window: 1, __sessionId: "run-A", ref: 5 });
+    assert.strictEqual(clickA.success, true);
+    const clickB = await createBrowserClickTool(client, pages).execute({ window: 1, __sessionId: "run-B", ref: 5 });
+    assert.strictEqual(clickB.success, false);
+    assert.ok(clickB.error?.includes("in use by another task"));
+    assert.strictEqual((client.click as unknown as { calls: unknown[] }).calls.length, 1);
   });
 });
 
@@ -214,11 +182,10 @@ describe("browser action tools", () => {
 
   test("upload_file takes a path outside the workspace", async () => {
     await withWorkspace(async (ws) => {
-      const state = createBrowserPageState();
-      state.currentPageId = "p1";
+      const state = oneTab("p1").pages;
       const client = createMockClient();
       const tool = createBrowserUploadFileTool(client, state, ws);
-      const result = await tool.execute({ path: "/etc/passwd" });
+      const result = await tool.execute({ window: 1, __sessionId: "run", path: "/etc/passwd" });
       assert.strictEqual(result.success, true);
       const call = (client.uploadFile as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
       assert.deepStrictEqual(call?.arguments[1], ["/etc/passwd"]);
@@ -227,11 +194,10 @@ describe("browser action tools", () => {
 
   test("upload_file reports a missing file instead of calling the sidecar", async () => {
     await withWorkspace(async (ws) => {
-      const state = createBrowserPageState();
-      state.currentPageId = "p1";
+      const state = oneTab("p1").pages;
       const client = createMockClient();
       const tool = createBrowserUploadFileTool(client, state, ws);
-      const result = await tool.execute({ path: "nope.png" });
+      const result = await tool.execute({ window: 1, __sessionId: "run", path: "nope.png" });
       assert.strictEqual(result.success, false);
       assert.ok(result.error?.includes("File not found"));
       assert.strictEqual((client.uploadFile as unknown as { calls: unknown[] }).calls.length, 0);
@@ -241,11 +207,10 @@ describe("browser action tools", () => {
   test("upload_file passes the resolved absolute path to the sidecar", async () => {
     await withWorkspace(async (ws) => {
       await writeFile(join(ws, "claw.png"), "x");
-      const state = createBrowserPageState();
-      state.currentPageId = "p1";
+      const state = oneTab("p1").pages;
       const client = createMockClient();
       const tool = createBrowserUploadFileTool(client, state, ws);
-      const result = await tool.execute({ path: "claw.png" });
+      const result = await tool.execute({ window: 1, __sessionId: "run", path: "claw.png" });
       assert.strictEqual(result.success, true);
       const call = (client.uploadFile as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
       assert.deepStrictEqual(call?.arguments[1], [join(ws, "claw.png")]);
@@ -255,64 +220,61 @@ describe("browser action tools", () => {
   });
 
   test("select_option surfaces which strategy worked", async () => {
-    const state = createBrowserPageState();
-    state.currentPageId = "p1";
+    const state = oneTab("p1").pages;
     const tool = createBrowserSelectOptionTool(createMockClient(), state);
-    const result = await tool.execute({ ref: 3, value: "July" });
+    const result = await tool.execute({ window: 1, __sessionId: "run", ref: 3, value: "July" });
     assert.strictEqual(result.success, true);
     assert.ok(result.output.includes('Selected "July"'));
     assert.ok(result.output.includes("via role=option"));
   });
 
   test("press_key forwards the key and an optional ref", async () => {
-    const state = createBrowserPageState();
-    state.currentPageId = "p1";
+    const state = oneTab("p1").pages;
     const client = createMockClient();
     const tool = createBrowserPressKeyTool(client, state);
-    const result = await tool.execute({ key: "Enter", ref: 4 });
+    const result = await tool.execute({ window: 1, __sessionId: "run", key: "Enter", ref: 4 });
     assert.strictEqual(result.success, true);
     const call = (client.pressKey as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
     assert.deepStrictEqual(call?.arguments.slice(0, 3), ["p1", "Enter", 4]);
   });
 
   test("scroll defaults to down and returns a fresh snapshot", async () => {
-    const state = createBrowserPageState();
-    state.currentPageId = "p1";
+    const state = oneTab("p1").pages;
     const client = createMockClient();
     const tool = createBrowserScrollTool(client, state);
-    const result = await tool.execute({});
+    const result = await tool.execute({ window: 1, __sessionId: "run" });
     assert.strictEqual(result.success, true);
     const call = (client.scroll as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
     assert.strictEqual(call?.arguments[1], "down");
     assert.ok(result.output.includes("__ref"));
   });
 
-  test("the action tools all require an active page", async () => {
+  test("the action tools all need a window", async () => {
     const client = createMockClient();
+    const { pages } = oneTab();
     const tools = [
-      createBrowserSelectOptionTool(client, createBrowserPageState()),
-      createBrowserPressKeyTool(client, createBrowserPageState()),
-      createBrowserScrollTool(client, createBrowserPageState()),
+      createBrowserSelectOptionTool(client, pages),
+      createBrowserPressKeyTool(client, pages),
+      createBrowserScrollTool(client, pages),
     ];
     for (const tool of tools) {
-      const result = await tool.execute({ ref: 1, value: "x", key: "Enter" });
-      assert.strictEqual(result.success, false, `${tool.name} must refuse without a page`);
-      assert.ok(result.error?.includes("No active browser page"));
+      const result = await tool.execute({ __sessionId: "run", ref: 1, value: "x", key: "Enter" });
+      assert.strictEqual(result.success, false, `${tool.name} must refuse without a window`);
+      assert.ok(result.error?.includes("Name the window"));
     }
   });
 });
 
 describe("browser vision and wait tools", () => {
   function activeState() {
-    const state = createBrowserPageState();
-    state.currentPageId = "p1";
+    const state = oneTab("p1").pages;
     return state;
   }
 
   test("click_at refuses pixel coordinates instead of round-tripping them", async () => {
     const client = createMockClient();
     const tool = createBrowserClickAtTool(client, activeState());
-    const result = await tool.execute({ x: 960, y: 540 });
+    const result = await tool.execute({ window: 1, __sessionId: "run", x: 960, y: 540 });
     assert.strictEqual(result.success, false);
     assert.ok(result.error?.includes("fractions"));
     assert.strictEqual((client.clickAt as unknown as { calls: unknown[] }).calls.length, 0);
@@ -321,7 +283,7 @@ describe("browser vision and wait tools", () => {
   test("click_at accepts fractions and reports where it landed", async () => {
     const client = createMockClient();
     const tool = createBrowserClickAtTool(client, activeState());
-    const result = await tool.execute({ x: 0.5, y: 0.5 });
+    const result = await tool.execute({ window: 1, __sessionId: "run", x: 0.5, y: 0.5 });
     assert.strictEqual(result.success, true);
     assert.ok(result.output.includes("960,540"));
     assert.ok(result.output.includes("1920x1080"));
@@ -330,7 +292,7 @@ describe("browser vision and wait tools", () => {
   test("click_at accepts the edges of the viewport", async () => {
     const tool = createBrowserClickAtTool(createMockClient(), activeState());
     for (const [x, y] of [[0, 0], [1, 1]]) {
-      const result = await tool.execute({ x, y });
+      const result = await tool.execute({ window: 1, __sessionId: "run", x, y });
       assert.strictEqual(result.success, true, `${x},${y} must be valid`);
     }
   });
@@ -338,15 +300,15 @@ describe("browser vision and wait tools", () => {
   test("wait_for forwards text, ref and timeout", async () => {
     const client = createMockClient();
     const tool = createBrowserWaitForTool(client, activeState());
-    await tool.execute({ text: "Loaded", timeout_ms: 5000 });
+    await tool.execute({ window: 1, __sessionId: "run", text: "Loaded", timeout_ms: 5000 });
     const call = (client.waitFor as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
     assert.deepStrictEqual(call?.arguments[1], { text: "Loaded", ref: undefined, timeoutMs: 5000 });
   });
 
   test("hover and drag forward their refs", async () => {
     const client = createMockClient();
-    await createBrowserHoverTool(client, activeState()).execute({ ref: 3 });
-    await createBrowserDragTool(client, activeState()).execute({ from_ref: 4, to_ref: 5 });
+    await createBrowserHoverTool(client, activeState()).execute({ window: 1, __sessionId: "run", ref: 3 });
+    await createBrowserDragTool(client, activeState()).execute({ window: 1, __sessionId: "run", from_ref: 4, to_ref: 5 });
     const hover = (client.hover as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
     const drag = (client.drag as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
     assert.strictEqual(hover?.arguments[1], 3);
@@ -356,15 +318,14 @@ describe("browser vision and wait tools", () => {
 
 describe("browser low-level tools", () => {
   function activeState() {
-    const state = createBrowserPageState();
-    state.currentPageId = "p1";
+    const state = oneTab("p1").pages;
     return state;
   }
 
   test("eval is refused unless allowEval is set", async () => {
     const client = createMockClient();
     const tool = createBrowserEvalTool(client, activeState(), { config: {} });
-    const result = await tool.execute({ js: "return 1" });
+    const result = await tool.execute({ window: 1, __sessionId: "run", js: "return 1" });
     assert.strictEqual(result.success, false);
     assert.ok(result.error?.includes("allowEval"));
     assert.strictEqual((client.evaluate as unknown as { calls: unknown[] }).calls.length, 0);
@@ -373,14 +334,14 @@ describe("browser low-level tools", () => {
   test("eval runs when enabled", async () => {
     const client = createMockClient();
     const tool = createBrowserEvalTool(client, activeState(), { config: { allowEval: true } });
-    const result = await tool.execute({ js: "return document.title" });
+    const result = await tool.execute({ window: 1, __sessionId: "run", js: "return document.title" });
     assert.strictEqual(result.success, true);
     assert.strictEqual(result.output, '"Example"');
   });
 
   test("cdp is refused unless allowCdp is set", async () => {
     const tool = createBrowserCdpTool(createMockClient(), activeState(), { config: {} });
-    const result = await tool.execute({ method: "DOM.getDocument" });
+    const result = await tool.execute({ window: 1, __sessionId: "run", method: "DOM.getDocument" });
     assert.strictEqual(result.success, false);
     assert.ok(result.error?.includes("allowCdp"));
   });
@@ -389,7 +350,7 @@ describe("browser low-level tools", () => {
     const client = createMockClient();
     const tool = createBrowserCdpTool(client, activeState(), { config: { allowCdp: true } });
     for (const method of ["Network.getAllCookies", "Storage.getStorageKeyForFrame", "Target.createTarget", "Browser.close"]) {
-      const result = await tool.execute({ method });
+      const result = await tool.execute({ window: 1, __sessionId: "run", method });
       assert.strictEqual(result.success, false, `${method} must be refused`);
       assert.ok(result.error?.includes("not allowed"));
     }
@@ -399,7 +360,7 @@ describe("browser low-level tools", () => {
   test("cdp allows an allowlisted method", async () => {
     const client = createMockClient();
     const tool = createBrowserCdpTool(client, activeState(), { config: { allowCdp: true } });
-    const result = await tool.execute({ method: "DOM.getDocument", params: { depth: 1 } });
+    const result = await tool.execute({ window: 1, __sessionId: "run", method: "DOM.getDocument", params: { depth: 1 } });
     assert.strictEqual(result.success, true);
     const call = (client.cdp as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
     assert.strictEqual(call?.arguments[1], "DOM.getDocument");
@@ -410,8 +371,8 @@ describe("browser low-level tools", () => {
     const tool = createBrowserCdpTool(createMockClient(), activeState(), {
       config: { allowCdp: true, cdpAllowlist: ["Page.navigate"] },
     });
-    assert.strictEqual((await tool.execute({ method: "DOM.getDocument" })).success, false);
-    assert.strictEqual((await tool.execute({ method: "Page.navigate" })).success, true);
+    assert.strictEqual((await tool.execute({ window: 1, __sessionId: "run", method: "DOM.getDocument" })).success, false);
+    assert.strictEqual((await tool.execute({ window: 1, __sessionId: "run", method: "Page.navigate" })).success, true);
   });
 
   test("isCdpMethodAllowed matches globs and is case-insensitive", () => {
@@ -427,7 +388,7 @@ describe("browser low-level tools", () => {
   test("handle_dialog forwards the decision and the prompt text", async () => {
     const client = createMockClient();
     const tool = createBrowserHandleDialogTool(client, activeState());
-    const result = await tool.execute({ accept: false, prompt_text: "hello" });
+    const result = await tool.execute({ window: 1, __sessionId: "run", accept: false, prompt_text: "hello" });
     assert.strictEqual(result.success, true);
     assert.ok(result.output.includes("dismissed"));
     const call = (client.handleDialog as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
@@ -437,7 +398,7 @@ describe("browser low-level tools", () => {
   test("download defaults to a downloads folder inside the workspace", async () => {
     const client = createMockClient();
     const tool = createBrowserDownloadTool(client, activeState(), { workspaceDir: "/ws" });
-    await tool.execute({});
+    await tool.execute({ window: 1, __sessionId: "run" });
     const call = (client.waitForDownload as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
     assert.strictEqual(call?.arguments[1], "/ws/downloads");
   });
@@ -448,7 +409,7 @@ describe("browser low-level tools", () => {
       workspaceDir: "/ws",
       config: { downloadDir: "/data/dl" },
     });
-    await tool.execute({});
+    await tool.execute({ window: 1, __sessionId: "run" });
     const call = (client.waitForDownload as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
     assert.strictEqual(call?.arguments[1], "/data/dl");
   });
@@ -456,7 +417,7 @@ describe("browser low-level tools", () => {
   test("pdf takes a destination outside the workspace", async () => {
     const client = createMockClient();
     const tool = createBrowserPdfTool(client, activeState(), { workspaceDir: "/ws" });
-    const result = await tool.execute({ path: "/etc/evil.pdf" });
+    const result = await tool.execute({ window: 1, __sessionId: "run", path: "/etc/evil.pdf" });
     assert.strictEqual(result.success, true);
     assert.ok(result.output.includes("/etc/evil.pdf"));
   });
@@ -464,7 +425,7 @@ describe("browser low-level tools", () => {
   test("pdf defaults into the download directory", async () => {
     const client = createMockClient();
     const tool = createBrowserPdfTool(client, activeState(), { workspaceDir: "/ws" });
-    const result = await tool.execute({});
+    const result = await tool.execute({ window: 1, __sessionId: "run" });
     assert.strictEqual(result.success, true);
     assert.ok(result.output.includes("/ws/downloads/page-"));
   });

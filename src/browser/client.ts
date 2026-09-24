@@ -14,6 +14,7 @@ import type {
   BrowserTabInfo,
   BrowserTextResult,
   BrowserWaitResult,
+  BrowserWindowView,
 } from "./types.ts";
 
 const DEFAULT_VIEWPORT = { width: 1920, height: 1080 };
@@ -25,6 +26,7 @@ const DEFAULT_VIEWPORT = { width: 1920, height: 1080 };
 const DEFAULT_TIMEOUTS_MS: Record<string, number> = {
   default: 30000,
   navigate: 45000,
+  "create-window": 45000,
   reload: 45000,
   screenshot: 45000,
   upload: 60000,
@@ -35,12 +37,11 @@ const DEFAULT_TIMEOUTS_MS: Record<string, number> = {
 };
 
 /** HTTP client for the Node browser sidecar. All Playwright work happens in the
- *  sidecar process (connectOverCDP hangs under Bun); here we only exchange JSON
- *  and reference pages by opaque string ids. One client instance == one sidecar
- *  session; cleanup() closes only the pages this session opened. */
+ *  sidecar process (connectOverCDP hangs under Bun); here we only exchange JSON and name
+ *  pages by their CDP target id and windows by their CDP window id. It holds no state: which
+ *  run works where is the server's (src/tools/browser/windows.ts), so one client serves every
+ *  run at once. */
 export class BrowserClient {
-  private sessionId: string | null = null;
-
   constructor(
     private sidecarUrl: string,
     private viewport = DEFAULT_VIEWPORT,
@@ -50,11 +51,9 @@ export class BrowserClient {
   /**
    * Points the client at the sidecar the live config names. The browser tools hold one client for
    * the life of the process, so this is how a hot-reloaded `browser.sidecarUrl`, viewport or
-   * timeout reaches the next run. Only between runs: the sidecar session in flight, if any, stays
-   * on the settings it was opened with.
+   * timeout reaches the runs: applied to the next call, whichever run makes it.
    */
   reconfigure(sidecarUrl: string, viewport = DEFAULT_VIEWPORT, timeoutsMs: Record<string, number> = {}): void {
-    if (this.sessionId) return;
     this.sidecarUrl = sidecarUrl;
     this.viewport = viewport;
     this.timeoutsMs = timeoutsMs;
@@ -105,24 +104,28 @@ export class BrowserClient {
     return (await res.json()) as T;
   }
 
-  private async ensureSession(): Promise<string> {
-    if (!this.sessionId) {
-      const { sessionId } = await this.call<{ sessionId: string }>("session", { viewport: this.viewport });
-      this.sessionId = sessionId;
-    }
-    return this.sessionId;
-  }
-
-  /** Navigates the given tab (reusePageId) in place unless newTab is set, so a
-   *  task can stay in one tab instead of opening a new one per navigation. */
-  async navigate(url: string, opts?: { reusePageId?: string; newTab?: boolean }): Promise<BrowserResult> {
-    const sessionId = await this.ensureSession();
+  /** Navigates the given tab in place unless newTab is set, in which case the tab opens in the
+   *  given window: a task stays in one tab instead of opening a new one per navigation. */
+  async navigate(url: string, opts?: { pageId?: string; windowId?: number; newTab?: boolean }): Promise<BrowserResult> {
     return this.call<BrowserResult>("navigate", {
-      sessionId,
       url,
-      reusePageId: opts?.reusePageId,
+      pageId: opts?.pageId,
+      windowId: opts?.windowId,
       newTab: opts?.newTab,
     });
+  }
+
+  async listWindows(): Promise<BrowserWindowView[]> {
+    const { windows } = await this.call<{ windows: BrowserWindowView[] }>("list-windows", {});
+    return windows;
+  }
+
+  async createWindow(url: string): Promise<BrowserResult & { windowId: number }> {
+    return this.call<BrowserResult & { windowId: number }>("create-window", { url, viewport: this.viewport });
+  }
+
+  async closeWindow(windowId: number): Promise<void> {
+    await this.call("close-window", { windowId });
   }
 
   async snapshot(pageId: string): Promise<BrowserSnapshot> {
@@ -232,27 +235,17 @@ export class BrowserClient {
     return this.call<{ path: string }>("pdf", { pageId, path });
   }
 
+  /** Every tab, flat, for the app's Browser page. Agents go through the windows. */
   async listTabs(): Promise<BrowserTabInfo[]> {
-    const sessionId = await this.ensureSession();
-    const { tabs } = await this.call<{ tabs: BrowserTabInfo[] }>("tabs", { sessionId });
+    const { tabs } = await this.call<{ tabs: BrowserTabInfo[] }>("tabs", {});
     return tabs;
   }
 
-  async focusTab(index: number): Promise<string> {
-    const sessionId = await this.ensureSession();
-    const { pageId } = await this.call<{ pageId: string }>("focus-tab", { sessionId, index });
-    return pageId;
+  async focusTab(pageId: string): Promise<void> {
+    await this.call("focus-tab", { pageId });
   }
 
-  async closeTab(index: number): Promise<void> {
-    const sessionId = await this.ensureSession();
-    await this.call("close-tab", { sessionId, index });
-  }
-
-  async cleanup(): Promise<void> {
-    if (!this.sessionId) return;
-    const sessionId = this.sessionId;
-    this.sessionId = null;
-    await this.call("cleanup", { sessionId }).catch(() => undefined);
+  async closeTab(pageId: string): Promise<void> {
+    await this.call("close-tab", { pageId });
   }
 }

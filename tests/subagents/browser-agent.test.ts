@@ -104,21 +104,28 @@ interface LlmCall {
  * A fake world: the sidecar answers every endpoint with a plausible shape and records the calls;
  * the model is a script, one answer per browser-agent turn.
  */
-function world(script: Array<(call: LlmCall) => object>, opts: { navigateError?: string } = {}) {
+function world(script: Array<(call: LlmCall) => object | Promise<object>>, opts: { navigateError?: string } = {}) {
   const sidecar: string[] = [];
   const llm: LlmCall[] = [];
+  const windows = [{ windowId: 10, tabs: [{ pageId: "p0", url: "https://open.example.com", title: "Already open" }] }];
   let turn = 0;
   const mock = mockFetch(async (input?: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("127.0.0.1:9223")) {
       const endpoint = url.split("/").pop() ?? "";
       sidecar.push(endpoint);
-      if (endpoint === "session") return json({ sessionId: "sc-1" });
-      if (endpoint === "tabs") return json({ tabs: [{ url: "https://open.example.com", title: "Already open" }] });
+      if (endpoint === "list-windows") return json({ windows });
+      if (endpoint === "create-window") {
+        const windowId = 11 + windows.length;
+        const pageId = `p${windowId}`;
+        windows.push({ windowId, tabs: [{ pageId, url: "https://example.com", title: "" }] });
+        return json({ windowId, pageId, url: "https://example.com", snapshot: { raw: "page", refs: [1] } });
+      }
       if (endpoint === "navigate") {
         if (opts.navigateError) return json({ error: opts.navigateError }, 500);
         return json({ pageId: "p1", url: "https://example.com", snapshot: { raw: "page", refs: [1] } });
       }
+      if (endpoint === "snapshot") return json({ raw: "page", refs: [1] });
       if (endpoint === "screenshot") return json({ type: "image", path: "/tmp/shot.png", mimeType: "image/png" });
       return json({});
     }
@@ -127,7 +134,7 @@ function world(script: Array<(call: LlmCall) => object>, opts: { navigateError?:
     llm.push(call);
     const step = script[Math.min(turn, script.length - 1)]!;
     turn += 1;
-    return llmResponse(step(call));
+    return llmResponse(await step(call));
   });
   return {
     sidecar,
@@ -189,13 +196,13 @@ describe("the browser agent's toolbox", () => {
 describe("delegate_browser_task runs the browser agent as a sub-agent", () => {
   test("a task becomes a private one-shot of the caller, run on the browser tools alone, and answers with what browser_done recorded", async () => {
     const config = makeConfig({ enabled: true });
-    const { tool } = harness(config);
+    const { tool, session: browser } = harness(config);
     const spawned: HookEventMap["subagent:spawn"][] = [];
     const onSpawn = (ev: HookEventMap["subagent:spawn"]): void => { spawned.push(ev); };
     hooks.on("subagent:spawn", onSpawn);
     const w = world([
-      () => toolCall("browser_navigate", { url: "https://example.com" }),
-      () => toolCall("browser_screenshot", {}),
+      () => toolCall("browser_navigate", { window: 1, url: "https://example.com" }),
+      () => toolCall("browser_screenshot", { window: 1 }),
       () => toolCall("browser_done", { summary: "The page shows the price: 42 EUR." }),
       () => ({ content: "The page shows the price: 42 EUR." }),
     ]);
@@ -228,7 +235,8 @@ describe("delegate_browser_task runs the browser agent as a sub-agent", () => {
       const task = first && "text" in first ? String(first.text) : "";
       expect(task).toContain("Task: Read the price");
       expect(task).toContain("Start URL: https://example.com");
-      expect(task).toContain("Open browser tabs");
+      expect(task).toContain("## Browser windows");
+      expect(task).toContain("Window 1 (free)");
       expect(task).toContain("https://open.example.com");
 
       // The model only ever saw the browser toolbox.
@@ -237,8 +245,9 @@ describe("delegate_browser_task runs the browser agent as a sub-agent", () => {
         expect(call.tools).toContain("browser_done");
         expect(call.tools.every((n) => n.startsWith("browser_"))).toBe(true);
       }
-      // And the browser was left clean for the next run.
-      expect(w.sidecar[w.sidecar.length - 1]).toBe("cleanup");
+      // The run held window 1 while it worked, and gave it back when it ended.
+      expect(await browser.windows.describe("anyone")).toContain("Window 1 (free)");
+      expect(w.sidecar).not.toContain("cleanup");
     } finally {
       hooks.off("subagent:spawn", onSpawn);
       w.restore();
@@ -267,7 +276,7 @@ describe("delegate_browser_task runs the browser agent as a sub-agent", () => {
     const { tool } = harness(makeConfig({ enabled: true }));
     const w = world(
       [
-        () => toolCall("browser_navigate", { url: "https://example.com" }),
+        () => toolCall("browser_navigate", { window: 1, url: "https://example.com" }),
         () => ({ content: "The browser is down, I stopped." }),
       ],
       { navigateError: "connect ECONNREFUSED 127.0.0.1:9223" },
@@ -325,23 +334,51 @@ describe("delegate_browser_task runs the browser agent as a sub-agent", () => {
     }
   });
 
-  test("two tasks take the one browser in turn, each cleaning up before the next opens", async () => {
-    const { tool } = harness(makeConfig({ enabled: true }));
+  test("two tasks on the same site run at once, each in a window of its own, and neither waits for the other", async () => {
+    const { tool, session: browser } = harness(makeConfig({ enabled: true }));
+    const taskOf = (call: LlmCall): string => String(call.messages.find((m) => m.role === "user")?.content ?? "");
+    // Neither task takes its first step before the other has talked to its model. With runs taking
+    // turns on the browser, whichever goes second could never start while the first waits, in
+    // either order: that is the failure named here.
+    const started = new Map<string, () => void>();
+    const running = {
+      a: new Promise<void>((resolve) => started.set("a", resolve)),
+      b: new Promise<void>((resolve) => started.set("b", resolve)),
+    };
     const w = world([
-      (call) => (call.messages.some((m) => m.role === "tool") ? toolCall("browser_done", { summary: "done" }) : toolCall("browser_navigate", { url: "https://example.com" })),
+      async (call) => {
+        const tools = call.messages.filter((m) => m.role === "tool");
+        if (tools.length === 0) {
+          const me = taskOf(call).includes("task-a") ? "a" : "b";
+          const other = me === "a" ? "b" : "a";
+          started.get(me)!();
+          const timer = new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`task ${other} never started while task ${me} was running: browser runs are queued`)), 3000),
+          );
+          await Promise.race([running[other], timer]);
+        }
+        const replies = tools.length;
+        if (tools.some((m) => String(m.content).startsWith("Recorded"))) return { content: "done" };
+        if (replies === 0) return toolCall("browser_new_window", { url: "https://example.com" });
+        if (replies === 1) {
+          // The window this run just opened, as the tool reported it.
+          const opened = /Opened window (\d+)/.exec(String(call.messages.filter((m) => m.role === "tool")[0]?.content))?.[1];
+          return toolCall("browser_click", { window: Number(opened), ref: 1 });
+        }
+        return toolCall("browser_done", { summary: "done" });
+      },
     ]);
     try {
-      const [a, b] = await Promise.all([
-        tool.execute({ url: "https://a.example.com", instructions: "a", __message: message(), __sessionId: "s1" }),
-        tool.execute({ url: "https://b.example.com", instructions: "b", __message: message(), __sessionId: "s1" }),
+      const [ra, rb] = await Promise.all([
+        tool.execute({ url: "https://example.com", instructions: "task-a", __message: message(), __sessionId: "s1" }),
+        tool.execute({ url: "https://example.com", instructions: "task-b", __message: message(), __sessionId: "s1" }),
       ]);
-      expect(a!.success).toBe(true);
-      expect(b!.success).toBe(true);
-      // Sidecar sessions never overlap: the second `session` opens after the first `cleanup`.
-      const firstCleanup = w.sidecar.indexOf("cleanup");
-      const sessions = w.sidecar.map((e, i) => (e === "session" ? i : -1)).filter((i) => i >= 0);
-      expect(sessions.length).toBeGreaterThanOrEqual(2);
-      expect(sessions[sessions.length - 1]!).toBeGreaterThan(firstCleanup);
+      expect(ra!.error).toBeUndefined();
+      expect(rb!.error).toBeUndefined();
+      expect(w.sidecar.filter((e) => e === "create-window")).toHaveLength(2);
+      // Both windows were given back.
+      const listing = await browser.windows.describe("anyone");
+      expect(listing).not.toContain("in use");
     } finally {
       w.restore();
     }

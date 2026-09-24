@@ -26,39 +26,51 @@ function mockSidecar(answers: Record<string, unknown>): { calls: Call[]; restore
 const SIDECAR = "http://127.0.0.1:9223";
 
 describe("BrowserClient", () => {
-  test("navigate creates a session first, then navigates", async () => {
+  test("navigate posts the url with the tab to reuse and its window, and opens no session", async () => {
     const m = mockSidecar({
-      session: { sessionId: "s1" },
       navigate: { pageId: "p1", snapshot: { raw: 'btn [__ref="5"]', refs: [5] }, url: "https://example.com" },
     });
     try {
       const client = new BrowserClient(SIDECAR);
-      const result = await client.navigate("https://example.com");
+      const result = await client.navigate("https://example.com", { pageId: "p1", windowId: 7 });
       assert.strictEqual(result.pageId, "p1");
-      assert.strictEqual(result.url, "https://example.com");
       assert.deepStrictEqual(result.snapshot.refs, [5]);
-      assert.strictEqual(m.calls[0]?.path, "session");
-      assert.strictEqual(m.calls[1]?.path, "navigate");
-      assert.strictEqual(m.calls[1]?.body.sessionId, "s1");
-      assert.strictEqual(m.calls[1]?.body.url, "https://example.com");
+      assert.deepStrictEqual(m.calls.map((c) => c.path), ["navigate"]);
+      assert.strictEqual(m.calls[0]?.body.url, "https://example.com");
+      assert.strictEqual(m.calls[0]?.body.pageId, "p1");
+      assert.strictEqual(m.calls[0]?.body.windowId, 7);
     } finally {
       m.restore();
     }
   });
 
-  test("the session is created once and reused across calls", async () => {
+  test("a new tab is asked for in a window", async () => {
+    const m = mockSidecar({ navigate: { pageId: "p9", snapshot: { raw: "", refs: [] }, url: "https://a.test" } });
+    try {
+      await new BrowserClient(SIDECAR).navigate("https://a.test", { windowId: 3, newTab: true });
+      assert.strictEqual(m.calls[0]?.body.windowId, 3);
+      assert.strictEqual(m.calls[0]?.body.newTab, true);
+      assert.strictEqual(m.calls[0]?.body.pageId, undefined);
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("windows are listed, created with the viewport, and closed by id", async () => {
     const m = mockSidecar({
-      session: { sessionId: "s1" },
-      navigate: { pageId: "p1", snapshot: { raw: "", refs: [] }, url: "https://a.test" },
-      snapshot: { raw: "", refs: [] },
+      "list-windows": { windows: [{ windowId: 5, tabs: [{ pageId: "p1", url: "https://a.test", title: "A" }] }] },
+      "create-window": { windowId: 6, pageId: "p2", snapshot: { raw: "", refs: [] }, url: "https://b.test" },
+      "close-window": {},
     });
     try {
-      const client = new BrowserClient(SIDECAR);
-      await client.navigate("https://a.test");
-      await client.snapshot("p1");
-      await client.navigate("https://b.test");
-      const sessionCalls = m.calls.filter((c) => c.path === "session");
-      assert.strictEqual(sessionCalls.length, 1, "session must be created exactly once");
+      const client = new BrowserClient(SIDECAR, { width: 1280, height: 800 });
+      const windows = await client.listWindows();
+      assert.strictEqual(windows[0]?.tabs[0]?.pageId, "p1");
+      const created = await client.createWindow("https://b.test");
+      assert.strictEqual(created.windowId, 6);
+      await client.closeWindow(6);
+      assert.deepStrictEqual(m.calls.find((c) => c.path === "create-window")?.body, { url: "https://b.test", viewport: { width: 1280, height: 800 } });
+      assert.strictEqual(m.calls.find((c) => c.path === "close-window")?.body.windowId, 6);
     } finally {
       m.restore();
     }
@@ -107,10 +119,9 @@ describe("BrowserClient", () => {
     }
   });
 
-  test("listTabs, focusTab and closeTab carry the sessionId", async () => {
+  test("listTabs, focusTab and closeTab name tabs by their page", async () => {
     const m = mockSidecar({
-      session: { sessionId: "s1" },
-      tabs: { tabs: [{ id: "0", url: "https://a.test", title: "" }] },
+      tabs: { tabs: [{ id: "p1", url: "https://a.test", title: "" }] },
       "focus-tab": { pageId: "p2", url: "https://a.test" },
       "close-tab": {},
     });
@@ -118,39 +129,11 @@ describe("BrowserClient", () => {
       const client = new BrowserClient(SIDECAR);
       const tabs = await client.listTabs();
       assert.strictEqual(tabs.length, 1);
-      const pageId = await client.focusTab(0);
-      assert.strictEqual(pageId, "p2");
-      await client.closeTab(0);
-      assert.strictEqual(m.calls.find((c) => c.path === "focus-tab")?.body.sessionId, "s1");
-      assert.strictEqual(m.calls.find((c) => c.path === "close-tab")?.body.index, 0);
-    } finally {
-      m.restore();
-    }
-  });
-
-  test("cleanup posts the sessionId once a session exists", async () => {
-    const m = mockSidecar({
-      session: { sessionId: "s1" },
-      navigate: { pageId: "p1", snapshot: { raw: "", refs: [] }, url: "https://a.test" },
-      cleanup: {},
-    });
-    try {
-      const client = new BrowserClient(SIDECAR);
-      await client.navigate("https://a.test");
-      await client.cleanup();
-      const cleanup = m.calls.find((c) => c.path === "cleanup");
-      assert.strictEqual(cleanup?.body.sessionId, "s1");
-    } finally {
-      m.restore();
-    }
-  });
-
-  test("cleanup is a no-op when no session was created", async () => {
-    const m = mockSidecar({ cleanup: {} });
-    try {
-      const client = new BrowserClient(SIDECAR);
-      await client.cleanup();
-      assert.strictEqual(m.calls.length, 0, "cleanup must not hit the sidecar if no session exists");
+      await client.focusTab("p2");
+      await client.closeTab("p3");
+      assert.strictEqual(m.calls.find((c) => c.path === "focus-tab")?.body.pageId, "p2");
+      assert.strictEqual(m.calls.find((c) => c.path === "close-tab")?.body.pageId, "p3");
+      assert.ok(m.calls.every((c) => !("sessionId" in c.body)), "there is no sidecar session any more");
     } finally {
       m.restore();
     }

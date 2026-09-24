@@ -1,12 +1,14 @@
 // Public surface of the browser tool family. Split by concern: page/tab plumbing
 // (navigation), things done to the page (actions), and the delegation entry point the
 // main agent sees (delegate).
-export { type BrowserPageState, createBrowserPageState } from "./state.ts";
+export { BrowserWindows, type WindowsBackend } from "./windows.ts";
 export {
   createBrowserNavigateTool,
   createBrowserSnapshotTool,
   createBrowserScreenshotTool,
-  createBrowserListTabsTool,
+  createBrowserListWindowsTool,
+  createBrowserNewWindowTool,
+  createBrowserCloseWindowTool,
   createBrowserFocusTabTool,
   createBrowserCloseTabTool,
 } from "./navigation.ts";
@@ -36,7 +38,6 @@ export {
   BrowserSession,
   DEFAULT_NOVNC_URL,
   DEFAULT_SIDECAR_URL,
-  enqueueBrowserTask,
   isBrowserInfraError,
   recordBrowserOutcome,
   takeBrowserOutcome,

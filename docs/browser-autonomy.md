@@ -141,8 +141,9 @@ main threat, and it is the reason `eval`/`cdp` are opt-in.
 - **The subagent summary is untrusted input** for the main agent: it is page-derived text that
   a hostile site can shape. `delegate_browser_task` output must be wrapped as untrusted data
   (`src/agent/prompt/normalize-untrusted.ts`), and secret-looking strings redacted from it.
-- **Unchanged**: SSRF guard on `browser_navigate`, one-task-at-a-time serialization,
-  per-subagent page state, `AbortSignal` threading.
+- **Unchanged**: SSRF guard on `browser_navigate`, per-run page state, `AbortSignal` threading.
+  (The one-task-at-a-time queue has since been replaced by windows held per run:
+  `docs/browser-windows.md`.)
 
 ## Config
 

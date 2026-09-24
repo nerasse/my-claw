@@ -3,7 +3,8 @@ import assert from "node:assert";
 import { BrowserClient } from "../../src/browser/client.ts";
 import { createBrowserFetchTool, createBrowserTextTool } from "../../src/tools/browser/inspect.ts";
 import { createBrowserReloadTool } from "../../src/tools/browser/navigation.ts";
-import { createBrowserPageState, type BrowserPageState } from "../../src/tools/browser/state.ts";
+import type { BrowserWindows } from "../../src/tools/browser/windows.ts";
+import { oneTab } from "../helpers/browser-windows.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
 interface Call {
@@ -30,11 +31,9 @@ function mockSidecar(
 
 const SIDECAR = "http://127.0.0.1:9223";
 
-function page(): { client: BrowserClient; state: BrowserPageState } {
+function page(): { client: BrowserClient; state: BrowserWindows } {
   const client = new BrowserClient(SIDECAR);
-  const state = createBrowserPageState();
-  state.currentPageId = "p1";
-  return { client, state };
+  return { client, state: oneTab("p1").pages };
 }
 
 describe("browser_fetch", () => {
@@ -44,7 +43,7 @@ describe("browser_fetch", () => {
     });
     try {
       const { client, state } = page();
-      const result = await createBrowserFetchTool(client, state).execute({ url: "/api/x" });
+      const result = await createBrowserFetchTool(client, state).execute({ window: 1, __sessionId: "run", url: "/api/x" });
       assert.strictEqual(result.success, true);
       assert.match(result.output, /HTTP 200 application\/json/);
       assert.match(result.output, /\{"ok":true\}/);
@@ -60,7 +59,7 @@ describe("browser_fetch", () => {
     const m = mockSidecar({ fetch: { url: "https://s.test/x", status: 404, contentType: "text/plain", truncated: false, body: "not found" } });
     try {
       const { client, state } = page();
-      const result = await createBrowserFetchTool(client, state).execute({ url: "https://s.test/x" });
+      const result = await createBrowserFetchTool(client, state).execute({ window: 1, __sessionId: "run", url: "https://s.test/x" });
       assert.strictEqual(result.success, true);
       assert.match(result.output, /HTTP 404/);
       assert.match(result.output, /not found/);
@@ -73,7 +72,7 @@ describe("browser_fetch", () => {
     const m = mockSidecar({ fetch: { url: "u", status: 200, contentType: "", truncated: true, body: "x" } });
     try {
       const { client, state } = page();
-      const truncated = await createBrowserFetchTool(client, state).execute({ url: "/a" });
+      const truncated = await createBrowserFetchTool(client, state).execute({ window: 1, __sessionId: "run", url: "/a" });
       assert.match(truncated.output, /\[truncated\]/);
     } finally {
       m.restore();
@@ -81,7 +80,7 @@ describe("browser_fetch", () => {
     const m2 = mockSidecar({ fetch: { url: "u", status: 204, contentType: "", truncated: false, body: "" } });
     try {
       const { client, state } = page();
-      const empty = await createBrowserFetchTool(client, state).execute({ url: "/a" });
+      const empty = await createBrowserFetchTool(client, state).execute({ window: 1, __sessionId: "run", url: "/a" });
       assert.match(empty.output, /\(empty body\)/);
     } finally {
       m2.restore();
@@ -92,7 +91,7 @@ describe("browser_fetch", () => {
     const m = mockSidecar({ fetch: { url: "u", status: 200, contentType: "", truncated: false, body: "ok" } });
     try {
       const { client, state } = page();
-      await createBrowserFetchTool(client, state).execute({ url: "/api", method: "POST", headers: { "content-type": "application/json", "x-drop": 7 }, body: "{}" });
+      await createBrowserFetchTool(client, state).execute({ window: 1, __sessionId: "run", url: "/api", method: "POST", headers: { "content-type": "application/json", "x-drop": 7 }, body: "{}" });
       const sent = m.calls.find((c) => c.path === "fetch");
       assert.strictEqual(sent?.body.method, "POST");
       assert.strictEqual(sent?.body.body, "{}");
@@ -106,7 +105,7 @@ describe("browser_fetch", () => {
     const m = mockSidecar({});
     try {
       const { client, state } = page();
-      const result = await createBrowserFetchTool(client, state).execute({ url: "" });
+      const result = await createBrowserFetchTool(client, state).execute({ window: 1, __sessionId: "run", url: "" });
       assert.strictEqual(result.success, false);
       assert.match(result.error ?? "", /needs a url/);
       assert.strictEqual(m.calls.length, 0);
@@ -119,7 +118,7 @@ describe("browser_fetch", () => {
     const m = mockSidecar({}, { path: "fetch", status: 500, error: "Failed to fetch" });
     try {
       const { client, state } = page();
-      const result = await createBrowserFetchTool(client, state).execute({ url: "https://other.test/x" });
+      const result = await createBrowserFetchTool(client, state).execute({ window: 1, __sessionId: "run", url: "https://other.test/x" });
       assert.strictEqual(result.success, false);
       assert.match(result.error ?? "", /Failed to fetch/);
     } finally {
@@ -133,7 +132,7 @@ describe("browser_text", () => {
     const m = mockSidecar({ text: { truncated: false, text: "Bonjour\ntout le monde" } });
     try {
       const { client, state } = page();
-      const result = await createBrowserTextTool(client, state).execute({});
+      const result = await createBrowserTextTool(client, state).execute({ window: 1, __sessionId: "run" });
       assert.strictEqual(result.success, true);
       assert.match(result.output, /Bonjour/);
     } finally {
@@ -145,7 +144,7 @@ describe("browser_text", () => {
     const m = mockSidecar({ text: { truncated: false, text: "   " } });
     try {
       const { client, state } = page();
-      const result = await createBrowserTextTool(client, state).execute({});
+      const result = await createBrowserTextTool(client, state).execute({ window: 1, __sessionId: "run" });
       assert.strictEqual(result.success, true);
       assert.match(result.output, /no visible text/);
     } finally {
@@ -157,7 +156,7 @@ describe("browser_text", () => {
     const m = mockSidecar({ text: { truncated: false, text: "a" } });
     try {
       const { client, state } = page();
-      await createBrowserTextTool(client, state).execute({ max_chars: 500 });
+      await createBrowserTextTool(client, state).execute({ window: 1, __sessionId: "run", max_chars: 500 });
       assert.strictEqual(m.calls.find((c) => c.path === "text")?.body.maxChars, 500);
     } finally {
       m.restore();
@@ -170,7 +169,7 @@ describe("browser_reload", () => {
     const m = mockSidecar({ reload: { url: "https://s.test/x", snapshot: { raw: 'button "Reload" [__ref="3"]', refs: [3] } } });
     try {
       const { client, state } = page();
-      const result = await createBrowserReloadTool(client, state).execute({});
+      const result = await createBrowserReloadTool(client, state).execute({ window: 1, __sessionId: "run" });
       assert.strictEqual(result.success, true);
       assert.match(result.output, /Interactive refs: 3/);
       assert.match(result.output, /Reload/);
@@ -183,7 +182,7 @@ describe("browser_reload", () => {
     const m = mockSidecar({}, { path: "reload", status: 500, error: "net::ERR_CONNECTION_RESET" });
     try {
       const { client, state } = page();
-      const result = await createBrowserReloadTool(client, state).execute({});
+      const result = await createBrowserReloadTool(client, state).execute({ window: 1, __sessionId: "run" });
       assert.strictEqual(result.success, false);
       assert.match(result.error ?? "", /ERR_CONNECTION_RESET/);
     } finally {

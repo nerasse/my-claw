@@ -2,7 +2,8 @@ import { test, describe } from "bun:test";
 import assert from "node:assert";
 import { BrowserClient } from "../../src/browser/client.ts";
 import { createBrowserActTool } from "../../src/tools/browser/act.ts";
-import { createBrowserPageState, type BrowserPageState } from "../../src/tools/browser/state.ts";
+import type { BrowserWindows } from "../../src/tools/browser/windows.ts";
+import { oneTab } from "../helpers/browser-windows.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
 interface Call {
@@ -33,11 +34,10 @@ function mockSidecar(
 const SIDECAR = "http://127.0.0.1:9223";
 const SNAPSHOT = { snapshot: { raw: 'button "Submit" [__ref="7"]', refs: [7] } };
 
-function armed(): { client: BrowserClient; state: BrowserPageState; tool: ReturnType<typeof createBrowserActTool> } {
+function armed(): { client: BrowserClient; pages: BrowserWindows; tool: ReturnType<typeof createBrowserActTool> } {
   const client = new BrowserClient(SIDECAR);
-  const state = createBrowserPageState();
-  state.currentPageId = "p1";
-  return { client, state, tool: createBrowserActTool(client, state) };
+  const { pages } = oneTab("p1");
+  return { client, pages, tool: createBrowserActTool(client, pages) };
 }
 
 describe("browser_act", () => {
@@ -45,7 +45,7 @@ describe("browser_act", () => {
     const m = mockSidecar({ snapshot: SNAPSHOT.snapshot });
     try {
       const { tool } = armed();
-      const result = await tool.execute({
+      const result = await tool.execute({ window: 1, __sessionId: "run",
         steps: [
           { action: "type", ref: 1, text: "Yassir" },
           { action: "select_option", ref: 2, value: "1997" },
@@ -69,7 +69,7 @@ describe("browser_act", () => {
     const m = mockSidecar({ snapshot: SNAPSHOT.snapshot }, { path: "click", status: 500, error: "element is not clickable" });
     try {
       const { tool } = armed();
-      const result = await tool.execute({
+      const result = await tool.execute({ window: 1, __sessionId: "run",
         steps: [
           { action: "type", ref: 1, text: "a" },
           { action: "click", ref: 2 },
@@ -90,7 +90,7 @@ describe("browser_act", () => {
     const m = mockSidecar({ snapshot: SNAPSHOT.snapshot }, { path: "select-option", status: 500, error: "Ref 9 not found — it is stale" });
     try {
       const { tool } = armed();
-      const result = await tool.execute({
+      const result = await tool.execute({ window: 1, __sessionId: "run",
         steps: [
           { action: "click", ref: 1 },
           { action: "select_option", ref: 9, value: "x" },
@@ -108,7 +108,7 @@ describe("browser_act", () => {
     const m = mockSidecar({});
     try {
       const { tool } = armed();
-      const result = await tool.execute({ steps: [] });
+      const result = await tool.execute({ window: 1, __sessionId: "run", steps: [] });
       assert.strictEqual(result.success, false);
       assert.match(result.error ?? "", /non-empty steps array/);
       assert.strictEqual(m.calls.length, 0);
@@ -121,7 +121,7 @@ describe("browser_act", () => {
     const m = mockSidecar({ snapshot: SNAPSHOT.snapshot });
     try {
       const { tool } = armed();
-      const result = await tool.execute({
+      const result = await tool.execute({ window: 1, __sessionId: "run",
         steps: [{ action: "click", ref: 1 }, { action: "teleport", ref: 2 }],
       });
       assert.strictEqual(result.success, false);
@@ -137,7 +137,7 @@ describe("browser_act", () => {
     const m = mockSidecar({});
     try {
       const { tool } = armed();
-      const result = await tool.execute({ steps: [{ action: "click" }] });
+      const result = await tool.execute({ window: 1, __sessionId: "run", steps: [{ action: "click" }] });
       assert.strictEqual(result.success, false);
       assert.match(result.error ?? "", /click\) needs a numeric ref/);
       assert.strictEqual(m.calls.length, 0);
@@ -150,7 +150,7 @@ describe("browser_act", () => {
     const m = mockSidecar({ snapshot: SNAPSHOT.snapshot }, { path: "click", status: 500, error: "nope" });
     try {
       const { tool } = armed();
-      const result = await tool.execute({
+      const result = await tool.execute({ window: 1, __sessionId: "run",
         steps: [{ action: "click", ref: 1 }, { action: "press_key", key: "Tab" }],
         stop_on_error: false,
       });
@@ -167,7 +167,7 @@ describe("browser_act", () => {
     const m = mockSidecar({ snapshot: SNAPSHOT.snapshot });
     try {
       const { tool } = armed();
-      await tool.execute({ steps: [{ action: "type", ref: 4, text: "query", submit: true }] });
+      await tool.execute({ window: 1, __sessionId: "run", steps: [{ action: "type", ref: 4, text: "query", submit: true }] });
       const at = m.calls.findIndex((c) => c.path === "press-key");
       assert.ok(at > -1, "Enter was pressed");
       assert.strictEqual(m.calls[at]?.body.key, "Enter");
@@ -180,9 +180,9 @@ describe("browser_act", () => {
   test("a navigate mid-chain moves the page the later steps use", async () => {
     const m = mockSidecar({ navigate: { pageId: "p2", url: "https://two.test", snapshot: { raw: "", refs: [] } }, snapshot: SNAPSHOT.snapshot });
     try {
-      const { tool, state } = armed();
-      await tool.execute({ steps: [{ action: "navigate", url: "https://two.test" }, { action: "click", ref: 1 }] });
-      assert.strictEqual(state.currentPageId, "p2");
+      const { tool, pages } = armed();
+      await tool.execute({ window: 1, __sessionId: "run", steps: [{ action: "navigate", url: "https://two.test" }, { action: "click", ref: 1 }] });
+      assert.strictEqual(await pages.page({ window: 1, __sessionId: "run" }), "p2");
       const click = m.calls.find((c) => c.path === "click");
       assert.strictEqual(click?.body.pageId, "p2", "the click landed on the new page");
     } finally {
@@ -194,7 +194,7 @@ describe("browser_act", () => {
     const m = mockSidecar({}, { path: "snapshot", status: 500, error: "page is gone" });
     try {
       const { tool } = armed();
-      const result = await tool.execute({ steps: [{ action: "click", ref: 1 }] });
+      const result = await tool.execute({ window: 1, __sessionId: "run", steps: [{ action: "click", ref: 1 }] });
       assert.strictEqual(result.success, true);
       assert.match(result.output, /snapshot unavailable: Error: page is gone/);
     } finally {

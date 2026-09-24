@@ -22,7 +22,7 @@ export function createDelegateBrowserTool(
 ): Tool {
   return {
     name: "delegate_browser_task",
-    description: "Delegate a web browsing task to a specialized subagent. Use for multi-step web interactions like filling forms, booking, or searching on specific websites. There is ONE shared browser: tasks run strictly one at a time, and parallel calls are queued — prefer a single well-scoped task (or sequential calls) over a parallel batch. The subagent may take screenshots during the task; any captured images are automatically attached to your response and delivered to the user. Do NOT try to find, read, or re-attach these screenshots, and do NOT reference them with MEDIA: — they are already attached. Just describe the result in your reply.",
+    description: "Delegate a web browsing task to a specialized subagent. Use for multi-step web interactions like filling forms, booking, or searching on specific websites. Tasks run in parallel on one shared browser, each in windows of its own: parallel calls are fine, even on the same site. The subagent may take screenshots during the task; any captured images are automatically attached to your response and delivered to the user. Do NOT try to find, read, or re-attach these screenshots, and do NOT reference them with MEDIA: — they are already attached. Just describe the result in your reply.",
     parameters: {
       type: "object",
       properties: {
@@ -47,9 +47,9 @@ export function createDelegateBrowserTool(
         return { success: false, output: "", error: "Missing parent message context" };
       }
       try {
-        // The open tabs are part of the task, not of a tool the agent would have to think of
-        // calling: the reuse rule in its prompt names this section.
-        const task = `Task: ${instructions}\nStart URL: ${url}\n\n${await session.describeOpenTabs()}`;
+        // The open windows are part of the task, not of a tool the agent would have to think of
+        // calling: the window rules in its prompt name this section.
+        const task = `Task: ${instructions}\nStart URL: ${url}\n\n${await session.describeWindows()}`;
         const { id, result, attachments } = await runner.spawn({
           displayName: "browser",
           type: "browser",

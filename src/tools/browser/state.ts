@@ -1,21 +1,24 @@
 import type { BrowserSnapshot } from "../../browser/types.ts";
 
-// Tracks the current page id across tool calls of ONE subagent run. This used to be a
-// module-level global: concurrent browser subagents clobbered each other's page id and
-// ended up clicking/snapshotting each other's tabs. Each subagent now owns its state.
-export interface BrowserPageState {
-  currentPageId: string | null;
-}
+type ObjectSchema = {
+  type: "object";
+  properties: Record<string, unknown>;
+  required?: string[];
+};
 
-export function createBrowserPageState(): BrowserPageState {
-  return { currentPageId: null };
-}
-
-export function getPageId(state: BrowserPageState): string {
-  if (!state.currentPageId) {
-    throw new Error("No active browser page. Call browser_navigate first.");
-  }
-  return state.currentPageId;
+/**
+ * A browser tool's parameters, plus the window it acts in. Every action names one: that is how two
+ * runs share one browser without ever sharing a tab -- docs/browser-windows.md.
+ */
+export function windowed(schema: ObjectSchema): ObjectSchema {
+  return {
+    type: "object",
+    properties: {
+      window: { type: "number", description: "The window to act in, as browser_list_windows numbers it" },
+      ...schema.properties,
+    },
+    required: ["window", ...(schema.required ?? [])],
+  };
 }
 
 export async function guardUrl(url: string): Promise<void> {

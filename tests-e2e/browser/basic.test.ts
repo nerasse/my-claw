@@ -12,6 +12,8 @@ const E2E_ENABLED = process.env.BROWSER_E2E === "1";
 const SIDECAR_PORT = Number(process.env.BROWSER_E2E_PORT || 9333);
 const SIDECAR_URL = `http://127.0.0.1:${SIDECAR_PORT}`;
 const NODE_BIN = process.env.NODE_BIN || "node";
+// Point it at a throwaway Chromium: this suite opens windows and tabs in whatever browser it drives.
+const CDP_URL = process.env.BROWSER_E2E_CDP_URL || "http://127.0.0.1:9222";
 
 // skipIf (not an early return): a disabled block is reported as skipped, not as
 // passing tests that asserted nothing.
@@ -44,6 +46,16 @@ describe.skipIf(!E2E_ENABLED)("Browser E2E", () => {
         // opens the native OS dialog.
         "/upload": new Response(
           `<!DOCTYPE html><html><body><button id="pick" style="width:200px;height:30px">Add a profile photo</button><input id="file" type="file" style="display:none" /><div id="name">no file</div><script>document.getElementById("pick").onclick=()=>document.getElementById("file").click();document.getElementById("file").onchange=(e)=>{document.getElementById("name").innerText="file: "+((e.target.files[0]||{}).name||"");};</script></body></html>`,
+          { headers: { "Content-Type": "text/html" } },
+        ),
+        "/cookie": new Response(`<!DOCTYPE html><html><body>cookie set</body></html>`, {
+          headers: { "Content-Type": "text/html", "Set-Cookie": "e2e=shared; Path=/" },
+        }),
+        "/whoami": new Response(`<!DOCTYPE html><html><body><script>document.body.innerText="cookie: "+document.cookie</script></body></html>`, {
+          headers: { "Content-Type": "text/html" },
+        }),
+        "/opener": new Response(
+          `<!DOCTYPE html><html><body><a id="blank" href="/button" target="_blank" style="display:block;width:150px;height:28px">Blank</a><button id="pop" style="width:150px;height:28px" onclick="window.open('/form','','width=500,height=400')">Popup</button></body></html>`,
           { headers: { "Content-Type": "text/html" } },
         ),
         "/tall": new Response(
@@ -99,7 +111,7 @@ describe.skipIf(!E2E_ENABLED)("Browser E2E", () => {
     const sidecarPath = join(import.meta.dir, "../../sidecar/server.mjs");
     sidecar = Bun.spawn({
       cmd: [NODE_BIN, sidecarPath],
-      env: { ...process.env, CDP_URL: "http://127.0.0.1:9222", PORT: String(SIDECAR_PORT) },
+      env: { ...process.env, CDP_URL, PORT: String(SIDECAR_PORT) },
       stdout: "inherit",
       stderr: "inherit",
     });
@@ -122,38 +134,90 @@ describe.skipIf(!E2E_ENABLED)("Browser E2E", () => {
     // Tabs are never auto-closed now, so this test tidies up its own tabs (those
     // pointing at the local test server) to avoid leaking them into the shared browser.
     try {
-      const tabs = await client.listTabs();
-      for (let i = tabs.length - 1; i >= 0; i--) {
-        if (tabs[i]?.url.includes("localhost:")) await client.closeTab(i).catch(() => undefined);
+      for (const tab of await client.listTabs()) {
+        if (tab.url.includes("localhost:")) await client.closeTab(tab.id).catch(() => undefined);
       }
     } catch {
       // sidecar may already be gone
     }
-    await client.cleanup().catch(() => undefined);
     sidecar?.kill();
     server.stop();
   });
 
-  test("navigate reuses the same tab when reusePageId is given", async () => {
+  test("navigate reuses the same tab when its pageId is given", async () => {
     const first = await client.navigate(`${baseUrl}/button`, { newTab: true });
-    const reused = await client.navigate(`${baseUrl}/form`, { reusePageId: first.pageId });
+    const reused = await client.navigate(`${baseUrl}/form`, { pageId: first.pageId });
     assert.equal(reused.pageId, first.pageId, "same tab must be reused, not a new one");
     assert.ok(reused.url.includes("/form"));
-    await client.closeTab((await client.listTabs()).findIndex((t) => t.url.includes("/form"))).catch(() => undefined);
+    await client.closeTab(first.pageId).catch(() => undefined);
   });
 
-  test("cleanup leaves tabs open (persistent browser)", async () => {
-    const before = (await client.listTabs()).length;
-    await client.navigate(`${baseUrl}/button`, { newTab: true });
-    await client.cleanup();
+  const windowOf = async (pageId: string): Promise<number | undefined> =>
+    (await client.listWindows()).find((w) => w.tabs.some((t) => t.pageId === pageId))?.windowId;
 
-    // A fresh session on the same sidecar still sees the tab: it was NOT closed.
-    const fresh = new BrowserClient(SIDECAR_URL);
-    const after = await fresh.listTabs();
-    assert.ok(after.length >= before + 1, "cleanup must not close tabs");
-    const idx = after.findIndex((t) => t.url.includes("/button"));
-    if (idx >= 0) await fresh.closeTab(idx).catch(() => undefined);
-    await fresh.cleanup().catch(() => undefined);
+  test("a new window is a real window of its own, listed with its tab, sharing the profile's cookies", async () => {
+    const a = await client.createWindow(`${baseUrl}/cookie`);
+    const b = await client.createWindow(`${baseUrl}/whoami`);
+    try {
+      assert.notStrictEqual(a.windowId, b.windowId);
+      const windows = await client.listWindows();
+      assert.deepStrictEqual(windows.find((w) => w.windowId === a.windowId)?.tabs.map((t) => t.pageId), [a.pageId]);
+      assert.ok((await client.text(b.pageId)).text.includes("cookie: e2e=shared"), "one profile: a login in one window is a login in all");
+    } finally {
+      await client.closeWindow(a.windowId);
+      await client.closeWindow(b.windowId);
+    }
+    assert.strictEqual(await windowOf(a.pageId), undefined, "close-window closes its tabs");
+  });
+
+  test("a new tab opens in the window it is asked for, even when another window has the focus", async () => {
+    const a = await client.createWindow(`${baseUrl}/button`);
+    const b = await client.createWindow(`${baseUrl}/form`);
+    try {
+      await client.focusTab(b.pageId);
+      const tab = await client.navigate(`${baseUrl}/tall`, { windowId: a.windowId, newTab: true });
+      assert.strictEqual(await windowOf(tab.pageId), a.windowId);
+    } finally {
+      await client.closeWindow(a.windowId);
+      await client.closeWindow(b.windowId);
+    }
+  });
+
+  test("a tab or a window a click opens is listed with the page that opened it", async () => {
+    const a = await client.createWindow(`${baseUrl}/opener`);
+    const extra: number[] = [];
+    try {
+      const blank = Number(a.snapshot.raw.match(/\[__ref="(\d+)"\] a "Blank"/)?.[1]);
+      const pop = Number(a.snapshot.raw.match(/\[__ref="(\d+)"\] button "Popup"/)?.[1]);
+      await client.click(a.pageId, blank);
+      await client.click(a.pageId, pop);
+      await Bun.sleep(500);
+      const windows = await client.listWindows();
+      const opened = windows.flatMap((w) => w.tabs.map((t) => ({ ...t, windowId: w.windowId }))).filter((t) => t.openerPageId === a.pageId);
+      const sameWindow = opened.find((t) => t.url.includes("/button"));
+      const popup = opened.find((t) => t.url.includes("/form"));
+      assert.strictEqual(sameWindow?.windowId, a.windowId, "target=_blank stays in the opener's window");
+      assert.ok(popup && popup.windowId !== a.windowId, "a window.open with features is a window of its own");
+      if (popup) extra.push(popup.windowId);
+    } finally {
+      await client.closeWindow(a.windowId);
+      for (const w of extra) await client.closeWindow(w).catch(() => undefined);
+    }
+  });
+
+  test("clicking a file input opens no native dialog, and the upload answers the chooser it opened", async () => {
+    const path = "/tmp/my-claw-e2e-upload3.txt";
+    await Bun.write(path, "payload");
+    const result = await client.navigate(`${baseUrl}/upload`);
+    const button = Number(result.snapshot.raw.match(/\[__ref="(\d+)"\] button/)?.[1]);
+    await client.click(result.pageId, button);
+    const clicked = await client.snapshot(result.pageId);
+    assert.ok(clicked.raw.includes("A file chooser is open on this page"), "the chooser is intercepted and announced");
+    const info = await client.uploadFile(result.pageId, [path]);
+    assert.strictEqual(info.via, "open-chooser");
+    const after = await client.snapshot(result.pageId);
+    assert.ok(after.raw.includes("file: my-claw-e2e-upload3.txt"));
+    assert.ok(!after.raw.includes("A file chooser is open"), "an answered chooser is not announced again");
   });
 
   test("navigate returns a snapshot with injected interactive refs", async () => {
@@ -367,16 +431,13 @@ describe.skipIf(!E2E_ENABLED)("Browser E2E", () => {
     const before = (await client.listTabs()).length;
 
     await client.navigate(`${baseUrl}/button`);
-    await client.navigate(`${baseUrl}/form`);
+    const form = await client.navigate(`${baseUrl}/form`);
     const afterOpen = await client.listTabs();
     assert.strictEqual(afterOpen.length, before + 2, "two tabs were opened");
+    assert.ok(afterOpen.some((t) => t.id === form.pageId), "tabs are listed by their page id");
 
-    // Focus a known tab and confirm the sidecar can address it by index.
-    const formIndex = afterOpen.findIndex((t) => t.url.includes("/form"));
-    const focusedPageId = await client.focusTab(formIndex);
-    assert.ok(focusedPageId);
-
-    await client.closeTab(formIndex);
+    await client.focusTab(form.pageId);
+    await client.closeTab(form.pageId);
     const afterClose = await client.listTabs();
     assert.strictEqual(afterClose.length, before + 1, "one tab was closed");
   });

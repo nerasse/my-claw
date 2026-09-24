@@ -1,6 +1,7 @@
 import { type Tool, type ToolResult, str, strOpt, num, numOpt } from "../types.ts";
 import type { BrowserClient } from "../../browser/client.ts";
-import { type BrowserPageState, getPageId } from "./state.ts";
+import { windowed } from "./state.ts";
+import type { BrowserWindows } from "./windows.ts";
 
 function headersOf(value: unknown): Record<string, string> | undefined {
   if (typeof value !== "object" || value === null) return undefined;
@@ -19,22 +20,22 @@ function headersOf(value: unknown): Record<string, string> | undefined {
  *  JSON its own scripts requested: that JSON is stable across redesigns, already parsed, and
  *  holds the fields the DOM only ever shows a virtualised window of. */
 
-export function createBrowserFindTool(client: BrowserClient, state: BrowserPageState): Tool {
+export function createBrowserFindTool(client: BrowserClient, pages: BrowserWindows): Tool {
   return {
     name: "browser_find",
     description:
       "Search the current page snapshot for a string and get only the matching lines, with their refs. Use this instead of re-snapshotting a long page when you are looking for one control or one value.",
-    parameters: {
+    parameters: windowed({
       type: "object",
       properties: {
         query: { type: "string", description: "Text to look for, case-insensitive" },
       },
       required: ["query"],
-    },
+    }),
     async execute(args): Promise<ToolResult> {
       const query = str(args, "query");
       try {
-        const result = await client.find(getPageId(state), query);
+        const result = await client.find(await pages.page(args), query);
         if (result.matches === 0) {
           return {
             success: true,
@@ -51,22 +52,22 @@ export function createBrowserFindTool(client: BrowserClient, state: BrowserPageS
   };
 }
 
-export function createBrowserNetworkTool(client: BrowserClient, state: BrowserPageState): Tool {
+export function createBrowserNetworkTool(client: BrowserClient, pages: BrowserWindows): Tool {
   return {
     name: "browser_network",
     description:
       "List the JSON responses this page has fetched, newest first, with an id for each. The data behind a dynamic page is almost always here, already structured. Read one with browser_response.",
-    parameters: {
+    parameters: windowed({
       type: "object",
       properties: {
         filter: { type: "string", description: "Only URLs containing this string" },
       },
       required: [],
-    },
+    }),
     async execute(args): Promise<ToolResult> {
       const filter = strOpt(args, "filter");
       try {
-        const result = await client.responses(getPageId(state), filter);
+        const result = await client.responses(await pages.page(args), filter);
         if (result.responses.length === 0) {
           const scope = filter ? ` matching "${filter}"` : "";
           return {
@@ -85,22 +86,22 @@ export function createBrowserNetworkTool(client: BrowserClient, state: BrowserPa
   };
 }
 
-export function createBrowserResponseTool(client: BrowserClient, state: BrowserPageState): Tool {
+export function createBrowserResponseTool(client: BrowserClient, pages: BrowserWindows): Tool {
   return {
     name: "browser_response",
     description:
       "Read the body of one response listed by browser_network, by its id. Prefer this over scraping the rendered DOM when the page has the data as JSON.",
-    parameters: {
+    parameters: windowed({
       type: "object",
       properties: {
         id: { type: "number", description: "Response id from browser_network" },
       },
       required: ["id"],
-    },
+    }),
     async execute(args): Promise<ToolResult> {
       const id = num(args, "id", 0);
       try {
-        const result = await client.responseBody(getPageId(state), id);
+        const result = await client.responseBody(await pages.page(args), id);
         const note = result.truncated ? "\n[body truncated]" : "";
         return { success: true, output: `${result.status} ${result.url}\n${result.body}${note}` };
       } catch (e) {
@@ -110,12 +111,12 @@ export function createBrowserResponseTool(client: BrowserClient, state: BrowserP
   };
 }
 
-export function createBrowserFetchTool(client: BrowserClient, state: BrowserPageState): Tool {
+export function createBrowserFetchTool(client: BrowserClient, pages: BrowserWindows): Tool {
   return {
     name: "browser_fetch",
     description:
       "Issue an HTTP request FROM THE PAGE (same origin, session cookies included) and get the response body. Use it to hit the site's own API directly instead of scraping the rendered DOM: browser_network/browser_response only re-read what the page already fetched, this one asks. A non-2xx status comes back as a result, not an error.",
-    parameters: {
+    parameters: windowed({
       type: "object",
       properties: {
         url: { type: "string", description: "Absolute URL, or a path resolved against the current page" },
@@ -124,7 +125,7 @@ export function createBrowserFetchTool(client: BrowserClient, state: BrowserPage
         body: { type: "string", description: "Optional request body for POST/PUT" },
       },
       required: ["url"],
-    },
+    }),
     async execute(args): Promise<ToolResult> {
       const url = strOpt(args, "url");
       if (!url) return { success: false, output: "", error: "browser_fetch needs a url." };
@@ -132,7 +133,7 @@ export function createBrowserFetchTool(client: BrowserClient, state: BrowserPage
       const body = strOpt(args, "body");
       const headers = headersOf(args["headers"]);
       try {
-        const result = await client.fetchInPage(getPageId(state), {
+        const result = await client.fetchInPage(await pages.page(args), {
           url,
           ...(method ? { method } : {}),
           ...(body ? { body } : {}),
@@ -149,21 +150,21 @@ export function createBrowserFetchTool(client: BrowserClient, state: BrowserPage
   };
 }
 
-export function createBrowserTextTool(client: BrowserClient, state: BrowserPageState): Tool {
+export function createBrowserTextTool(client: BrowserClient, pages: BrowserWindows): Tool {
   return {
     name: "browser_text",
     description:
       "The visible text of the page (and its iframes), which the accessibility tree does not carry. Use it to read prose, values or canvas-backed labels that have no ref, instead of writing JavaScript to reach document.body.innerText.",
-    parameters: {
+    parameters: windowed({
       type: "object",
       properties: {
         max_chars: { type: "number", description: "Cap the returned text (default 20000)" },
       },
-    },
+    }),
     async execute(args): Promise<ToolResult> {
       const maxChars = numOpt(args, "max_chars");
       try {
-        const result = await client.text(getPageId(state), maxChars);
+        const result = await client.text(await pages.page(args), maxChars);
         if (!result.text.trim()) return { success: true, output: "The page has no visible text." };
         return { success: true, output: result.text };
       } catch (e) {

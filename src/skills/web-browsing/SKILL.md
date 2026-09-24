@@ -32,13 +32,11 @@ position when an element has no ref, waiting, dialogs, downloads, PDF export, an
 owner enables them) JavaScript evaluation and raw CDP. So a mechanical blocker is a bug or a
 missing capability to report, never something for you to work around with `bash`.
 
-## One task at a time
+## Parallel tasks
 
-There is ONE shared browser. **Never call `delegate_browser_task` several times in
-parallel** — parallel calls are queued and run one after the other anyway, so a "parallel
-batch" of 3 tasks is just 3x the wall-clock time with none of the benefit. Prefer a single
-well-scoped task ("check these 3 Instagram profiles and report events found on each"), or
-sequential calls if the targets are truly unrelated.
+Tasks run at the same time on the one shared browser, each in windows of its own, even on
+the same site. Split independent targets into parallel calls; keep steps that depend on each
+other (log in, then act) in one task.
 
 ## Writing the instructions
 
@@ -83,16 +81,16 @@ delivered to the user. You do NOT need to (and must NOT):
 Just use the summary returned by `delegate_browser_task` to describe the result in your reply.
 The images are sent for you.
 
-## Tabs are persistent and shared
+## Windows are persistent and shared
 
-There is ONE shared browser (not a throwaway instance per task). Tabs stay OPEN
-between tasks — they are not closed when a task finishes. So the user can ask you to
+There is ONE shared browser (not a throwaway instance per task). Windows and tabs stay
+OPEN between tasks — they are not closed when a task finishes. So the user can ask you to
 continue on a page you opened earlier, and you can.
 
-- The subagent is told which tabs are already open and reuses a relevant one instead of
-  opening duplicates.
+- The subagent is told which windows and tabs are open, and which are free, and reuses a
+  free one on the right site instead of opening duplicates.
 - To answer "how many tabs are open?" or "close/tidy the tabs", delegate it:
-  `delegate_browser_task(url, "List the open tabs; close the ones about X, keep Y")`.
+  `delegate_browser_task(url, "List the open windows; close the ones about X, keep Y")`.
 - Do NOT claim each task is an isolated instance, and do NOT inspect processes with `bash`
   to count tabs — just delegate.
 

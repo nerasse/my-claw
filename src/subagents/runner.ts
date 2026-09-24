@@ -7,7 +7,7 @@ import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import { SkillRegistry } from "../skills/registry.ts";
 import type { AgentRegistry } from "../agents/registry.ts";
-import { enqueueBrowserTask, type BrowserSession } from "../tools/browser/session.ts";
+import type { BrowserSession } from "../tools/browser/session.ts";
 import { AgentBridge } from "../agent/bridge.ts";
 import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback, MediaStoreHook } from "../agent/backend.ts";
 
@@ -844,14 +844,14 @@ export class SubAgentRunner {
     };
     const browser = this.browser;
     if (type !== "browser" || !browser) return execute();
-    // One Chromium: the run takes its turn on it, and leaves it clean for the next one.
-    return enqueueBrowserTask(async () => {
-      try {
-        return await execute();
-      } finally {
-        await browser.cleanup();
-      }
-    });
+    // One Chromium, no turns: the run works in windows of its own and gives them back here,
+    // however it ends -- docs/browser-windows.md.
+    browser.beginRun(session.id, session.meta?.parentSessionId);
+    try {
+      return await execute();
+    } finally {
+      browser.endRun(session.id);
+    }
   }
 
   private createSession(

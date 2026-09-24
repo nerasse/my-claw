@@ -43,22 +43,22 @@ What the door (`src/tools/browser/delegate.ts`) still does around the run:
   the person through the caller's reply as they always did (`SubAgentRunner.spawn` now returns them
   for every sub-agent, and `spawn` passes them on too).
 
-What the runner does for a `browser`-typed run, whoever started it (the door or a `send`): it takes
-the browser queue (`enqueueBrowserTask`, one Chromium, one run at a time) and calls
-`BrowserSession.cleanup()` when the run ends, so the pages it opened are closed and the next run
-starts on a fresh sidecar session.
+What the runner does for a `browser`-typed run, whoever started it (the door or a `send`): nothing
+waits. `BrowserSession.beginRun` gives the run an empty set of windows, the run takes the windows it
+uses, and `BrowserSession.endRun` in the `finally` gives them back however the run ended. Any number
+of runs drive the one Chromium at once, each in windows of its own: `docs/browser-windows.md`.
 
 `spawn` still does not offer `browser` (`AgentRegistry.list`): a spawn of it would skip the framing,
-the queue and the handoff. The delegate is the door; `list_agents`, `/agents`, the roster and the
+the windows and the handoff. The delegate is the door; `list_agents`, `/agents`, the roster and the
 app see the runs it creates like any other one-shot.
 
 ## Layers
 
 | Layer | Files | Role |
 |---|---|---|
-| Sidecar | `sidecar/` (Node) | Owns Playwright. `browser.mjs`: CDP connection, session/page registries, dialog + download policy. `snapshot.mjs`: ref stamping, cross-frame resolution, label overlay. `handlers.mjs`: one function per operation. `server.mjs`: HTTP routing only |
-| Client | `src/browser/client.ts` (Bun) | Thin HTTP client to the sidecar; one sidecar session per run, pages addressed by id, per-endpoint timeouts; `reconfigure()` between runs follows the live config |
-| Tools | `src/tools/browser/` | `state` (page pointer, URL guard, the run's workspace), `navigation` (pages/tabs), `inspect` (find/network/response), `actions` (things done to the page), `lowlevel` (eval/CDP/dialog/download/pdf), `session` (the one browser, the queue, the outcome, `browser_done`), `register` (the toolbox into the registry), `delegate` (`delegate_browser_task`, the door every other agent sees) |
+| Sidecar | `sidecar/` (Node) | Owns Playwright. `browser.mjs`: CDP connection, page registry by CDP target id, the browser CDP session for windows, dialog + download + file chooser policy. `snapshot.mjs`: ref stamping, cross-frame resolution, label overlay. `handlers.mjs`: one function per operation. `server.mjs`: HTTP routing only |
+| Client | `src/browser/client.ts` (Bun) | Thin, stateless HTTP client to the sidecar, one for every run; pages addressed by CDP target id, windows by CDP window id, per-endpoint timeouts; `reconfigure()` at each run start follows the live config |
+| Tools | `src/tools/browser/` | `windows` (which run holds which window, each run's page in it, the cap and the sweep), `state` (the `window` parameter, URL guard, the run's workspace), `navigation` (pages, windows, tabs), `inspect` (find/network/response), `actions` (things done to the page), `lowlevel` (eval/CDP/dialog/download/pdf), `session` (the one browser, run start and end, the outcome, `browser_done`), `register` (the toolbox into the registry), `delegate` (`delegate_browser_task`, the door every other agent sees) |
 | Agent | `src/agents/builtin/browser.md` | The browser agent: `base: browser`, prompt and rules, `maxIterations: 60`. Runs through `src/subagents/runner.ts` and `src/agent/bridge.ts` like every sub-agent |
 
 ## Tools
@@ -87,9 +87,14 @@ app see the runs it creates like any other one-shot.
 | `browser_eval(js)` | **Gated** by `allowEval`. JS in the page, statement body with `return` |
 | `browser_cdp(method, params)` | **Gated** by `allowCdp` + allowlist. Raw CDP on the current page |
 | `browser_screenshot(labels?)` | Screenshot. `labels=true` overlays red ref tags |
-| `browser_list_tabs()` | List open tabs |
-| `browser_focus_tab(index)` | Switch to tab |
-| `browser_close_tab(index)` | Close tab |
+| `browser_list_windows()` | The windows with their tabs, and who is using each (yours, free, another task's) |
+| `browser_new_window(url)` | Open a window, the caller's until its run ends. At most 8 opened by agents |
+| `browser_close_window()` | Close a window and its tabs |
+| `browser_focus_tab(tab)` | Switch to a tab of the window, by its number in it |
+| `browser_close_tab(tab)` | Close a tab of the window, by its number in it |
+
+Every tool but `browser_list_windows`, `browser_new_window` and `browser_done` takes `window`, the
+window to act in: the first one to name a free window takes it for the run (`docs/browser-windows.md`).
 | `browser_done(summary, needs_human?)` | Record the outcome for the caller (summary, human takeover), then the agent answers with the summary |
 | `delegate_browser_task(url, instructions)` | Any other agent → a run of the browser agent. Screenshots auto-attached to response |
 
@@ -101,7 +106,7 @@ Those three are now tools of their own, so `eval` keeps its place as the top run
 
 **Scoping.** The `browser_*` tools are the `browser` tool base (`ToolRegistry.getForAgent("browser")`,
 a closed set: no MCP, no plugin, no skills) and every other base (`main`, `general`, `research`,
-`cron`) is filtered of them: two drivers on one Chromium is the failure the queue exists to prevent.
+`cron`) is filtered of them: a driver outside a browser run would hold no window and be released by nothing.
 `browser_eval` and `browser_cdp` are registered always and taken away per run through
 `ResolvedAgent.deny` when `browser.allowEval` / `browser.allowCdp` are off, so a hot-reload toggles
 them without a restart and a disabled tool is never advertised. Only the agent named `browser` may
@@ -164,11 +169,14 @@ systemd and Playwright only attaches over CDP, never launches it.
   flag back.
 - **SSRF**: `browser_navigate` blocks `localhost`, `127.0.0.1`, `file://`
 - **Dialog auto-dismiss**: `page.on('dialog', d => d.accept())` — no blocking alerts
-- **Serialized tasks**: there is ONE shared Chromium, so `delegate_browser_task` calls are
-  queued (`enqueueBrowserTask`) and run strictly one at a time. Parallel tasks used to
-  clobber each other's tabs/refs and fail with "browser has been closed" / max-steps.
-- **Per-subagent page state**: the "current page" pointer lives in a `BrowserPageState`
-  owned by each subagent, not in a module global — concurrent runs cannot cross-click.
+- **Parallel tasks, one window each**: there is ONE shared Chromium and runs are not queued.
+  Each run holds the windows it works in; a window another run holds is refused with what to do
+  instead, never waited for (`docs/browser-windows.md`). The queue this replaced made four tasks
+  issued together wait up to 12 minutes for their turn.
+- **Per-run page, per window**: the current page of a run is kept per window it holds, in
+  `BrowserWindows`, keyed by the run's session id: concurrent runs cannot cross-click.
+- **No native file dialog**: every page has a permanent `filechooser` listener, so a click on a
+  file input never opens GTK's modal "Open File" window, which would freeze every run at once.
 - **Render settle**: navigate waits `load` (bounded 8s) after `domcontentloaded`, and
   screenshots wait `networkidle` (bounded 3s) + 300ms — SPAs no longer produce blank shots.
 - **Overlay hygiene**: the subagent prompt requires dismissing cookie/consent banners
@@ -237,8 +245,8 @@ Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
 - **One CDP connection**: the sidecar connects to Chromium once and reuses it across every
   task. It never calls `browser.close()` (with `connectOverCDP` that would kill the external
   Chromium); on `disconnected` it resets and reconnects on the next task.
-- **Per-task session**: each task gets a sidecar session; `cleanup` only drops that session's
-  bookkeeping — it **leaves all tabs open** so the browser persists for the next task.
+- **Nothing closes at a run's end**: windows and tabs stay open so the browser persists for the
+  next task; past 12 tabs, idle agent tabs nobody holds are swept when a tab is about to open.
   Screenshots are not deleted here (sent as attachments, then removed post-send by
   `cleanupGeneratedTempFiles`, which sweeps `/tmp/browser-*` and `/tmp/tts-*`).
 - **Self-healing**: if Chromium or the sidecar restarts (e.g. `myclaw update`), the next task
@@ -324,12 +332,13 @@ src/browser/
   client.ts          # Bun: HTTP client to the sidecar (pages = opaque ids), per-endpoint timeouts
   types.ts           # Snapshot, Attachment, TabInfo, Result, ActionInfo, viewport, low-level results
 src/tools/browser/
-  state.ts           # Page pointer, URL guard, snapshot formatting
-  navigation.ts      # navigate/snapshot/screenshot + tabs
+  windows.ts         # Which run holds which window, each run's page in it, the cap and the sweep
+  state.ts           # The `window` parameter, URL guard, snapshot formatting
+  navigation.ts      # navigate/snapshot/screenshot, windows, tabs
   actions.ts         # click, type, select_option, upload, key, scroll, hover, drag, click_at, wait_for
   inspect.ts         # find, network, response
   lowlevel.ts        # eval, cdp (allowlist), dialog, download, pdf
-  session.ts         # the one browser (client + page pointer), the one-at-a-time queue, the run's outcome, browser_done
+  session.ts         # the one browser (client + windows), run start and end, the run's outcome, browser_done
   register.ts        # the toolbox into the process registry (browser base)
   delegate.ts        # delegate_browser_task: frames the task, runs the browser agent as a sub-agent, reads the outcome back
   index.ts           # Public surface

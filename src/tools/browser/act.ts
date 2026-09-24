@@ -2,7 +2,8 @@ import { access } from "node:fs/promises";
 import { type Tool, type ToolResult } from "../types.ts";
 import type { BrowserClient } from "../../browser/client.ts";
 import { resolveWorkspacePath } from "../workspace.ts";
-import { type BrowserPageState, getPageId, guardUrl, formatSnapshot, workspaceOf } from "./state.ts";
+import { formatSnapshot, guardUrl, windowed, workspaceOf } from "./state.ts";
+import type { BrowserWindows } from "./windows.ts";
 
 /** One action in a chain. The set mirrors the single-action tools, minus the ones that only
  *  read (`snapshot`, `find`, `network`, `screenshot`) and the tabs, which are not steps. */
@@ -106,8 +107,15 @@ function parseStep(raw: unknown, index: number): Step {
 
 /** Each ref is resolved by the sidecar at the moment its step runs, so a page that renumbered
  *  its elements mid-chain is followed, not mis-addressed. */
-async function runStep(client: BrowserClient, state: BrowserPageState, step: Step, workspaceDir?: string): Promise<void> {
-  const pageId = getPageId(state);
+async function runStep(
+  client: BrowserClient,
+  pages: BrowserWindows,
+  args: Record<string, unknown>,
+  windowId: number,
+  step: Step,
+  workspaceDir?: string,
+): Promise<void> {
+  const pageId = await pages.page(args);
   switch (step.action) {
     case "click":
       await client.click(pageId, step.ref);
@@ -140,8 +148,8 @@ async function runStep(client: BrowserClient, state: BrowserPageState, step: Ste
     }
     case "navigate": {
       await guardUrl(step.url);
-      const result = await client.navigate(step.url, { reusePageId: state.currentPageId ?? undefined });
-      state.currentPageId = result.pageId;
+      const result = await client.navigate(step.url, { pageId, windowId });
+      pages.moved(args, windowId, result.pageId, false);
       return;
     }
   }
@@ -153,12 +161,12 @@ async function runStep(client: BrowserClient, state: BrowserPageState, step: Ste
  * runs the same calls back to back and answers with ONE snapshot at the end. It stops at the
  * first step that fails, because a blind chain that keeps going acts on the wrong page.
  */
-export function createBrowserActTool(client: BrowserClient, state: BrowserPageState, workspaceDir?: string): Tool {
+export function createBrowserActTool(client: BrowserClient, pages: BrowserWindows, workspaceDir?: string): Tool {
   return {
     name: "browser_act",
     description:
       "Run a sequence of actions in ONE step, and get a single page snapshot at the end instead of one per action. Use it for a safe, known sequence (fill a form field by field, then submit) where you do not need to look between the actions. Each step's ref is re-resolved when it runs, and the chain stops at the first failure. Same actions as the single tools: click, type (submit:true presses Enter on the field), select_option, press_key, scroll, upload_file, wait_for, navigate.",
-    parameters: {
+    parameters: windowed({
       type: "object",
       properties: {
         steps: {
@@ -172,7 +180,7 @@ export function createBrowserActTool(client: BrowserClient, state: BrowserPageSt
         },
       },
       required: ["steps"],
-    },
+    }),
     async execute(args): Promise<ToolResult> {
       const raw = args["steps"];
       if (!Array.isArray(raw) || raw.length === 0) {
@@ -185,6 +193,13 @@ export function createBrowserActTool(client: BrowserClient, state: BrowserPageSt
         return { success: false, output: "", error: `Invalid chain, nothing was executed: ${String(e)}` };
       }
 
+      let windowId: number;
+      try {
+        windowId = await pages.window(args);
+      } catch (e) {
+        return { success: false, output: "", error: `Nothing was executed: ${String(e)}` };
+      }
+
       const stopOnError = args["stop_on_error"] !== false;
       const signal = args["__signal"] instanceof AbortSignal ? args["__signal"] : undefined;
       const dir = workspaceOf(args, workspaceDir);
@@ -195,7 +210,7 @@ export function createBrowserActTool(client: BrowserClient, state: BrowserPageSt
         if (signal?.aborted) break;
         const step = steps[i]!;
         try {
-          await runStep(client, state, step, dir);
+          await runStep(client, pages, args, windowId, step, dir);
           done.push({ index: i, action: step.action, ok: true });
         } catch (e) {
           done.push({ index: i, action: step.action, ok: false, error: String(e) });
@@ -206,7 +221,7 @@ export function createBrowserActTool(client: BrowserClient, state: BrowserPageSt
 
       let snapshotText: string;
       try {
-        snapshotText = formatSnapshot(await client.snapshot(getPageId(state)));
+        snapshotText = formatSnapshot(await client.snapshot(await pages.page(args)));
       } catch (e) {
         snapshotText = `(snapshot unavailable: ${String(e)})`;
       }
