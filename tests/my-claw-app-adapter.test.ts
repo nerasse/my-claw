@@ -19,6 +19,7 @@ import type { ToolApprovalRequest, UnifiedMessage } from "../src/channels/types.
 import { createJob, loadJobs, removeJob, saveJobs, updateJob } from "../src/cron/store.ts";
 
 import { mockFetch } from "./helpers/mock-fetch.ts";
+import { buildZip, part } from "./helpers/zip.ts";
 import { resetAppUpdateCache } from "../src/channels/my-claw-app/updates.ts";
 import { questionManager } from "../src/questions/manager.ts";
 import { sessionLogOf } from "../src/sessions/log-access.ts";
@@ -777,6 +778,53 @@ describe("MyClawAppAdapter", () => {
 
     assert.equal(served.headers.get("content-type"), "text/html");
     assert.equal(served.headers.get("content-security-policy"), "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:");
+  });
+
+  /**
+   * What the app cannot decode travels as something it can: the text of a document, the entry
+   * list of an archive. Both are read out of the bytes, and the file itself is untouched --
+   * Download still hands over the document.
+   */
+  test("a document is served as its text, and an archive as its entry list", async () => {
+    const tmpDir = join(MY_CLAW_DIR, "tmp");
+    await mkdir(tmpDir, { recursive: true });
+    const stamp = Date.now();
+    const docx = join(tmpDir, `letter-${stamp}.docx`);
+    await writeFile(
+      docx,
+      buildZip([
+        part("word/document.xml", "<w:document><w:body><w:p><w:r><w:t>Bonjour le monde</w:t></w:r></w:p></w:body></w:document>"),
+      ]),
+    );
+    const archive = join(tmpDir, `bundle-${stamp}.zip`);
+    await writeFile(archive, buildZip([part("readme.txt", "hello"), part("src/main.ts", "code")]));
+
+    await adapter.send(DEVICE_ID, {
+      text: "docs",
+      attachments: [
+        { type: "file", path: docx },
+        { type: "file", path: archive },
+      ],
+    });
+    const frame = (await nextFrame(client)) as { attachments: Array<{ id: string; filename: string; kind?: string }> };
+    const docxId = frame.attachments.find((a) => a.filename.endsWith(".docx"))!.id;
+    const zipId = frame.attachments.find((a) => a.filename.endsWith(".zip"))!.id;
+    assert.equal(frame.attachments.find((a) => a.filename.endsWith(".docx"))!.kind, "office");
+    assert.equal(frame.attachments.find((a) => a.filename.endsWith(".zip"))!.kind, "archive");
+
+    const text = await fetch(`http://127.0.0.1:${adapter.port}/media/${docxId}?device=${DEVICE_ID}&token=${TOKEN}&view=text`);
+    assert.equal(text.status, 200);
+    assert.equal(text.headers.get("content-type"), "text/plain; charset=utf-8");
+    assert.equal(await text.text(), "Bonjour le monde");
+
+    const listing = await fetch(`http://127.0.0.1:${adapter.port}/media/${zipId}?device=${DEVICE_ID}&token=${TOKEN}&view=list`);
+    assert.equal(listing.status, 200);
+    const payload = (await listing.json()) as { entries: Array<{ name: string }> };
+    assert.deepEqual(payload.entries.map((entry) => entry.name), ["readme.txt", "src/main.ts"]);
+
+    // The file itself is what a plain fetch still hands over: the conversion never rewrites it.
+    const original = await fetch(`http://127.0.0.1:${adapter.port}/media/${docxId}?device=${DEVICE_ID}&token=${TOKEN}`);
+    assert.equal(original.headers.get("content-type"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
   });
 
   test("a video serves a generated preview frame under ?thumb=1", async () => {

@@ -2,6 +2,8 @@ import { mkdir, stat } from "node:fs/promises";
 import { dirname, extname } from "node:path";
 import { extractVideoThumbnail } from "../../media/video.ts";
 import { kindByName, mimeTypeForName, type FileKind } from "../../utils/file-kind.ts";
+import { listZipEntries } from "../../utils/archive.ts";
+import { extractOfficeText } from "../../utils/office-text.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import { thumbPathFor, type SessionFileStore } from "./files.ts";
 import { sanitizeThreadId } from "./sessions.ts";
@@ -57,7 +59,7 @@ export async function serveSkill(d: MyClawAppFilesDeps, source: string, name: st
   return new Response(content, { headers: { "Content-Type": "text/markdown; charset=utf-8" } });
 }
 
-export async function serveMedia(d: MyClawAppFilesDeps, id: string, owner: string | undefined, thumb: boolean, rangeHeader: string | null = null): Promise<Response> {
+export async function serveMedia(d: MyClawAppFilesDeps, id: string, owner: string | undefined, thumb: boolean, rangeHeader: string | null = null, view: string | null = null): Promise<Response> {
   let path: string | undefined;
   let mimeType = "application/octet-stream";
   let filename: string | undefined;
@@ -75,6 +77,30 @@ export async function serveMedia(d: MyClawAppFilesDeps, id: string, owner: strin
     }
   }
   if (!path) return new Response("Not Found", { status: 404 });
+
+  // What the app cannot decode travels as something it can: the text of a document, or the entry
+  // list of an archive (docs/file-preview.md). Both are read out of the bytes here, and neither
+  // ever rewrites the file -- Download still hands over the document itself.
+  if (view === "text") {
+    const text = await extractOfficeText(path);
+    if (text === null) return new Response("Not Found", { status: 404 });
+    return new Response(text, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "X-Content-Type-Options": "nosniff",
+        "Access-Control-Allow-Origin": "*",
+      },
+    });
+  }
+
+  if (view === "list") {
+    const entries = await listZipEntries(path);
+    if (entries.length === 0) return new Response("Not Found", { status: 404 });
+    return Response.json(
+      { entries: entries.slice(0, ARCHIVE_ENTRY_LIMIT).map((entry) => ({ name: entry.name, size: entry.size })) },
+      { headers: { "Access-Control-Allow-Origin": "*", "X-Content-Type-Options": "nosniff" } },
+    );
+  }
 
   if (thumb) {
     if (!mimeType.startsWith("video/")) return new Response("Not Found", { status: 404 });
@@ -125,6 +151,9 @@ export async function serveMedia(d: MyClawAppFilesDeps, id: string, owner: strin
   headers["Content-Length"] = String(size);
   return new Response(file, { headers });
 }
+
+/** A listing is for reading, not for walking a filesystem: past this the answer is a download. */
+const ARCHIVE_ENTRY_LIMIT = 2000;
 
 /** The families the app shows rather than saves. Everything else is a download. */
 const RENDERED_INLINE = /^(image|audio|video|text)\//;

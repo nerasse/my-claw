@@ -1182,7 +1182,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       const id = url.pathname.slice("/media/".length);
       const deviceId = this.authenticate(req, url);
       if (!deviceId) return new Response("Unauthorized", { status: 401 });
-      return serveMedia(this.filesDeps(), id, ownerFor(this.config, deviceId), url.searchParams.get("thumb") === "1", req.headers.get("range"));
+      return serveMedia(this.filesDeps(), id, ownerFor(this.config, deviceId), url.searchParams.get("thumb") === "1", req.headers.get("range"), url.searchParams.get("view"));
     }
 
     if (url.pathname === "/skills") {
