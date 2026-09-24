@@ -720,6 +720,65 @@ describe("MyClawAppAdapter", () => {
     assert.equal(frame.attachments[0]!.filename, namedName);
   });
 
+  /**
+   * What a reader shows travels inline, so a WebView or an `<img>` gets a document and not a
+   * download; what it saves stays an attachment. Range is what lets pdf.js and a video seek, and
+   * it is what a resumed download needs -- docs/file-preview.md.
+   */
+  test("what renders is served inline and answers Range; what is saved stays an attachment", async () => {
+    const tmpDir = join(MY_CLAW_DIR, "tmp");
+    await mkdir(tmpDir, { recursive: true });
+    const stamp = Date.now();
+    const shot = join(tmpDir, `inline-${stamp}.png`);
+    const bundle = join(tmpDir, `bundle-${stamp}.zip`);
+    await writeFile(shot, "png-bytes");
+    await writeFile(bundle, "zip-bytes");
+
+    await adapter.send(DEVICE_ID, {
+      text: "here",
+      attachments: [
+        { type: "image", path: shot },
+        { type: "file", path: bundle },
+      ],
+    });
+    const frame = (await nextFrame(client)) as { attachments: Array<{ id: string; filename: string }> };
+    const imageId = frame.attachments.find((a) => a.filename.endsWith(".png"))!.id;
+    const zipId = frame.attachments.find((a) => a.filename.endsWith(".zip"))!.id;
+
+    const image = await fetch(`http://127.0.0.1:${adapter.port}/media/${imageId}?device=${DEVICE_ID}&token=${TOKEN}`);
+    assert.equal(image.status, 200);
+    assert.ok(image.headers.get("content-disposition")?.startsWith("inline;"), "a picture is shown, not saved");
+    assert.equal(image.headers.get("accept-ranges"), "bytes");
+    assert.equal(image.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(image.headers.get("content-length"), "9");
+
+    const saved = await fetch(`http://127.0.0.1:${adapter.port}/media/${zipId}?device=${DEVICE_ID}&token=${TOKEN}`);
+    assert.equal(saved.status, 200);
+    assert.ok(saved.headers.get("content-disposition")?.startsWith("attachment;"), "an archive is saved, not shown");
+
+    const partial = await fetch(`http://127.0.0.1:${adapter.port}/media/${imageId}?device=${DEVICE_ID}&token=${TOKEN}`, {
+      headers: { range: "bytes=0-3" },
+    });
+    assert.equal(partial.status, 206);
+    assert.equal(partial.headers.get("content-range"), "bytes 0-3/9");
+    assert.equal(partial.headers.get("content-length"), "4");
+    assert.equal(await partial.text(), "png-");
+  });
+
+  test("a page served inline cannot run anything, whatever opens it", async () => {
+    const tmpDir = join(MY_CLAW_DIR, "tmp");
+    await mkdir(tmpDir, { recursive: true });
+    const page = join(tmpDir, `page-${Date.now()}.html`);
+    await writeFile(page, "<!doctype html><html><body><script>alert(1)</script>hi</body></html>");
+
+    await adapter.send(DEVICE_ID, { text: "page", attachments: [{ type: "file", path: page }] });
+    const frame = (await nextFrame(client)) as { attachments: Array<{ id: string }> };
+    const served = await fetch(`http://127.0.0.1:${adapter.port}/media/${frame.attachments[0]!.id}?device=${DEVICE_ID}&token=${TOKEN}`);
+
+    assert.equal(served.headers.get("content-type"), "text/html");
+    assert.equal(served.headers.get("content-security-policy"), "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:");
+  });
+
   test("a video serves a generated preview frame under ?thumb=1", async () => {
     const tmpDir = join(MY_CLAW_DIR, "tmp");
     await mkdir(tmpDir, { recursive: true });

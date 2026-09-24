@@ -541,6 +541,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       const stored = att.id ? await this.files.readById(owner, att.id) : null;
       const meta = stored
         ? registerMedia(this.filesDeps(), stored.path, {
+            kind: stored.file.kind,
             type: stored.file.type,
             mimeType: stored.file.mimeType,
             filename: stored.file.filename,
@@ -581,8 +582,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         await myClawAppLog("warn", "large attachment from agent", { owner, threadId, filename: file.filename, size: file.sizeBytes, threshold: this.files.warnSizeBytes });
       }
       return registerMedia(this.filesDeps(), filePathFor(owner, threadId, file.storedName), {
-        // The bytes are in the store: its type is what the device must render, not a claim made
-        // before the copy (the extension table decides, whatever the caller guessed).
+        // The bytes are in the store: its verdict is what the device must render, not a claim made
+        // before the copy (the store reads the content, whatever the caller guessed).
+        kind: file.kind,
         type: file.type !== "file" ? file.type : (meta.type ?? "file"),
         mimeType: file.mimeType,
         filename: file.filename,
@@ -1165,7 +1167,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       const id = url.pathname.slice("/media/".length);
       const deviceId = this.authenticate(req, url);
       if (!deviceId) return new Response("Unauthorized", { status: 401 });
-      return serveMedia(this.filesDeps(), id, ownerFor(this.config, deviceId), url.searchParams.get("thumb") === "1");
+      return serveMedia(this.filesDeps(), id, ownerFor(this.config, deviceId), url.searchParams.get("thumb") === "1", req.headers.get("range"));
     }
 
     if (url.pathname === "/skills") {

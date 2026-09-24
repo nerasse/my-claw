@@ -1,4 +1,4 @@
-import { copyFile, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, open, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createReadStream, createWriteStream } from "node:fs";
 import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
@@ -6,6 +6,14 @@ import { pipeline } from "node:stream/promises";
 import { basename, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { MY_CLAW_DIR, type MyClawAppChannelConfig } from "../../core/config.ts";
+import {
+  kindByName,
+  mediaTypeForKind,
+  mimeTypeForName,
+  sniffKind,
+  type FileKind,
+  type FileKindVerdict,
+} from "../../utils/file-kind.ts";
 
 /**
  * Attachments live next to their session, one directory per thread:
@@ -24,6 +32,9 @@ export interface SessionFile {
   filename: string;
   /** Entry on disk, `<id>__<filename>`. Only the store should need it. */
   storedName: string;
+  /** What the file is, finely -- docs/file-preview.md. The reader picks its viewer from this. */
+  kind: FileKind;
+  /** The coarse word the wire protocol carries, derived from `kind` (mediaTypeForKind). */
   type: "image" | "audio" | "video" | "file";
   mimeType: string;
   sizeBytes: number;
@@ -54,11 +65,36 @@ async function hashFile(path: string): Promise<string> {
   return hash.digest("hex");
 }
 
-const TYPE_BY_MIME: Record<string, SessionFile["type"]> = {
-  "image/": "image",
-  "audio/": "audio",
-  "video/": "video",
-};
+/** Enough of a file to recognise it: every signature lives in the first few hundred bytes. */
+const SAMPLE_BYTES = 4096;
+
+async function readSample(path: string): Promise<Uint8Array> {
+  try {
+    const handle = await open(path, "r");
+    try {
+      const buffer = new Uint8Array(SAMPLE_BYTES);
+      const { bytesRead } = await handle.read(buffer, 0, SAMPLE_BYTES, 0);
+      return buffer.subarray(0, bytesRead);
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return new Uint8Array();
+  }
+}
+
+/**
+ * The name first, the bytes only when the name settles nothing (`kindByName` returning nothing is
+ * exactly that, docs/file-preview.md). The name is right for everything ordinary and costs no
+ * read; a file with no extension, or one nobody knows, is the only one opened to be classified.
+ * Reading every write instead would reclassify a text file named `.png` -- and would also cost a
+ * read on every attachment, for a case that does not happen.
+ */
+async function verdictOf(filename: string, path: string): Promise<FileKindVerdict> {
+  const byName = kindByName(filename);
+  if (byName !== undefined) return { kind: byName, mimeType: mimeTypeForName(filename) };
+  return sniffKind(await readSample(path), filename);
+}
 
 export function filesDirFor(owner: string, threadId: string): string {
   return join(MY_CLAW_DIR, "files", "my-claw-app", owner, threadId);
@@ -80,26 +116,6 @@ export function filesRootForOwner(owner: string): string {
  */
 export function thumbPathFor(owner: string, id: string): string {
   return join(MY_CLAW_DIR, "files", "my-claw-app", ".thumbs", owner, `${id}.jpg`);
-}
-
-/**
- * The only extension table of the channel. An entry missing here does not degrade to a generic
- * download: `typeFor` reads the type back out of the mime, so an unlisted audio extension is
- * stored as type "file", and the STT pass -- which only looks at type "audio" -- never sees it.
- * A voice note would reach the agent as a path instead of as words.
- */
-export const MIME_BY_EXTENSION: Record<string, string> = {
-  jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif", heic: "image/heic",
-  pdf: "application/pdf", txt: "text/plain", md: "text/markdown", json: "application/json", csv: "text/csv",
-  mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm",
-  mp3: "audio/mpeg", m4a: "audio/mp4", wav: "audio/wav", ogg: "audio/ogg",
-  oga: "audio/ogg", opus: "audio/ogg", aac: "audio/aac", flac: "audio/flac", amr: "audio/amr", weba: "audio/webm",
-  zip: "application/zip", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-};
-
-export function mimeTypeFor(filename: string): string {
-  return MIME_BY_EXTENSION[extname(filename).slice(1).toLowerCase()] ?? "application/octet-stream";
 }
 
 export class SessionFileStore {
@@ -127,14 +143,17 @@ export class SessionFileStore {
         if (!parsed) continue;
         const { id, filename } = parsed;
         try {
-          const info = await stat(join(threadDir, name));
+          const path = join(threadDir, name);
+          const info = await stat(path);
           if (!info.isFile()) continue;
+          const verdict = await verdictOf(filename, path);
           files.push({
             id,
             filename,
             storedName: name,
-            type: typeFor(filename),
-            mimeType: mimeTypeFor(filename),
+            kind: verdict.kind,
+            type: mediaTypeForKind(verdict.kind),
+            mimeType: verdict.mimeType,
             sizeBytes: info.size,
             ts: info.mtime.toISOString(),
           });
@@ -229,12 +248,14 @@ export class SessionFileStore {
       if (!body) throw new Error("empty upload body");
       await pipeline(Readable.fromWeb(body), createWriteStream(target));
       const info = await stat(target);
+      const verdict = await verdictOf(safeName, target);
       return {
         id,
         filename: safeName,
         storedName,
-        type: typeFor(safeName),
-        mimeType: mimeTypeFor(safeName),
+        kind: verdict.kind,
+        type: mediaTypeForKind(verdict.kind),
+        mimeType: verdict.mimeType,
         sizeBytes: info.size,
         ts: new Date().toISOString(),
       };
@@ -257,13 +278,16 @@ export class SessionFileStore {
     const dir = filesDirFor(owner, threadId);
     await mkdir(dir, { recursive: true });
     const storedName = `${id}__${safeName}`;
-    await write(filePathFor(owner, threadId, storedName));
+    const target = filePathFor(owner, threadId, storedName);
+    await write(target);
+    const verdict = await verdictOf(safeName, target);
     return {
       id,
       filename: safeName,
       storedName,
-      type: typeFor(safeName),
-      mimeType: mimeTypeFor(safeName),
+      kind: verdict.kind,
+      type: mediaTypeForKind(verdict.kind),
+      mimeType: verdict.mimeType,
       sizeBytes,
       ts: new Date().toISOString(),
     };
@@ -302,12 +326,4 @@ export class SessionFileStore {
     }
     return null;
   }
-}
-
-function typeFor(filename: string): SessionFile["type"] {
-  const mime = mimeTypeFor(filename);
-  for (const [prefix, type] of Object.entries(TYPE_BY_MIME)) {
-    if (mime.startsWith(prefix)) return type;
-  }
-  return "file";
 }

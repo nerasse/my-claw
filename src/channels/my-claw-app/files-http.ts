@@ -1,8 +1,9 @@
 import { mkdir, stat } from "node:fs/promises";
 import { dirname, extname } from "node:path";
 import { extractVideoThumbnail } from "../../media/video.ts";
+import { kindByName, mimeTypeForName, type FileKind } from "../../utils/file-kind.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
-import { MIME_BY_EXTENSION, thumbPathFor, type SessionFileStore } from "./files.ts";
+import { thumbPathFor, type SessionFileStore } from "./files.ts";
 import { sanitizeThreadId } from "./sessions.ts";
 import type { MyClawAppSkillsController } from "./controllers.ts";
 import type { MyClawAppAttachmentMeta, MyClawAppAttachmentRef } from "./types.ts";
@@ -56,7 +57,7 @@ export async function serveSkill(d: MyClawAppFilesDeps, source: string, name: st
   return new Response(content, { headers: { "Content-Type": "text/markdown; charset=utf-8" } });
 }
 
-export async function serveMedia(d: MyClawAppFilesDeps, id: string, owner: string | undefined, thumb: boolean): Promise<Response> {
+export async function serveMedia(d: MyClawAppFilesDeps, id: string, owner: string | undefined, thumb: boolean, rangeHeader: string | null = null): Promise<Response> {
   let path: string | undefined;
   let mimeType = "application/octet-stream";
   let filename: string | undefined;
@@ -89,11 +90,63 @@ export async function serveMedia(d: MyClawAppFilesDeps, id: string, owner: strin
 
   const headers: Record<string, string> = {
     "Content-Type": mimeType,
+    "X-Content-Type-Options": "nosniff",
+    "Accept-Ranges": "bytes",
   };
+  // What the app renders travels inline, so a WebView or an <img> reads a document and not a
+  // download; what it saves -- an archive, an Office file, an unknown binary -- stays an
+  // attachment (docs/file-preview.md). A page or a drawing served inline must run nothing,
+  // whatever opens it: the app's own preview turns JavaScript off, this is the fence for every
+  // other reader of the same URL.
+  const rendered = RENDERED_INLINE.test(mimeType);
   if (filename) {
-    headers["Content-Disposition"] = `attachment; filename="${filename.replace(/["\\]/g, "")}"`;
+    headers["Content-Disposition"] = `${rendered ? "inline" : "attachment"}; filename="${filename.replace(/["\\]/g, "")}"`;
+  } else if (rendered) {
+    headers["Content-Disposition"] = "inline";
   }
-  return new Response(Bun.file(path), { headers });
+  if (mimeType === "text/html" || mimeType === "image/svg+xml" || mimeType === "application/xhtml+xml") {
+    headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:";
+  }
+
+  const file = Bun.file(path);
+  const size = file.size;
+  const range = parseRange(rangeHeader, size);
+  if (range) {
+    headers["Content-Range"] = `bytes ${range.start}-${range.end}/${size}`;
+    headers["Content-Length"] = String(range.end - range.start + 1);
+    return new Response(file.slice(range.start, range.end + 1), { status: 206, headers });
+  }
+  headers["Content-Length"] = String(size);
+  return new Response(file, { headers });
+}
+
+/** The families the app shows rather than saves. Everything else is a download. */
+const RENDERED_INLINE = /^(image|audio|video|text)\//;
+
+/**
+ * A single byte range, which is all pdf.js and a video seek ever ask for. A malformed or
+ * unsatisfiable one answers the whole file, which is what every reader tolerates.
+ */
+function parseRange(header: string | null, size: number): { start: number; end: number } | null {
+  if (!header) return null;
+  const match = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!match) return null;
+  const rawStart = match[1] ?? "";
+  const rawEnd = match[2] ?? "";
+  if (rawStart === "" && rawEnd === "") return null;
+  let start: number;
+  let end: number;
+  if (rawStart === "") {
+    const suffix = Number(rawEnd);
+    if (!Number.isInteger(suffix) || suffix <= 0) return null;
+    start = Math.max(0, size - suffix);
+    end = size - 1;
+  } else {
+    start = Number(rawStart);
+    end = rawEnd === "" ? size - 1 : Number(rawEnd);
+  }
+  if (!Number.isInteger(start) || !Number.isInteger(end) || start > end || start >= size) return null;
+  return { start, end: Math.min(end, size - 1) };
 }
 
 export function thumbnailFor(d: MyClawAppFilesDeps, owner: string, id: string, videoPath: string): Promise<string | undefined> {
@@ -155,7 +208,7 @@ export async function handleUpload(d: MyClawAppFilesDeps, owner: string, req: Re
   try {
     const file = await d.files.saveStream(owner, safeThread, filename, req.body);
     await myClawAppLog("info", "file uploaded", { owner, threadId: safeThread, id: file.id, size: file.sizeBytes, type });
-    return Response.json({ id: file.id, type: type || file.type, filename: file.filename, mimeType: file.mimeType, sizeBytes: file.sizeBytes });
+    return Response.json({ id: file.id, kind: file.kind, type: type || file.type, filename: file.filename, mimeType: file.mimeType, sizeBytes: file.sizeBytes });
   } catch (err) {
     const reason = err instanceof Error ? err.message : "Upload failed";
     await myClawAppLog("warn", "upload failed", { owner, threadId: safeThread, filename, reason });
@@ -168,7 +221,7 @@ export async function handleUpload(d: MyClawAppFilesDeps, owner: string, req: Re
  * into the store (agent attachments), so the look-aside cache and the persistent file agree:
  * an evicted cache entry still resolves through the store, and files.delete matches.
  */
-export function registerMedia(d: MyClawAppFilesDeps, path: string, meta: { type: "image" | "audio" | "video" | "file" } & Omit<MediaEntry, "path" | "type">, id: string = crypto.randomUUID()): MyClawAppAttachmentMeta | undefined {
+export function registerMedia(d: MyClawAppFilesDeps, path: string, meta: { type: "image" | "audio" | "video" | "file"; kind?: FileKind } & Omit<MediaEntry, "path" | "type">, id: string = crypto.randomUUID()): MyClawAppAttachmentMeta | undefined {
   d.media.set(id, { path, ...meta });
   d.mediaOrder.push(id);
   if (d.mediaOrder.length > MAX_MEDIA_ENTRIES) {
@@ -177,6 +230,7 @@ export function registerMedia(d: MyClawAppFilesDeps, path: string, meta: { type:
   }
   return {
     id,
+    kind: meta.kind ?? kindByName(path),
     type: meta.type,
     mimeType: meta.mimeType ?? mimeTypeForPath(path),
     filename: meta.filename,
@@ -188,7 +242,7 @@ export function registerMedia(d: MyClawAppFilesDeps, path: string, meta: { type:
   };
 }
 
-/** Serving reuses the store's table: two lists drifted apart once, and .opus was the casualty. */
+/** Serving reuses the one table: two lists drifted apart once, and .opus was the casualty. */
 function mimeTypeForPath(path: string): string | undefined {
-  return MIME_BY_EXTENSION[extname(path).slice(1).toLowerCase()];
+  return mimeTypeForName(path);
 }

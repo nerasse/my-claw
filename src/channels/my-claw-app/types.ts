@@ -1,8 +1,11 @@
 /** Wire protocol for the my-claw-app channel. Spec: docs/my-claw-app-channel.md. */
 import type { ChatLocation, ChatLocationInput } from "../types.ts";
+import type { FileKind } from "../../utils/file-kind.ts";
 
 export interface MyClawAppAttachmentMeta {
   id: string;
+  /** What the file is, finely, so the reader picks its viewer -- docs/file-preview.md. */
+  kind?: FileKind;
   type: "image" | "audio" | "video" | "file";
   mimeType?: string;
   filename?: string;

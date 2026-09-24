@@ -2,7 +2,7 @@ import { stat } from "node:fs/promises";
 import { basename, extname, join, resolve } from "node:path";
 import { briefError } from "../../utils/errors.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
-import { MIME_BY_EXTENSION } from "./files.ts";
+import { mimeTypeForName } from "../../utils/file-kind.ts";
 import { writeStreamAtomically } from "./fs-ops.ts";
 
 /**
@@ -59,7 +59,7 @@ export async function fsDownload(raw: string | null): Promise<Response> {
   const name = basename(path);
   return new Response(Bun.file(path), {
     headers: {
-      "Content-Type": MIME_BY_EXTENSION[extname(name).slice(1).toLowerCase()] ?? "application/octet-stream",
+      "Content-Type": mimeTypeForName(name),
       "Content-Length": String(st.size),
       "Content-Disposition": contentDisposition(name),
       "Cache-Control": "no-store",

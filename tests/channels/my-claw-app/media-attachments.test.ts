@@ -21,6 +21,7 @@ const file = (id: string, filename: string, sizeBytes = 10): SessionFile => ({
   id,
   filename,
   storedName: `${id}__${filename}`,
+  kind: "audio",
   type: "audio",
   mimeType: "audio/mpeg",
   sizeBytes,

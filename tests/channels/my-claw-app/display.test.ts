@@ -312,7 +312,7 @@ describe("displayOf: user turns read back the storage form", () => {
   test("a stored voice note loses its [Audio] marker and keeps its words on the attachment", () => {
     const entries = chain([user(`regarde ca\n\n[Audio]: "rappelle-moi demain"\n\n[Attachments]\n- audio: /home/neras/.my-claw/files/my-claw-app/neras/thr/0f23058a-8e46-4d55-8967-fd6e5953f6aa__voice.m4a (12710 ms)`, { transcripts: { "/home/neras/.my-claw/files/my-claw-app/neras/thr/0f23058a-8e46-4d55-8967-fd6e5953f6aa__voice.m4a": "rappelle-moi demain" } })]);
     const drawn = show(entries, 1000, [
-      { id: "0f23058a-8e46-4d55-8967-fd6e5953f6aa", filename: "voice.m4a", storedName: "0f23058a-8e46-4d55-8967-fd6e5953f6aa__voice.m4a", type: "audio", mimeType: "audio/mp4", sizeBytes: 4, ts: "2026-01-01" },
+      { id: "0f23058a-8e46-4d55-8967-fd6e5953f6aa", filename: "voice.m4a", storedName: "0f23058a-8e46-4d55-8967-fd6e5953f6aa__voice.m4a", kind: "audio", type: "audio", mimeType: "audio/mp4", sizeBytes: 4, ts: "2026-01-01" },
     ]);
     const userEntry = drawn[0]!;
     expect(userEntry.role).toBe("user");
