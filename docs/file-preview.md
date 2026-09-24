@@ -79,15 +79,18 @@ Two facts worth writing down, because both are counter-intuitive and both are te
 |---|---|---|
 | image, svg | image viewer | RN `Image`, `react-native-svg` |
 | markdown | document reader | `DocumentMarkdown` (exists) |
-| code, text, json, csv | CodeMirror, read-only | the editor page (exists) |
+| code, text, json | CodeMirror, read-only | the editor page (exists) |
+| csv | table | `core/delimited.ts` + `CsvTable` |
 | pdf | pdf.js | `react-native-webview` + `assets/pdfviewer` |
 | html | sandboxed WebView, no JS | `react-native-webview`, the server's CSP |
-| archive | entry list | server |
-| office | extracted text | server |
+| archive | entry list | server (`utils/archive.ts`) |
+| office | extracted text | server (`utils/office-text.ts`) |
 | audio, video | the existing players | exists |
 | binary | download card, with the reason | exists |
 
-A CSV reads in the code reader for now; a table of its own is the next refinement.
+A picture the phone cannot decode (bmp, tiff, ico) is converted to PNG on the way out, by the
+ffmpeg already here for the video thumbnails. The store keeps the original. Nothing here needed a
+new dependency: a ZIP is a central directory plus the runtime's inflate, and the rest is ffmpeg.
 
 The file browser already proves the CodeMirror path: it opens any text file, coloured by extension
 (`LANGUAGE_BY_EXTENSION`, ~40 languages). Reusing that page in read-only mode is what closes most of
@@ -115,9 +118,9 @@ the gap, and it adds no new technology.
   - The app routes on it (`viewerFor`), and every viewer exists: markdown rendered, plain text as
     it is, every code language coloured in a read-only CodeMirror, an SVG drawn natively, a PDF
     through a bundled pdf.js page, and a web page as a sandboxed preview with no scripts.
-- **Next, in order**:
-  1. Server conversions the app cannot do: an exotic image (bmp, tiff, ico) to png, an Office
-     document to text, a ZIP to its entry list. No new npm dependency is needed for any of them:
-     ffmpeg is already here (it makes the video thumbnails), and a ZIP is a central directory plus
-     inflate, which the runtime has.
-  2. A CSV earns its table.
+  - The conversions the app cannot do, all server-side and all without a new dependency: an
+    exotic image to PNG (ffmpeg), a document to its text, an archive to its entry list
+    (`utils/archive.ts` reads a ZIP's own directory, `utils/office-text.ts` walks its XML parts).
+  - A CSV opens as a table.
+- **Left to do**: nothing this document promised. What a future pass could add: a source/preview
+  toggle for HTML, a text selection in the PDF, an AudioViewer where a voice note is not one.
