@@ -150,8 +150,9 @@ copy the run attached behind it falls away. Nothing else falls with it: the brow
 tool produced beside a PDF the agent delivered are not that PDF's duplicate and ride the same
 bubble as before (thread 3fad6e60 carries those by the handful).
 
-The live frame needs no such filter: it trusts explicit `MEDIA:` refs over programmatic
-attachments outright (`MyClawAppAdapter.send`). That coarser rule also drops a run's *unnamed*
-media whenever the answer names any, which the log keeps: a turn that delivered a PDF while its
-tools captured screenshots shows the captures only on a reload. Worth aligning one day; the
-display is the side that showed a duplicate, and this is what fixes it.
+The live frame applies the same rule, through the same verdict (`MyClawAppAdapter.send` asks
+`duplicatesAmong` and skips an attached copy whose content a ref already drew). It used to be
+coarser: any `MEDIA:` ref dropped every programme attachment, so a turn that delivered a PDF while
+its tools captured screenshots showed the captures only on a reload -- the live bubble and its
+replay disagreed on the same turn. Both sides now show the turn's refs, then the run's media minus
+the contents those refs already named.

@@ -504,8 +504,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
     const mediaRefs = extractMediaRefs(message.text);
     const text = stripMediaRefs(message.text);
-    // The agent's explicit MEDIA: refs are trusted over programmatic attachments.
-    const attachmentsToSend = mediaRefs.length > 0 ? [] : (message.attachments ?? []);
+    // What the run attached rides the same bubble as the refs its answer wrote -- the very order
+    // the log replays in (`displayOf`: a turn's own refs, then what its tools attached). The two
+    // used to be exclusive here: any `MEDIA:` ref dropped every programme attachment, which kept a
+    // delivered PDF's screenshots off the live bubble and showed them only on reload (thread
+    // 3fad6e60). What must not survive is the duplicate: the store keeps one copy per named file,
+    // so a voice note its answer delivers arrives as two copies of one content (2026-09-23).
+    const attachmentsToSend = message.attachments ?? [];
 
     if (!text && !mediaRefs.length && !attachmentsToSend.length) return;
 
@@ -517,11 +522,19 @@ export class MyClawAppAdapter implements ChannelAdapter {
       const meta = await this.mediaForPath(owner, threadId, ref.path, { type: mediaTypeForPath(ref.path), audioAsVoice: ref.audioAsVoice, durationMs: ref.durationMs });
       if (meta) attachments.push(meta);
     }
+    // The store's verdict on which ids are one content, so a copy the answer already named is not
+    // drawn again behind it. Asked only when both sides have something to compare.
+    const duplicates =
+      mediaRefs.length > 0 && attachmentsToSend.length > 0
+        ? await this.files.duplicatesAmong(owner, threadId)
+        : new Map<string, string>();
+    const drawn = new Set(attachments.map((meta) => duplicates.get(meta.id) ?? meta.id));
     for (const att of attachmentsToSend) {
       if (!att.path) {
         await myClawAppLog("debug", "attachment without local path skipped", { type: att.type });
         continue;
       }
+      if (att.id && drawn.has(duplicates.get(att.id) ?? att.id)) continue;
       // A run that stored its bytes when it ended named the copy here: registering it is all that
       // is left. The device then fetches exactly what the run's end marker names, and the picture
       // is not stored twice (2026-09-15).
@@ -538,7 +551,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
             audioAsVoice: att.audioAsVoice,
           }, stored.file.id)
         : await this.mediaForPath(owner, threadId, att.path, { type: att.type, mimeType: att.mimeType, filename: att.filename, sizeBytes: att.sizeBytes, width: att.width, height: att.height, durationMs: att.durationMs, audioAsVoice: att.audioAsVoice });
-      if (meta) attachments.push(meta);
+      if (meta) {
+        attachments.push(meta);
+        drawn.add(duplicates.get(meta.id) ?? meta.id);
+      }
     }
 
     const frame: MyClawAppChatMessage = {

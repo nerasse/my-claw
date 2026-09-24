@@ -4,8 +4,9 @@
  * The bubble of 2026-09-23 (the starter-kit thread): a voice note the run's TTS produced and the
  * answer delivered with `MEDIA:` reached a reopened thread as two refs and two copies, and
  * `displayOf` concatenates a turn's own refs with what its tools attached -- so the bubble drew
- * two players for the same voice, one with its duration and one without. The live frame never had
- * this (the adapter trusts explicit refs over programmatic attachments); the log did.
+ * two players for the same voice, one with its duration and one without. The live frame carries
+ * the refs and the run's media side by side now too (the adapter asks the same store), so this
+ * resolver and that path are one rule: the refs' names, then what nothing named yet.
  *
  * What must survive the fix is what is *not* a duplicate: the screenshots a tool produced beside a
  * PDF the agent delivered ride the same bubble and belong to the owner (measured on thread

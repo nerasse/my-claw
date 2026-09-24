@@ -1,7 +1,7 @@
 import { test, afterEach, beforeEach, describe, spyOn } from "bun:test";
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
-import { filesRootForOwner } from "../src/channels/my-claw-app/files.ts";
+import { filesRootForOwner, SessionFileStore } from "../src/channels/my-claw-app/files.ts";
 import { mkdir, writeFile, unlink, readdir, readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -654,6 +654,70 @@ describe("MyClawAppAdapter", () => {
 
     const missing = await fetch(`http://127.0.0.1:${adapter.port}/media/nope?device=${DEVICE_ID}&token=${TOKEN}`);
     assert.equal(missing.status, 404);
+  });
+
+  /**
+   * What one turn shows: the refs its answer wrote, then the media its tools attached. The two
+   * used to be exclusive -- any `MEDIA:` ref dropped every programme attachment -- which kept a
+   * delivered file's screenshots off the live bubble and showed them only on reload. Measured on
+   * thread 3fad6e60: four turns delivered a PDF or a letter by `MEDIA:` while their tools attached
+   * 3 to 6 browser captures the prose never named.
+   */
+  test("a run's media the answer does not name rides the bubble with it, as a replay shows it", async () => {
+    const tmpDir = join(MY_CLAW_DIR, "tmp");
+    await mkdir(tmpDir, { recursive: true });
+    const stamp = Date.now();
+    const letterName = `letter-${stamp}.pdf`;
+    const shotOne = `shot-one-${stamp}.png`;
+    const shotTwo = `shot-two-${stamp}.png`;
+    const letter = join(tmpDir, letterName);
+    await writeFile(letter, "pdf-bytes");
+    await writeFile(join(tmpDir, shotOne), "shot-one-bytes");
+    await writeFile(join(tmpDir, shotTwo), "shot-two-bytes");
+
+    await adapter.send(DEVICE_ID, {
+      text: `MEDIA:${letter} voila la lettre`,
+      attachments: [
+        { type: "image", path: join(tmpDir, shotOne) },
+        { type: "image", path: join(tmpDir, shotTwo) },
+      ],
+    });
+
+    const frame = (await nextFrame(client)) as { text: string; attachments: Array<{ filename: string }> };
+    assert.equal(frame.text, "voila la lettre");
+    assert.deepEqual(frame.attachments.map((a) => a.filename).sort(), [letterName, shotOne, shotTwo].sort());
+  });
+
+  /**
+   * The duplicate, the other way round: a voice note the run's TTS produced and the answer
+   * delivered after copying it out of the tool's scratch dir are one content under two names, and
+   * the store keeps both copies by contract. The bubble must draw the voice once -- the name the
+   * answer gave it -- live exactly as on reload (2026-09-23, the starter-kit thread).
+   */
+  test("a copy the answer already named is not drawn again behind it", async () => {
+    const bytes = new TextEncoder().encode("le son de la reponse");
+    const tmpDir = join(MY_CLAW_DIR, "tmp");
+    await mkdir(tmpDir, { recursive: true });
+    const stamp = Date.now();
+    // What the answer names: the copy the agent made to deliver the voice.
+    const namedName = `reponse-vocale-${stamp}.mp3`;
+    const namedPath = join(tmpDir, namedName);
+    await writeFile(namedPath, bytes);
+    // What the run attached: the tool's own copy of the same voice, stored and paired by the end
+    // marker -- the id is what the frame carries.
+    const runCopyPath = join(tmpDir, `output-${stamp}.mp3`);
+    await writeFile(runCopyPath, bytes);
+    const files = new SessionFileStore();
+    const runCopy = await files.saveFromPath(DEVICE_ID, "default", runCopyPath);
+
+    await adapter.send(DEVICE_ID, {
+      text: `MEDIA:${namedPath} voila`,
+      attachments: [{ type: "audio", path: runCopyPath, id: runCopy.id }],
+    });
+
+    const frame = (await nextFrame(client)) as { attachments: Array<{ id: string; filename: string }> };
+    assert.equal(frame.attachments.length, 1);
+    assert.equal(frame.attachments[0]!.filename, namedName);
   });
 
   test("a video serves a generated preview frame under ?thumb=1", async () => {
