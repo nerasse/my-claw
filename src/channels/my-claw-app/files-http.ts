@@ -92,6 +92,12 @@ export async function serveMedia(d: MyClawAppFilesDeps, id: string, owner: strin
     "Content-Type": mimeType,
     "X-Content-Type-Options": "nosniff",
     "Accept-Ranges": "bytes",
+    // The PDF page is loaded by the app's WebView from a local asset, so its origin is `null` and
+    // its own fetch of the document is cross-origin (docs/file-preview.md). The credential is the
+    // token in the query either way, so opening the read to any origin grants nothing: without it
+    // a page that does not know the URL gets the same 401 it would from any other caller.
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
   };
   // What the app renders travels inline, so a WebView or an <img> reads a document and not a
   // download; what it saves -- an archive, an Office file, an unknown binary -- stays an

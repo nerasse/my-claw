@@ -1163,6 +1163,21 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return handleUpload(this.filesDeps(), ownerFor(this.config, deviceId), req);
     }
 
+    // The PDF page fetches its document itself, and a Range header is not CORS-safelisted: the
+    // browser asks first. Answered before authentication on purpose -- a preflight carries no
+    // credential, and the GET it precedes is refused the same way any other unauthenticated one is.
+    if (url.pathname.startsWith("/media/") && req.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Headers": "Range",
+          "Access-Control-Max-Age": "600",
+        },
+      });
+    }
+
     if (url.pathname.startsWith("/media/")) {
       const id = url.pathname.slice("/media/".length);
       const deviceId = this.authenticate(req, url);
