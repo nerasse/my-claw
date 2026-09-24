@@ -29,8 +29,13 @@ const OUTAGE_TEXT = /ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|UND_ERR_|fetch 
  * 403 is where this predicate used to stop reading. The message is the evidence and the status is
  * an accident of the edge, so the message wins. Measured 2026-09-20: a ten-minute run with
  * twenty-six tool calls died on it while a healthy second route candidate sat unused.
+ *
+ * "Upstream request failed" is not evidence: it is the envelope OpenCode Go puts around every
+ * upstream answer, a malformed request's included. The bracketed type inside it is what tells.
+ * Read as an outage, the envelope retried a 422 naming the field we sent wrong for three and a half
+ * minutes, on the same upstream, before the run died of it anyway (measured 2026-09-24).
  */
-const UPSTREAM_FAULT = /\[server_error\]|upstream response was not valid json|upstream request failed|bad gateway|invalid upstream|upstream (?:error|failure|timeout)/i;
+const UPSTREAM_FAULT = /\[server_error\]|upstream response was not valid json|bad gateway|invalid upstream|upstream (?:error|failure|timeout)/i;
 
 /**
  * The body saying the provider will not carry this content, whatever we do to the request.

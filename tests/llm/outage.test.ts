@@ -45,3 +45,28 @@ test("a moderation word in a 5xx is still just an outage", () => {
   assert.equal(isPolicyRefusal(failure(502, "upstream said: content filter unavailable")), false);
   assert.equal(isProviderOutage(failure(502, "upstream said: content filter unavailable")), true);
 });
+
+test("the gateway's envelope says nothing about whose fault it is: the bracketed type does", () => {
+  // OpenCode Go wraps every upstream answer in "Upstream request failed: [<type>] ...". The
+  // envelope alone used to read as an outage, so a 422 naming the field we sent wrong was retried
+  // for 30 s, 60 s and 120 s on the same upstream and the run died anyway (measured 2026-09-24).
+  const ours = failure(
+    422,
+    "LLM stream request failed: HTTP 422 — Upstream request failed: [invalid_request_error] Input should be a valid string",
+  );
+  assert.equal(isOutageClass(ours), false);
+  assert.equal(isProviderOutage(ours), false);
+
+  // The same envelope around the far side's faults, as the logs have them, still reroutes.
+  const invalidJson = "Error from provider (Console Go): Upstream request failed: [server_error] Upstream response was not valid JSON";
+  assert.equal(isProviderOutage(failure(400, `LLM request failed: HTTP 400 — ${invalidJson}`)), true);
+  assert.equal(isProviderOutage(failure(403, `LLM request failed: HTTP 403 — ${invalidJson}`)), true);
+  assert.equal(
+    isProviderOutage(failure(402, "LLM request failed: HTTP 402 — Error from provider (Console Go): Upstream request failed: [insufficient_user_quota] You're out of credits")),
+    true,
+  );
+  assert.equal(
+    isProviderOutage(failure(400, "Error from provider (Console Go): Upstream request failed: [invalid_request_error] Content Exists Risk")),
+    true,
+  );
+});
