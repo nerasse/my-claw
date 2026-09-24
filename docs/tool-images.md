@@ -12,20 +12,46 @@ deposits them.*
 
 ## The rule
 
-One rule, no provider table: **a tool's images ride its own tool message**, as content parts
+**In the conversation, a tool's images belong to its own tool message**, as content parts
 (`text` + `image_url`) beside the output text. Nothing is added to the conversation's message
-roles, so the entry-to-message pairing the prompt depends on is untouched. Each transport maps the
-parts to its native shape:
+roles, so the entry-to-message pairing the prompt depends on is untouched. Each transport then puts
+them where its protocol allows images:
 
 | transport | shape |
 |---|---|
 | Anthropic | blocks *inside* the call's `tool_result` (`content: [text, image]`) |
 | Codex / Responses | `function_call_output.output` items (`input_text`, `input_image`) |
-| OpenAI-compatible | the parts array on `role: "tool"` (the same shape user messages use) |
+| OpenAI-compatible | the tool message keeps its text; the turn's images follow its last tool result in one `user` message (`liftToolImages`, `provider.ts`) |
 
-An endpoint that refuses parts on a tool message is a measured quirk to handle when it is
-measured, not a table to guess at (the codebase already papers over per-model refusals in
-`provider.ts`, for cache parts).
+## Why chat completions lifts them
+
+*2026-09-24.* The first version sent the parts array on `role: "tool"` for chat completions too,
+on the belief that those endpoints take the user-message part shape there. They do not have to:
+the spec types a tool message's content as `string | Array<ChatCompletionContentPartText>`
+(`openai-node`, `ChatCompletionToolMessageParam`), text only. opencode says the same in its code
+("OpenAI-compatible APIs only support string content in tool results") and lifts media into a user
+message for exactly those providers.
+
+What made it look fine: a tolerant upstream accepts the parts anyway. OpenCode Go routes each
+session (`x-opencode-session`) to one upstream of `deepseek-v4.1-flash`, and some are strict. Same
+request, only the session header changed:
+
+| session | image on `tool` | text on `tool` | image on `user` |
+|---|---|---|---|
+| browser sub-agent `f233eb3d` | 422 `messages.3.tool.content.str: Input should be a valid string` | 200 | 200, reads the image |
+| thread `5b626af1` | 422, same | 200 | 200 |
+| a fresh session | 200, reads the image | 200 | 200 |
+
+Because the session keeps its upstream, every retry failed identically and the two runs died (one
+after 62 tool calls). The 422 was also retried as an outage for three and a half minutes, because
+`outage.ts` read OpenCode's envelope "Upstream request failed" as the far side's fault; the
+bracketed type inside it (`[invalid_request_error]`) is what tells, and now decides.
+
+The lift is derived from the history on every call, so a given history always sends the same
+prefix and the prompt cache holds. The tool results stay contiguous after the assistant that asked
+for them (every endpoint checks that), and each lifted image is preceded by the call it came from
+(`read (call tc1):`), so the model can tell whose picture it is. A user message carrying images is
+the one shape every vision endpoint takes, so there is no per-provider table to keep.
 
 ## `read` reads pictures
 

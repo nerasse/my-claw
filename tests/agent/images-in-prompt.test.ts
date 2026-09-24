@@ -177,10 +177,11 @@ describe("images in the prompt", () => {
  * A tool's own images (2026-09-22: the owner found that an agent cannot load a picture into its
  * context -- an attachment only arrived when a human sent it). Two paths must agree: the live
  * message the settle loop pushes, and the prompt a later run rebuilds from the log entry. Both put
- * the image on the tool's own message, matched by call id.
+ * the image on the tool's own message, matched by call id; on chat completions, whose tool message
+ * takes text only, the wire then carries it in the user turn right after (docs/tool-images.md).
  */
 describe("images a tool read", () => {
-  test("a tool's image rides its tool message, live and rebuilt", async () => {
+  test("a tool's image reaches the model after its tool result, live and rebuilt", async () => {
     runRegistry.clear();
     const setup = await setupSessionLog(SESSION_ID);
     const reg = noopTools();
@@ -212,24 +213,26 @@ describe("images a tool read", () => {
       const r1 = await router.route(message("m1", "look at the screen"));
       expect(r1?.text).toBe("seen");
 
-      const toolContentOf = (body: Body): string | Part[] => {
-        const tool = body.messages.find((m) => m.role === "tool");
-        expect(tool).toBeTruthy();
-        return tool!.content;
+      // The tool message answers its call in text; the picture follows it, in the next message.
+      const afterTool = (body: Body): { tool: string | Part[]; next?: { role: string; content: string | Part[] } } => {
+        const at = body.messages.findIndex((m) => m.role === "tool");
+        expect(at).toBeGreaterThan(0);
+        return { tool: body.messages[at]!.content, next: body.messages[at + 1] };
       };
-      const live = toolContentOf(bodies[1]!);
-      expect(Array.isArray(live)).toBe(true);
-      // The text keeps its place on the message, the picture beside it.
-      expect((live as Part[]).some((p) => p.type === "text" && (p.text ?? "").includes("Image read successfully"))).toBe(true);
-      const liveImages = imageParts(live);
+      const live = afterTool(bodies[1]!);
+      expect(String(live.tool)).toContain("Image read successfully");
+      expect(imageParts(live.tool).length).toBe(0);
+      expect(live.next?.role).toBe("user");
+      const liveImages = imageParts(live.next!.content as Part[]);
       expect(liveImages.length).toBe(1);
       expect(liveImages[0]?.image_url?.url.startsWith("data:image/png;base64,")).toBe(true);
 
       // A later run rebuilds the prompt from the log: the entry still carries the image, and the
-      // pairing is by call id, so the tool message gets it back.
+      // pairing is by call id, so it follows the same tool result again.
       await router.route(message("m2", "and now?"));
-      const rebuilt = toolContentOf(bodies[2]!);
-      expect(imageParts(rebuilt).length).toBe(1);
+      const rebuilt = afterTool(bodies[2]!);
+      expect(rebuilt.next?.role).toBe("user");
+      expect(imageParts(rebuilt.next!.content as Part[]).length).toBe(1);
     } finally {
       mock.restore();
       runRegistry.clear();

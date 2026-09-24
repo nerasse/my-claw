@@ -187,8 +187,9 @@ export type ChatMessage =
       providerMeta?: ProviderMeta;
     }
   // Content parts on a tool message are how a tool's images reach the model (a `read` of a PNG,
-  // a screenshot): OpenAI-compatible endpoints take the same text/image_url part shape as user
-  // messages, Anthropic folds them inside the tool_result block. A string stays the common case.
+  // a screenshot). Each transport places them where its protocol allows: inside the tool_result
+  // block on Anthropic, in function_call_output on Responses, and in a user turn after the tool
+  // results on chat completions, whose tool message takes text only (`liftToolImages`).
   | { role: "tool"; tool_call_id: string; content: string | ChatMessageContent[] };
 
 export interface LlmUsage {
@@ -369,6 +370,47 @@ const EPHEMERAL_CACHE = { type: "ephemeral" as const };
 type WireMessage = Record<string, unknown>;
 
 /**
+ * A tool's images, moved to where chat completions can carry them -- docs/tool-images.md.
+ *
+ * The spec types a tool message's content as `string | Array<text part>`, never an image. A
+ * tolerant upstream takes one anyway, a strict one answers 422: OpenCode Go routes each session to
+ * one upstream, so the same model worked in one conversation and failed every retry in another
+ * (`messages.3.tool.content.str: Input should be a valid string`, measured 2026-09-24).
+ *
+ * So each tool message keeps its text, and the images of one turn follow its last tool result in a
+ * single user turn, naming the call each came from. The tool results stay contiguous after the
+ * assistant that asked for them, which is what every endpoint checks. Derived from the history on
+ * every call, so the same history always sends the same prefix and the prompt cache holds.
+ */
+function liftToolImages(messages: ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  const names = new Map<string, string>();
+  let lifted: ChatMessageContent[] = [];
+  const flush = (): void => {
+    if (lifted.length === 0) return;
+    out.push({ role: "user", content: [{ type: "text", text: "Images returned by the tool calls above:" }, ...lifted] });
+    lifted = [];
+  };
+  for (const msg of messages) {
+    if (msg.role !== "tool") flush();
+    if (msg.role === "assistant") for (const tc of msg.tool_calls ?? []) names.set(tc.id, tc.function.name);
+    if (msg.role !== "tool" || typeof msg.content === "string") {
+      out.push(msg);
+      continue;
+    }
+    const images = msg.content.filter((part) => part.type === "image_url");
+    const text = msg.content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n\n");
+    if (images.length > 0) {
+      const name = names.get(msg.tool_call_id) ?? "tool";
+      lifted.push({ type: "text", text: `${name} (call ${msg.tool_call_id}):` }, ...images);
+    }
+    out.push({ role: "tool", tool_call_id: msg.tool_call_id, content: text || "The image is in the next message." });
+  }
+  flush();
+  return out;
+}
+
+/**
  * Flatten a ChatMessage to the wire object, preserving role-specific fields.
  *
  * Field by field, never a spread: `ChatMessage` carries `providerMeta`, which is internal state and
@@ -462,13 +504,14 @@ function buildRequestBody(
   stream?: boolean,
   cacheHints: boolean = config.promptCache === true,
 ): Record<string, unknown> {
-const body: Record<string, unknown> = {
-  model: config.apiModel ?? config.model,
+  const sent = liftToolImages(messages);
+  const body: Record<string, unknown> = {
+    model: config.apiModel ?? config.model,
     // Always through `toWireMessage`, cache or no cache. Handing the raw `ChatMessage[]` to
     // JSON.stringify was putting `providerMeta` on the wire whenever prompt caching was off.
     messages: cacheHints
-      ? applyPromptCache(messages, chatIdentity(config))
-      : messages.map((m) => toWireMessage(m, chatIdentity(config))),
+      ? applyPromptCache(sent, chatIdentity(config))
+      : sent.map((m) => toWireMessage(m, chatIdentity(config))),
   };
 
   // An OpenAI-family engine ignores the `cache_control` breakpoints above and keys its implicit
