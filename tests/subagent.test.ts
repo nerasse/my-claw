@@ -821,3 +821,44 @@ test("a run is filed as its payer's folder, re-stamped at every drive", async ()
     fetchMock.restore();
   }
 });
+
+test("one-shot runs have no concurrency cap: a fourth and a fifth start while three are in flight", async () => {
+  // The owner wants the model free to fan out (2026-09-23): the old cap of 3 answered the fourth
+  // spawn "run limit reached" while the first three were still waiting on their model.
+  const registry = new ToolRegistry();
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+
+  let inFlight = 0;
+  let arrived: () => void = () => {};
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const fetchMock = mockFetch(async () => {
+    inFlight += 1;
+    arrived();
+    await gate;
+    return new Response(JSON.stringify({ choices: [{ message: { content: "done" } }] }), { status: 200 }) as never;
+  });
+  const waitInFlight = async (n: number): Promise<void> => {
+    while (inFlight < n) await new Promise<void>((resolve) => { arrived = resolve; });
+  };
+  const spawnOne = async (name: string) => {
+    const existing = await reg.listExistingIds();
+    return runner.spawn({ displayName: name, type: "research", mode: "run", task: "explore", parentMessage: createMessage(), existingIds: existing, generateId: (n, e) => reg.generateId(n, e), parentSessionId: "matrix/room/!caller:test", visibility: "global" });
+  };
+
+  try {
+    const first = [spawnOne("fan-a"), spawnOne("fan-b"), spawnOne("fan-c")];
+    await waitInFlight(3);
+    const late = [spawnOne("fan-d"), spawnOne("fan-e")];
+    // A refused spawn answers at once and never reaches the model: settle on whichever comes first
+    // so the assertion names the refusal instead of timing out.
+    await Promise.race([waitInFlight(5), Promise.all(late).then(() => undefined)]);
+    release();
+    const results = await Promise.all([...first, ...late]);
+    assert.deepEqual(results.map((r) => r.result), ["done", "done", "done", "done", "done"]);
+  } finally {
+    release();
+    fetchMock.restore();
+  }
+});

@@ -36,7 +36,8 @@ spawn, and `executeRunWithSession` hard-codes `depth = 1`.
 
 ### `spawn(name, type, mode, task, workspaceDir?)`
 
-- `mode: "run"` — one-shot. Max 3 concurrent runs globally. The session is **kept** after the run:
+- `mode: "run"` — one-shot. No cap on concurrent runs: the owner removed it (2026-09-23) so
+  the model can fan out freely; depth stays structural (sub-agents have no `spawn`). The session is **kept** after the run:
   the app lists it as a temporary sub-agent and can open and drive it like any other. It is always
   `private`, so only the conversation that asked for it sees it, and it dies with that conversation
   (the app's delete cascades, see `docs/subagent-navigation.md`).

@@ -46,9 +46,6 @@ export interface SubAgentStream {
   reasoning?: ReasoningSink;
 }
 
-const MAX_CONCURRENT_RUNS = 3;
-const MAX_DEPTH = 2;
-
 /**
  * The images of a send, in the shape the log stores and the prompt reads back.
  *
@@ -105,7 +102,6 @@ interface ActiveSubAgentRun {
 }
 
 export class SubAgentRunner {
-  private activeCount = 0;
   private activeRuns = new Map<string, Set<ActiveSubAgentRun>>();
 
   private sessionManager?: SessionManager;
@@ -231,10 +227,6 @@ export class SubAgentRunner {
     await writeMeta(id, metaOf(session, (await sessionLogOf(id)).leaf()));
   }
 
-  canSpawn(depth: number): boolean {
-    return this.activeCount < MAX_CONCURRENT_RUNS && depth < MAX_DEPTH;
-  }
-
   /**
    * The caller's identity for the visibility rule, read from its own session rather than passed
    * in. Every entry point takes a session id and nothing else, so resolving here is what keeps a
@@ -295,9 +287,6 @@ export class SubAgentRunner {
     if ("error" in resolved) return { id: "", result: `Error: ${resolved.error}`, attachments: [] };
 
     if (mode === "run") {
-      if (!this.canSpawn(0)) {
-        return { id: "", result: `Error: run limit reached (${MAX_CONCURRENT_RUNS} max concurrent, depth ${MAX_DEPTH} max)`, attachments: [] };
-      }
       return this.runOneShot(displayName, type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, signal, model, toolCallId, streamProvider, enqueue);
     }
 
@@ -678,14 +667,12 @@ export class SubAgentRunner {
 
       hooks.emit("subagent:spawn", { id, displayName: displayName || id.slice("subagent/".length), type, mode: "run", parentSessionId, action: "spawn", task, ...(toolCallId ? { toolCallId } : {}) });
       const stream = streamProvider?.(id);
-      this.activeCount += 1;
       try {
         const execute = () => this.executeRunWithSession(session, type, workspaceDir, parentMessage, trackedSignal, model, stream, undefined, task);
         const result = await (enqueue ? enqueue(id, execute) : execute());
         hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
         return { id, result, attachments: this.takeAttachments(id) };
       } finally {
-        this.activeCount -= 1;
         await this.indexForSearch(id, session);
         // The run wrote its turns into the session in memory; this is the moment they land on disk.
         await this.persistSession(id, session);

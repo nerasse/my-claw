@@ -30,7 +30,7 @@ export function createSpawnTool(
         "visibility decides who can later list and drive it: 'global' (default, every conversation), " +
         "'workspace' (only conversations of the workspace spawning it), 'private' (this conversation alone). " +
         "Optionally pick the sub-agent's model from the listed ones (default: the configured sub-agent model). " +
-        "Max 3 concurrent runs, max depth 2.";
+        "No cap on concurrent runs. Max depth 2.";
     },
     // Getter on purpose: both engines rebuild tool definitions per run, so the model enum
     // follows config hot-reloads instead of freezing at boot.

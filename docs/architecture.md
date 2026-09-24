@@ -164,7 +164,7 @@ Hooks are an in-process event bus (`src/hooks/`), not persisted to disk.
 ### Sub-agents
 
 - 2 types: **general** (full tools) and **research** (read-only: read, search, ls, fetch)
-- Mode `run` = one-shot (max 3 concurrent, depth 2), mode `session` = persistent on disk
+- Mode `run` = one-shot (no concurrency cap, depth 2), mode `session` = persistent on disk
 - Persistent sessions stored in `~/.my-claw/sessions/subagent/${name}-${hex4}.json`
 - 5 tools: `spawn`, `send`, `list_agents`, `kill_agent`, `reset_agent`
 - FIFO queueing: concurrent `send` to same sub-agent queues instead of rejecting

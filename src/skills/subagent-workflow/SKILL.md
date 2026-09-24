@@ -67,7 +67,7 @@ Spawn deliberately:
 
 ## Limits
 
-- Max **3 concurrent** one-shot runs globally
+- **No cap** on concurrent one-shot runs
 - **One level deep only**: you (main) spawn sub-agents; sub-agents have no `spawn` tool, so they cannot spawn further
 - Sub-agent sessions auto-truncate at **500 messages** (keeps last 50)
 - **Unlimited** persistent sub-agents on disk
