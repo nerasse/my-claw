@@ -79,14 +79,15 @@ Two facts worth writing down, because both are counter-intuitive and both are te
 |---|---|---|
 | image, svg | image viewer | RN `Image`, `react-native-svg` |
 | markdown | document reader | `DocumentMarkdown` (exists) |
-| code, text, json, html, csv | CodeMirror, read-only | the editor page (exists) |
-| pdf | pdf.js | `react-native-webview` + a bundled page |
-| html (preview) | sandboxed WebView, no JS | `react-native-webview`, `isDangerousHtml` |
-| csv | table | `MarkdownTable` (exists) |
+| code, text, json, csv | CodeMirror, read-only | the editor page (exists) |
+| pdf | pdf.js | `react-native-webview` + `assets/pdfviewer` |
+| html | sandboxed WebView, no JS | `react-native-webview`, the server's CSP |
 | archive | entry list | server |
 | office | extracted text | server |
 | audio, video | the existing players | exists |
 | binary | download card, with the reason | exists |
+
+A CSV reads in the code reader for now; a table of its own is the next refinement.
 
 The file browser already proves the CodeMirror path: it opens any text file, coloured by extension
 (`LANGUAGE_BY_EXTENSION`, ~40 languages). Reusing that page in read-only mode is what closes most of
@@ -108,13 +109,15 @@ the gap, and it adds no new technology.
 
 - **Done**:
   - The classification (`src/utils/file-kind.ts`), and the server carries `kind` on every session
-    file and every attachment. `serveMedia` answers inline/attachment from it, with Range and a
-    `default-src 'none'` CSP on a page or a drawing.
-  - The app routes on it (`viewerFor`), and the reader is real: markdown rendered, plain text as
-    it is, every code language coloured in a read-only CodeMirror, and an SVG drawn natively.
+    file and every attachment. `serveMedia` answers inline/attachment from it, with Range, a
+    `default-src 'none'` CSP on a page or a drawing, and CORS on the read (a page loaded from the
+    app's assets has the origin `null`, and its own fetch is cross-origin).
+  - The app routes on it (`viewerFor`), and every viewer exists: markdown rendered, plain text as
+    it is, every code language coloured in a read-only CodeMirror, an SVG drawn natively, a PDF
+    through a bundled pdf.js page, and a web page as a sandboxed preview with no scripts.
 - **Next, in order**:
-  1. pdf.js page (bundled like the editor page, `assets/pdfviewer`), and the sandboxed HTML
-     preview. Both are WebViews, and the CSP the server already sends is their fence.
-  2. Server conversions the app cannot do: an exotic image (bmp, tiff, avif, ico) to png, an
-     Office document to text, a ZIP to its entry list.
-  3. A CSV earns its table.
+  1. Server conversions the app cannot do: an exotic image (bmp, tiff, ico) to png, an Office
+     document to text, a ZIP to its entry list. No new npm dependency is needed for any of them:
+     ffmpeg is already here (it makes the video thumbnails), and a ZIP is a central directory plus
+     inflate, which the runtime has.
+  2. A CSV earns its table.
