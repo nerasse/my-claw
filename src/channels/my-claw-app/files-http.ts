@@ -4,6 +4,7 @@ import { extractVideoThumbnail } from "../../media/video.ts";
 import { kindByName, mimeTypeForName, type FileKind } from "../../utils/file-kind.ts";
 import { listZipEntries } from "../../utils/archive.ts";
 import { extractOfficeText } from "../../utils/office-text.ts";
+import { EXOTIC_IMAGE_MIME, imageToPng } from "../../media/image-format.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import { thumbPathFor, type SessionFileStore } from "./files.ts";
 import { sanitizeThreadId } from "./sessions.ts";
@@ -112,6 +113,22 @@ export async function serveMedia(d: MyClawAppFilesDeps, id: string, owner: strin
     path = generated;
     mimeType = "image/jpeg";
     filename = undefined;
+  }
+
+  // A picture the phone cannot decode is drawn anyway: converted on the way out, never in the
+  // store. The original bytes are what every other caller gets (docs/file-preview.md).
+  if (EXOTIC_IMAGE_MIME.test(mimeType)) {
+    const png = await imageToPng(path);
+    if (png) {
+      return new Response(png, {
+        headers: {
+          "Content-Type": "image/png",
+          "X-Content-Type-Options": "nosniff",
+          "Content-Disposition": filename ? `inline; filename="${filename.replace(/["\\]/g, "").replace(/\.[^.]+$/, ".png")}"` : "inline",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
+    }
   }
 
   const headers: Record<string, string> = {

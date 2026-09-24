@@ -827,6 +827,35 @@ describe("MyClawAppAdapter", () => {
     assert.equal(original.headers.get("content-type"), "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
   });
 
+  /**
+   * The platform image view decodes what Android decodes and nothing else: a bmp, a tiff or an
+   * ico is converted on the way out, through the ffmpeg already here for video thumbnails. The
+   * store keeps the original bytes.
+   */
+  test("a picture the phone cannot decode is served as a PNG", async () => {
+    const tmpDir = join(MY_CLAW_DIR, "tmp");
+    await mkdir(tmpDir, { recursive: true });
+    const bmp = join(tmpDir, `picture-${Date.now()}.bmp`);
+    await execFileAsync("ffmpeg", ["-y", "-f", "lavfi", "-i", "color=c=red:s=4x4", "-frames:v", "1", bmp]);
+
+    await adapter.send(DEVICE_ID, { text: "img", attachments: [{ type: "image", path: bmp }] });
+    const frame = (await nextFrame(client)) as { attachments: Array<{ id: string; kind?: string; filename: string }> };
+    assert.equal(frame.attachments[0]!.kind, "image");
+
+    const served = await fetch(
+      `http://127.0.0.1:${adapter.port}/media/${frame.attachments[0]!.id}?device=${DEVICE_ID}&token=${TOKEN}`,
+    );
+    assert.equal(served.status, 200);
+    assert.equal(served.headers.get("content-type"), "image/png");
+    const bytes = new Uint8Array(await served.arrayBuffer());
+    assert.deepEqual(
+      [...bytes.subarray(0, 8)],
+      [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+      "a PNG signature, drawn from a BMP",
+    );
+    assert.ok(served.headers.get("content-disposition")?.includes(".png"), "the served name says what it is");
+  });
+
   test("a video serves a generated preview frame under ?thumb=1", async () => {
     const tmpDir = join(MY_CLAW_DIR, "tmp");
     await mkdir(tmpDir, { recursive: true });
