@@ -106,12 +106,15 @@ the gap, and it adds no new technology.
 
 ## Where this stands
 
-- **Done**: the classification (`src/utils/file-kind.ts`, `tests/utils/file-kind.test.ts`).
+- **Done**:
+  - The classification (`src/utils/file-kind.ts`), and the server carries `kind` on every session
+    file and every attachment. `serveMedia` answers inline/attachment from it, with Range and a
+    `default-src 'none'` CSP on a page or a drawing.
+  - The app routes on it (`viewerFor`), and the reader is real: markdown rendered, plain text as
+    it is, every code language coloured in a read-only CodeMirror, and an SVG drawn natively.
 - **Next, in order**:
-  1. Expose `kind` (additive) from the server, and let the app's `viewerFor` route on it. Route the
-     four surfaces through it.
-  2. CodeMirror read-only for every text and code kind, in a bubble and in session files. CSV and
-     JSON views.
-  3. `inline` + Range in `serveMedia`; exotic images through a server conversion.
-  4. pdf.js page (bundled like the editor page); sandboxed HTML preview; native SVG.
-  5. Office text extraction; archive listing.
+  1. pdf.js page (bundled like the editor page, `assets/pdfviewer`), and the sandboxed HTML
+     preview. Both are WebViews, and the CSP the server already sends is their fence.
+  2. Server conversions the app cannot do: an exotic image (bmp, tiff, avif, ico) to png, an
+     Office document to text, a ZIP to its entry list.
+  3. A CSV earns its table.
