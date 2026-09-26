@@ -106,9 +106,10 @@ Two places consume it:
   provider opted into `promptCache` — that opt-in is precisely the owner stating the endpoint
   tolerates cache hint fields.
 
-The anthropic and implicit dialects are untouched by this: they were at 91-97% cache-read in
-production when the key was introduced, and `tests/analytics/e2e-usage.test.ts` guards that a
-non-OpenAI engine still gets its breakpoints and no key.
+The `openai` dialect is the only one that gets the key, and `anthropic` the only one that gets the
+breakpoints: the two spellings are mutually exclusive and each is meaningless to an engine that
+does not speak it. The `implicit` dialects -- DeepSeek, GLM, Kimi, MiMo, Qwen -- are sent neither,
+which `tests/analytics/e2e-usage.test.ts` guards on the highest-volume path in production.
 
 ## When the endpoint refuses the shape
 
@@ -125,16 +126,11 @@ Input should be a valid string, field: 'messages[0].content.str', value: [{'type
 Measured 2026-09-21, on `opencode_go/glm-5.3` — while the *same provider's* deepseek models take the
 identical request. The prompt was fine; the form our hints chose was not.
 
-The transport answers it itself: a 400 whose body names the content shape
-(`isContentShapeRefusal`) makes it **rebuild the request without any cache hints and resend it
-once**, and remember the refusal per `baseUrl|model` (`cacheHintsRefused`). The next call for that
-model goes out plain from the first byte, so the round trip is paid once ever, not once per call.
-A 400 about anything else — a model that does not exist, a request we sent wrong — is left alone and
-surfaces as itself; rerouting every 400 would hide our own bugs.
-
-The memo is per process and never persisted: it is a compatibility fact about a remote endpoint, and
-a restart is a fine place to re-learn it. `resetCacheHintRefusals()` is the test seam, wired into
-`tests/setup-globals.ts` like every other piece of module-level state.
+One refusal was all this transport used to handle, in code written where the call is made. It is now
+one row of a table, `plain-content`, in `src/llm/request-repair.ts`, beside two others that cost a
+run twenty-nine minutes on 2026-09-26. The rebuild, the single replay and the per-endpoint memo all
+still happen; what changed is that they are data, and that a refusal naming a parameter is answered
+rather than thrown. See `docs/llm-request-repair.md`.
 
 ## Auditing it
 

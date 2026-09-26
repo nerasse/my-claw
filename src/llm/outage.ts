@@ -70,3 +70,20 @@ export function isPolicyRefusal(err: unknown): boolean {
 export function isProviderOutage(err: unknown): boolean {
   return isOutageClass(err) || isPolicyRefusal(err);
 }
+
+/**
+ * Worth another provider, for a third reason: the model itself lacks a capability the request
+ * needs, and said so by name.
+ *
+ * This is deliberately *not* a malformed request, which stays ours and must surface as itself.
+ * A model that refuses `cache_control` or that cannot answer without the reasoning of the turns it
+ * is shown is telling us what it *is*; another model is a legitimate answer, and the request has
+ * already been repaired for this one before we get here (docs/llm-request-repair.md).
+ *
+ * Only the provider marks this, and only from a refusal the repair table recognised: an unknown
+ * 400 keeps its old path.
+ */
+export function isCapabilityRefusal(err: unknown): boolean {
+  const capability = (err as { capability?: string } | undefined)?.capability;
+  return typeof capability === "string" && capability.length > 0;
+}

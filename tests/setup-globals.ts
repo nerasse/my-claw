@@ -3,7 +3,8 @@
 // evaluate config.ts before MY_CLAW_DIR is redirected. Keeping the src imports in a separate,
 // later preload guarantees the temp dir is already in place.
 import { beforeEach } from "bun:test";
-import { resetCacheHintRefusals, resetCircuitBreaker } from "../src/llm/provider.ts";
+import { resetCircuitBreaker } from "../src/llm/provider.ts";
+import { resetLearnedRepairs } from "../src/llm/request-repair.ts";
 import { resetBashScopeProbe, setBashLimits } from "../src/tools/bash.ts";
 import { resetPromptFileCache } from "../src/agent/prompt/loader.ts";
 import { resetSkillVectorCache } from "../src/skills/retrieval.ts";
@@ -45,7 +46,7 @@ beforeEach(() => {
   resetCircuitBreaker();
   // Keyed on baseUrl + model, so one file's refusing endpoint would silence another file's
   // cache-breakpoint assertions without any visible link between them.
-  resetCacheHintRefusals();
+  resetLearnedRepairs();
   // Keyed on MY_CLAW_WORKSPACE, which tests move around; mtime equality is also blind to two
   // writes inside one tick.
   resetPromptFileCache();

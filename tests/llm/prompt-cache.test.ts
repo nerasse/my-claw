@@ -73,7 +73,7 @@ describe("applyPromptCache", () => {
 describe("buildRequestBody prompt cache gating", () => {
   const base = { baseUrl: "https://example.com", model: "m", apiKey: "k" };
 
-  async function capture(promptCache: boolean): Promise<Record<string, unknown>> {
+  async function capture(promptCache: boolean, model: string = "m"): Promise<Record<string, unknown>> {
     const bodies: Array<Record<string, unknown>> = [];
     const mock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
       bodies.push(JSON.parse(init?.body as string));
@@ -83,7 +83,7 @@ describe("buildRequestBody prompt cache gating", () => {
       });
     });
     try {
-      await chatCompletion({ ...base, promptCache }, [
+      await chatCompletion({ ...base, model, promptCache }, [
         { role: "system", content: "SYS" },
         { role: "user", content: "hi" },
       ]);
@@ -100,11 +100,18 @@ describe("buildRequestBody prompt cache gating", () => {
     expect(JSON.stringify(body)).not.toContain("cache_control");
   });
 
-  test("on: system + last message carry cache_control", async () => {
-    const body = await capture(true);
+  test("on: a Claude model carries cache_control on the system message and the last one", async () => {
+    const body = await capture(true, "claude-sonnet-5");
     const messages = body["messages"] as Array<{ content: unknown }>;
     expect(Array.isArray(messages[0]!.content)).toBe(true);
     expect(JSON.stringify(body)).toContain("cache_control");
+  });
+
+  test("on: a model that speaks neither dialect gets no hint at all", async () => {
+    // `cache_control` is Anthropic's spelling. Sending it to a DeepSeek model is what answered
+    // 400 on 2026-09-26, after twenty-three tool calls and four minutes of work.
+    const body = await capture(true, "deepseek-v4.1-flash");
+    expect(JSON.stringify(body)).not.toContain("cache_control");
   });
 });
 
@@ -176,10 +183,12 @@ describe("prompt_cache_key by model family", () => {
     expect(JSON.stringify(body)).toContain("cache_control");
   });
 
-  test("an implicit-cache engine keeps breakpoints and gets no key", async () => {
+  test("an implicit-cache engine gets neither key nor breakpoints", async () => {
+    // The name of this test used to promise the breakpoints were kept, which was the bug stated
+    // as a fact: they are the other dialect's spelling, and this engine reads neither.
     const body = await capture({ model: "deepseek/deepseek-v4-flash-vision-exp", promptCache: true, cacheKey: "sess-4" });
     expect(body["prompt_cache_key"]).toBeUndefined();
-    expect(JSON.stringify(body)).toContain("cache_control");
+    expect(JSON.stringify(body)).not.toContain("cache_control");
   });
 
   test("no key without the provider opt-in, and none without a session", async () => {
@@ -189,7 +198,9 @@ describe("prompt_cache_key by model family", () => {
 });
 
 describe("an endpoint that refuses the cached content shape", () => {
-  const base = { baseUrl: "https://refusing.example.com", model: "glm-5.3", apiKey: "k" };
+  // A Claude id: it is the only dialect we still send breakpoints to, so it is the only place a
+  // refusal of that shape can still arise. The contract below is unchanged.
+  const base = { baseUrl: "https://refusing.example.com", model: "claude-sonnet-5", apiKey: "k" };
   const messages: ChatMessage[] = [
     { role: "system", content: "SYS" },
     { role: "user", content: "hi" },
@@ -216,8 +227,9 @@ describe("an endpoint that refuses the cached content shape", () => {
   }
 
   test("is resent without the hints, and the answer lands", async () => {
-    // Measured 2026-09-21: `opencode_go/glm-5.3` answers 400 to the parts form our cache hints
-    // produce, while the same provider's deepseek models take it. The request was fine.
+    // Measured 2026-09-21 on `opencode_go/glm-5.3`: an upstream that validates the content shape
+    // strictly answers 400 to the parts form our cache hints produce. The request was fine -- and
+    // since the dialect fix, such a model is not sent the parts form in the first place.
     const { bodies, restore } = answering();
     try {
       const response = await chatCompletion({ ...base, promptCache: true }, messages);

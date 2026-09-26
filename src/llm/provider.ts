@@ -2,6 +2,12 @@ import type { ReasoningField, ResolvedLlmConfig } from "../core/config.ts";
 import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError, sleep } from "../core/aborted.ts";
 import { isRetryableStatus, retryDelayMs, parseRetryAfterMs } from "./retry.ts";
+import {
+  repairFor,
+  repairOptionsFor,
+  rememberRepair,
+  type RepairOptions,
+} from "./request-repair.ts";
 import { ReasoningSegmenter, type ReasoningSegment } from "./reasoning-segments.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
@@ -416,7 +422,11 @@ function liftToolImages(messages: ChatMessage[]): ChatMessage[] {
  * Field by field, never a spread: `ChatMessage` carries `providerMeta`, which is internal state and
  * must not reach any endpoint except through the one branch below that knows the shape it wants.
  */
-function toWireMessage(msg: ChatMessage, self?: { backend: string; model: string }): WireMessage {
+function toWireMessage(
+  msg: ChatMessage,
+  self?: { backend: string; model: string },
+  forceReasoning: boolean = false,
+): WireMessage {
   const w: WireMessage = { role: msg.role, content: msg.content };
   if (msg.role === "tool") w["tool_call_id"] = msg.tool_call_id;
   if (msg.role === "assistant" && msg.tool_calls) w["tool_calls"] = msg.tool_calls;
@@ -426,7 +436,10 @@ function toWireMessage(msg: ChatMessage, self?: { backend: string; model: string
     // produced it. DeepSeek answers 400 without the field when tools are present; GLM and Kimi
     // degrade quietly. Self-gating beyond that -- nothing is captured for a model that publishes
     // no field, so nothing is sent.
-    const chat = meta && self && meta.backend === self.backend && meta.model === self.model ? meta.chat : undefined;
+    // Same model, same transport, *unless* a repair asked for the field back: an endpoint in
+    // thinking mode demands the reasoning of the turn it is being shown, whoever produced it.
+    const same = meta && self && meta.backend === self.backend && meta.model === self.model;
+    const chat = (same || forceReasoning) && meta ? meta.chat : undefined;
     if (chat?.field === "reasoning_details" && chat.details) w["reasoning_details"] = chat.details;
     else if (chat?.field === "reasoning_content" && chat.text !== undefined) w["reasoning_content"] = chat.text;
   }
@@ -458,8 +471,12 @@ function markCacheBreakpoint(w: WireMessage): void {
  * that don't support caching ignore the extra `cache_control` field; gate it per provider because
  * some strict ones reject unknown fields in content.
  */
-export function applyPromptCache(messages: ChatMessage[], self?: { backend: string; model: string }): WireMessage[] {
-  const wire = messages.map((m) => toWireMessage(m, self));
+export function applyPromptCache(
+  messages: ChatMessage[],
+  self?: { backend: string; model: string },
+  forceReasoning: boolean = false,
+): WireMessage[] {
+  const wire = messages.map((m) => toWireMessage(m, self, forceReasoning));
   const sysIdx = wire.findIndex((m) => m["role"] === "system");
   if (sysIdx >= 0) markCacheBreakpoint(wire[sysIdx]!);
   const lastIdx = wire.length - 1;
@@ -480,21 +497,20 @@ export function applyPromptCache(messages: ChatMessage[], self?: { backend: stri
  * it: one failed round trip ever, instead of one per call. The memo is per process on purpose --
  * it is a compatibility fact about a remote endpoint, not state worth persisting.
  */
-const cacheHintsRefused = new Set<string>();
-
 function cacheKeyOf(config: ResolvedLlmConfig): string {
   return `${config.baseUrl}|${config.apiModel ?? config.model}`;
 }
 
-/** Test seam: the memo is process-wide, and one file's refusal must not reach the next. */
-export function resetCacheHintRefusals(): void {
-  cacheHintsRefused.clear();
-}
-
-/** A 400 saying our content shape is wrong: the form the cache hints chose, not the request. */
-export function isContentShapeRefusal(status: number, detail: string): boolean {
-  if (status !== 400) return false;
-  return /content\.str|should be a valid string|is not of type 'string'|messages\[\d+\]\.content/i.test(detail);
+/**
+ * The options this endpoint gets, before anything has been refused: the dialect of the model being
+ * called decides the *form* of the cache hint, and the provider's opt-in decides whether there is
+ * one at all. A per-provider flag cannot say which of the two shapes an engine understands -- the
+ * cache-policy notes say so, and it is what made an Anthropic-only field reach a DeepSeek model
+ * and kill a run (2026-09-26).
+ */
+function optionsFor(config: ResolvedLlmConfig): RepairOptions {
+  const dialect = cacheDialectOf(config.apiModel ?? config.model);
+  return repairOptionsFor(cacheKeyOf(config), dialect, config.promptCache === true);
 }
 
 function buildRequestBody(
@@ -502,23 +518,21 @@ function buildRequestBody(
   messages: ChatMessage[],
   tools?: unknown[],
   stream?: boolean,
-  cacheHints: boolean = config.promptCache === true,
+  options: RepairOptions = optionsFor(config),
 ): Record<string, unknown> {
   const sent = liftToolImages(messages);
   const body: Record<string, unknown> = {
     model: config.apiModel ?? config.model,
     // Always through `toWireMessage`, cache or no cache. Handing the raw `ChatMessage[]` to
     // JSON.stringify was putting `providerMeta` on the wire whenever prompt caching was off.
-    messages: cacheHints
-      ? applyPromptCache(sent, chatIdentity(config))
-      : sent.map((m) => toWireMessage(m, chatIdentity(config))),
+    messages: options.cacheBreakpoints
+      ? applyPromptCache(sent, chatIdentity(config), options.forceReasoning)
+      : sent.map((m) => toWireMessage(m, chatIdentity(config), options.forceReasoning)),
   };
 
-  // An OpenAI-family engine ignores the `cache_control` breakpoints above and keys its implicit
-  // prefix cache on this instead, whichever provider resells it. Gated on the same per-provider
-  // opt-in as the breakpoints: it is an extra top-level field, and the opt-in is precisely the
-  // owner stating this endpoint tolerates cache hints. See docs/prompt-caching.md.
-  if (cacheHints && config.cacheKey && cacheDialectOf(config.apiModel ?? config.model) === "openai") {
+  // The other dialect, never both: an OpenAI-family engine ignores the breakpoints above and keys
+  // its implicit prefix cache on this instead. See docs/prompt-caching.md.
+  if (options.cacheKey && config.cacheKey) {
     body["prompt_cache_key"] = config.cacheKey;
   }
 
@@ -541,6 +555,12 @@ function buildRequestBody(
   // silent reroute to another would defeat both. Only ever set for OpenRouter.
   if (config.providerRoute) {
     body["provider"] = { order: [config.providerRoute], allow_fallbacks: false };
+  }
+
+  // Last, so it can name any field this builder sets: a parameter an endpoint refused by name is
+  // dropped whatever it is, and the refusal is remembered (docs/llm-request-repair.md).
+  for (const dropped of options.dropParameters) {
+    delete body[dropped];
   }
 
   return body;
@@ -753,13 +773,16 @@ export async function chatCompletion(
     ...sessionAffinityHeaders(config.baseUrl, config.cacheKey, await userAgent()),
     ...config.headers,
   };
-  let cacheHints = config.promptCache === true && !cacheHintsRefused.has(cacheKeyOf(config));
-  let bodyObject = buildRequestBody(config, messages, tools, false, cacheHints);
+  const options = optionsFor(config);
+  let bodyObject = buildRequestBody(config, messages, tools, false, options);
   await clampOutputToPinnedEndpoint(config, bodyObject);
   let body = JSON.stringify(bodyObject);
   const url = `${config.baseUrl}/chat/completions`;
 
   let lastErr: unknown;
+  // Set once a repair has been applied to this call: a second refusal of the same shape is then
+  // about the model rather than about the request (docs/llm-request-repair.md).
+  let repaired = false;
   const budget = timeoutBudget(config);
 
   for (let attempt = 1; attempt <= LLM_RETRY_ATTEMPTS; attempt++) {
@@ -785,21 +808,32 @@ export async function chatCompletion(
           const pinned404 = await pinnedRoute404(config, response.status, detail, bodyObject);
           const err = new Error(
             pinned404?.message ?? `LLM request failed: HTTP ${response.status} — ${detail}`,
-          ) as Error & { status?: number; stalePin?: boolean };
+          ) as Error & { status?: number; stalePin?: boolean; capability?: string };
           err.status = response.status;
           if (pinned404) err.stalePin = true;
 
-          if (cacheHints && isContentShapeRefusal(response.status, detail)) {
-            cacheHints = false;
-            cacheHintsRefused.add(cacheKeyOf(config));
-            bodyObject = buildRequestBody(config, messages, tools, false, false);
-            body = JSON.stringify(bodyObject);
-            void log("warn", "endpoint refused the cached content shape; resending without cache hints", {
-              model: config.apiModel ?? config.model,
-              baseUrl: config.baseUrl,
-            });
-            lastErr = err;
-            continue;
+          // A refusal that names what to change is a change we can make: the same call, repaired,
+          // replayed once. Without this the run ended on it -- after twenty-three tool calls in
+          // one case and twenty-nine minutes of work in another (2026-09-26).
+          const repair = repairFor(response.status, detail);
+          if (repair) {
+            if (repair.apply(options, detail)) {
+              repaired = true;
+              rememberRepair(cacheKeyOf(config), repair, detail);
+              bodyObject = buildRequestBody(config, messages, tools, false, options);
+              body = JSON.stringify(bodyObject);
+              void log("warn", "LLM request repaired", {
+                repair: repair.id,
+                model: config.apiModel ?? config.model,
+                baseUrl: config.baseUrl,
+                detail: detail.slice(0, 200),
+              });
+              lastErr = err;
+              continue;
+            }
+            // Repaired already and refused again: the model cannot do it. Anything else stays
+            // our bug, which is why this is the only thing that marks a capability.
+            if (repaired) err.capability = repair.id;
           }
 
           if (attempt < LLM_RETRY_ATTEMPTS && (isRetryableStatus(response.status) || pinned404?.retryable)) {
@@ -884,13 +918,14 @@ export async function chatCompletionStream(
     ...sessionAffinityHeaders(config.baseUrl, config.cacheKey, await userAgent()),
     ...config.headers,
   };
-  let cacheHints = config.promptCache === true && !cacheHintsRefused.has(cacheKeyOf(config));
-  let bodyObject = buildRequestBody(config, messages, tools, true, cacheHints);
+  const options = optionsFor(config);
+  let bodyObject = buildRequestBody(config, messages, tools, true, options);
   await clampOutputToPinnedEndpoint(config, bodyObject);
   let body = JSON.stringify(bodyObject);
   const url = `${config.baseUrl}/chat/completions`;
 
   let lastErr: unknown;
+  let repaired = false;
   let tokensDelivered = false;
   const budget = timeoutBudget(config);
 
@@ -921,21 +956,32 @@ export async function chatCompletionStream(
         const pinned404 = await pinnedRoute404(config, response.status, detail, bodyObject);
         const err = new Error(
           pinned404?.message ?? `LLM stream request failed: HTTP ${response.status} — ${detail}`,
-        ) as Error & { status?: number; stalePin?: boolean };
+        ) as Error & { status?: number; stalePin?: boolean; capability?: string };
         err.status = response.status;
         if (pinned404) err.stalePin = true;
 
-        if (cacheHints && isContentShapeRefusal(response.status, detail)) {
-          cacheHints = false;
-          cacheHintsRefused.add(cacheKeyOf(config));
-          bodyObject = buildRequestBody(config, messages, tools, true, false);
-          body = JSON.stringify(bodyObject);
-          void log("warn", "endpoint refused the cached content shape; resending without cache hints", {
-            model: config.apiModel ?? config.model,
-            baseUrl: config.baseUrl,
-          });
-          lastErr = err;
-          continue;
+        // A refusal that names what to change is a change we can make: the same call, repaired,
+        // replayed once. Without this the run ended on it -- after twenty-three tool calls in
+        // one case and twenty-nine minutes of work in another (2026-09-26).
+        const repair = repairFor(response.status, detail);
+        if (repair) {
+          if (repair.apply(options, detail)) {
+            repaired = true;
+            rememberRepair(cacheKeyOf(config), repair, detail);
+            bodyObject = buildRequestBody(config, messages, tools, true, options);
+            body = JSON.stringify(bodyObject);
+            void log("warn", "LLM request repaired", {
+              repair: repair.id,
+              model: config.apiModel ?? config.model,
+              baseUrl: config.baseUrl,
+              detail: detail.slice(0, 200),
+            });
+            lastErr = err;
+            continue;
+          }
+          // Repaired already and refused again: the model cannot do it. Anything else stays
+          // our bug, which is why this is the only thing that marks a capability.
+          if (repaired) err.capability = repair.id;
         }
 
         if (attempt < LLM_RETRY_ATTEMPTS && !tokensDelivered && (isRetryableStatus(response.status) || pinned404?.retryable)) {

@@ -22,7 +22,7 @@ import { selectRelevantSkills } from "../skills/retrieval.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ProviderMeta } from "../llm/provider.ts";
 import { llmComplete, llmCompleteStream } from "../llm/transport.ts";
 import { resolveRunModel, type RunModel, type RunModelOverride } from "../llm/run-model.ts";
-import { isProviderOutage } from "../llm/outage.ts";
+import { isCapabilityRefusal, isProviderOutage } from "../llm/outage.ts";
 import { providerFallbackTargets } from "../llm/provider-fallback.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
@@ -310,11 +310,13 @@ export class AgentBridge implements AgentBackend {
         return { response, config };
       } catch (err) {
         rethrowIfAborted(err, params.signal);
-        if (isOverflowError(err) || params.emitted() || !isProviderOutage(err)) throw err;
+        if (isOverflowError(err) || params.emitted() || !(isProviderOutage(err) || isCapabilityRefusal(err))) throw err;
 
         const reason = String((err as Error | undefined)?.message ?? err).slice(0, 200);
         const failed = { model: config.model, provider: config.provider };
-        const wait = params.waits.shift();
+        // A capability the model does not have is not a wait: the next target is the only cure.
+        const capability = (err as { capability?: string }).capability;
+        const wait = capability ? undefined : params.waits.shift();
         if (wait !== undefined) {
           this.recordFailedCall({ ...params, config, durationMs: Date.now() - startedAt, error: err });
           await this.noteFallback(
@@ -340,7 +342,9 @@ export class AgentBridge implements AgentBackend {
         params.attempted.add(next.model);
         config = { ...next.config, cacheKey: next.config.cacheKey ?? params.session.id };
         await this.noteFallback(
-          `[fallback] ${failed.model} via ${failed.provider ?? "provider"} is unavailable (${reason}). This run used ${next.model} instead (${next.label}); it returns to ${failed.model} once the provider recovers.`,
+          capability
+            ? `[fallback] ${failed.model} cannot do this (${capability}: ${reason}). This run used ${next.model} instead (${next.label}).`
+            : `[fallback] ${failed.model} via ${failed.provider ?? "provider"} is unavailable (${reason}). This run used ${next.model} instead (${next.label}); it returns to ${failed.model} once the provider recovers.`,
           params,
         );
       }

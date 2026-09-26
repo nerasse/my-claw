@@ -269,8 +269,10 @@ test("E2E: the conversation names the OpenAI prefix cache all the way to the wir
   }
 });
 
-test("E2E: an implicit-cache engine is left exactly as it was", async () => {
-  // Guards the highest-volume path in production against the change above.
+test("E2E: an implicit-cache engine is sent no cache hint at all", async () => {
+  // The highest-volume path in production, and the one that answered 400 on 2026-09-26: a
+  // DeepSeek model was being sent an Anthropic-only `cache_control` breakpoint. What is guarded
+  // here is that neither spelling reaches it, and that the call itself is untouched.
   const registry = new ToolRegistry();
   const skillRegistry = new SkillRegistry();
   const bridge = new AgentBridge(
@@ -299,7 +301,7 @@ test("E2E: an implicit-cache engine is left exactly as it was", async () => {
   try {
     await bridge.handleMessage(createMessage(), createSession());
     assert.equal("prompt_cache_key" in bodies[0]!, false);
-    assert.ok(JSON.stringify(bodies[0]).includes("cache_control"));
+    assert.equal(JSON.stringify(bodies[0]).includes("cache_control"), false);
   } finally {
     fetchMock.restore();
   }
