@@ -2,7 +2,6 @@
 import crypto from "node:crypto";
 
 const SCREENSHOT_DIR = "/tmp";
-const MAX_REFS = 400;
 
 export function screenshotPath() {
   return `${SCREENSHOT_DIR}/browser-${crypto.randomUUID()}.png`;
@@ -21,7 +20,7 @@ function extractRefs(snapshot) {
 // Runs inside the page (once per frame). Playwright's ariaSnapshot({ ref: true }) emits no
 // usable ref markers in this build, so we assign our own: stamp every visible interactive
 // element with a __ref attribute (acted on via [__ref="N"], also used by the label overlay).
-function stampFrame({ max, start }) {
+function stampFrame({ start }) {
   // role=option/listbox/menuitemradio/treeitem are load-bearing: custom React comboboxes
   // render their options as plain divs carrying those roles. Without them in this list the
   // options appear in the aria tree but get no ref, so the agent can see them and still be
@@ -64,8 +63,7 @@ function stampFrame({ max, start }) {
       rect.bottom > 0 && rect.top < viewportHeight && rect.right > 0 && rect.left < viewportWidth;
     candidates.push({ el, inViewport });
   }
-  // Viewport-first: the ref budget is capped, so off-screen page chrome (footers, hidden
-  // menus) must never consume the budget before the element the agent is looking at.
+  // Viewport-first: what the agent is looking at is numbered, and read, before the page chrome.
   const ordered = [
     ...candidates.filter((c) => c.inViewport),
     ...candidates.filter((c) => !c.inViewport),
@@ -74,7 +72,6 @@ function stampFrame({ max, start }) {
   const lines = [];
   let ref = start - 1;
   for (const { el, inViewport } of ordered) {
-    if (ref - start + 1 >= max) break;
     ref += 1;
     el.setAttribute("__ref", String(ref));
     const role = el.getAttribute("role") || el.tagName.toLowerCase();
@@ -101,10 +98,8 @@ export async function snapshotPage(page) {
   const blocks = [];
   let next = 1;
   for (const frame of page.frames()) {
-    const budget = MAX_REFS - (next - 1);
-    if (budget <= 0) break;
     const result = await frame
-      .evaluate(stampFrame, { max: budget, start: next })
+      .evaluate(stampFrame, { start: next })
       .catch(() => null); // a cross-origin or detached frame is skipped, never fatal
     if (!result?.lines) continue;
     const label = frame === page.mainFrame() ? "" : `\n[iframe ${frame.url().slice(0, 120)}]\n`;

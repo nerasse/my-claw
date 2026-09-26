@@ -38,8 +38,9 @@ pointer.
   agent, or a new delegation) takes them back. Anyone else is refused, like a held window.
 - **Every action names its window** (`window`, the short number `browser_list_windows` shows). A run
   may hold several.
-- **No cap on runs.** The owner removed every concurrency cap (sub-agents included). What bounds the
-  browser is the window cap and the sweep below.
+- **No cap, anywhere.** The owner removed every concurrency cap (sub-agents included), then every
+  browser one (2026-09-26: "Il faut éviter tout blocage ou limitation. Au pire les navigateurs lag
+  avec moins de RAM, c'est un souci pour l'infra"). See "Nothing is capped" below.
 
 ## What a window is
 
@@ -53,26 +54,72 @@ the one browser context. Measured:
 | opening a tab *in a given window* | `Target.createTarget` has no window parameter and opens in the last active window. `bringToFront` on a tab of the window then `createTarget`: 50/50 in the right window. The sidecar serialises that pair (and every other `bringToFront`) behind one lock, since a `bringToFront` elsewhere between the two would move the tab. `window.open` from inside the window also hit 50/50, and was not kept: the page's own scripts can replace `window.open`. |
 | two windows typed into, clicked and screenshotted at the same time | 20/20 rounds, no crossed input, `document.hasFocus()` true on both |
 | a tab behind another tab in its window | `visibilityState` stays `visible`, a screenshot takes 238 ms, a click works, `requestAnimationFrame` runs. Playwright's focus emulation covers it: no `bringToFront` is needed before acting. |
-| Chromium window ids | large, not reused across launches (e.g. 552585005): the tools show short aliases (1, 2, 3...), assigned for the life of the server |
+| Chromium window ids | large, not reused across launches (e.g. 552585005, 1962074506): the tools show short aliases (1, 2, 3...), assigned for the life of the server. A browser restart cannot hand an old id to a new window, so a hold needs no browser epoch |
 | memory | about 220 MB of RSS per extra window on a real page (Wikipedia) |
 
 ## Windows and tabs a site opens by itself
 
 `target=_blank` and `window.open(url)` open a tab in the **same** window, with `opener` set to the
 page that clicked. `window.open(url, "", "width=..,height=..")` opens a **new** window, `opener` set
-too. Neither is ever refused or counted against a cap: they are what a click did, not a decision.
+too. Neither is ever refused: they are what a click did, not a decision.
 A window a site opened belongs to the run that holds the window of its opener, and a tab born
 inside a held window is that run's.
 
-## The cap and the sweep
+## Nothing is capped
 
-- At most **8 windows opened by agents** (`browser_new_window`), counted over the ones still open.
-  Windows the owner opened, and windows sites opened, do not count. Past it the tool is refused
-  with the free windows to reuse.
-- Past **12 tabs in the browser**, opening a window or a tab first closes the least recently used
-  **agent tabs** that have been idle for 30 minutes, and only in windows nobody holds. A tab that
-  was already open when the server started, or that the owner opened, is never closed by the
-  sweep: we do not know what it is.
+- **No window cap.** Runs open as many windows as they need (it was 8 agent windows until
+  2026-09-26; it was never reached). Closing what is no longer needed is `browser_close_window`.
+- **No sweep.** Nothing closes a tab behind anyone's back (it closed idle agent tabs past 12). Tabs
+  and windows persist between runs until someone closes them.
+- **Nothing a page gives back is cut by the sidecar**: `browser_text`, `browser_eval`, `browser_cdp`,
+  `browser_response`, `browser_fetch`, `browser_find`, `browser_network` and the snapshot's refs
+  (400 until then) come back whole, and the per-page response log keeps every JSON response. A long
+  result is the agent loop's to handle, as for every tool: past the live ceiling (60 000 chars) the
+  run sees the start and the file with all of it, which `browser_read_output` reads to the end.
+  That tool reads the run's own results and nothing else: the browser agent reads untrusted pages
+  all day, so it gets no path to the rest of the disk (`.env` included).
+- **A wait is as long as asked**: `browser_wait_for` and `browser_download` take any `timeout_ms`
+  (30 s and 120 s ceilings until then), and the client's HTTP budget follows it.
+- What stays bounded is time per call (the per-endpoint budgets), which is what keeps a call from
+  hanging forever, and the machine: memory is an infrastructure concern (about 220 MB per window).
+
+## A frozen tab
+
+A page stuck in its own JavaScript (a loop that never yields: a careers site did it on 2026-09-26)
+answers nothing a tool sends it, for as long as it lives, and holds a CPU core. Measured on
+Chromium 147 / Playwright 1.62.1, on that tab:
+
+| call | result |
+|---|---|
+| `page.title()`, any evaluation, a snapshot | never returns |
+| detaching a CDP session from it | never returns |
+| `connectOverCDP` while it is open (a sidecar restart) | never returns, since the connection attaches to every tab |
+| `Target.getTargets`, `Browser.getWindowForTarget`, `bringToFront`, closing it | a few ms |
+| another window, the same site included: navigate, click, screenshot | normal |
+| closing it | about 0.5 s before it is gone, while the browser gives up on its renderer |
+
+In production the window listing asked every tab its title, so one frozen tab made it time out 80
+times in forty minutes, for every run on every site. Hence:
+
+- **Listings never ask a page.** `list-windows` and the app's `tabs` read the browser's own list
+  (titles and urls included); openers come from Playwright's memory, which asks the page nothing
+  either (the browser's list drops the opener of a `target=_blank` link, which Chromium opens
+  noopener). Adopting a page no longer waits for its CDP session to detach.
+- **A call that runs out of time on a page probes it** (`Runtime.evaluate("1")` over a socket of
+  its own, 3 s). Frozen: the tab is closed and the run told to reopen its url in a new tab. Alive:
+  the page is only slow, and nothing is closed; Playwright's own timeout message, which says what it
+  waited for, is kept as it is.
+- **A sidecar that cannot connect** waits 10 s, probes every tab, and reports the frozen ones; the
+  server closes them and the call goes through (the pending connection completes the moment they
+  are gone: measured).
+- **A tab a human was handed is never closed**, frozen or not (owner, 2026-09-26: never close a tab
+  an agent is waiting on the user for): a tab in a window kept after `needs_human`, for as long as
+  the hold lasts. The run is told the tab was left open; at a reconnection the caller is told the
+  browser waits on it, and the tab becomes closable when the hold ends.
+- A popup opened without `noopener` shares its opener's renderer, so a popup that freezes freezes
+  its opener with it (measured): both are frozen tabs, and are treated as such.
+- The decision is the server's (`BrowserClient.call`), because only the windows know which tabs a
+  human was handed; the sidecar only probes and closes.
 
 ## The native file chooser
 
@@ -87,7 +134,7 @@ a click opened is kept for the page, the next snapshot says so, and `browser_upl
 
 - Pages are identified by their CDP `targetId`, windows by their CDP window id. Both survive a
   restart of the sidecar, so the server's holds and each run's current page stay valid when it comes
-  back. The sidecar sessions (`/session`, `/cleanup`) are gone: they only carried a current page,
+  back. A frozen tab would stop that reconnection: see "A frozen tab". The sidecar sessions (`/session`, `/cleanup`) are gone: they only carried a current page,
   which is the server's job now.
 - **One sidecar per Chromium.** The sidecar adopts every page as it is born (the file chooser and a
   popup's opener cannot wait for a tool to touch it), so a second sidecar on the same Chromium puts
@@ -103,7 +150,9 @@ a click opened is kept for the page, the next snapshot says so, and `browser_upl
 
 | piece | file |
 |---|---|
-| holds, aliases, each run's page per window, cap, sweep, handoff hold | `src/tools/browser/windows.ts` (`BrowserWindows`) |
+| holds, aliases, each run's page per window, handoff hold, `keptForHuman` | `src/tools/browser/windows.ts` (`BrowserWindows`) |
+| a frozen tab: probe, close, keep the human's | `src/browser/client.ts` (`call`), `sidecar/browser.mjs` (`responsive`, `frozenPages`, `closeTarget`, the connect budget) |
+| a run's long results | `src/tools/browser/output.ts` (`browser_read_output`) |
 | run start and end | `src/subagents/runner.ts` (`beginRun` before, `endRun` in the `finally`), through `BrowserSession` |
 | the `window` parameter on every page tool | `src/tools/browser/state.ts` (`windowed`) |
 | `browser_list_windows`, `browser_new_window`, `browser_close_window`, tabs by window | `src/tools/browser/navigation.ts` |
@@ -120,3 +169,10 @@ the prompt carries the strategy: each place says only its part.
   windows when runs work in parallel. Next step, separately.
 - Two runs working the same account on the same site at the same time may trip that site's
   anti-abuse. Nothing here prevents it.
+
+## Left out
+
+- **Taking windows back on a `send`** (plan F12): after a normal end, a run's windows are free, and
+  a `send` to the same browser agent starts from what is free like any run. Of 348 browser sessions
+  up to 2026-09-26, none was ever continued, so there is nothing to take back yet. The handoff case,
+  the one that matters, is covered by the hold.

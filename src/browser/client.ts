@@ -34,7 +34,32 @@ const DEFAULT_TIMEOUTS_MS: Record<string, number> = {
   "wait-for": 35000,
   "download-wait": 125000,
   pdf: 60000,
+  // The probe waits up to 3 s for a page by design: it must never inherit a shorter default.
+  probe: 10000,
+  "close-target": 10000,
 };
+
+/** A tab whose page no longer answers, as the sidecar found it. */
+interface FrozenTab {
+  pageId: string;
+  url: string;
+}
+
+/** A failed sidecar call, with what the recovery needs to know about it. */
+class SidecarCallError extends Error {
+  constructor(
+    message: string,
+    /** The call ran out of time: on a slow page, or on a frozen one. */
+    readonly stalled: boolean,
+    /** Tabs the sidecar found frozen while it could not reach the browser. */
+    readonly frozen: FrozenTab[] = [],
+  ) {
+    super(message);
+  }
+}
+
+// Playwright's own wording when a page operation runs out of time inside the sidecar.
+const PAGE_TIMEOUT = /Timeout \d+ms exceeded/;
 
 /** HTTP client for the Node browser sidecar. All Playwright work happens in the
  *  sidecar process (connectOverCDP hangs under Bun); here we only exchange JSON and name
@@ -48,6 +73,16 @@ export class BrowserClient {
     private timeoutsMs: Record<string, number> = {},
   ) {}
 
+  private keptForHuman: (pageId: string) => boolean = () => false;
+
+  /**
+   * Which tabs must stay open even frozen: the ones a human was handed. The client closes the
+   * others on its own when they stop the browser, and only the windows know which is which.
+   */
+  keepOpenWhen(predicate: (pageId: string) => boolean): void {
+    this.keptForHuman = predicate;
+  }
+
   /**
    * Points the client at the sidecar the live config names. The browser tools hold one client for
    * the life of the process, so this is how a hot-reloaded `browser.sidecarUrl`, viewport or
@@ -57,6 +92,12 @@ export class BrowserClient {
     this.sidecarUrl = sidecarUrl;
     this.viewport = viewport;
     this.timeoutsMs = timeoutsMs;
+  }
+
+  /** A call that asks the sidecar to wait (`wait_for`, a download) gets that wait, and a margin for the answer. */
+  private budgetFor(path: string, body: Record<string, unknown>): number {
+    const asked = typeof body["timeoutMs"] === "number" ? body["timeoutMs"] + 5000 : 0;
+    return Math.max(this.timeoutFor(path), asked);
   }
 
   private timeoutFor(path: string): number {
@@ -69,14 +110,68 @@ export class BrowserClient {
     );
   }
 
-  private async call<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  /**
+   * One sidecar call, and the one recovery a stuck browser needs: a tab stuck in its own JavaScript
+   * answers nothing, and whatever waited on it waited for every run (2026-09-26, 80 timeouts of the
+   * window listing over forty minutes). Such a tab is closed, unless a human is working in it, and
+   * the run is told; a page that is only slow is left alone and said to be slow.
+   */
+  private async call<T>(path: string, body: Record<string, unknown>, retried = false): Promise<T> {
+    try {
+      return await this.send<T>(path, body);
+    } catch (e) {
+      if (!(e instanceof SidecarCallError)) throw e;
+      if (e.frozen.length > 0) {
+        const kept = e.frozen.filter((t) => this.keptForHuman(t.pageId));
+        await Promise.all(e.frozen.filter((t) => !kept.includes(t)).map((t) => this.closeFrozen(t.pageId)));
+        if (kept.length === 0 && !retried) return this.call<T>(path, body, true);
+        if (kept.length > 0) {
+          throw new Error(
+            `The browser is held up by a frozen tab a human was handed (${kept.map((t) => t.url).join(", ")}): it is left open for them, and closed once their hold ends. Try again later.`,
+          );
+        }
+        throw new Error(e.message);
+      }
+      const pageId = typeof body["pageId"] === "string" ? body["pageId"] : undefined;
+      if (e.stalled && pageId) throw await this.explainStall(path, body, pageId, e);
+      throw new Error(e.message);
+    }
+  }
+
+  private async explainStall(path: string, body: Record<string, unknown>, pageId: string, e: SidecarCallError): Promise<Error> {
+    const probe = await this.send<{ open: boolean; responsive: boolean; url?: string }>("probe", { pageId }).catch(() => undefined);
+    if (!probe?.open) return new Error(e.message);
+    if (probe.responsive) {
+      // Playwright's own timeout on a live page says what it waited for; ours says only how long.
+      if (PAGE_TIMEOUT.test(e.message)) return new Error(e.message);
+      return new Error(
+        `Browser ${path} took longer than ${this.budgetFor(path, body)}ms, but the page still responds: it is slow, not stuck. Retry, or wait for something specific with browser_wait_for.`,
+      );
+    }
+    const url = probe.url ?? "";
+    if (this.keptForHuman(pageId)) {
+      return new Error(
+        `The tab stopped responding: its page is frozen (${url}). It is left open, because a human was handed its window: work in another window.`,
+      );
+    }
+    await this.closeFrozen(pageId);
+    return new Error(
+      `The tab stopped responding: its page is frozen, and it was closed so it cannot hold up the browser. Open ${url} again in a new tab (browser_navigate with new_tab) if you still need it.`,
+    );
+  }
+
+  private async closeFrozen(pageId: string): Promise<void> {
+    await this.send("close-target", { pageId }).catch(() => undefined);
+  }
+
+  private async send<T>(path: string, body: Record<string, unknown>): Promise<T> {
     let res: Response;
     try {
       res = await fetch(`${this.sidecarUrl}/${path}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.timeoutFor(path)),
+        signal: AbortSignal.timeout(this.budgetFor(path, body)),
       });
     } catch (e) {
       // A blown budget and a dead sidecar are different failures and lead to different fixes,
@@ -85,21 +180,21 @@ export class BrowserClient {
       // browser had crashed whenever a slow call ran long, and it then reported that crash to
       // the owner as fact.
       if (e instanceof Error && e.name === "TimeoutError") {
-        throw new Error(
-          `Browser ${path} exceeded its ${this.timeoutFor(path)}ms budget. The sidecar is still up: split the work or raise the budget.`,
-        );
+        throw new SidecarCallError(`Browser ${path} exceeded its ${this.budgetFor(path, body)}ms budget. The sidecar is still up.`, true);
       }
       throw new Error(`Browser sidecar unreachable at ${this.sidecarUrl}: ${String(e)}`);
     }
     if (!res.ok) {
       let message = `HTTP ${res.status}`;
+      let frozen: FrozenTab[] = [];
       try {
-        const data = (await res.json()) as { error?: string };
+        const data = (await res.json()) as { error?: string; frozen?: FrozenTab[] };
         if (data.error) message = data.error;
+        if (Array.isArray(data.frozen)) frozen = data.frozen;
       } catch {
         // keep status-based message
       }
-      throw new Error(message);
+      throw new SidecarCallError(message, PAGE_TIMEOUT.test(message), frozen);
     }
     return (await res.json()) as T;
   }
@@ -145,8 +240,8 @@ export class BrowserClient {
     return this.call<BrowserFetchResult>("fetch", { pageId, ...opts });
   }
 
-  async text(pageId: string, maxChars?: number): Promise<BrowserTextResult> {
-    return this.call<BrowserTextResult>("text", { pageId, maxChars });
+  async text(pageId: string): Promise<BrowserTextResult> {
+    return this.call<BrowserTextResult>("text", { pageId });
   }
 
   async find(pageId: string, query: string): Promise<BrowserFindResult> {

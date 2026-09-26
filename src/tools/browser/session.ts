@@ -20,6 +20,7 @@ export class BrowserSession {
   constructor(private config: MyClawConfig) {
     this.client = new BrowserClient(this.sidecarUrl(), config.browser?.viewport, config.browser?.timeoutsMs);
     this.windows = new BrowserWindows(this.client);
+    this.client.keepOpenWhen((pageId) => this.windows.keptForHuman(pageId));
   }
 
   sidecarUrl(): string {

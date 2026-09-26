@@ -11,11 +11,6 @@ export interface WindowsBackend {
   focusTab(pageId: string): Promise<void>;
 }
 
-/** Windows opened by agents (`browser_new_window`). The owner's and the sites' do not count. */
-export const MAX_AGENT_WINDOWS = 8;
-/** Past this many tabs in the browser, opening one first closes idle agent tabs. */
-export const SWEEP_ABOVE_TABS = 12;
-export const SWEEP_IDLE_MS = 30 * 60_000;
 /** How long a window stays held for its conversation after a human handoff. */
 export const HANDOFF_HOLD_MS = 30 * 60_000;
 
@@ -48,6 +43,9 @@ function tabArg(args: Record<string, unknown>): number | undefined {
  * run, and the run's end gives it back. A window another run holds is refused with what to do
  * instead, never waited for. Everything here is the server's memory: a hold cannot outlive its run,
  * because a crash that loses the holds loses the runs with them.
+ *
+ * Nothing here caps the browser or closes a tab behind anyone's back: how many windows the runs
+ * open is theirs to decide, and what that costs is the machine's.
  */
 export class BrowserWindows {
   private readonly windowByAlias = new Map<number, number>();
@@ -58,12 +56,7 @@ export class BrowserWindows {
   /** windowId -> the conversation it is kept for after a human handoff. */
   private readonly holds = new Map<number, { parent: string; until: number }>();
   private readonly runs = new Map<string, RunWindows>();
-  private readonly agentWindows = new Set<number>();
-  /** Tabs an agent opened: the only ones the sweep may close. */
-  private readonly agentTabs = new Set<string>();
   private readonly lastUsed = new Map<string, number>();
-  private readonly seen = new Set<string>();
-  private primed = false;
   private layout: BrowserWindowView[] = [];
 
   constructor(
@@ -133,37 +126,29 @@ export class BrowserWindows {
     run.current.set(windowId, pageId);
     this.lastUsed.set(pageId, this.now());
     if (!opened) return;
-    this.seen.add(pageId);
-    this.agentTabs.add(pageId);
     const window = this.layout.find((w) => w.windowId === windowId);
     if (window && !window.tabs.some((t) => t.pageId === pageId)) window.tabs.push({ pageId, url: "", title: "" });
   }
 
-  /** Opens a window for the calling run, within the cap, after the sweep has made room. */
+  /** Opens a window for the calling run, which holds it from the start. */
   async newWindow(args: Record<string, unknown>, url: string): Promise<{ alias: number; result: BrowserResult }> {
-    await this.refresh();
-    const open = [...this.agentWindows].filter((w) => this.isOpen(w));
-    if (open.length >= MAX_AGENT_WINDOWS) {
-      const free = this.layout.filter((w) => this.stateFor(w.windowId, sessionOf(args)) === "free").map((w) => this.alias(w.windowId));
-      const reuse = free.length > 0 ? `reuse a free one (${free.map((a) => `window ${a}`).join(", ")})` : "reuse one you hold";
-      throw new Error(
-        `The browser already has ${MAX_AGENT_WINDOWS} windows opened by agents: ${reuse}, or close one you hold with browser_close_window.`,
-      );
-    }
-    await this.sweep();
     const result = await this.backend.createWindow(url);
-    const session = sessionOf(args);
-    this.agentWindows.add(result.windowId);
-    this.locks.set(result.windowId, session);
+    this.locks.set(result.windowId, sessionOf(args));
     this.layout.push({ windowId: result.windowId, tabs: [{ pageId: result.pageId, url: result.url, title: "" }] });
     this.moved(args, result.windowId, result.pageId, true);
     return { alias: this.alias(result.windowId), result };
   }
 
-  /** Room for a tab about to open in a window the run holds. */
-  async beforeOpeningTab(): Promise<void> {
-    await this.refresh();
-    await this.sweep();
+  /**
+   * Whether the tab is in a window kept for a human who was handed a blocker (a captcha, a code):
+   * such a tab is never closed for the browser's sake, even frozen, because someone is working in
+   * it. What the layout last showed is what counts; a tab it has never shown is nobody's.
+   */
+  keptForHuman(pageId: string): boolean {
+    const window = this.layout.find((w) => w.tabs.some((t) => t.pageId === pageId));
+    if (!window) return false;
+    const hold = this.holds.get(window.windowId);
+    return hold !== undefined && hold.until > this.now();
   }
 
   async closeWindow(args: Record<string, unknown>): Promise<number> {
@@ -270,45 +255,13 @@ export class BrowserWindows {
       }
     }
 
-    // A tab born inside a held window is its run's. Tabs open when the server started never are.
-    const t = this.now();
-    for (const w of windows) {
-      for (const tab of w.tabs) {
-        if (this.seen.has(tab.pageId)) continue;
-        this.seen.add(tab.pageId);
-        if (this.primed && this.locks.has(w.windowId)) {
-          this.agentTabs.add(tab.pageId);
-          this.lastUsed.set(tab.pageId, t);
-        }
-      }
-    }
-    this.primed = true;
-    for (const pageId of [...this.seen]) if (!windowOfPage.has(pageId)) this.forgetPage(pageId);
+    for (const pageId of [...this.lastUsed.keys()]) if (!windowOfPage.has(pageId)) this.lastUsed.delete(pageId);
     for (const run of this.runs.values()) {
       for (const [windowId, pageId] of run.current) if (windowOfPage.get(pageId) !== windowId) run.current.delete(windowId);
     }
     for (const w of windows) this.alias(w.windowId);
     this.layout = windows;
     return windows;
-  }
-
-  /** Closes the idle agent tabs nobody holds, least recently used first, down to the threshold. */
-  private async sweep(): Promise<void> {
-    const total = this.layout.reduce((n, w) => n + w.tabs.length, 0);
-    let excess = total - SWEEP_ABOVE_TABS;
-    if (excess <= 0) return;
-    const now = this.now();
-    const candidates = this.layout
-      .filter((w) => this.stateFor(w.windowId, "") === "free")
-      .flatMap((w) => w.tabs)
-      .filter((t) => this.agentTabs.has(t.pageId) && now - (this.lastUsed.get(t.pageId) ?? now) >= SWEEP_IDLE_MS)
-      .sort((a, b) => (this.lastUsed.get(a.pageId) ?? 0) - (this.lastUsed.get(b.pageId) ?? 0));
-    for (const tab of candidates) {
-      if (excess <= 0) break;
-      await this.backend.closeTab(tab.pageId).catch(() => undefined);
-      this.forgetPage(tab.pageId);
-      excess -= 1;
-    }
   }
 
   private async tabOf(args: Record<string, unknown>): Promise<{ windowId: number; tab: number; pageId: string }> {
@@ -367,15 +320,12 @@ export class BrowserWindows {
     this.aliasByWindow.delete(windowId);
     this.locks.delete(windowId);
     this.holds.delete(windowId);
-    this.agentWindows.delete(windowId);
     for (const tab of this.tabsOf(windowId)) this.forgetPage(tab.pageId);
     this.layout = this.layout.filter((w) => w.windowId !== windowId);
     for (const run of this.runs.values()) run.current.delete(windowId);
   }
 
   private forgetPage(pageId: string): void {
-    this.seen.delete(pageId);
-    this.agentTabs.delete(pageId);
     this.lastUsed.delete(pageId);
     for (const w of this.layout) w.tabs = w.tabs.filter((t) => t.pageId !== pageId);
   }

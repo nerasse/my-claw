@@ -58,7 +58,7 @@ app see the runs it creates like any other one-shot.
 |---|---|---|
 | Sidecar | `sidecar/` (Node) | Owns Playwright. `browser.mjs`: CDP connection, page registry by CDP target id, the browser CDP session for windows, dialog + download + file chooser policy. `snapshot.mjs`: ref stamping, cross-frame resolution, label overlay. `handlers.mjs`: one function per operation. `server.mjs`: HTTP routing only |
 | Client | `src/browser/client.ts` (Bun) | Thin, stateless HTTP client to the sidecar, one for every run; pages addressed by CDP target id, windows by CDP window id, per-endpoint timeouts; `reconfigure()` at each run start follows the live config |
-| Tools | `src/tools/browser/` | `windows` (which run holds which window, each run's page in it, the cap and the sweep), `state` (the `window` parameter, URL guard, the run's workspace), `navigation` (pages, windows, tabs), `inspect` (find/network/response), `actions` (things done to the page), `lowlevel` (eval/CDP/dialog/download/pdf), `session` (the one browser, run start and end, the outcome, `browser_done`), `register` (the toolbox into the registry), `delegate` (`delegate_browser_task`, the door every other agent sees) |
+| Tools | `src/tools/browser/` | `windows` (which run holds which window, each run's page in it, the handoff hold), `state` (the `window` parameter, URL guard, the run's workspace), `navigation` (pages, windows, tabs), `inspect` (find/network/response), `actions` (things done to the page), `lowlevel` (eval/CDP/dialog/download/pdf), `session` (the one browser, run start and end, the outcome, `browser_done`), `register` (the toolbox into the registry), `delegate` (`delegate_browser_task`, the door every other agent sees) |
 | Agent | `src/agents/builtin/browser.md` | The browser agent: `base: browser`, prompt and rules, `maxIterations: 60`. Runs through `src/subagents/runner.ts` and `src/agent/bridge.ts` like every sub-agent |
 
 ## Tools
@@ -67,7 +67,8 @@ app see the runs it creates like any other one-shot.
 |---|---|
 | `browser_navigate(url)` | Open URL, return snapshot with refs |
 | `browser_reload()` | Reload the current page in place, return a fresh snapshot |
-| `browser_text(max_chars?)` | The visible text of the page and its iframes (what the a11y tree does not carry) |
+| `browser_text()` | The visible text of the page and its iframes (what the a11y tree does not carry), whole |
+| `browser_read_output(path, offset?)` | The rest of one of the run's own results that was too long for the live message, part by part |
 | `browser_fetch(url, method?, headers?, body?)` | Issue a request **from the page** (same origin, session cookies) and read the body |
 | `browser_snapshot()` | Accessibility tree with `[__ref=N]` |
 | `browser_click(ref)` | Click element by ref |
@@ -93,7 +94,7 @@ app see the runs it creates like any other one-shot.
 | `browser_focus_tab(tab)` | Switch to a tab of the window, by its number in it |
 | `browser_close_tab(tab)` | Close a tab of the window, by its number in it |
 
-Every tool but `browser_list_windows`, `browser_new_window` and `browser_done` takes `window`, the
+Every tool but `browser_list_windows`, `browser_new_window`, `browser_read_output` and `browser_done` takes `window`, the
 window to act in: the first one to name a free window takes it for the run (`docs/browser-windows.md`).
 | `browser_done(summary, needs_human?)` | Record the outcome for the caller (summary, human takeover), then the agent answers with the summary |
 | `delegate_browser_task(url, instructions)` | Any other agent → a run of the browser agent. Screenshots auto-attached to response |
@@ -246,7 +247,8 @@ Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
   task. It never calls `browser.close()` (with `connectOverCDP` that would kill the external
   Chromium); on `disconnected` it resets and reconnects on the next task.
 - **Nothing closes at a run's end**: windows and tabs stay open so the browser persists for the
-  next task; past 12 tabs, idle agent tabs nobody holds are swept when a tab is about to open.
+  next task, until someone closes them: nothing sweeps them (`docs/browser-windows.md`). A tab
+  whose page froze is closed when a call on it runs out of time, unless a human was handed it.
   Screenshots are not deleted here (sent as attachments, then removed post-send by
   `cleanupGeneratedTempFiles`, which sweeps `/tmp/browser-*` and `/tmp/tts-*`).
 - **Self-healing**: if Chromium or the sidecar restarts (e.g. `myclaw update`), the next task
@@ -332,7 +334,8 @@ src/browser/
   client.ts          # Bun: HTTP client to the sidecar (pages = opaque ids), per-endpoint timeouts
   types.ts           # Snapshot, Attachment, TabInfo, Result, ActionInfo, viewport, low-level results
 src/tools/browser/
-  windows.ts         # Which run holds which window, each run's page in it, the cap and the sweep
+  windows.ts         # Which run holds which window, each run's page in it, the handoff hold
+  output.ts          # browser_read_output: the run's own long results, read to the end
   state.ts           # The `window` parameter, URL guard, snapshot formatting
   navigation.ts      # navigate/snapshot/screenshot, windows, tabs
   actions.ts         # click, type, select_option, upload, key, scroll, hover, drag, click_at, wait_for

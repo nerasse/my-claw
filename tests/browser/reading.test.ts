@@ -39,7 +39,7 @@ function page(): { client: BrowserClient; state: BrowserWindows } {
 describe("browser_fetch", () => {
   test("asks the site's API from the page and returns the body", async () => {
     const m = mockSidecar({
-      fetch: { url: "https://site.test/api/x", status: 200, contentType: "application/json", truncated: false, body: '{"ok":true}' },
+      fetch: { url: "https://site.test/api/x", status: 200, contentType: "application/json", body: '{"ok":true}' },
     });
     try {
       const { client, state } = page();
@@ -56,7 +56,7 @@ describe("browser_fetch", () => {
   });
 
   test("a non-2xx status is a result, not an error", async () => {
-    const m = mockSidecar({ fetch: { url: "https://s.test/x", status: 404, contentType: "text/plain", truncated: false, body: "not found" } });
+    const m = mockSidecar({ fetch: { url: "https://s.test/x", status: 404, contentType: "text/plain", body: "not found" } });
     try {
       const { client, state } = page();
       const result = await createBrowserFetchTool(client, state).execute({ window: 1, __sessionId: "run", url: "https://s.test/x" });
@@ -68,16 +68,19 @@ describe("browser_fetch", () => {
     }
   });
 
-  test("a truncated body says so, and an empty one says so", async () => {
-    const m = mockSidecar({ fetch: { url: "u", status: 200, contentType: "", truncated: true, body: "x" } });
+  // Owner, 2026-09-26: no cap. A long body is the agent loop's to spill, like any tool output.
+  test("a long body arrives whole, and an empty one says so", async () => {
+    const long = "x".repeat(900_000);
+    const m = mockSidecar({ fetch: { url: "u", status: 200, contentType: "", body: long } });
     try {
       const { client, state } = page();
-      const truncated = await createBrowserFetchTool(client, state).execute({ window: 1, __sessionId: "run", url: "/a" });
-      assert.match(truncated.output, /\[truncated\]/);
+      const whole = await createBrowserFetchTool(client, state).execute({ window: 1, __sessionId: "run", url: "/a" });
+      assert.ok(whole.output.endsWith(long));
+      assert.doesNotMatch(whole.output, /truncated/);
     } finally {
       m.restore();
     }
-    const m2 = mockSidecar({ fetch: { url: "u", status: 204, contentType: "", truncated: false, body: "" } });
+    const m2 = mockSidecar({ fetch: { url: "u", status: 204, contentType: "", body: "" } });
     try {
       const { client, state } = page();
       const empty = await createBrowserFetchTool(client, state).execute({ window: 1, __sessionId: "run", url: "/a" });
@@ -88,7 +91,7 @@ describe("browser_fetch", () => {
   });
 
   test("method, headers and body are forwarded", async () => {
-    const m = mockSidecar({ fetch: { url: "u", status: 200, contentType: "", truncated: false, body: "ok" } });
+    const m = mockSidecar({ fetch: { url: "u", status: 200, contentType: "", body: "ok" } });
     try {
       const { client, state } = page();
       await createBrowserFetchTool(client, state).execute({ window: 1, __sessionId: "run", url: "/api", method: "POST", headers: { "content-type": "application/json", "x-drop": 7 }, body: "{}" });
@@ -129,7 +132,7 @@ describe("browser_fetch", () => {
 
 describe("browser_text", () => {
   test("returns the visible text", async () => {
-    const m = mockSidecar({ text: { truncated: false, text: "Bonjour\ntout le monde" } });
+    const m = mockSidecar({ text: { text: "Bonjour\ntout le monde" } });
     try {
       const { client, state } = page();
       const result = await createBrowserTextTool(client, state).execute({ window: 1, __sessionId: "run" });
@@ -141,7 +144,7 @@ describe("browser_text", () => {
   });
 
   test("an empty page is not an error", async () => {
-    const m = mockSidecar({ text: { truncated: false, text: "   " } });
+    const m = mockSidecar({ text: { text: "   " } });
     try {
       const { client, state } = page();
       const result = await createBrowserTextTool(client, state).execute({ window: 1, __sessionId: "run" });
@@ -152,12 +155,12 @@ describe("browser_text", () => {
     }
   });
 
-  test("max_chars is forwarded", async () => {
-    const m = mockSidecar({ text: { truncated: false, text: "a" } });
+  test("the text is asked for whole: there is no cap to pass", async () => {
+    const m = mockSidecar({ text: { text: "a" } });
     try {
       const { client, state } = page();
-      await createBrowserTextTool(client, state).execute({ window: 1, __sessionId: "run", max_chars: 500 });
-      assert.strictEqual(m.calls.find((c) => c.path === "text")?.body.maxChars, 500);
+      await createBrowserTextTool(client, state).execute({ window: 1, __sessionId: "run" });
+      assert.deepStrictEqual(Object.keys(m.calls.find((c) => c.path === "text")?.body ?? {}), ["pageId"]);
     } finally {
       m.restore();
     }

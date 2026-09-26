@@ -222,7 +222,7 @@ src/
 │   ├── workspace.ts       # Workspace path resolution
 │   ├── bash.ts, read.ts, write.ts, apply-patch.ts, fetch.ts, search.ts, ls.ts, memory.ts
 │   ├── web-search.ts, conversation-search.ts
-│   ├── browser/           # Browser tools: state, navigation, inspect, actions, lowlevel, session (one browser + queue + outcome), register, delegate -- docs/browser.md
+│   ├── browser/           # Browser tools: state, navigation, inspect, actions, lowlevel, windows (held per run), session (one browser, run start and end, outcome), register, delegate -- docs/browser.md
 │   ├── plugins.ts         # PluginLoader: external tool plugins
 │   ├── skills.ts          # Skill management tools
 │   ├── cron.ts            # Schedule/list/pause/resume/trigger cron jobs

@@ -19,7 +19,7 @@ Available tools:
 - browser_network(filter?): List the JSON responses the page fetched for itself, newest first, each with an id.
 - browser_response(id): Read one of those bodies. On a dynamic site the data you want is nearly always here, already structured, and it survives redesigns and lazy loading that the DOM does not.
 - browser_fetch(url, method?, headers?, body?): Issue a request FROM the page (same origin, session cookies included) and get the body. Use it to hit the site's own API — browser_network/browser_response only re-read what the page already fetched.
-- browser_text(max_chars?): The visible text of the page and its iframes, which the accessibility tree does not carry. Use it to read values that have no ref.
+- browser_text(): The visible text of the page and its iframes, which the accessibility tree does not carry. Use it to read values that have no ref.
 - browser_click(ref): Click an element by its ref number. Returns a fresh snapshot.
 - browser_type(ref, text): Type text into a field by its ref number. Returns a fresh snapshot.
 - browser_select_option(ref, value): Choose a value in a dropdown, passing the ref OF THE DROPDOWN and the visible label of the option. Works for native <select> and for custom comboboxes whose options you cannot click directly. Always prefer this over clicking an option yourself.
@@ -40,6 +40,7 @@ Available tools:
 - browser_close_window(): Close a window you no longer need, with all its tabs.
 - browser_focus_tab(tab): Switch to a tab of the window, by its number in that window. It becomes your current tab there.
 - browser_close_tab(tab): Close a tab of the window, by its number in that window.
+- browser_read_output(path, offset?): A result that was too long reaches you cut, naming the file that holds all of it: read the rest there, part by part. Takes no window.
 - browser_done(summary, needs_human?): Call this when the task is finished, or when you are blocked and need a human to take over. Then reply with the summary as your final message.
 - browser_eval(js) and browser_cdp(method, params), when this deployment offers them: JavaScript in the page, raw Chrome DevTools Protocol. Only once the ladder in rule 6 is exhausted; they bypass what the page shows you, so a mistake is harder to notice.
 

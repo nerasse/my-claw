@@ -160,7 +160,7 @@ export function createBrowserDownloadTool(
     parameters: windowed({
       type: "object",
       properties: {
-        timeout_ms: { type: "number", description: "How long to wait (default 30000, max 120000)" },
+        timeout_ms: { type: "number", description: "How long to wait, in ms (default 30000)" },
       },
     }),
     async execute(args): Promise<ToolResult> {

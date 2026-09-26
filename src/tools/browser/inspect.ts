@@ -102,8 +102,7 @@ export function createBrowserResponseTool(client: BrowserClient, pages: BrowserW
       const id = num(args, "id", 0);
       try {
         const result = await client.responseBody(await pages.page(args), id);
-        const note = result.truncated ? "\n[body truncated]" : "";
-        return { success: true, output: `${result.status} ${result.url}\n${result.body}${note}` };
+        return { success: true, output: `${result.status} ${result.url}\n${result.body}` };
       } catch (e) {
         return { success: false, output: "", error: String(e) };
       }
@@ -141,8 +140,7 @@ export function createBrowserFetchTool(client: BrowserClient, pages: BrowserWind
         });
         const type = result.contentType ? ` ${result.contentType}` : "";
         const payload = result.body.length === 0 ? "\n(empty body)" : `\n${result.body}`;
-        const note = result.truncated ? " [truncated]" : "";
-        return { success: true, output: `HTTP ${result.status}${type} ${result.url}${note}${payload}` };
+        return { success: true, output: `HTTP ${result.status}${type} ${result.url}${payload}` };
       } catch (e) {
         return { success: false, output: "", error: String(e) };
       }
@@ -155,16 +153,10 @@ export function createBrowserTextTool(client: BrowserClient, pages: BrowserWindo
     name: "browser_text",
     description:
       "The visible text of the page (and its iframes), which the accessibility tree does not carry. Use it to read prose, values or canvas-backed labels that have no ref, instead of writing JavaScript to reach document.body.innerText.",
-    parameters: windowed({
-      type: "object",
-      properties: {
-        max_chars: { type: "number", description: "Cap the returned text (default 20000)" },
-      },
-    }),
+    parameters: windowed({ type: "object", properties: {} }),
     async execute(args): Promise<ToolResult> {
-      const maxChars = numOpt(args, "max_chars");
       try {
-        const result = await client.text(await pages.page(args), maxChars);
+        const result = await client.text(await pages.page(args));
         if (!result.text.trim()) return { success: true, output: "The page has no visible text." };
         return { success: true, output: result.text };
       } catch (e) {

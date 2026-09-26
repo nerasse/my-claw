@@ -2,13 +2,12 @@ import { describe, expect, test } from "bun:test";
 import {
   BrowserWindows,
   HANDOFF_HOLD_MS,
-  MAX_AGENT_WINDOWS,
-  SWEEP_ABOVE_TABS,
-  SWEEP_IDLE_MS,
   type BrowserWindowView,
   type WindowsBackend,
 } from "../../src/tools/browser/windows.ts";
-import { isBrowserInfraError } from "../../src/tools/browser/session.ts";
+import { BrowserSession, isBrowserInfraError, recordBrowserOutcome } from "../../src/tools/browser/session.ts";
+import type { MyClawConfig } from "../../src/core/config.ts";
+import { mockFetch } from "../helpers/mock-fetch.ts";
 
 /** A browser in memory: windows and tabs the tests arrange, and a record of what was closed. */
 function fakeBrowser(initial: BrowserWindowView[] = []) {
@@ -172,22 +171,48 @@ describe("BrowserWindows: human handoff", () => {
     w.beginRun("OTHER", "conv-2");
     expect(await w.page(run("OTHER", 1))).toBe("r1");
   });
+
+  // Owner, 2026-09-26: never close a tab an agent handed to the user. The client asks this before
+  // closing a frozen tab on its own.
+  test("a tab of a window kept for a human is known as such, until the hold ends", async () => {
+    let clock = 1_000;
+    const b = fakeBrowser([reddit(11, "r1"), reddit(12, "r2")]);
+    const w = new BrowserWindows(b.backend, () => clock);
+    w.beginRun("A", "conv-1");
+    await w.page(run("A", 1));
+    await w.page(run("A", 2));
+    w.endRun("A", false);
+    expect(w.keptForHuman("r1")).toBe(false);
+
+    w.beginRun("H", "conv-2");
+    await w.page(run("H", 1));
+    w.endRun("H", true);
+    expect(w.keptForHuman("r1")).toBe(true);
+    expect(w.keptForHuman("r2")).toBe(false);
+    expect(w.keptForHuman("unknown")).toBe(false);
+
+    clock += HANDOFF_HOLD_MS + 1;
+    expect(w.keptForHuman("r1")).toBe(false);
+  });
 });
 
 describe("BrowserWindows: windows and tabs", () => {
-  test("a new window is the caller's, and the cap counts agent windows only", async () => {
+  // Owner, 2026-09-26: no cap. How many windows the runs open is theirs to decide.
+  test("a new window is the caller's, however many agents already opened", async () => {
     const human = Array.from({ length: 3 }, (_, i) => reddit(100 + i, `h${i}`));
     const b = fakeBrowser(human);
     const w = new BrowserWindows(b.backend);
     w.beginRun("A");
-    for (let i = 0; i < MAX_AGENT_WINDOWS; i++) await w.newWindow(run("A"), `https://site-${i}.test`);
-    const refusal = await w.newWindow(run("A"), "https://one-more.test").catch((e: Error) => e.message);
-    expect(refusal).toContain(`already has ${MAX_AGENT_WINDOWS} windows opened by agents`);
-    // The owner's three windows were free and are offered for reuse.
-    expect(refusal).toContain("window 1");
+    w.beginRun("B");
+    for (let i = 0; i < 30; i++) await w.newWindow(run(i % 2 ? "A" : "B"), `https://site-${i}.test`);
+    const { alias } = await w.newWindow(run("A"), "https://one-more.test");
+    expect(await w.page(run("A", alias))).toBeTruthy();
+    expect(b.windows.length).toBe(34);
+    const refusal = await w.page(run("B", alias)).catch((e: Error) => e.message);
+    expect(refusal).toContain("in use by another task");
   });
 
-  test("a window a site opened neither counts against the cap nor is free: it follows its opener", async () => {
+  test("a window a site opened is not free: it follows its opener", async () => {
     const b = fakeBrowser([reddit(11, "r1")]);
     const w = new BrowserWindows(b.backend);
     w.beginRun("A");
@@ -197,7 +222,6 @@ describe("BrowserWindows: windows and tabs", () => {
     const refusal = await w.page(run("B", 2)).catch((e: Error) => e.message);
     expect(refusal).toContain("in use by another task");
     expect(await w.page(run("A", 2))).toBe("pop");
-    for (let i = 0; i < MAX_AGENT_WINDOWS; i++) await w.newWindow(run("A"), `https://site-${i}.test`);
   });
 
   test("focus_tab makes a tab the run's page; close_tab forgets it", async () => {
@@ -231,9 +255,10 @@ describe("BrowserWindows: windows and tabs", () => {
   });
 });
 
-describe("BrowserWindows: the sweep", () => {
-  /** A run that opened `count` tabs in one window, then ended long ago. */
-  async function idleAgentTabs(count: number) {
+// Owner, 2026-09-26: nothing closes a tab behind anyone's back. Tabs pile up until someone
+// closes them; what that costs is the machine's.
+describe("BrowserWindows: no sweep", () => {
+  test("idle agent tabs are never closed, however many and however old", async () => {
     let clock = 1_000;
     const b = fakeBrowser([{ windowId: 1, tabs: [{ pageId: "owner", url: "https://owner.test", title: "" }] }]);
     const w = new BrowserWindows(b.backend, () => clock);
@@ -241,47 +266,43 @@ describe("BrowserWindows: the sweep", () => {
     await w.describe("A");
     const { result } = await w.newWindow(run("A"), "https://agent.test/0");
     const agentWindow = b.windows.find((x) => x.tabs.some((t) => t.pageId === result.pageId))!;
-    for (let i = 1; i < count; i++) agentWindow.tabs.push({ pageId: `a${i}`, url: `https://agent.test/${i}`, title: "" });
+    for (let i = 1; i < 40; i++) agentWindow.tabs.push({ pageId: `a${i}`, url: `https://agent.test/${i}`, title: "" });
     await w.describe("A");
     w.endRun("A", false);
-    return { b, w, advance: (ms: number) => (clock += ms) };
-  }
-
-  test("past the threshold, idle agent tabs nobody holds are closed, and never the owner's", async () => {
-    const { b, w, advance } = await idleAgentTabs(SWEEP_ABOVE_TABS + 2);
-    advance(SWEEP_IDLE_MS);
+    clock += 7 * 24 * 60 * 60_000;
     w.beginRun("B");
     await w.newWindow(run("B"), "https://fresh.test");
-    expect(b.closedTabs.length).toBe(3);
-    expect(b.closedTabs).not.toContain("owner");
-  });
-
-  test("tabs used recently are not swept", async () => {
-    const { b, w, advance } = await idleAgentTabs(SWEEP_ABOVE_TABS + 2);
-    advance(SWEEP_IDLE_MS - 1);
-    w.beginRun("B");
-    await w.newWindow(run("B"), "https://fresh.test");
+    await w.page(run("B", 2, { tab: 1 }));
     expect(b.closedTabs).toEqual([]);
   });
+});
 
-  test("a held window is never swept", async () => {
-    const { b, w, advance } = await idleAgentTabs(SWEEP_ABOVE_TABS + 2);
-    advance(SWEEP_IDLE_MS);
-    w.beginRun("C");
-    await w.page(run("C", 2));
-    w.beginRun("B");
-    await w.newWindow(run("B"), "https://fresh.test");
-    expect(b.closedTabs).toEqual([]);
-  });
-
-  test("tabs open when the server started are never the agent's", async () => {
-    let clock = 1_000;
-    const many = Array.from({ length: SWEEP_ABOVE_TABS + 3 }, (_, i) => ({ pageId: `old${i}`, url: `https://old.test/${i}`, title: "" }));
-    const b = fakeBrowser([{ windowId: 1, tabs: many }]);
-    const w = new BrowserWindows(b.backend, () => clock);
-    clock += SWEEP_IDLE_MS * 10;
-    w.beginRun("A");
-    await w.newWindow(run("A"), "https://fresh.test");
-    expect(b.closedTabs).toEqual([]);
+describe("BrowserSession: the windows decide what the client may close", () => {
+  // The client closes a frozen tab on its own; only the windows know that a human was handed one.
+  test("a frozen tab in a window handed to a human is not closed by the shared client", async () => {
+    const paths: string[] = [];
+    const mock = mockFetch(async (input) => {
+      const path = String(input).split("/").pop() ?? "";
+      paths.push(path);
+      if (path === "list-windows") return new Response(JSON.stringify({ windows: [reddit(11, "r1")] })) as never;
+      if (path === "probe") return new Response(JSON.stringify({ open: true, responsive: false, url: "https://captcha.test" })) as never;
+      if (path === "close-target") return new Response("{}") as never;
+      throw Object.assign(new Error("timeout"), { name: "TimeoutError" });
+    });
+    try {
+      const session = new BrowserSession({ browser: { enabled: true } } as MyClawConfig);
+      session.beginRun("run-h", "conv-1");
+      await session.windows.page(run("run-h", 1));
+      recordBrowserOutcome("run-h", { needsHuman: true });
+      session.endRun("run-h");
+      const error = await session.client.snapshot("r1").then(
+        () => "",
+        (e: Error) => e.message,
+      );
+      expect(error).toContain("left open");
+      expect(paths).not.toContain("close-target");
+    } finally {
+      mock.restore();
+    }
   });
 });

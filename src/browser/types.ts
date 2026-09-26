@@ -62,8 +62,8 @@ export interface BrowserWaitResult {
   waited: string;
 }
 
-/** Low-level results are pre-serialized and truncated by the sidecar: page-controlled data
- *  must not be able to flood the agent's context. */
+/** Low-level results come pre-serialized. Their length is the agent loop's to handle, like any
+ *  tool output: past its ceiling the rest goes to a file the agent can read. */
 export interface BrowserEvalResult {
   value: string;
 }
@@ -73,12 +73,10 @@ export interface BrowserFetchResult {
   url: string;
   status: number;
   contentType: string;
-  truncated: boolean;
   body: string;
 }
 
 export interface BrowserTextResult {
-  truncated: boolean;
   text: string;
 }
 
@@ -106,8 +104,8 @@ export interface BrowserResponseInfo {
   method: string;
 }
 
-/** `total` counts everything recorded for the page, `responses` only what the filter kept and
- *  the cap allowed: an agent that saw 3 of 90 must be able to tell that from a page with 3. */
+/** `total` counts everything recorded for the page, `responses` only what the filter kept: an
+ *  agent that saw 3 of 90 must be able to tell that from a page with 3. */
 export interface BrowserResponseList {
   total: number;
   responses: BrowserResponseInfo[];
@@ -116,6 +114,5 @@ export interface BrowserResponseList {
 export interface BrowserResponseBody {
   url: string;
   status: number;
-  truncated: boolean;
   body: string;
 }

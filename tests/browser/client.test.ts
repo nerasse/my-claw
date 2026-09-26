@@ -191,7 +191,7 @@ describe("BrowserClient", () => {
       navigate: { pageId: "p1", snapshot: { raw: "", refs: [] }, url: "https://a.test" },
       find: { query: "q", matches: 1, lines: ["row"], url: "https://a.test" },
       responses: { total: 3, responses: [{ id: 2, url: "https://a.test/api", status: 200, type: "application/json", method: "GET" }] },
-      responseBody: { url: "https://a.test/api", status: 200, truncated: false, body: "{}" },
+      responseBody: { url: "https://a.test/api", status: 200, body: "{}" },
     });
     try {
       const client = new BrowserClient(SIDECAR);
@@ -361,6 +361,188 @@ describe("BrowserClient", () => {
       assert.ok(seen.length === 1, "only the long-timeout call should have completed");
     } finally {
       handle.restore();
+    }
+  });
+});
+
+/**
+ * A tab stuck in its own JavaScript answers nothing, and whatever waited on it waited for every run
+ * (2026-09-26: the window listing timed out 80 times over forty minutes, and runs on other sites
+ * failed with it). The client tells a frozen page from a slow one and closes the frozen one, unless
+ * a human was handed its window.
+ */
+describe("BrowserClient: a frozen tab", () => {
+  const timeout = (): never => {
+    const e = new Error("The operation was aborted due to timeout");
+    e.name = "TimeoutError";
+    throw e;
+  };
+
+  function sidecar(answer: (path: string, body: Record<string, unknown>) => Response | Promise<Response>) {
+    const calls: Call[] = [];
+    const handle = mockFetch(async (input, init) => {
+      const path = String(input).split("/").pop() ?? "";
+      const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown>;
+      calls.push({ path, body });
+      return (await answer(path, body)) as never;
+    });
+    return { calls, restore: handle.restore };
+  }
+
+  const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status });
+
+  const failure = async (call: Promise<unknown>): Promise<string> => {
+    try {
+      await call;
+    } catch (e) {
+      return (e as Error).message;
+    }
+    throw new Error("the call was expected to fail");
+  };
+
+  test("a call that runs out of time on a frozen page closes the tab and says so", async () => {
+    const m = sidecar((path) => {
+      if (path === "probe") return json({ open: true, responsive: false, url: "https://careers.test/job" });
+      if (path === "close-target") return json({});
+      return timeout();
+    });
+    try {
+      const error = await failure(new BrowserClient(SIDECAR).snapshot("p1"));
+      assert.match(error, /frozen/);
+      assert.match(error, /was closed/);
+      assert.match(error, /https:\/\/careers\.test\/job/);
+      assert.ok(!isBrowserInfraError(error), "a frozen tab is not the browser being down");
+      assert.deepStrictEqual(m.calls.map((c) => c.path), ["snapshot", "probe", "close-target"]);
+      assert.deepStrictEqual(m.calls[2]?.body, { pageId: "p1" });
+    } finally {
+      m.restore();
+    }
+  });
+
+  // Owner, 2026-09-26: never close a tab an agent is waiting on the user for.
+  test("a frozen tab a human was handed is left open", async () => {
+    const m = sidecar((path) => {
+      if (path === "probe") return json({ open: true, responsive: false, url: "https://captcha.test" });
+      if (path === "close-target") return json({});
+      return timeout();
+    });
+    try {
+      const client = new BrowserClient(SIDECAR);
+      client.keepOpenWhen((pageId) => pageId === "p1");
+      const error = await failure(client.snapshot("p1"));
+      assert.match(error, /frozen/);
+      assert.match(error, /left open/);
+      assert.ok(!m.calls.some((c) => c.path === "close-target"), "the human's tab must not be closed");
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("a page that is only slow is left alone, and said to be slow", async () => {
+    const m = sidecar((path) => (path === "probe" ? json({ open: true, responsive: true, url: "https://slow.test" }) : timeout()));
+    try {
+      const error = await failure(new BrowserClient(SIDECAR).text("p1"));
+      assert.match(error, /slow, not stuck/);
+      assert.ok(!error.includes("raise the budget"), "the agent has no budget to raise");
+      assert.ok(!m.calls.some((c) => c.path === "close-target"));
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("Playwright's own timeout on a live page keeps its message: it says what it waited for", async () => {
+    const message = "locator.waitFor: Timeout 30000ms exceeded. waiting for getByText('First name')";
+    const m = sidecar((path) => (path === "probe" ? json({ open: true, responsive: true }) : json({ error: message }, 500)));
+    try {
+      const error = await failure(new BrowserClient(SIDECAR).waitFor("p1", { text: "First name" }));
+      assert.strictEqual(error, message);
+      assert.deepStrictEqual(m.calls.map((c) => c.path), ["wait-for", "probe"]);
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("Playwright's timeout on a frozen page closes it too", async () => {
+    const m = sidecar((path) => {
+      if (path === "probe") return json({ open: true, responsive: false, url: "https://careers.test" });
+      if (path === "close-target") return json({});
+      return json({ error: "page.goto: Timeout 30000ms exceeded." }, 500);
+    });
+    try {
+      const error = await failure(new BrowserClient(SIDECAR).navigate("https://careers.test", { pageId: "p1" }));
+      assert.match(error, /frozen/);
+      assert.ok(m.calls.some((c) => c.path === "close-target"));
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("a browser the sidecar cannot reach for a frozen tab gets the tab closed, and the call goes through", async () => {
+    let attempts = 0;
+    const m = sidecar((path) => {
+      if (path === "close-target") return json({});
+      attempts += 1;
+      if (attempts === 1) {
+        return json({ error: "The browser cannot be reached while 1 of its tabs is frozen", frozen: [{ pageId: "f1", url: "https://stuck.test" }] }, 500);
+      }
+      return json({ windows: [] });
+    });
+    try {
+      assert.deepStrictEqual(await new BrowserClient(SIDECAR).listWindows(), []);
+      assert.deepStrictEqual(m.calls.map((c) => c.path), ["list-windows", "close-target", "list-windows"]);
+      assert.deepStrictEqual(m.calls[1]?.body, { pageId: "f1" });
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("the frozen tab holding the browser is kept when a human was handed it, and the caller is told", async () => {
+    const m = sidecar((path) =>
+      path === "close-target"
+        ? json({})
+        : json({ error: "The browser cannot be reached while 1 of its tabs is frozen", frozen: [{ pageId: "h1", url: "https://captcha.test" }] }, 500),
+    );
+    try {
+      const client = new BrowserClient(SIDECAR);
+      client.keepOpenWhen((pageId) => pageId === "h1");
+      const error = await failure(client.listWindows());
+      assert.match(error, /human/);
+      assert.ok(!m.calls.some((c) => c.path === "close-target"));
+      assert.ok(!isBrowserInfraError(error));
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("a call on no page is never probed", async () => {
+    const m = sidecar(() => timeout());
+    try {
+      const error = await failure(new BrowserClient(SIDECAR).listWindows());
+      assert.match(error, /budget/);
+      assert.deepStrictEqual(m.calls.map((c) => c.path), ["list-windows"]);
+    } finally {
+      m.restore();
+    }
+  });
+
+  test("a call that asks the sidecar to wait is given that long", async () => {
+    const handle = mockFetch(async (_input, init) => {
+      const signal = (init as { signal?: AbortSignal }).signal;
+      return await new Promise<never>((resolve, reject) => {
+        const timer = setTimeout(() => resolve(json({ waited: "delay" }) as never), 150);
+        signal?.addEventListener("abort", () => {
+          clearTimeout(timer);
+          reject(Object.assign(new Error("aborted"), { name: "TimeoutError" }));
+        });
+      });
+    });
+    const m = { restore: handle.restore };
+    try {
+      const client = new BrowserClient(SIDECAR, undefined, { default: 40, "wait-for": 40 });
+      const result = await client.waitFor("p1", { timeoutMs: 100 });
+      assert.strictEqual(result.waited, "delay");
+    } finally {
+      m.restore();
     }
   });
 });

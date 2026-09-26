@@ -25,7 +25,6 @@ export function createBrowserNavigateTool(client: BrowserClient, pages: BrowserW
       try {
         await guardUrl(url);
         const windowId = await pages.window(args);
-        if (newTab) await pages.beforeOpeningTab();
         const result = newTab
           ? await client.navigate(url, { windowId, newTab: true })
           : await client.navigate(url, { pageId: await pages.page(args), windowId });

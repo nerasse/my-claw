@@ -262,6 +262,13 @@ describe("E2E browser delegation", () => {
     }
   });
 
+  test("the browser agent can read its own long results, and gets no general file reader", async () => {
+    const registry = await withBrowser(config);
+    const names = registry.getForAgent("browser").map((t) => t.name);
+    expect(names).toContain("browser_read_output");
+    expect(names).not.toContain("read");
+  });
+
   test("delegate_browser_task has url and instructions as required params", async () => {
     const registry = await withBrowser(config);
     const router = makeRouter(registry);

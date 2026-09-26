@@ -247,7 +247,7 @@ export function createBrowserWaitForTool(client: BrowserClient, pages: BrowserWi
       properties: {
         text: { type: "string", description: "Wait until this text is visible on the page" },
         ref: { type: "number", description: "Wait until this ref is visible" },
-        timeout_ms: { type: "number", description: "Give up after this long (default 10000, max 30000)" },
+        timeout_ms: { type: "number", description: "Give up after this long, in ms (default 10000)" },
       },
     }),
     async execute(args): Promise<ToolResult> {

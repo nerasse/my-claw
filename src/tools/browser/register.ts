@@ -34,6 +34,7 @@ import {
   createBrowserSnapshotTool,
 } from "./navigation.ts";
 import { createBrowserDoneTool, guardedBrowserTool, type BrowserSession } from "./session.ts";
+import { createBrowserReadOutputTool } from "./output.ts";
 
 /**
  * The browser agent's toolbox, in the process-wide registry.
@@ -61,6 +62,7 @@ export function registerBrowserTools(registry: ToolRegistry, config: MyClawConfi
     createBrowserResponseTool(client, windows),
     createBrowserFetchTool(client, windows),
     createBrowserTextTool(client, windows),
+    createBrowserReadOutputTool(),
     createBrowserClickTool(client, windows),
     createBrowserTypeTool(client, windows),
     createBrowserSelectOptionTool(client, windows),

@@ -47,7 +47,10 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify(result ?? {}));
   } catch (e) {
     res.writeHead(500, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: String(e instanceof Error ? e.message : e) }));
+    // `frozen` travels with the error: whether those tabs may be closed is the server's call, which
+    // alone knows the ones a human is working in.
+    const frozen = e && typeof e === "object" && Array.isArray(e.frozen) ? { frozen: e.frozen } : {};
+    res.end(JSON.stringify({ error: String(e instanceof Error ? e.message : e), ...frozen }));
   }
 });
 

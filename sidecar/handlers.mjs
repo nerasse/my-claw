@@ -5,7 +5,9 @@ import {
   CDP_URL,
   adopt,
   allPages,
+  birthOf,
   browserSession,
+  closeTarget,
   dropPage,
   ensureContext,
   getPage,
@@ -13,9 +15,10 @@ import {
   idOf,
   isConnected,
   pageForTarget,
+  pageTargets,
   popDownload,
   recordedResponses,
-  RESPONSE_BODY_MAX,
+  responsive,
   setDialogOverride,
   takeChooser,
   windowOf,
@@ -23,11 +26,11 @@ import {
 } from "./browser.mjs";
 import { injectRefLabels, removeRefLabels, resolveRef, screenshotPath, snapshotPage } from "./snapshot.mjs";
 
-const MAX_LOW_LEVEL_OUTPUT = 20000;
-
 // Hard floor, independent of config: these would expose the browser session's credentials
 // (cookies, storage, auth headers via request interception) or let the agent escape its own
 // page. A hostile page steering the agent must not be able to reach them.
+const byBirth = (a, b) => birthOf(a.pageId ?? a.id) - birthOf(b.pageId ?? b.id);
+
 const CDP_DENIED = [
   /^Browser\./i,
   /^Target\./i,
@@ -103,27 +106,54 @@ export const handlers = {
     return { windowId: await windowOf(targetId), pageId: targetId, snapshot: await snapshotPage(page), url: page.url() };
   },
 
+  // Asked of the browser, never of the pages: a tab stuck in its own JavaScript answers nothing,
+  // its title included, and a listing that asked each tab waited on it for every run at once.
   async "list-windows"() {
     const ctx = await ensureContext();
+    const cdp = await browserSession();
+    const targets = await pageTargets();
+    // The opener comes from Playwright, which keeps it without asking the page: the browser's own
+    // list drops it for a target=_blank link, which Chromium opens noopener.
+    const openers = new Map();
+    await Promise.all(
+      ctx.pages().map(async (page) => {
+        const pageId = await adopt(page).catch(() => undefined);
+        const opener = await page.opener().catch(() => null);
+        const openerPageId = opener ? idOf(opener) : undefined;
+        if (pageId && openerPageId) openers.set(pageId, openerPageId);
+      }),
+    );
+    const located = await Promise.all(
+      targets.map((t) =>
+        cdp.send("Browser.getWindowForTarget", { targetId: t.id }).then(
+          (r) => r.windowId,
+          () => undefined, // closed between the listing and the lookup
+        ),
+      ),
+    );
     const windows = new Map();
-    for (const page of ctx.pages()) {
-      if (page.isClosed()) continue;
-      let pageId;
-      let windowId;
-      try {
-        pageId = await adopt(page);
-        windowId = await windowOf(pageId);
-      } catch {
-        continue; // closed between the listing and the lookup
-      }
-      const opener = await page.opener().catch(() => null);
-      const openerPageId = opener ? idOf(opener) : undefined;
-      const tab = { pageId, url: page.url(), title: await page.title().catch(() => ""), ...(openerPageId ? { openerPageId } : {}) };
+    targets.forEach((t, i) => {
+      const windowId = located[i];
+      if (windowId === undefined) return;
       const tabs = windows.get(windowId) ?? [];
-      tabs.push(tab);
+      const openerPageId = openers.get(t.id) ?? t.openerId;
+      tabs.push({ pageId: t.id, url: t.url, title: t.title, ...(openerPageId ? { openerPageId } : {}) });
       windows.set(windowId, tabs);
-    }
-    return { windows: [...windows].map(([windowId, tabs]) => ({ windowId, tabs })) };
+    });
+    return { windows: [...windows].map(([windowId, tabs]) => ({ windowId, tabs: tabs.sort(byBirth) })) };
+  },
+
+  // Whether a tab's page still answers: a call that ran past its budget is either on a slow page or
+  // on a frozen one, and the two call for opposite answers (wait, or close it).
+  async probe(body) {
+    const target = (await pageTargets()).find((t) => t.id === body.pageId);
+    if (!target) return { open: false, responsive: false };
+    return { open: true, responsive: await responsive(target), url: target.url };
+  },
+
+  async "close-target"(body) {
+    await closeTarget(String(body.pageId));
+    return {};
   },
 
   async "close-window"(body) {
@@ -181,21 +211,13 @@ export const handlers = {
       },
       { url, method, headers: body.headers ?? null, payload: body.body ?? null },
     );
-    const truncated = result.body.length > RESPONSE_BODY_MAX;
-    return {
-      url: result.url,
-      status: result.status,
-      contentType: result.contentType,
-      truncated,
-      body: truncated ? `${result.body.slice(0, RESPONSE_BODY_MAX)}...[truncated]` : result.body,
-    };
+    return { url: result.url, status: result.status, contentType: result.contentType, body: result.body };
   },
 
   // The visible text, which the accessibility tree does not carry and the agent otherwise
   // reaches for with a hand-rolled `document.body.innerText` through eval.
   async text(body) {
     const page = await getPage(body.pageId);
-    const cap = Math.min(Math.max(Number(body.maxChars) || MAX_LOW_LEVEL_OUTPUT, 1), 200000);
     const blocks = [];
     for (const frame of page.frames()) {
       const value = await frame
@@ -204,8 +226,7 @@ export const handlers = {
       if (!value || !value.trim()) continue;
       blocks.push(frame === page.mainFrame() ? value : `[iframe ${frame.url().slice(0, 120)}]\n${value}`);
     }
-    const joined = blocks.join("\n\n");
-    return { truncated: joined.length > cap, text: joined.length > cap ? `${joined.slice(0, cap)}...[truncated]` : joined };
+    return { text: blocks.join("\n\n") };
   },
 
   // The JSON the page fetched for itself, listed newest first. Answers "where does this data
@@ -218,7 +239,7 @@ export const handlers = {
     return {
       total: seen.length,
       responses: matched
-        .slice(-40)
+        .slice()
         .reverse()
         .map(({ id, url, status, type, method }) => ({ id, url, status, type, method })),
     };
@@ -236,12 +257,7 @@ export const handlers = {
     } catch (e) {
       throw new Error(`Response ${record.id} (${record.url}) is no longer readable: ${String(e)}`);
     }
-    return {
-      url: record.url,
-      status: record.status,
-      truncated: text.length > RESPONSE_BODY_MAX,
-      body: text.length > RESPONSE_BODY_MAX ? `${text.slice(0, RESPONSE_BODY_MAX)}...[truncated]` : text,
-    };
+    return { url: record.url, status: record.status, body: text };
   },
 
   // Grep over the snapshot the agent already reasons about. Without it, looking for one control
@@ -255,7 +271,7 @@ export const handlers = {
     return {
       query: body.query,
       matches: hits.length,
-      lines: hits.slice(0, 40),
+      lines: hits,
       url: page.url(),
     };
   },
@@ -307,7 +323,7 @@ export const handlers = {
 
   async "wait-for"(body) {
     const page = await getPage(body.pageId);
-    const timeout = Math.min(Number(body.timeoutMs ?? 10000), 30000);
+    const timeout = Number(body.timeoutMs ?? 10000);
     if (body.text) {
       await page.getByText(String(body.text)).first().waitFor({ state: "visible", timeout });
       return { waited: "text" };
@@ -468,17 +484,11 @@ export const handlers = {
     return { type: "image", path, mimeType: "image/png", viewport };
   },
 
-  // Every tab, flat: the app's Browser page lists them. Agents read list-windows.
+  // Every tab, flat: the app's Browser page lists them. Agents read list-windows. Asked of the
+  // browser for the same reason: a frozen tab must not freeze the page that shows it.
   async tabs() {
-    const ctx = await ensureContext();
-    const tabs = await Promise.all(
-      ctx.pages().map(async (p) => ({
-        id: await adopt(p).catch(() => ""),
-        url: p.url(),
-        title: await p.title().catch(() => ""),
-      })),
-    );
-    return { tabs };
+    const targets = await pageTargets();
+    return { tabs: targets.sort(byBirth).map((t) => ({ id: t.id, url: t.url, title: t.title })) };
   },
 
   // Shows the tab in its window. Behind the focus lock: it moves what the next new tab opens after.
@@ -502,10 +512,7 @@ export const handlers = {
   async evaluate(body) {
     const page = await getPage(body.pageId);
     const value = await page.evaluate(`(async () => { ${body.js} })()`);
-    const encoded = JSON.stringify(value ?? null);
-    return {
-      value: encoded.length > MAX_LOW_LEVEL_OUTPUT ? `${encoded.slice(0, MAX_LOW_LEVEL_OUTPUT)}...[truncated]` : encoded,
-    };
+    return { value: JSON.stringify(value ?? null) };
   },
 
   // Raw CDP, inside the sidecar so it stays the single owner of the browser. The denylist is
@@ -520,10 +527,7 @@ export const handlers = {
     const session = await page.context().newCDPSession(page);
     try {
       const result = await session.send(method, body.params ?? {});
-      const encoded = JSON.stringify(result ?? null);
-      return {
-        result: encoded.length > MAX_LOW_LEVEL_OUTPUT ? `${encoded.slice(0, MAX_LOW_LEVEL_OUTPUT)}...[truncated]` : encoded,
-      };
+      return { result: JSON.stringify(result ?? null) };
     } finally {
       await session.detach().catch(() => undefined);
     }
@@ -539,7 +543,7 @@ export const handlers = {
 
   async "download-wait"(body) {
     await getPage(body.pageId); // fail fast: a stale pageId would otherwise burn the whole timeout
-    const timeout = Math.min(Number(body.timeoutMs ?? 30000), 120000);
+    const timeout = Number(body.timeoutMs ?? 30000);
     const deadline = Date.now() + timeout;
     let download = popDownload(body.pageId);
     while (!download && Date.now() < deadline) {
