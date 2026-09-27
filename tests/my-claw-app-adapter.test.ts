@@ -2349,6 +2349,43 @@ describe("MyClawAppAdapter", () => {
     const probe = await fetch(`http://127.0.0.1:${port}/my-claw-app`).catch(() => null);
     assert.equal(probe, null);
   });
+  test("chat.continue picks a stopped run back up with no bubble, and refuses a finished one", async () => {
+    // docs/continue.md: the send pipeline with no text of its own; the run reads the log.
+    const sessionId = store.resolveSessionId(DEVICE_ID, "default");
+    const log = await sessionLogOf(sessionId);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "compte les fichiers" });
+    log.append({ type: "run_start", prompt: false });
+    log.append({ type: "phase", prompt: true, text: "", runId: "t1" });
+    log.append({ type: "run_end", prompt: false, reason: "aborted" });
+    await log.flush();
+
+    client.ws.send(JSON.stringify({ type: "chat.continue", threadId: "default" }));
+    await waitUntil(() => received.length === 1);
+    const msg = received[0]!;
+    assert.equal(msg.resume, true);
+    assert.equal(msg.text, "compte les fichiers");
+    assert.match(msg.id, /^continue-/);
+    // No mirrored bubble: nobody typed anything.
+    await assert.rejects(() => nextFrame(client, 200));
+
+    log.append({ type: "run_start", prompt: false });
+    log.append({ type: "phase", prompt: true, text: "57", runId: "t2" });
+    log.append({ type: "run_end", prompt: false, reason: "done" });
+    await log.flush();
+    client.ws.send(JSON.stringify({ type: "chat.continue", threadId: "default" }));
+    const refused = await nextFrame(client);
+    assert.equal(refused.type, "chat.command.result");
+    assert.match(String(refused.text), /Nothing to continue/);
+    assert.equal(received.length, 1);
+
+    const { end } = runRegistry.startRoot(sessionId);
+    try {
+      client.ws.send(JSON.stringify({ type: "chat.continue", threadId: "default" }));
+      assert.match(String((await nextFrame(client)).text), /already going/);
+    } finally {
+      end();
+    }
+  });
 });
 
 describe("MyClawAppAdapter owners", () => {

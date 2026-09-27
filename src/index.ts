@@ -122,7 +122,8 @@ import { createNotifyTool } from "./tools/notify.ts";
 import { createQuestionTool } from "./tools/question.ts";
 import { questionManager } from "./questions/manager.ts";
 import { createWorkspacesTool } from "./tools/workspaces.ts";
-import { CronScheduler, DEFAULT_CRON_TIMEOUT_MS } from "./cron/scheduler.ts";
+import { CronScheduler, DEFAULT_ALERT_AFTER_MS } from "./cron/scheduler.ts";
+import { parseDurationMs } from "./utils/duration.ts";
 import { createJob, loadJobs, mutateJobs, removeJob, updateJob } from "./cron/store.ts";
 import { endpointStore, foregroundStore, loadOrCreateVapid, publishNotification, isForegroundOn, cleanNotificationText } from "./notifications/push.ts";
 import { SubAgentRunner, type SubAgentStream } from "./subagents/runner.ts";
@@ -753,6 +754,19 @@ async function main() {
       url: `myclaw://job/${jobId}`,
     });
   });
+  // A run still going past its alert time: announced every interval, whatever `silent` says --
+  // a job that runs that long is the one the owner has to decide about. The tap opens the run
+  // itself, where its Stop is. docs/cron.md.
+  hooks.on("cron:job:long", ({ jobName, sessionId, runningMs }) => {
+    const threadId = cronSessionToThread(sessionId);
+    const hours = Math.floor(runningMs / 3_600_000);
+    const minutes = Math.round((runningMs % 3_600_000) / 60_000);
+    void publishNotification({
+      title: jobName,
+      body: `Still running after ${hours > 0 ? `${hours} h${minutes > 0 ? ` ${minutes} min` : ""}` : `${minutes} min`}. Open it to follow it or stop it.`,
+      url: threadId ? `myclaw://thread/${threadId}` : "myclaw://jobs",
+    });
+  });
   // A silent job stays silent when it fails: it used to notify anyway, which made "silent"
   // useless for the failing job that needed it most.
   hooks.on("cron:job:error", ({ jobId, jobName, error, silent }) => {
@@ -801,7 +815,14 @@ async function main() {
         .map((t) => t.name),
     cronAgentSkills: () => resolveAgentSkills(config, "cron"),
     cronAgentMcp: () => resolveAgentMcp(config, "cron"),
-    defaultTimeoutMs: () => config.cron?.timeoutMs ?? DEFAULT_CRON_TIMEOUT_MS,
+    defaultTimeoutMs: () => config.cron?.timeoutMs,
+    defaultAlertAfterMs: () => {
+      try {
+        return config.cron?.alertAfter !== undefined ? parseDurationMs(config.cron.alertAfter) : DEFAULT_ALERT_AFTER_MS;
+      } catch {
+        return DEFAULT_ALERT_AFTER_MS;
+      }
+    },
     // `deliver: "thread:<title>"`: the owner's conversation of that name, or a new one in the job's
     // workspace. Found by title among the owner's threads, so a second job naming the same thread
     // lands beside the first instead of opening another.
@@ -2248,7 +2269,8 @@ async function main() {
         : "";
       return subAgentRunner.send(
         sessionId,
-        message.text,
+        // A Continue from the sub-agent's own chat adds no turn: the runner resumes it.
+        message.resume ? undefined : message.text,
         message.attachments.length > 0 ? message.attachments : undefined,
         message,
         subAgentRegistry,

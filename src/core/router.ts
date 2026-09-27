@@ -140,7 +140,9 @@ export class MessageRouter {
     }
 
     hooks.emit("message:received", { message });
-    archiveChannelMessage(message);
+    // A Continue carries the last question for the run to read, not a new one: archived, it would
+    // show up in search as if it had been asked twice.
+    if (!message.resume) archiveChannelMessage(message);
 
     if (!this.checkRateLimit(message.userId)) {
       void log("warn", "rate limit exceeded", { userId: message.userId, platform: message.platform });
@@ -191,7 +193,7 @@ export class MessageRouter {
       // (a run of its own, app-driven or parent-driven), the message goes into that run instead of
       // waiting in the per-agent queue. RerouteSignal propagates to routeWithReroute, which reruns
       // this branch with noInject -- falling through to a queued, freshly streamed send.
-      if (!options.noInject && runRegistry.canInject(sessionId)) {
+      if (!options.noInject && !message.resume && runRegistry.canInject(sessionId)) {
         const injected = runRegistry.enqueueInjection(sessionId, message);
         if (injected) {
           void log("info", "message queued for injection into active sub-agent run", { ...messageLogData(message), sessionId });
@@ -221,7 +223,8 @@ export class MessageRouter {
     // been claimed has one too (see below), and that is the whole point. The returned promise
     // resolves when the run finishes addressing it -> the adapter's existing reaction/typing/commit
     // lifecycle (which awaits this) just works.
-    if (this.config && injectionEnabled(this.config) && !options.noInject) {
+    // A Continue is never folded into a run in flight: it is a request to restart a stopped one.
+    if (this.config && injectionEnabled(this.config) && !options.noInject && !message.resume) {
       const injected = runRegistry.enqueueInjection(sessionId, message);
       if (injected) {
         void log("info", "message queued for injection into active run", { ...messageLogData(message), sessionId });

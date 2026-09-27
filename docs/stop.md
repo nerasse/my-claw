@@ -191,3 +191,13 @@ what makes an entry after `run_end` impossible rather than merely unlikely.
 ## Hooks
 
 `agent:run:aborted` (per run, main and sub-agents) and `subagent:aborted` fire on stop.
+
+## What a Stop leaves in the log
+
+A Stop ends the run, not the record of what it started. Every call of the tool batch in flight is
+written before `run_end`: the ones that finished with their result, the ones the Stop cut with the
+interruption as theirs (`ToolEntry.interrupted`). The batch used to be thrown away whole on the first
+call that rethrew the abort, finished siblings included, and a stopped run's sub-agents vanished from
+the prompt. A call that returns *after* the Stop is still dropped (a stop is a stop): its result is
+the interruption. Continue picks the run back up from there -- docs/continue.md.
+

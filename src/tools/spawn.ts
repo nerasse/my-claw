@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
-import { SubAgentRunner, type SubAgentStream } from "../subagents/runner.ts";
+import { resumeHint, subagentIdOf, SubAgentRunner, type SubAgentStream } from "../subagents/runner.ts";
 import { SubAgentRegistry } from "../subagents/registry.ts";
 import type { UnifiedMessage } from "../channels/types.ts";
 import { isAbort, rethrowIfAborted } from "../core/aborted.ts";
@@ -144,10 +144,10 @@ export function createSpawnTool(
           return {
             success: false,
             output: "",
-            error: "The sub-agent's run was stopped before it answered. Its work is on disk: send it again, or read its thread.",
+            error: `The sub-agent's run was stopped before it answered.${resumeHint(subagentIdOf(e))}`,
           };
         }
-        return { success: false, output: "", error: String(e) };
+        return { success: false, output: "", error: `The sub-agent failed: ${String(e)}.${resumeHint(subagentIdOf(e))}` };
       }
     },
   };

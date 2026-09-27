@@ -40,6 +40,8 @@ kill_agent("subagent/explorer-a7b3")
 - `mode: "run"`: answers once, not meant to be driven again. `mode: "session"`: persistent, the
   answer ends with the id to pass to `send`.
 - `list_agents()` shows what this conversation can reach, and whether each is `running` or `idle`.
+- **A sub-agent that was stopped or failed keeps its work.** Its result says so and names it:
+  `send(id)` with no message resumes it where it stopped. Never spawn a new one for the same task.
 - Parameters (`workspaceDir`, `visibility`, `model`), sends with attachments, reset and kill:
   read `references/workflow.md`.
 

@@ -74,6 +74,8 @@ export interface CronJob {
    * say both (2026-09-27: the weekly job was killed at thirty minutes with six sub-agents mid-pass).
    */
   timeoutMs?: number;
+  /** When a run still going is announced to the owner, above `cron.alertAfter` (docs/cron.md). */
+  alertAfterMs?: number;
   nextRunAt: string | null;
   /** When the last run ended. */
   lastRunAt: string | null;

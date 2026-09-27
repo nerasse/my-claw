@@ -652,6 +652,17 @@ export interface MyClawAppChatStop {
   threadId: string;
 }
 
+/**
+ * Continue the thread's last run where it stopped (an error, a Stop, a server that went down),
+ * adding no message -- docs/continue.md. `parentThreadId` is the conversation a sub-agent's chat
+ * was opened from, as on `chat.send`: it is what lets a private sub-agent be reached.
+ */
+export interface MyClawAppChatContinue {
+  type: "chat.continue";
+  threadId: string;
+  parentThreadId?: string;
+}
+
 export interface MyClawAppAgentsConfigGet {
   type: "agents.config.get";
 }
@@ -1058,6 +1069,7 @@ export type MyClawAppClientFrame =
   | MyClawAppModelEffortSet
   | MyClawAppModelContextSet
   | MyClawAppChatStop
+  | MyClawAppChatContinue
   | MyClawAppAgentsConfigGet
   | MyClawAppAgentsModelSet
   | MyClawAppAgentsModelClear

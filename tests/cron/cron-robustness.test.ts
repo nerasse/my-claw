@@ -47,7 +47,7 @@ function toolContext(over: Partial<CronToolContext> = {}): CronToolContext {
     cronTools: () => ["bash", "conversation_search"],
     cronAgentSkills: () => "all",
     cronAgentMcp: () => "all",
-    defaultTimeoutMs: () => 30 * 60_000,
+    defaultTimeoutMs: () => undefined,
     ...over,
   };
 }
@@ -373,9 +373,44 @@ describe("the time limit", () => {
     const created = await tool.execute({ action: "create", name: "w", prompt: "p", schedule: "0 18 * * 0", deliver: "local", timeout: "3h" });
     expect(created.output).toContain("timeout: 3 h (job)");
     const [job] = await loadJobs();
-    const cleared = await tool.execute({ action: "update", job_id: job!.id, timeout: "inherit" });
-    expect(cleared.output).toContain("timeout: 30 min (cron.timeoutMs)");
+    const cleared = await tool.execute({ action: "update", job_id: job!.id, timeout: "none" });
+    // No wall by default any more: a long run is announced, the owner stops it.
+    expect(cleared.output).toContain("timeout: none");
     expect((await loadJobs())[0]!.timeoutMs).toBeUndefined();
+  });
+});
+
+describe("a long run is announced, not stopped", () => {
+  test("alerts at the alert time and again at every interval, and the run is never stopped", async () => {
+    const ctl = controllableRouter();
+    const scheduler = new CronScheduler(ctl.router, sessions(), config({ cron: { enabled: true, alertAfter: 40, alertEvery: 40 } }), () => ({}));
+    const alerts: number[] = [];
+    hooks.on("cron:job:long", ({ runningMs }) => { alerts.push(runningMs); });
+    const prompts: string[] = [];
+    const route = ctl.router.routeCron.bind(ctl.router);
+    ctl.router.routeCron = (m: UnifiedMessage, id: string) => {
+      prompts.push(m.text);
+      return route(m, id);
+    };
+    await saveJobs([due(createJob({ name: "weekly", prompt: "p", schedule: "every 1h", origin: null, deliver: "local" }))]);
+    const run = scheduler.tick();
+    await until(() => alerts.length >= 2);
+    expect(ctl.stopped).toEqual([]);
+    expect(prompts[0]).not.toContain("Time limit");
+    ctl.finish(ctl.started[0]!);
+    expect(await run).toBe(1);
+  });
+
+  test("a job's own alert time is set, shown, and cleared back", async () => {
+    const tool = createCronTool({ tick: async () => 0, runningOf: () => undefined } as unknown as CronScheduler, toolContext({ defaultAlertAfterMs: () => 60 * 60_000 }));
+    const created = await tool.execute({ action: "create", name: "w", prompt: "p", schedule: "0 18 * * 0", deliver: "local", alert: "3h" });
+    expect(created.output).toContain("alert: 3 h (job)");
+    expect(created.output).toContain("timeout: none");
+    const [job] = await loadJobs();
+    expect(job!.alertAfterMs).toBe(3 * 60 * 60_000);
+    const cleared = await tool.execute({ action: "update", job_id: job!.id, alert: "inherit" });
+    expect(cleared.output).toContain("alert: 1 h |");
+    expect((await loadJobs())[0]!.alertAfterMs).toBeUndefined();
   });
 });
 

@@ -110,35 +110,32 @@ Two jobs of the same workspace can now overlap. Each run is told in its prompt w
 its workspace is running, and to re-read a file right before changing it with a targeted edit:
 neither can see the other's edits coming, and that is what keeps one from writing over the other.
 
-### Time limits, and a run told to finish before it is stopped
+### A long run is announced, not stopped
 
-- `cron.timeoutMs` — the install-wide wall-clock limit (30 min).
-- A job's own `timeout` (`cron create/update ... timeout: "3h"`, stored as `timeoutMs`, at most
-  24 h) — above the install-wide one. A weekly research that fans out to six sub-agents and a mail
-  check that takes five minutes do not share a limit.
+The weekly research of 2026-09-27 died at the thirty-minute wall with six sub-agents mid-pass,
+nothing written. A longer wall only moves that loss, and the reason for a wall at all -- a long job
+held every other one up -- went away when jobs started running side by side. So by default there is
+**no wall**: a run still going is announced, and the owner decides.
+
+- `cron.alertAfter` (default `1h`) — the first push, "<job> still running after 3 h. Open it to
+  follow it or stop it." Its tap opens the run itself, where its Stop is.
+- `cron.alertEvery` (default `1h`) — again at every interval while it goes: 3 h, 4 h, 5 h...
+- A job's own `alert` (`cron create/update ... alert: "3h"`, stored as `alertAfterMs`) — above
+  `cron.alertAfter`.
+- Sent whatever `silent` says: a job that runs that long is the one the owner has to decide about.
+
+A wall is still there for whoever wants one: `cron.timeoutMs` for the install, a job's own `timeout`
+(at most 24 h). When one is set, the run is told first: at a tenth of its limit before the wall
+(between one and ten minutes, never more than half the limit), the scheduler injects a wrap-up
+message into the run **and into every live sub-agent under it**, through the same mailbox the owner
+steers a run with. The sub-agents are the ones that matter: a parent waiting on them only reads its
+mailbox once they return. The prompt states the limit, so the run plans to write down what matters
+early. A run that hits the wall anyway is `interrupted`, not `error`, and so is a run the server lost
+when it stopped (`runningSince` still set at boot).
+
+A run stopped or interrupted can be picked back up from its thread with Continue (docs/continue.md).
+
 - `cron.maxIterations` — overrides the tool-calling loop budget for cron runs.
-
-A run killed at the wall loses everything it had not written, its sub-agents' work included: the
-weekly research of 2026-09-27 lost six passes that way, each twenty-eight minutes in. So a run is
-told first. At a tenth of its limit before the wall (between one and ten minutes, never more than
-half the limit), the scheduler injects a wrap-up message into the run **and into every live
-sub-agent under it**, through the same mailbox the owner steers a run with. The sub-agents are the
-ones that matter: a parent waiting on them only reads its mailbox once they return, and they are the
-ones who can hand back what they found. The tree is known from the `subagent:*` hooks, for cron runs
-only. The prompt also states the limit, so the run plans to write down what matters early.
-
-A run that hits the wall anyway is `interrupted`, not `error`: it needs a longer limit, not a fix to
-its prompt. A run the server lost when it stopped (`runningSince` still set at boot) is recognised at
-the first tick and marked `interrupted` too, instead of the job looking fine until its next run.
-
-### Fresh session per run
-
-Every run creates a session `cron/<jobId>/<runId>` seeded with the job's model and workspace
-key, and deletes it when the run ends. One run never inherits the history of the previous one,
-and a change of workspace or model applies to the very next run. The durable record is the job
-state (`lastStatus`, `lastError`, `lastRunAt`) and the output store, not the session. A job
-whose `workspace` key left `config.workspaces` is paused with a `pausedReason` instead of
-running silently in the default workspace. See `docs/multi-workspace.md`.
 
 ### Every write of jobs.json is one load-change-write, in turn
 
@@ -163,8 +160,8 @@ when that pid is gone.
 
 ### What `cron list`, `create` and `update` show
 
-Each job reads back as every setting its run will use -- model, effort, workspace, delivery, time
-limit, scopes, switches, notifications -- then the run in flight if there is one, then the last run:
+Each job reads back as every setting its run will use -- model, effort, workspace, delivery, alert
+time, time limit (`none` by default), scopes, switches, notifications -- then the run in flight if there is one, then the last run:
 when it started, its status (`ok`, `error`, `interrupted`), how long it lasted, the model it ran on
 once its tag resolved, and what it cost with its sub-agents (from the analytics the calls already
 wrote; `>=` when only some calls were priced), with the error when there was one. `create` and

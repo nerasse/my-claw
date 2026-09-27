@@ -16,7 +16,8 @@ import type { SessionAttachment, SessionData } from "../sessions/store.ts";
 import { loadSession, deleteStoredSession, archiveSession, recordSubAgentCaller, subagentSessionIdsSync } from "../sessions/store.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
 import { metaOf, writeMeta } from "../sessions/meta.ts";
-import type { UserEntry } from "../sessions/log.ts";
+import type { SessionLog, UserEntry } from "../sessions/log.ts";
+import { continuable, lastAnswer } from "../sessions/resume.ts";
 import { log } from "../utils/logger.ts";
 import type { SessionManager } from "../sessions/manager.ts";
 import { hooks } from "../hooks/index.ts";
@@ -369,9 +370,14 @@ export class SubAgentRunner {
     };
   }
 
+  /**
+   * Drives an existing sub-agent. `message` undefined resumes it instead: no turn is added, the run
+   * picks up where its last one stopped (docs/continue.md), and one that had in fact finished
+   * answers with what it said then, without running again.
+   */
   async send(
     id: string,
-    message: string,
+    message: string | undefined,
     attachments: Attachment[] | undefined,
     parentMessage: UnifiedMessage,
     registry: { enqueue: <T>(id: string, task: () => Promise<T>) => Promise<T>; isRunning: (id: string) => boolean },
@@ -388,6 +394,7 @@ export class SubAgentRunner {
     toolCallId?: string,
     streamProvider?: (id: string) => SubAgentStream | undefined,
   ): Promise<string> {
+    id = await this.canonicalId(id, callerSessionId);
     return this.runTracked(id, signal, (trackedSignal) => registry.enqueue(id, async () => {
       const session = await loadSession(id);
       if (!session || !session.meta) {
@@ -397,11 +404,14 @@ export class SubAgentRunner {
       if (!isReachableFrom(session.meta, caller)) {
         return `Error: sub-agent ${id} not found.`;
       }
+      const entryLog = await sessionLogOf(id);
+      if (message === undefined) {
+        return this.resume(id, session, entryLog, parentMessage, callerSessionId, caller.folderId, trackedSignal, stream, toolCallId, streamProvider);
+      }
 
       const userContent = this.buildUserContent(message, attachments, parentMessage.location);
       const images = imagesOf(attachments);
       // Write user turn to the log. A crash before the first bridge turn must still show the question.
-      const entryLog = await sessionLogOf(id);
       // A human app send owns the child-thread bubble, so its chat.send id must be reused by the
       // persisted entry. Test and non-app callers can reuse a message id, in which case the log
       // keeps its own identity rather than creating a duplicate id in the tree.
@@ -556,6 +566,81 @@ export class SubAgentRunner {
     return out;
   }
 
+  /**
+   * The id a caller meant. Models copy ids loosely: told `subagent/wttj-4f2a`, deepseek-v4.1-flash
+   * wrote `wttj-4f2a` and `wttj` as often as the real thing (2026-09-28). The prefix is added, and a
+   * bare display name resolves when exactly one sub-agent this caller can reach carries it.
+   */
+  private async canonicalId(id: string, callerSessionId: string): Promise<string> {
+    const trimmed = id.trim();
+    if (trimmed.startsWith("subagent/")) return trimmed;
+    const prefixed = `subagent/${trimmed}`;
+    if (await loadSession(prefixed)) return prefixed;
+    const named = (await this.list({ isRunning: () => false }, callerSessionId)).filter((a) => a.displayName === trimmed);
+    return named.length === 1 ? named[0]!.id : prefixed;
+  }
+
+  /**
+   * A sub-agent picks up where its last run stopped, adding no turn -- docs/continue.md. The same
+   * lifecycle as a `send`, so the parent's card shows it working. One whose last run had in fact
+   * finished is not run again: its answer is returned as it stands.
+   */
+  private async resume(
+    id: string,
+    session: SessionData,
+    entryLog: SessionLog,
+    parentMessage: UnifiedMessage,
+    callerSessionId: string,
+    folderId: string | undefined,
+    signal: AbortSignal,
+    stream: SubAgentStream | undefined,
+    toolCallId: string | undefined,
+    streamProvider: ((id: string) => SubAgentStream | undefined) | undefined,
+  ): Promise<string> {
+    session.invokedBy = callerSessionId;
+    session.parentFolderId = folderId;
+    recordSubAgentCaller(session, callerSessionId);
+    const meta = session.meta!;
+    const tracked = toolCallId !== undefined;
+    const state = continuable(entryLog.entries(), entryLog.leaf());
+    if (tracked) {
+      hooks.emit("subagent:spawn", {
+        id,
+        displayName: meta.displayName || id.slice("subagent/".length),
+        type: meta.type,
+        mode: "session",
+        parentSessionId: callerSessionId,
+        toolCallId,
+        action: "send",
+        task: "Continue where you stopped.",
+      });
+    }
+    if (!state.ok) {
+      const answer = lastAnswer(entryLog.entries(), entryLog.leaf());
+      const result = answer ?? `Error: sub-agent ${id} has nothing to resume. ${state.reason}`;
+      if (tracked) {
+        if (answer) hooks.emit("subagent:complete", { id, resultLength: answer.length, parentSessionId: callerSessionId });
+        else hooks.emit("subagent:error", { id, error: new Error(result), parentSessionId: callerSessionId });
+      }
+      return result;
+    }
+    const runStream = stream ?? (tracked ? streamProvider?.(id) : undefined);
+    try {
+      const result = await this.executeRunWithSession(session, meta.type, meta.workspaceDir, parentMessage, signal, undefined, runStream, undefined, state.lastUserText, undefined, true);
+      if (tracked) hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId: callerSessionId });
+      return result;
+    } catch (err) {
+      if (tracked && callerSessionId !== (meta.parentSessionId ?? "")) {
+        if (isAbort(err, signal)) hooks.emit("subagent:aborted", { id, parentSessionId: callerSessionId });
+        else hooks.emit("subagent:error", { id, error: err, parentSessionId: callerSessionId });
+      }
+      throw err;
+    } finally {
+      await this.persistSession(id, session);
+      await this.indexForSearch(id, session);
+    }
+  }
+
   async list(registry: { isRunning: (id: string) => boolean }, callerSessionId: string): Promise<SubAgentInfo[]> {
     const out: SubAgentInfo[] = [];
     // Resolved once for the whole scan rather than per entry: the caller does not change between
@@ -672,6 +757,10 @@ export class SubAgentRunner {
         const result = await (enqueue ? enqueue(id, execute) : execute());
         hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
         return { id, result, attachments: this.takeAttachments(id) };
+      } catch (err) {
+        // A one-shot keeps its session, work included: the caller is told which one it was, so it
+        // can resume it instead of starting the same task again from nothing (docs/continue.md).
+        throw withSubagentId(err, id);
       } finally {
         await this.indexForSearch(id, session);
         // The run wrote its turns into the session in memory; this is the moment they land on disk.
@@ -717,6 +806,8 @@ export class SubAgentRunner {
     userText?: string,
     /** Images of that turn, already on the entry: the run resolves its model knowing it has them. */
     images?: SessionAttachment[],
+    /** Continue the session as it stands, adding no turn (docs/continue.md). */
+    resume?: boolean,
   ): Promise<string> {
     const depth = 1;
     // Adopt the session into the shared cache before the run: the app channel's history/peek
@@ -787,6 +878,7 @@ export class SubAgentRunner {
       // sub-agent silently blind to every picture it was sent.
       attachments: images ?? [],
       isForwarded: false,
+      ...(resume ? { resume: true } : {}),
       raw: null,
     };
 
@@ -882,4 +974,20 @@ export class SubAgentRunner {
     });
     return `${content}\n\n[Attachments]\n${lines.join("\n")}`;
   }
+}
+
+/** An error carrying the sub-agent it came from, for the tool that reports it to the caller. */
+export function withSubagentId(err: unknown, id: string): unknown {
+  if (err && typeof err === "object" && !("subagentId" in err)) (err as { subagentId?: string }).subagentId = id;
+  return err;
+}
+
+export function subagentIdOf(err: unknown): string | undefined {
+  const id = (err as { subagentId?: unknown } | undefined)?.subagentId;
+  return typeof id === "string" ? id : undefined;
+}
+
+/** What a caller is told when a sub-agent it ran stopped or failed on its own: its work is kept. */
+export function resumeHint(id: string | undefined): string {
+  return id ? ` Sub-agent ${id} kept everything it had done: send(id: "${id}") with no message resumes it where it stopped. Do not start a new one for the same task.` : "";
 }

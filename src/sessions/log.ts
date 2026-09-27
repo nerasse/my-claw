@@ -106,6 +106,11 @@ export interface ToolEntry extends EntryBase {
   attachments?: SessionAttachment[];
   durationMs?: number;
   /**
+   * The run ended under this call (a Stop, a crash): the output says so, and a Continue resumes a
+   * sub-agent the call was running instead of redoing it -- docs/continue.md.
+   */
+  interrupted?: true;
+  /**
    * Sub-agent state as it stood when a pre-log session was imported, and only then: the shape kept
    * the lifecycle on the assistant turn's tool call, so the migration copies it here rather than
    * losing it. Nothing writes it live -- a sub-agent outlives the call that started it, so its

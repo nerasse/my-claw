@@ -324,6 +324,7 @@ the first answer wins.
 { "type": "chat.send", "id": "uuid", "text": "...", "threadId": "projet", "ts": "iso", "attachments": [{ "id": "uuid", "type": "image|file" }, { "id": "uuid", "type": "audio", "audioAsVoice": true, "durationMs": 4200 }] }
 { "type": "chat.send", "id": "uuid", "text": "...", "threadId": "projet", "location": { "latitude": 48.8566, "longitude": 2.3522, "accuracyMeters": 24, "capturedAt": "iso" } }
 { "type": "chat.stop", "threadId": "projet" }
+{ "type": "chat.continue", "threadId": "projet", "parentThreadId": "main" }
 { "type": "session.list" }
 { "type": "commands.list" }
 { "type": "files.list", "threadId": "projet" }
@@ -447,6 +448,10 @@ provider request URLs.
   which leaves nothing for a third verb to do.
 - `chat.stop` stops the run of the thread, whatever backend drives it (the wire version of
   `/stop`). Answered with a `chat.command.result`.
+- `chat.continue` picks the thread's last run back up when it was stopped, failed or lost, adding no
+  message: the run is announced and streamed like any other. Refused with a `chat.command.result`
+  when a run is going or the last run finished. `parentThreadId` as on `chat.send`, for a
+  sub-agent's chat. docs/continue.md.
 - `files.list` / `files.delete` manage the conversation's attachments.
 - `session.rename` names a conversation and answers with the resulting `session.list.result`.
   A blank title hands it back to the automatic one, which is the opening words of the first

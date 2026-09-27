@@ -19,6 +19,12 @@ export interface UnifiedMessage {
   roomContext?: string;
   mentionsBot?: boolean;
   sessionScope?: "per-user" | "per-room" | "per-chat";
+  /**
+   * Continue the conversation as it stands: the run adds no turn, it picks up where the last run
+   * stopped (docs/continue.md). `text` then carries the last question, for what reads it (skill
+   * suggestions, memory), and is never written.
+   */
+  resume?: boolean;
   raw: unknown;
 }
 

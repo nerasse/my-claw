@@ -541,7 +541,13 @@ export interface CronConfig {
   enabled?: boolean;
   tickIntervalMs?: number;
   maxIterations?: number;
+  // An install-wide wall-clock limit, off unless set: a long run is announced, not stopped
+  // (alertAfter), and the owner stops it. A job can set its own. docs/cron.md.
   timeoutMs?: number;
+  // When a run still going is announced, then how often again: "3h", "30m", or milliseconds.
+  // Defaults 1h and 1h. A job can set its own first alert (alertAfter).
+  alertAfter?: string | number;
+  alertEvery?: string | number;
 }
 
 export interface EmbeddingConfig {

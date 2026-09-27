@@ -10,8 +10,8 @@ import { hooks } from "../../src/hooks/index.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 import { deleteSession, type LegacySessionData } from "../../src/sessions/store.ts";
-import type { SessionLog, UserEntry } from "../../src/sessions/log.ts";
-import { contextEntries } from "../../src/sessions/projection.ts";
+import type { SessionLog, ToolEntry, UserEntry } from "../../src/sessions/log.ts";
+import { contextEntries, promptOf } from "../../src/sessions/projection.ts";
 
 const SESSION_ID = "test-abort";
 
@@ -76,7 +76,7 @@ test("bridge: already-aborted signal stops before the first LLM call and emits a
   }
 });
 
-test("bridge: abort mid-tool leaves the question on the branch and no entry for the call it cut", async () => {
+test("bridge: abort mid-tool leaves the question on the branch and the call it cut, marked interrupted", async () => {
   const registry = new ToolRegistry();
   // Sealing only happens once the assistant tool_call message is in the session, so the abort has
   // to land while the tool runs. A fixed delay made that a race: on a loaded machine it could fire
@@ -106,9 +106,9 @@ test("bridge: abort mid-tool leaves the question on the branch and no entry for 
     await assert.rejects(() => p, AbortedError);
 
     // An abort moves no cursor: it writes its `run_end` and rethrows. The question is on the
-    // branch because it was appended there, and the tool is absent because it never settled --
-    // a tool entry is only written once its call has a result, so the stop leaves no half-entry
-    // and nothing to seal.
+    // branch because it was appended there. The call it cut is there too, whole: its result is the
+    // interruption. It used to be left out, and with it every sibling of its batch, so a Continue
+    // (or the next turn) could not see what had been started -- docs/continue.md.
     await log.flush();
     const entries = log.entries();
     const context = contextEntries(entries, log.leaf());
@@ -117,8 +117,16 @@ test("bridge: abort mid-tool leaves the question on the branch and no entry for 
     assert.ok(userEntry, "user turn should be in context");
     assert.equal(userEntry.text, "hello");
 
-    const toolEntry = context.find((e) => e.type === "tool");
-    assert.equal(toolEntry, undefined, "a call cut mid-flight settled into no entry");
+    const toolEntry = context.find((e): e is ToolEntry => e.type === "tool");
+    assert.ok(toolEntry, "the cut call is on the branch");
+    assert.equal(toolEntry.interrupted, true);
+    assert.equal(toolEntry.ok, false);
+    assert.match(toolEntry.output, /^Interrupted/);
+    // A result the provider can take: the call and its answer are paired in the prompt.
+    const prompt = promptOf(entries, log.leaf());
+    const call = prompt.find((m) => m.role === "assistant" && "tool_calls" in m && m.tool_calls?.length);
+    assert.ok(call, "the assistant turn carries the call");
+    assert.ok(prompt.some((m) => m.role === "tool"), "and its result follows");
   } finally {
     fetchMock.restore();
   }

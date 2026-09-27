@@ -15,7 +15,8 @@ import type { SessionData, SessionAttachment } from "../sessions/store.ts";
 import { attributionParent, markSessionDirty, usageFolderOf, usageWorkspaceOf } from "../sessions/store.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
 import { promptOf, contextEntries } from "../sessions/projection.ts";
-import type { Entry, SessionLog } from "../sessions/log.ts";
+import type { Entry, SessionLog, ToolEntry } from "../sessions/log.ts";
+import { continuable, CUT_OFF_NUDGE, endsOnOwnText, interruptedOutput, interruptedSubagents, orphanCalls, subagentOfCall } from "../sessions/resume.ts";
 import { RunRecorder } from "./run-recorder.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
@@ -594,7 +595,15 @@ export class AgentBridge implements AgentBackend {
       // first turn. Skip it here to avoid a duplicate. A bubble is written once, so a message the
       // run already recorded as an injection -- or one a force-closed run left on the log for the
       // run that reroutes it -- is not written again either.
-      if (!userEntryWritten && !entries.get(message.id)) {
+      // A Continue adds no turn: the run picks up the conversation exactly as it stands.
+      const resuming = message.resume === true;
+      if (resuming) {
+        // Read again under the session's lock: the run that was going when Continue was pressed
+        // may have finished since, and a finished run has nothing to pick up.
+        const state = continuable(entries.entries(), entries.leaf());
+        if (!state.ok) return state.reason;
+      }
+      if (!userEntryWritten && !resuming && !entries.get(message.id)) {
         recorder.user({
           // The app has already drawn this bubble from chat.send. Reuse that id so a later sync
           // replaces it instead of appending a second copy.
@@ -605,10 +614,75 @@ export class AgentBridge implements AgentBackend {
           ...(transcripts.length > 0 ? { transcripts: Object.fromEntries(transcripts.map((t) => [t.path, t.text])) } : {}),
         });
       }
+      // Sub-agent calls a lost run never settled get their result now, in the turn that made them
+      // and before this run opens: that is where they belong, and without them the prompt does not
+      // show them at all. Only on a Continue, the one run that means to pick that work back up.
+      if (resuming) {
+        for (const orphan of orphanCalls(entries.entries(), entries.leaf())) {
+          entries.append<ToolEntry>({
+            type: "tool",
+            prompt: true,
+            callId: orphan.callId,
+            name: orphan.name,
+            args: orphan.args,
+            output: interruptedOutput(orphan.name, orphan.subagentId),
+            truncated: false,
+            ok: false,
+            interrupted: true,
+            runId: orphan.turnId,
+          });
+        }
+      }
+      // Read before this run's own marker: past it, the last run is this one, which has nothing.
+      const resumable = resuming && tools.some((t) => t.name === "send")
+        ? interruptedSubagents(entries.entries(), entries.leaf())
+        : [];
+
       // The trigger turn is on the log: whatever this run writes from here on is its work, and
       // the marker lets a reopened thread fold that work until the matching runEnd -- the line
       // between the question and the work is exactly where a reader draws it.
       recorder.runStart();
+
+      // A Continue resumes the sub-agents the last run left interrupted before the model says
+      // anything: each picks up its own work where it stopped, and its answer becomes the result
+      // of a `send` the run makes on its own. Done here rather than left to the model, which,
+      // told the id, copied it wrong two times in three (deepseek-v4.1-flash, 2026-09-28).
+      if (resumable.length > 0) {
+        recorder.nextTurn();
+        recorder.turn({ content: "" });
+        const calls = resumable.map((r) => ({ id: `resume_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`, name: "send", arguments: { id: r.subagentId } as Record<string, unknown> }));
+        const resumed = await Promise.allSettled(calls.map(async (tc) => {
+          if (onToolStart) {
+            try { await onToolStart(tc); }
+            catch { /* a tool-start frame must never abort the run */ }
+          }
+          const callStartedAt = Date.now();
+          const result = await this.executeTool({
+            name: tc.name, args: tc.arguments, message, session, toolCallId: tc.id, signal, agentType: agentToolType, available: tools,
+          });
+          const durationMs = Date.now() - callStartedAt;
+          if (onToolUse) {
+            await onToolUse([{ id: tc.id, name: tc.name, arguments: tc.arguments, durationMs, output: result.content, ok: result.success }], session.verbose !== false);
+          }
+          return { result, durationMs };
+        }));
+        for (const [index, outcome] of resumed.entries()) {
+          const tc = calls[index]!;
+          const interrupted = outcome.status === "rejected";
+          await recorder.tool({
+            callId: tc.id,
+            name: tc.name,
+            arguments: JSON.stringify(tc.arguments),
+            output: interrupted ? interruptedOutput(tc.name, resumable[index]!.subagentId) : outcome.value.result.content,
+            ok: !interrupted && outcome.value.result.success,
+            ...(interrupted ? { interrupted: true } : { durationMs: outcome.value.durationMs }),
+          });
+          toolExecutions += 1;
+        }
+        const stopped = resumed.find((outcome) => outcome.status === "rejected");
+        if (stopped?.status === "rejected") throw stopped.reason;
+        recorder.nextTurn();
+      }
 
       const openaiTools = toOpenAiToolDefinitions(tools);
 
@@ -627,6 +701,13 @@ export class AgentBridge implements AgentBackend {
       }
 
       await this.injectMemory(message, chatMessages, session);
+
+      // Cut off mid-answer, the model restarts its answer from the top two times in three when
+      // handed it alone; told where it stopped, it carries on mid-sentence (four in four, measured).
+      // In the prompt only: the log keeps what was said, and nobody typed this.
+      if (resuming && resumable.length === 0 && endsOnOwnText(entries.entries(), entries.leaf())) {
+        chatMessages.push({ role: "user", content: CUT_OFF_NUDGE });
+      }
 
       const toolSchemaTokens = estimateTokens(JSON.stringify(openaiTools));
       // Carried on the session so the next turn-start gate can count it. That gate runs before this
@@ -1162,17 +1243,27 @@ export class AgentBridge implements AgentBackend {
         // means a run that ends here has no work of its own still in flight, whatever ends it.
         const outcomes = await Promise.allSettled(response.toolCalls.map((tc) => executeOne(tc)));
         const failed = outcomes.find((outcome) => outcome.status === "rejected");
-        if (failed?.status === "rejected") throw failed.reason;
-        const settled = outcomes.map(
-          (outcome) => (outcome as PromiseFulfilledResult<Awaited<ReturnType<typeof executeOne>>>).value,
-        );
+        // Every call is written before the run ends, the interrupted ones included. The whole batch
+        // used to be thrown away on the first rejection -- a Stop reaching a `spawn` -- with the
+        // siblings that had finished: 295 stopped runs in this install left sub-agents the prompt
+        // no longer showed, so the next run started them again from nothing (2026-09-28). A call
+        // the run ended under gets the interruption as its result, and a sub-agent's names the
+        // child, which a Continue then resumes -- docs/continue.md.
+        const calls = response.toolCalls;
+        const settled = outcomes.map((outcome, index) => {
+          if (outcome.status === "fulfilled") return { ...outcome.value, interrupted: false };
+          const tc = calls[index]!;
+          const content = interruptedOutput(tc.name, subagentOfCall(entries.entries(), tc.id));
+          const result: { content: string; success: boolean; attachments?: Attachment[] } = { content, success: false };
+          return { tc, result, durationMs: undefined, transformedResult: content, interrupted: true };
+        });
 
-        for (const { tc, result, durationMs, transformedResult } of settled) {
+        for (const { tc, result, durationMs, transformedResult, interrupted } of settled) {
           toolExecutions += 1;
           // The card took the transformed output before the nested AGENTS.md injection: that text
           // is prompt plumbing, not something a tool card should show.
           let recordedOutput = transformedResult;
-          if (nestedAgents) {
+          if (nestedAgents && !interrupted) {
             recordedOutput += nestedAgents.collect(tc.name, tc.arguments);
           }
           // Recorded before the message is built, and the message comes back from the recording:
@@ -1192,6 +1283,7 @@ export class AgentBridge implements AgentBackend {
             ok: result.success,
             ...(durationMs !== undefined ? { durationMs } : {}),
             ...(toolImages.length > 0 ? { attachments: toolImages } : {}),
+            ...(interrupted ? { interrupted: true } : {}),
           });
           stagnation.observe(recorded.message);
           chatMessages.push({
@@ -1203,6 +1295,7 @@ export class AgentBridge implements AgentBackend {
                 : recorded.message,
           });
         }
+        if (failed?.status === "rejected") throw failed.reason;
       }
 
       hooks.emit("agent:budget:exhausted", {

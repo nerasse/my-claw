@@ -12,7 +12,7 @@ import {
   parseJobTimeout,
 } from "../cron/store.ts";
 import type { CronDeliver, CronJob, CronOrigin } from "../cron/types.ts";
-import { DEFAULT_CRON_TIMEOUT_MS, type CronScheduler } from "../cron/scheduler.ts";
+import { DEFAULT_ALERT_AFTER_MS, type CronScheduler } from "../cron/scheduler.ts";
 import type { AgentScope } from "../core/config.ts";
 import { hooks } from "../hooks/index.ts";
 
@@ -32,8 +32,10 @@ export interface CronToolContext {
   /** The cron agent's own scope: what a job with no override inherits. */
   cronAgentSkills(): AgentScope;
   cronAgentMcp(): AgentScope;
-  /** The install-wide limit a job without its own inherits (`cron.timeoutMs`). */
-  defaultTimeoutMs?(): number;
+  /** The install-wide limit a job without its own inherits (`cron.timeoutMs`); none when unset. */
+  defaultTimeoutMs?(): number | undefined;
+  /** When a run still going is first announced, for a job without its own (`cron.alertAfter`). */
+  defaultAlertAfterMs?(): number;
   /**
    * The owner's conversation with this title, created in the workspace when there is none: the
    * target of `deliver: "thread:<title>"`. Returns its thread id.
@@ -98,13 +100,17 @@ const CONVERSATIONS_TOOL = "conversation_search";
  */
 function describeJob(job: CronJob, scheduler: CronScheduler, context: CronToolContext): string[] {
   const status = job.enabled ? job.state : "paused";
+  const installWall = context.defaultTimeoutMs?.();
   const timeout = job.timeoutMs
     ? `${span(job.timeoutMs)} (job)`
-    : `${span(context.defaultTimeoutMs?.() ?? DEFAULT_CRON_TIMEOUT_MS)} (cron.timeoutMs)`;
+    : installWall !== undefined ? `${span(installWall)} (cron.timeoutMs)` : "none";
+  const alert = job.alertAfterMs
+    ? `${span(job.alertAfterMs)} (job)`
+    : span(context.defaultAlertAfterMs?.() ?? DEFAULT_ALERT_AFTER_MS);
   const conversations = job.conversations === true || (job.tools ?? []).includes(CONVERSATIONS_TOOL);
   const lines = [
     `${job.id} | ${job.name} | ${job.schedule.display} | ${status}${job.pausedReason ? ` (${job.pausedReason})` : ""} | next: ${when(job.nextRunAt)}`,
-    `  model: ${job.model ?? "default model"}${job.effort ? ` (effort ${job.effort})` : ""} | workspace: ${job.workspace ?? "default workspace"} | deliver: ${deliverDisplay(job.deliver)} | timeout: ${timeout}`,
+    `  model: ${job.model ?? "default model"}${job.effort ? ` (effort ${job.effort})` : ""} | workspace: ${job.workspace ?? "default workspace"} | deliver: ${deliverDisplay(job.deliver)} | alert: ${alert} | timeout: ${timeout}`,
     `  skills: ${scopeDisplay(job.skills)} | mcp: ${scopeDisplay(job.mcp)} | tools: ${scopeDisplay(job.tools)}`,
     `  sub-agents: ${job.subagents === false ? "off" : "on"} | browser: ${job.browser === false ? "off" : "on"} | conversations: ${conversations ? "on" : "off"} | notify: ${job.silent ? "silent" : "on"}`,
   ];
@@ -139,11 +145,12 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
     return `${origin.platform}:${origin.chatId}:${threadId}`;
   }
 
-  function timeoutArg(args: Record<string, unknown>): number | undefined {
-    const raw = strOpt(args, "timeout");
+  /** Absent: don't touch. 0: clear back to the install's setting. Else the job's own, in ms. */
+  function durationArg(args: Record<string, unknown>, key: "timeout" | "alert"): number | undefined {
+    const raw = strOpt(args, key);
     if (raw === undefined) return undefined;
     const trimmed = raw.trim().toLowerCase();
-    if (trimmed === "" || trimmed === "inherit" || trimmed === "default") return 0;
+    if (trimmed === "" || trimmed === "inherit" || trimmed === "default" || trimmed === "none") return 0;
     return parseJobTimeout(raw);
   }
 
@@ -164,7 +171,8 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
         deliver: { type: "string", description: "Delivery target: 'origin' (the chat the job was created from), 'thread:<title>' (a conversation of that name, created in the job's workspace if it does not exist: one place for a family of jobs), 'local' (no delivery), or 'platform:chatId[:threadId]'. Default: origin (create/update)" },
         model: { type: "string", description: "Model override for this job; a model from the 'models' list of cron list (create/update)" },
         workspace: { type: "string", description: "Workspace key from config.workspaces the job runs in; absent = the default workspace. The key is validated against the config on the next run, and an unknown key pauses the job (create/update)" },
-        timeout: { type: "string", description: "This job's own time limit, e.g. '45m', '3h' (max 24h); 'inherit' clears it back to cron.timeoutMs. The run is told to wrap up shortly before the limit, then stopped at it (create/update)" },
+        alert: { type: "string", description: "When a run still going is announced to the owner, e.g. '3h' (then again every cron.alertEvery, 1h by default); 'inherit' clears it back to cron.alertAfter (1h). A long run is never stopped for it: the owner decides (create/update)" },
+        timeout: { type: "string", description: "A hard time limit for this job, e.g. '6h' (max 24h); none by default, 'none' clears it. The run is told to wrap up shortly before the limit, then stopped at it. Prefer 'alert' unless a run must never go past a time (create/update)" },
         skills: { type: "string", description: "Skills scope (create/update): 'inherit' (clear, the cron agent's list applies), 'all' or '*', 'none', or comma-separated names from the 'skills' list of cron list" },
         mcp: { type: "string", description: "MCP scope (create/update): 'inherit' (clear, the cron agent's list applies), 'all' or '*', 'none', or comma-separated server names from the 'mcp' list of cron list" },
         tools: { type: "string", description: "Tools scope (create/update): 'inherit' (clear, the cron agent's set applies), 'all' or '*', 'none', or comma-separated names from the 'tools' list of cron list. A list narrows the job to exactly those tools. Names outside the cron baseline are dropped at run time" },
@@ -201,7 +209,8 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
               return { success: false, output: "Cannot use 'origin' delivery without an origin chat. Specify a target: 'my-claw-app:owner'." };
             }
             const deliver = await resolveDeliver(deliverInput, origin, workspace);
-            const timeoutMs = timeoutArg(args);
+            const timeoutMs = durationArg(args, "timeout");
+            const alertAfterMs = durationArg(args, "alert");
             const conversations = boolOpt(args, "conversations");
 
             const job = createJob({
@@ -220,6 +229,7 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
               ...(timeoutMs ? { timeoutMs } : {}),
             });
             if (conversations === true) job.conversations = true;
+            if (alertAfterMs) job.alertAfterMs = alertAfterMs;
             await mutateJobs((jobs) => {
               jobs.push(job);
             });
@@ -279,7 +289,8 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
             const subagents = boolOpt(args, "subagents");
             const browser = boolOpt(args, "browser");
             const conversations = boolOpt(args, "conversations");
-            const timeoutMs = timeoutArg(args);
+            const timeoutMs = durationArg(args, "timeout");
+            const alertAfterMs = durationArg(args, "alert");
             const workspaceArg = strOpt(args, "workspace");
 
             // Resolved before the write: creating a conversation must not happen inside the lock.
@@ -302,6 +313,10 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
               if (conversations !== undefined) {
                 if (conversations) target.conversations = true;
                 else delete target.conversations;
+              }
+              if (alertAfterMs !== undefined) {
+                if (alertAfterMs > 0) target.alertAfterMs = alertAfterMs;
+                else delete target.alertAfterMs;
               }
               return updateJob(jobs, jobId, {
                 name: strOpt(args, "name"),

@@ -1,5 +1,5 @@
 import { type Tool, type ToolResult, str } from "./types.ts";
-import { SubAgentRunner, type SubAgentStream } from "../subagents/runner.ts";
+import { resumeHint, SubAgentRunner, type SubAgentStream } from "../subagents/runner.ts";
 import { SubAgentRegistry } from "../subagents/registry.ts";
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import { isAbort, rethrowIfAborted } from "../core/aborted.ts";
@@ -11,12 +11,12 @@ export function createSendTool(
 ): Tool {
   return {
     name: "send",
-    description: "Send a message to an existing persistent sub-agent. The sub-agent loads its full session history, processes the message, and saves the updated session. Blocks if the sub-agent is already running.",
+    description: "Send a message to an existing sub-agent. The sub-agent loads its full session history, processes the message, and saves the updated session. Blocks if the sub-agent is already running. Leave the message out to resume a sub-agent whose run was stopped or failed: it continues where it stopped, with everything it had already done.",
     parameters: {
       type: "object",
       properties: {
         id: { type: "string", description: "Sub-agent session ID (e.g. 'subagent/researcher-a7b3')" },
-        message: { type: "string", description: "Message to send" },
+        message: { type: "string", description: "Message to send. Omit it to resume the sub-agent where its last run stopped." },
         attachments: {
           type: "array",
           description: "Optional files to include",
@@ -30,12 +30,14 @@ export function createSendTool(
           },
         },
       },
-      required: ["id", "message"],
+      required: ["id"],
     },
     async execute(args): Promise<ToolResult> {
       try {
         const id = str(args, "id");
-        const message = str(args, "message");
+        // Absent or blank: resume. A model that wants to resume sometimes sends an empty string.
+        const raw = typeof args["message"] === "string" ? args["message"] : "";
+        const message = raw.trim() === "" ? undefined : raw;
         const attachments = (args["attachments"] as Array<{ path: string; type: string }> | undefined)?.map((a) => ({ path: a.path, type: a.type as Attachment["type"] }));
         const parentMessage = args["__message"] as UnifiedMessage | undefined;
         if (!parentMessage) {
@@ -57,7 +59,7 @@ export function createSendTool(
           return {
             success: false,
             output: "",
-            error: "The sub-agent's run was stopped before it answered. Its work is on disk: send it again, or read its thread.",
+            error: `The sub-agent's run was stopped before it answered.${resumeHint(str(args, "id") ? (str(args, "id").startsWith("subagent/") ? str(args, "id") : `subagent/${str(args, "id")}`) : undefined)}`,
           };
         }
         return { success: false, output: "", error: String(e) };

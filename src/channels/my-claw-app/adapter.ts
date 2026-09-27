@@ -103,6 +103,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppChatSend,
   MyClawAppHistoryAttachment,
   MyClawAppChatStop,
+  MyClawAppChatContinue,
   MyClawAppRunStopping,
   MyClawAppClientFrame,
   MyClawAppError,
@@ -270,6 +271,7 @@ import {
   type MyClawAppFilesDeps,
 } from "./files-http.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
+import { continuable } from "../../sessions/resume.ts";
 
 const CONFIRM_TIMEOUT_MS = 2 * 60 * 1000;
 // Healthy connections are idle on data frames for long stretches (protocol-level pings keep
@@ -1758,6 +1760,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "chat.stop":
         this.detach(this.handleChatStop(ws, frame), "handleChatStop");
         break;
+      case "chat.continue":
+        this.detach(this.handleChatContinue(ws, frame), "handleChatContinue");
+        break;
       case "status.watch": {
         const threadId = sanitizeThreadId(frame.threadId);
         if (!threadId) {
@@ -2661,6 +2666,54 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private sessionIdOf(ws: ServerWebSocket<MyClawAppSessionData>, threadId: string | undefined): { sessionId?: string } {
     const clean = threadId ? sanitizeThreadId(threadId) : null;
     return clean ? { sessionId: this.store.resolveSessionId(ws.data.owner, clean) } : {};
+  }
+
+  /**
+   * The Continue under a stopped or failed run: the same pipeline as a send, with no bubble and no
+   * text of its own. The run reads the conversation as it stands and picks it up -- docs/continue.md.
+   */
+  private async handleChatContinue(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppChatContinue,
+  ): Promise<void> {
+    const owner = ws.data.owner;
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId) {
+      await this.refuse(ws, "chat", "invalid threadId", { threadId: frame.threadId });
+      return;
+    }
+    const sessionId = this.store.resolveSessionId(owner, threadId);
+    const answer = (text: string): void => this.sendFrame(ws, { type: "chat.command.result", threadId, text });
+    if (runRegistry.isRunning(sessionId) || runRegistry.canInject(sessionId)) {
+      answer("A run is already going here.");
+      return;
+    }
+    const entries = await sessionLogOf(sessionId);
+    const state = continuable(entries.entries(), entries.leaf());
+    if (!state.ok) {
+      answer(state.reason);
+      return;
+    }
+    if (!this.messageHandler) return;
+    const id = `continue-${crypto.randomUUID()}`;
+    void this.messageHandler({
+      id,
+      platform: "my-claw-app",
+      userId: owner,
+      chatId: owner,
+      chatType: "dm",
+      text: state.lastUserText,
+      timestamp: new Date().toISOString(),
+      attachments: [],
+      isForwarded: false,
+      threadId,
+      sessionScope: "per-user",
+      resume: true,
+      // Carried like a send's: the sub-agent path reads the parent thread from it.
+      raw: { type: "chat.continue", id, threadId, ...(frame.parentThreadId ? { parentThreadId: frame.parentThreadId } : {}) },
+    }).catch((err) => {
+      void myClawAppLog("error", "continue failed", { owner, threadId, error: String(err) });
+    });
   }
 
   private async handleChatStop(

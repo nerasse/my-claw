@@ -67,6 +67,8 @@ export interface RecordedToolCall {
   durationMs?: number;
   /** Images the tool deposited into the model's context, already narrowed to image + path. */
   attachments?: SessionAttachment[];
+  /** The run ended under the call: the result is the interruption, not the tool's. */
+  interrupted?: boolean;
 }
 
 /**
@@ -255,6 +257,7 @@ export class RunRecorder {
       ok: call.ok,
       ...(call.durationMs !== undefined ? { durationMs: call.durationMs } : {}),
       ...(call.attachments?.length ? { attachments: call.attachments } : {}),
+      ...(call.interrupted ? { interrupted: true as const } : {}),
       // No sub-agent state here, and it is not an omission: a `spawn` returns while its child runs,
       // so this entry is written before there is anything terminal to record. `spawn_state` entries
       // carry the lifecycle -- src/sessions/spawn-state.ts.

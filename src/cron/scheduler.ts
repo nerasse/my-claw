@@ -1,7 +1,7 @@
 import type { ChannelAdapter, UnifiedMessage } from "../channels/types.ts";
 import type { MyClawConfig } from "../core/config.ts";
 import { resolveAgentWorkspace } from "../core/config.ts";
-import type { MessageRouter } from "../core/router.ts";
+import type { MessageRouter, RouteResult } from "../core/router.ts";
 import type { SessionManager } from "../sessions/manager.ts";
 import {
   getDueJobs,
@@ -19,13 +19,28 @@ import { hooks } from "../hooks/index.ts";
 import { cleanupGeneratedTempFiles } from "../utils/media.ts";
 import { runRegistry } from "../core/run-registry.ts";
 import { getDelegatedModelUsage, getSessionModelUsage, type SessionModelRow } from "../analytics/usage-db.ts";
+import { parseDurationMs } from "../utils/duration.ts";
 
 const SILENT_MARKER = "[SILENT]";
 
-// Safety net for runaway jobs, deliberately long so heavy/voluminous cron tasks
-// (deep research, many sub-agents) can finish. Override per install via cron.timeoutMs, and per
-// job with its own `timeoutMs`.
-export const DEFAULT_CRON_TIMEOUT_MS = 30 * 60_000;
+/**
+ * No wall by default: a long run is announced, and the owner stops it. A thirty-minute wall killed
+ * the weekly research of 2026-09-27 with six sub-agents mid-pass; a longer one would only move the
+ * loss. Jobs no longer hold each other up, so a long one costs its own tokens and nothing else. A
+ * wall stays available, per install (`cron.timeoutMs`) or per job (`timeout`). docs/cron.md.
+ */
+export const DEFAULT_ALERT_AFTER_MS = 60 * 60_000;
+export const DEFAULT_ALERT_EVERY_MS = 60 * 60_000;
+
+function durationOr(value: string | number | undefined, fallback: number): number {
+  if (value === undefined) return fallback;
+  try {
+    const ms = parseDurationMs(value);
+    return ms > 0 ? ms : fallback;
+  } catch {
+    return fallback;
+  }
+}
 
 /**
  * How long before the wall a run is told to finish. A tenth of its limit, between one and ten
@@ -310,7 +325,7 @@ export class CronScheduler {
         throw new CronWorkspaceMissingError(workspace);
       }
 
-      const timeoutMs = job.timeoutMs ?? this.config.cron?.timeoutMs ?? DEFAULT_CRON_TIMEOUT_MS;
+      const timeoutMs = job.timeoutMs ?? this.config.cron?.timeoutMs;
       const prompt = this.buildCronPrompt(job, timeoutMs, workspace);
       const synthMessage = this.buildSyntheticMessage(job, prompt);
 
@@ -347,17 +362,33 @@ export class CronScheduler {
 
       // Told before it is stopped: a run killed at the wall loses everything it had not written,
       // its sub-agents' work included. The weekly research of 2026-09-27 lost six passes that way.
-      const lead = wrapUpLeadMs(timeoutMs);
-      const wrapUp = setTimeout(() => this.wrapUp(sessionId, lead), Math.max(0, timeoutMs - lead));
-      if (wrapUp.unref) wrapUp.unref();
+      // Only when a wall was asked for.
+      const lead = timeoutMs !== undefined ? wrapUpLeadMs(timeoutMs) : 0;
       let timedOut = false;
-      const wall = setTimeout(() => {
-        timedOut = true;
-        this.router.stop(sessionId);
-      }, timeoutMs);
-      if (wall.unref) wall.unref();
+      const wrapUp = timeoutMs !== undefined ? setTimeout(() => this.wrapUp(sessionId, lead), Math.max(0, timeoutMs - lead)) : undefined;
+      if (wrapUp?.unref) wrapUp.unref();
+      const wall = timeoutMs !== undefined
+        ? setTimeout(() => {
+            timedOut = true;
+            this.router.stop(sessionId);
+          }, timeoutMs)
+        : undefined;
+      if (wall?.unref) wall.unref();
+      // Announced while it goes, never stopped for it: the owner decides (the tap opens the run,
+      // and its Stop). First at the job's alert time, then again at every interval.
+      const alertAfter = job.alertAfterMs ?? durationOr(this.config.cron?.alertAfter, DEFAULT_ALERT_AFTER_MS);
+      const alertEvery = durationOr(this.config.cron?.alertEvery, DEFAULT_ALERT_EVERY_MS);
+      let alertTimer: ReturnType<typeof setTimeout> | undefined;
+      const scheduleAlert = (delay: number): void => {
+        alertTimer = setTimeout(() => {
+          hooks.emit("cron:job:long", { jobId: job.id, jobName: job.name, sessionId, runningMs: Date.now() - jobStartedAt });
+          scheduleAlert(alertEvery);
+        }, delay);
+        if (alertTimer.unref) alertTimer.unref();
+      };
+      scheduleAlert(alertAfter);
 
-      let result: Awaited<ReturnType<typeof this.router.routeCron>>;
+      let result: RouteResult | undefined;
       try {
         // Opened here rather than in the router so the job id rides along: a notification sent
         // from inside the run points its tap at the job. The router reuses this context instead
@@ -369,8 +400,9 @@ export class CronScheduler {
       } finally {
         clearTimeout(wrapUp);
         clearTimeout(wall);
+        clearTimeout(alertTimer);
       }
-      if (timedOut) {
+      if (timedOut && timeoutMs !== undefined) {
         const limit = job.timeoutMs !== undefined ? "the job's timeout" : "cron.timeoutMs";
         throw new CronInterruptedError(
           `Timed out after ${formatMinutes(timeoutMs)} (${limit}); it had been told to finish ${formatMinutes(lead)} before.`,
@@ -489,16 +521,17 @@ export class CronScheduler {
     };
   }
 
-  private buildCronPrompt(job: CronJob, timeoutMs: number, workspace: string | undefined): string {
+  private buildCronPrompt(job: CronJob, timeoutMs: number | undefined, workspace: string | undefined): string {
     const header = [
       "You are executing a scheduled task. Your response will be automatically delivered.",
       "",
       "If you have nothing useful to report, start your response with [SILENT] and the delivery will be suppressed (the output is still saved locally).",
       "",
       "Do not ask clarifying questions -- there is no user present to answer.",
-      "",
-      `Time limit: ${formatMinutes(timeoutMs)}. You will be told when to wrap up; plan so that what matters is written down early.`,
     ];
+    if (timeoutMs !== undefined) {
+      header.push("", `Time limit: ${formatMinutes(timeoutMs)}. You will be told when to wrap up; plan so that what matters is written down early.`);
+    }
     // Two jobs of one workspace can run at the same time now. Neither can see the other's edits
     // coming, so each is told the other exists: re-reading a file right before changing it is
     // what keeps one from writing over the other.
