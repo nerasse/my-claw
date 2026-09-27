@@ -172,6 +172,7 @@ src/
 │       ├── files.ts       # Per-thread uploads under $MY_CLAW_DIR/files/my-claw-app/
 │       ├── stream.ts      # Token streaming + tool cards (chat.stream.* / chat.tool)
 │       ├── status-watch.ts # The status pages open, pushed a fresh report when theirs moves -- docs/status-command.md
+│       ├── browser-live.ts # The live view: window listing, pictures, the owner's taps and keys -- docs/browser-live.md
 │       └── types.ts       # Wire protocol types -- docs/my-claw-app-channel.md
 ├── llm/
 │   ├── provider.ts        # OpenAI-compatible API client (retry, timeout, safe parsing)
@@ -264,6 +265,7 @@ src/
 │   └── types.ts
 ├── browser/
 │   ├── client.ts          # HTTP client to the Node browser sidecar (pages = opaque ids)
+│   ├── cast.ts            # One socket to the sidecar's live pictures, shared by every device -- docs/browser-live.md
 │   └── types.ts           # Snapshot, Attachment, TabInfo, Result
 │   # NOTE: Playwright lives in the top-level sidecar/ (Node), not here — connectOverCDP
 │   # hangs under Bun. The sidecar owns navigate/snapshot/click/type/screenshot + tabs.

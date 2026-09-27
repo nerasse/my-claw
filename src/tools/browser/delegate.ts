@@ -91,9 +91,10 @@ export function createDelegateBrowserTool(
           try {
             vncHost = new URL(novncUrl).hostname || vncHost;
           } catch { /* novncUrl is malformed: fall back to localhost */ }
+          const screen = outcome.onScreen !== undefined ? ` Window ${outcome.onScreen} is on the VNC screen.` : "";
           return {
             success: false,
-            output: `Browser task paused — a human must take over.\n${summary}\nLive browser: ${novncUrl} (web) or ${vncHost}:5900 (VNC app). Resolve the blocker, then reply "continue".`,
+            output: `Browser task paused — a human must take over.\n${summary}\nLive browser: the app's Browser page (live view), ${novncUrl} (web) or ${vncHost}:5900 (VNC app).${screen} Resolve the blocker, then reply "continue".`,
             attachments,
           };
         }

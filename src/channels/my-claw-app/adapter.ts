@@ -1,6 +1,8 @@
 import type { Server, ServerWebSocket } from "bun";
 import { basename } from "node:path";
 import { handleBrowserInfo, handleBrowserUnblock } from "./browser-handlers.ts";
+import { BrowserLive } from "./browser-live.ts";
+import type { BrowserSession } from "../../tools/browser/session.ts";
 import type { BrowserConfig } from "../../core/config.ts";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type {
@@ -333,6 +335,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private notifications?: MyClawAppNotificationsController;
   private configEditor?: MyClawAppConfigController;
   private browser?: BrowserConfig;
+  private browserSession?: BrowserSession;
+  private readonly browserLive = new BrowserLive(() => (this.browser?.enabled ? this.browserSession : undefined));
   private workspacesCtrl?: MyClawAppWorkspacesController;
   private commandHandler?: MyClawAppCommandHandler;
   /** Set by the host: broadcasts `undo.prompt` and waits for the owner's `undo.choose`. */
@@ -775,6 +779,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
    *  section is handed over at boot rather than rediscovered here. */
   onBrowserConfig(browser: BrowserConfig): void {
     this.browser = browser;
+  }
+
+  /** The one browser the agents drive, which the live view watches and the owner acts in. */
+  onBrowserSession(session: BrowserSession): void {
+    this.browserSession = session;
   }
 
   onNotificationsController(controller: MyClawAppNotificationsController): void {
@@ -1426,6 +1435,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     this.sockets.remove(ws);
     this.statusWatch.unwatch(ws);
     this.fsWatches.drop(ws);
+    this.browserLive.drop(ws);
     void myClawAppLog("info", "device disconnected", {
       deviceId: ws.data.deviceId,
       surfaces: this.sockets.countFor(ws.data.deviceId),
@@ -1803,6 +1813,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
           sendFrame: (target, f) => this.sendFrame(target, f),
           refuse: (target, scope, message, data) => this.refuse(target, scope, message, data),
         }, ws), "handleBrowserUnblock");
+        break;
+      case "browser.watch":
+        this.browserLive.watch(ws, frame, (f) => this.sendFrame(ws, f));
+        break;
+      case "browser.input":
+        this.detach(this.browserLive.input(frame, (f) => this.sendFrame(ws, f)), "browserLive.input");
+        break;
+      case "browser.control":
+        this.detach(this.browserLive.control(frame, (f) => this.sendFrame(ws, f)), "browserLive.control");
         break;
       case "browser.info":
         this.detach(handleBrowserInfo({

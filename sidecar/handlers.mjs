@@ -10,6 +10,8 @@ import {
   closeTarget,
   dropPage,
   ensureContext,
+  frontOf,
+  markFront,
   getPage,
   hasChooser,
   idOf,
@@ -24,6 +26,7 @@ import {
   windowOf,
   withFocus,
 } from "./browser.mjs";
+import { OFFSTAGE, go, input, stage, stagedWindows } from "./live.mjs";
 import { injectRefLabels, removeRefLabels, resolveRef, screenshotPath, snapshotPage } from "./snapshot.mjs";
 
 // Hard floor, independent of config: these would expose the browser session's credentials
@@ -100,10 +103,14 @@ export const handlers = {
     const cdp = await browserSession();
     const width = Number(body.viewport?.width ?? 1920);
     const height = Number(body.viewport?.height ?? 1080);
-    const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank", newWindow: true, width, height });
+    // Born off the VNC screen, where a human may be working: the owner's own window, or the first
+    // one of an empty screen, is put on it.
+    const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank", newWindow: true, width, height, ...OFFSTAGE });
     const page = await pageForTarget(ctx, targetId);
+    const windowId = await windowOf(targetId);
+    if (body.onStage === true || (await stagedWindows()).size === 0) await stage(windowId);
     await settle(page, body.url);
-    return { windowId: await windowOf(targetId), pageId: targetId, snapshot: await snapshotPage(page), url: page.url() };
+    return { windowId, pageId: targetId, snapshot: await snapshotPage(page), url: page.url() };
   },
 
   // Asked of the browser, never of the pages: a tab stuck in its own JavaScript answers nothing,
@@ -140,7 +147,15 @@ export const handlers = {
       tabs.push({ pageId: t.id, url: t.url, title: t.title, ...(openerPageId ? { openerPageId } : {}) });
       windows.set(windowId, tabs);
     });
-    return { windows: [...windows].map(([windowId, tabs]) => ({ windowId, tabs: tabs.sort(byBirth) })) };
+    const staged = await stagedWindows().catch(() => new Set());
+    return {
+      windows: [...windows].map(([windowId, tabs]) => {
+        tabs.sort(byBirth);
+        // The tab the window shows: the one that came forward last, the newest if none was seen to.
+        const shown = tabs.reduce((a, b) => (frontOf(b.pageId) >= frontOf(a.pageId) ? b : a));
+        return { windowId, onStage: staged.has(windowId), tabs: tabs.map((t) => ({ ...t, active: t === shown })) };
+      }),
+    };
   },
 
   // Whether a tab's page still answers: a call that ran past its budget is either on a slow page or
@@ -149,6 +164,20 @@ export const handlers = {
     const target = (await pageTargets()).find((t) => t.id === body.pageId);
     if (!target) return { open: false, responsive: false };
     return { open: true, responsive: await responsive(target), url: target.url };
+  },
+
+  async stage(body) {
+    await ensureContext();
+    await stage(Number(body.windowId));
+    return {};
+  },
+
+  async input(body) {
+    return input(body);
+  },
+
+  async go(body) {
+    return go(body);
   },
 
   async "close-target"(body) {
@@ -495,6 +524,7 @@ export const handlers = {
   async "focus-tab"(body) {
     const page = await getPage(body.pageId);
     await withFocus(() => page.bringToFront());
+    markFront(String(body.pageId));
     return { pageId: body.pageId, url: page.url() };
   },
 

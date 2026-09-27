@@ -10,8 +10,10 @@
 // Layout: browser.mjs owns the CDP connection and registries, snapshot.mjs turns a page
 // into refs, handlers.mjs implements the operations, and this file only routes.
 import http from "node:http";
-import { CDP_URL } from "./browser.mjs";
+import { wsServer as WebSocketServer } from "playwright-core/lib/utilsBundle";
+import { CDP_URL, ensureContext } from "./browser.mjs";
 import { handlers } from "./handlers.mjs";
+import { Screencasts } from "./live.mjs";
 
 const PORT = Number(process.env.PORT || 9223);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -58,6 +60,36 @@ const server = http.createServer(async (req, res) => {
 // would then flap it); log and keep serving.
 process.on("unhandledRejection", (reason) => {
   console.error("[sidecar] unhandled rejection:", reason);
+});
+
+// Live pictures stream on a socket of their own (`/cast`): one message per painted frame, which a
+// request per frame would turn into a poll. The server relays them to the devices that watch.
+const casts = new WebSocketServer({ noServer: true });
+server.on("upgrade", (req, socket, head) => {
+  if ((req.url || "").split("?")[0] !== "/cast") {
+    socket.destroy();
+    return;
+  }
+  casts.handleUpgrade(req, socket, head, (ws) => {
+    const streams = new Screencasts((message) => {
+      if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(message));
+    });
+    ws.on("message", (data) => {
+      let message;
+      try {
+        message = JSON.parse(String(data));
+      } catch {
+        return;
+      }
+      if (message?.type === "watch") {
+        void ensureContext()
+          .then(() => streams.watch(message.streams))
+          .catch((e) => console.error("[sidecar] watch failed:", e));
+      }
+    });
+    ws.on("close", () => streams.close());
+    ws.on("error", () => streams.close());
+  });
 });
 
 server.on("error", (err) => {

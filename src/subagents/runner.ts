@@ -846,11 +846,11 @@ export class SubAgentRunner {
     if (type !== "browser" || !browser) return execute();
     // One Chromium, no turns: the run works in windows of its own and gives them back here,
     // however it ends -- docs/browser-windows.md.
-    browser.beginRun(session.id, session.meta?.parentSessionId);
+    browser.beginRun(session.id, session.meta?.parentSessionId, userText);
     try {
       return await execute();
     } finally {
-      browser.endRun(session.id);
+      await browser.endRun(session.id);
     }
   }
 

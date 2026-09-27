@@ -994,6 +994,9 @@ export interface MyClawAppDeviceRevoke {
 export type MyClawAppClientFrame =
   | MyClawAppBrowserInfo
   | MyClawAppBrowserUnblock
+  | MyClawAppBrowserWatch
+  | MyClawAppBrowserInput
+  | MyClawAppBrowserControl
   | MyClawAppChatSend
   | MyClawAppLocationPreview
   | MyClawAppSessionList
@@ -3651,6 +3654,98 @@ export interface MyClawAppBrowserUnblockResult {
   actions: MyClawAppBrowserUnblockAction[];
 }
 
+/**
+ * The live view -- docs/browser-live.md. What a device watches: the window listing, and the tabs
+ * whose pictures it shows, as tiles or one at full size. Each frame replaces the device's previous
+ * one; an empty one stops everything. Watching reserves nothing: agents keep their windows.
+ */
+export interface MyClawAppBrowserWatch {
+  type: "browser.watch";
+  windows: boolean;
+  streams: Array<{ pageId: string; quality: "tile" | "focus" }>;
+}
+
+/**
+ * The owner's hand on a tab, placed as fractions (0..1) of the picture they saw. `ts` is when it
+ * was made: the outbox replays what it held after a reconnect, and a tap from a minute ago on a
+ * page that has moved since would click something else, so a stale one is dropped.
+ */
+export interface MyClawAppBrowserInput {
+  type: "browser.input";
+  pageId: string;
+  ts: number;
+  input:
+    | { kind: "tap"; x: number; y: number; button?: "left" | "right" | "middle"; double?: boolean }
+    | { kind: "down" | "up" | "move"; x: number; y: number; button?: "left" | "right" | "middle" }
+    | { kind: "wheel"; x: number; y: number; dx: number; dy: number }
+    | { kind: "text"; text: string }
+    | { kind: "key"; key: string; modifiers?: Array<"Alt" | "Control" | "Meta" | "Shift"> };
+}
+
+export type MyClawAppBrowserControlAction =
+  | "stage"
+  | "new_window"
+  | "focus_tab"
+  | "close_tab"
+  | "close_window"
+  | "back"
+  | "forward"
+  | "reload"
+  | "goto";
+
+/** Everything else the owner does from the live view: which window the VNC screen shows, tabs, windows, navigation. */
+export interface MyClawAppBrowserControl {
+  type: "browser.control";
+  id: string;
+  action: MyClawAppBrowserControlAction;
+  windowId?: number;
+  pageId?: string;
+  url?: string;
+}
+
+export interface MyClawAppBrowserWindow {
+  /** The number agents use for it ("window 3"). */
+  alias: number;
+  windowId: number;
+  /** The one window the VNC screen shows. */
+  onStage: boolean;
+  state: "working" | "waiting" | "free";
+  task?: string;
+  tabs: Array<{ pageId: string; title: string; url: string; active: boolean }>;
+}
+
+/** Pushed to a device that watches the listing, whenever it changes. */
+export interface MyClawAppBrowserWindowsResult {
+  type: "browser.windows.result";
+  windows: MyClawAppBrowserWindow[];
+  error?: string;
+}
+
+export interface MyClawAppBrowserFrame {
+  type: "browser.frame";
+  pageId: string;
+  seq: number;
+  /** A JPEG, base64. */
+  data: string;
+  /** The page's viewport in CSS pixels. */
+  width: number;
+  height: number;
+}
+
+/** A watched tab closed, or its picture could not be started: the device stops waiting for one. */
+export interface MyClawAppBrowserFrameGone {
+  type: "browser.frame.gone";
+  pageId: string;
+}
+
+/** The answer to a control (with its id), or an input that failed (without one). */
+export interface MyClawAppBrowserControlResult {
+  type: "browser.control.result";
+  id?: string;
+  ok: boolean;
+  error?: string;
+}
+
 export interface MyClawAppBrowserInfoResult {
   type: "browser.info.result";
   enabled: boolean;
@@ -3670,6 +3765,10 @@ export type MyClawAppServerFrame =
   | MyClawAppPong
   | MyClawAppBrowserInfoResult
   | MyClawAppBrowserUnblockResult
+  | MyClawAppBrowserWindowsResult
+  | MyClawAppBrowserFrame
+  | MyClawAppBrowserFrameGone
+  | MyClawAppBrowserControlResult
   | MyClawAppChatMessage
   | MyClawAppChatUser
   | MyClawAppChatCompaction

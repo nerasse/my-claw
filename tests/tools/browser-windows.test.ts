@@ -5,7 +5,8 @@ import {
   type BrowserWindowView,
   type WindowsBackend,
 } from "../../src/tools/browser/windows.ts";
-import { BrowserSession, isBrowserInfraError, recordBrowserOutcome } from "../../src/tools/browser/session.ts";
+import { BrowserSession, isBrowserInfraError, recordBrowserOutcome, takeBrowserOutcome } from "../../src/tools/browser/session.ts";
+import { taskLabel } from "../../src/tools/browser/windows.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
@@ -301,6 +302,83 @@ describe("BrowserSession: the windows decide what the client may close", () => {
       );
       expect(error).toContain("left open");
       expect(paths).not.toContain("close-target");
+    } finally {
+      mock.restore();
+    }
+  });
+});
+
+describe("BrowserWindows: the owner's live view", () => {
+  test("a task names its window by its first line", () => {
+    expect(taskLabel("Task: apply to the Nabla job\nStart URL: https://x\n\n## Browser windows")).toBe("apply to the Nabla job");
+    expect(taskLabel("  \n continue")).toBe("continue");
+    expect(taskLabel(undefined)).toBeUndefined();
+    expect(taskLabel(`Task: ${"x".repeat(300)}`)!.length).toBe(140);
+  });
+
+  test("each window says whether a run works in it, waits for a human, or is free, and which tab it shows", async () => {
+    let clock = 1_000;
+    const b = fakeBrowser([
+      { windowId: 11, onStage: true, tabs: [{ pageId: "a", url: "https://a.test", title: "A", active: true }] },
+      { windowId: 12, tabs: [{ pageId: "b", url: "https://b.test", title: "B" }] },
+      { windowId: 13, tabs: [{ pageId: "c", url: "https://c.test", title: "C" }] },
+    ]);
+    const w = new BrowserWindows(b.backend, () => clock);
+    w.beginRun("R1", "conv-1", "search the jobs");
+    await w.page(run("R1", 1));
+    w.beginRun("R2", "conv-2", "solve the login");
+    await w.page(run("R2", 2));
+    w.endRun("R2", true);
+    const overview = await w.overview();
+    expect(overview).toEqual([
+      { alias: 1, windowId: 11, onStage: true, state: "working", task: "search the jobs", tabs: [{ pageId: "a", title: "A", url: "https://a.test", active: true }] },
+      { alias: 2, windowId: 12, onStage: false, state: "waiting", task: "solve the login", tabs: [{ pageId: "b", title: "B", url: "https://b.test", active: false }] },
+      { alias: 3, windowId: 13, onStage: false, state: "free", tabs: [{ pageId: "c", title: "C", url: "https://c.test", active: false }] },
+    ]);
+    clock += HANDOFF_HOLD_MS + 1;
+    expect((await w.overview())[1]).toMatchObject({ state: "free" });
+    expect((await w.overview())[1]!.task).toBeUndefined();
+  });
+
+  test("a handoff names the window the run worked in last, a normal end names none", async () => {
+    let clock = 1_000;
+    const b = fakeBrowser([reddit(11, "r1"), reddit(12, "r2")]);
+    const w = new BrowserWindows(b.backend, () => clock);
+    w.beginRun("A", "conv-1");
+    await w.page(run("A", 2));
+    clock += 10;
+    await w.page(run("A", 1));
+    expect(w.endRun("A", true)).toBe(11);
+    w.beginRun("B", "conv-1");
+    await w.page(run("B", 2));
+    expect(w.endRun("B", false)).toBeUndefined();
+  });
+});
+
+describe("BrowserSession: a handoff puts its window on the VNC screen", () => {
+  test("the window is staged, and the outcome names it for the handoff message", async () => {
+    const paths: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const mock = mockFetch(async (input, init) => {
+      const path = String(input).split("/").pop() ?? "";
+      paths.push({ path, body: JSON.parse(String((init as { body?: string }).body ?? "{}")) as Record<string, unknown> });
+      if (path === "list-windows") return new Response(JSON.stringify({ windows: [reddit(11, "r1"), reddit(12, "r2")] })) as never;
+      return new Response("{}") as never;
+    });
+    try {
+      const session = new BrowserSession({ browser: { enabled: true } } as MyClawConfig);
+      session.beginRun("run-s", "conv-1", "Task: log in");
+      await session.windows.page(run("run-s", 2));
+      recordBrowserOutcome("run-s", { summary: "captcha", needsHuman: true });
+      await session.endRun("run-s");
+      expect(paths.filter((p) => p.path === "stage").map((p) => p.body)).toEqual([{ windowId: 12 }]);
+      expect(takeBrowserOutcome("run-s")).toMatchObject({ needsHuman: true, onScreen: 2 });
+
+      session.beginRun("run-t", "conv-2");
+      await session.windows.page(run("run-t", 1));
+      recordBrowserOutcome("run-t", { summary: "done" });
+      await session.endRun("run-t");
+      expect(paths.filter((p) => p.path === "stage").length).toBe(1);
+      expect(takeBrowserOutcome("run-t")?.onScreen).toBeUndefined();
     } finally {
       mock.restore();
     }

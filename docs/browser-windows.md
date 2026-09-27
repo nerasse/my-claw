@@ -165,8 +165,8 @@ the prompt carries the strategy: each place says only its part.
 
 ## Out of scope
 
-- The VNC view: without a window manager it shows the last raised window, so it jumps between
-  windows when runs work in parallel. Next step, separately.
+- The VNC view, done since in `docs/browser-live.md`: one window on the screen, the others parked
+  off it, and the owner picks it from the app.
 - Two runs working the same account on the same site at the same time may trip that site's
   anti-abuse. Nothing here prevents it.
 

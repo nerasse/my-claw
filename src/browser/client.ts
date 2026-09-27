@@ -6,6 +6,8 @@ import type {
   BrowserEvalResult,
   BrowserFetchResult,
   BrowserFindResult,
+  BrowserGo,
+  BrowserInput,
   BrowserResponseBody,
   BrowserResponseList,
   BrowserResult,
@@ -37,6 +39,10 @@ const DEFAULT_TIMEOUTS_MS: Record<string, number> = {
   // The probe waits up to 3 s for a page by design: it must never inherit a shorter default.
   probe: 10000,
   "close-target": 10000,
+  // The owner's own clicks and keys: a long wait here is a hand that feels nothing.
+  input: 10000,
+  stage: 15000,
+  go: 45000,
 };
 
 /** A tab whose page no longer answers, as the sidecar found it. */
@@ -215,8 +221,26 @@ export class BrowserClient {
     return windows;
   }
 
-  async createWindow(url: string): Promise<BrowserResult & { windowId: number }> {
-    return this.call<BrowserResult & { windowId: number }>("create-window", { url, viewport: this.viewport });
+  /** A new window, off the VNC screen unless `onStage` (the owner's own) or the screen is empty. */
+  async createWindow(url: string, opts: { onStage?: boolean } = {}): Promise<BrowserResult & { windowId: number }> {
+    return this.call<BrowserResult & { windowId: number }>("create-window", {
+      url,
+      viewport: this.viewport,
+      ...(opts.onStage ? { onStage: true } : {}),
+    });
+  }
+
+  /** Puts a window on the VNC screen, and every other one off it. */
+  async stage(windowId: number): Promise<void> {
+    await this.call("stage", { windowId });
+  }
+
+  async input(pageId: string, action: BrowserInput): Promise<void> {
+    await this.call("input", { pageId, ...action });
+  }
+
+  async go(pageId: string, nav: BrowserGo): Promise<{ url: string }> {
+    return this.call<{ url: string }>("go", { pageId, ...nav });
   }
 
   async closeWindow(windowId: number): Promise<void> {

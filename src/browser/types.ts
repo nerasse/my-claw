@@ -27,12 +27,26 @@ export interface BrowserTabView {
   url: string;
   title: string;
   openerPageId?: string;
+  /** The tab its window shows (the one that came forward last). */
+  active?: boolean;
 }
 
 export interface BrowserWindowView {
   windowId: number;
+  /** The window on the VNC screen: one at a time, the others parked off it (docs/browser-live.md). */
+  onStage?: boolean;
   tabs: BrowserTabView[];
 }
+
+/** The owner's hand on a page, placed as a fraction (0..1) of the live picture they saw. */
+export type BrowserInput =
+  | { kind: "tap"; x: number; y: number; button?: "left" | "right" | "middle"; double?: boolean }
+  | { kind: "down" | "up" | "move"; x: number; y: number; button?: "left" | "right" | "middle" }
+  | { kind: "wheel"; x: number; y: number; dx: number; dy: number }
+  | { kind: "text"; text: string }
+  | { kind: "key"; key: string; modifiers?: Array<"Alt" | "Control" | "Meta" | "Shift"> };
+
+export type BrowserGo = { action: "back" | "forward" | "reload" } | { action: "goto"; url: string };
 
 /** How the sidecar actually performed an action. Surfaced to the agent because the path
  *  taken (native select vs keyboard fallback) tells it how much to trust the result. */

@@ -1,7 +1,11 @@
 # The Browser page
 
-`More -> Browser` in the app. It answers one question: how does a human take the browser over
-right now, without asking the agent and without an account on the host.
+`More -> Browser` in the app. Two panes:
+
+- **Live** (the default): every window of the browser, live, and the owner's hand in any of them,
+  and the window the VNC screen shows -- `docs/browser-live.md`.
+- **VNC**: how a human takes the browser over from outside the app right now, without asking the
+  agent and without an account on the host. The rest of this page is about that pane.
 
 ## Why the password is shown
 
@@ -43,7 +47,7 @@ including a wrong one.
 | `vncPort` | 5900 |
 | `password` | the decoded file, absent when there is none |
 | `services` | `systemctl is-active` over `browser.units` |
-| `tabs` / `tabsError` | the sidecar's `tabs` endpoint |
+| `tabs` / `tabsError` | the browser's own list of tabs (no page is asked anything); the app shows the live listing instead |
 
 `vncHost` is derived from `webUrl` rather than configured separately, so the web client and the
 native client can never be told to dial different machines.

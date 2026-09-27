@@ -2237,6 +2237,7 @@ async function main() {
     });
 
     if (config.browser) myClawApp.onBrowserConfig(config.browser);
+    myClawApp.onBrowserSession(browserSession);
 
     // The install-wide statistics page. Its money is the same money `/status` shows, priced by the
     // same table, so the two screens cannot disagree about a call they both cover.

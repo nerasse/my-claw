@@ -16,8 +16,32 @@ export const HANDOFF_HOLD_MS = 30 * 60_000;
 
 interface RunWindows {
   parent?: string;
+  /** What the run was asked to do, as the owner's live view names it. */
+  label?: string;
   /** The page the run works on in each window it holds. */
   current: Map<number, string>;
+}
+
+/** One window as the owner's live view shows it -- docs/browser-live.md. */
+export interface WindowOverview {
+  /** The number agents use for it. */
+  alias: number;
+  windowId: number;
+  onStage: boolean;
+  /** A run works in it, it waits for a human after a handoff, or nobody holds it. */
+  state: "working" | "waiting" | "free";
+  /** The task of the run working in it, or of the one that handed it over. */
+  task?: string;
+  tabs: Array<{ pageId: string; title: string; url: string; active: boolean }>;
+}
+
+const TASK_LABEL_CHARS = 140;
+
+/** The first line of a browser task (`Task: ...`), short enough for a tile. */
+export function taskLabel(text: string | undefined): string | undefined {
+  const line = text?.split("\n").find((l) => l.trim() !== "")?.replace(/^Task:\s*/, "").trim();
+  if (!line) return undefined;
+  return line.length > TASK_LABEL_CHARS ? `${line.slice(0, TASK_LABEL_CHARS - 1)}…` : line;
 }
 
 function sessionOf(args: Record<string, unknown>): string {
@@ -54,7 +78,7 @@ export class BrowserWindows {
   /** windowId -> the session of the run holding it. */
   private readonly locks = new Map<number, string>();
   /** windowId -> the conversation it is kept for after a human handoff. */
-  private readonly holds = new Map<number, { parent: string; until: number }>();
+  private readonly holds = new Map<number, { parent: string; until: number; label?: string }>();
   private readonly runs = new Map<string, RunWindows>();
   private readonly lastUsed = new Map<string, number>();
   private layout: BrowserWindowView[] = [];
@@ -64,19 +88,53 @@ export class BrowserWindows {
     private readonly now: () => number = Date.now,
   ) {}
 
-  beginRun(session: string, parent?: string): void {
-    this.runs.set(session, { ...(parent ? { parent } : {}), current: new Map() });
+  beginRun(session: string, parent?: string, label?: string): void {
+    this.runs.set(session, { ...(parent ? { parent } : {}), ...(label ? { label } : {}), current: new Map() });
   }
 
-  /** Gives back every window the run held; after a human handoff they stay kept for its conversation. */
-  endRun(session: string, handoff: boolean): void {
-    const parent = this.runs.get(session)?.parent;
+  /**
+   * Gives back every window the run held; after a human handoff they stay kept for its conversation.
+   * Returns the window the human should be shown then: the one the run worked in last.
+   */
+  endRun(session: string, handoff: boolean): number | undefined {
+    const run = this.runs.get(session);
+    const parent = run?.parent;
+    let shown: { windowId: number; at: number } | undefined;
     for (const [windowId, owner] of this.locks) {
       if (owner !== session) continue;
       this.locks.delete(windowId);
-      if (handoff && parent) this.holds.set(windowId, { parent, until: this.now() + HANDOFF_HOLD_MS });
+      if (!handoff || !parent) continue;
+      this.holds.set(windowId, { parent, until: this.now() + HANDOFF_HOLD_MS, ...(run?.label ? { label: run.label } : {}) });
+      const page = run?.current.get(windowId);
+      const at = (page ? this.lastUsed.get(page) : undefined) ?? -1;
+      if (!shown || at > shown.at) shown = { windowId, at };
     }
     this.runs.delete(session);
+    return shown?.windowId;
+  }
+
+  /** The number agents know a window by. */
+  aliasOf(windowId: number): number {
+    return this.alias(windowId);
+  }
+
+  /** The browser's windows and who is in them, for the owner's live view. */
+  async overview(): Promise<WindowOverview[]> {
+    const windows = await this.refresh();
+    return windows.map((w) => {
+      const holder = this.locks.get(w.windowId);
+      const hold = this.holds.get(w.windowId);
+      const waiting = holder === undefined && hold !== undefined && hold.until > this.now();
+      const task = holder !== undefined ? this.runs.get(holder)?.label : waiting ? hold?.label : undefined;
+      return {
+        alias: this.alias(w.windowId),
+        windowId: w.windowId,
+        onStage: w.onStage === true,
+        state: holder !== undefined ? "working" : waiting ? "waiting" : "free",
+        ...(task ? { task } : {}),
+        tabs: w.tabs.map((t) => ({ pageId: t.pageId, title: t.title, url: t.url, active: t.active === true })),
+      };
+    });
   }
 
   /** The page the calling run works on in the window it names, taking the window if it is free. */

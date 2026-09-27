@@ -54,12 +54,22 @@ type FetchImpl = (input?: string | URL | Request, init?: RequestInit) => Promise
 
 // The browser subagent queries the sidecar (session/tabs/cleanup) around its LLM
 // loop. Route those to sidecar-shaped responses so the LLM mock only sees LLM calls.
+const staged: Array<{ windowId: number }> = [];
+
 function withSidecar(impl: FetchImpl): { restore(): void } {
   const mock = mockFetch((async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("127.0.0.1:9223")) {
       if (url.endsWith("/session")) return new Response(JSON.stringify({ sessionId: "s" }), { status: 200 });
       if (url.endsWith("/tabs")) return new Response(JSON.stringify({ tabs: [] }), { status: 200 });
+      if (url.endsWith("/list-windows")) {
+        return new Response(JSON.stringify({ windows: [{ windowId: 41, tabs: [{ pageId: "t41", url: "https://example.com", title: "Example" }] }] }), { status: 200 });
+      }
+      if (url.endsWith("/snapshot")) return new Response(JSON.stringify({ raw: 'button "Verify" [__ref="1"]', refs: [1] }), { status: 200 });
+      if (url.endsWith("/stage")) {
+        staged.push(JSON.parse(String(init?.body ?? "{}")) as { windowId: number });
+        return new Response("{}", { status: 200 });
+      }
       return new Response(JSON.stringify({}), { status: 200 });
     }
     return impl(input as never, init as never);
@@ -178,8 +188,11 @@ describe("E2E browser delegation", () => {
       const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ role: string; content: unknown }>; tools?: Array<{ function: { name: string } }> };
       bodies.push(body);
       const tools = body.tools;
-      // Subagent loop: signal a handoff via browser_done(needs_human=true)
+      // Subagent loop: look at window 1, then signal a handoff via browser_done(needs_human=true)
       if (tools?.some((t) => t.function.name === "browser_done")) {
+        if (!body.messages.some((m) => m.role === "tool")) {
+          return llmResp({ content: "", tool_calls: [{ id: "tc_look", function: { name: "browser_snapshot", arguments: '{"window":1}' } }] });
+        }
         return llmResp({ content: "", tool_calls: [{ id: "tc_sub", function: { name: "browser_done", arguments: '{"summary":"hCaptcha is blocking the page","needs_human":true}' } }] });
       }
       // Main agent first call -> delegate; second call -> final answer
@@ -199,6 +212,9 @@ describe("E2E browser delegation", () => {
       expect(joined).toContain("https://vnc.example.com");
       expect(joined.toLowerCase()).toContain("take over");
       expect(joined).toContain("hCaptcha is blocking the page");
+      // The window the run was in is put on the VNC screen, and the owner is told which one.
+      expect(staged).toEqual([{ windowId: 41 }]);
+      expect(joined).toContain("Window 1 is on the VNC screen.");
     } finally {
       mock.restore();
     }

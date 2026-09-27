@@ -124,6 +124,23 @@ const PROBE_MS = 3000;
 const births = new Map(); // pageId -> seq
 let born = 0;
 
+// When each tab last came to the front of its window: a new tab and a tab brought forward are the
+// one their window shows. The browser has no call that says which tab a window shows, and asking
+// the page (visibility) lies under Playwright's focus emulation.
+const fronts = new Map(); // pageId -> seq
+let fronted = 0;
+
+export function markFront(pageId) {
+  fronts.set(pageId, ++fronted);
+}
+
+export function frontOf(pageId) {
+  return fronts.get(pageId) ?? 0;
+}
+
+/** What the live view hangs on a tab's birth and death, set by live.mjs, which imports this one. */
+export const pageHooks = { born: null, closed: null };
+
 export function birthOf(pageId) {
   if (!births.has(pageId)) births.set(pageId, ++born);
   return births.get(pageId);
@@ -196,7 +213,14 @@ export async function ensureContext(viewport) {
     // Adopted as soon as they exist, popups included: the file chooser listener has to be on a
     // page before anything clicks in it, and a popup's opener has to be known to hand it to the
     // run that caused it.
-    ctx.on("page", (page) => void adopt(page).catch(() => undefined));
+    ctx.on("page", (page) => {
+      void adopt(page)
+        .then((id) => {
+          markFront(id);
+          return pageHooks.born?.(page, id);
+        })
+        .catch(() => undefined);
+    });
     await Promise.all(ctx.pages().map((page) => adopt(page).catch(() => undefined)));
   }
   return ctx;
@@ -256,7 +280,10 @@ export function adopt(page) {
     birthOf(id);
     // Prune closed tabs (user-closed or crashed) so a stale handle isn't reused and misreported
     // as a sidecar outage; auto-accept dialogs on every adopted page, not just newly created ones.
-    page.on("close", () => dropPage(id));
+    page.on("close", () => {
+      dropPage(id);
+      void Promise.resolve(pageHooks.closed?.(id)).catch(() => undefined);
+    });
     page.on("dialog", (dialog) => {
       const override = dialogOverrides.get(id);
       if (override) {
@@ -325,6 +352,7 @@ export async function getPage(pageId) {
 export function dropPage(pageId) {
   allPages.delete(pageId);
   births.delete(pageId);
+  fronts.delete(pageId);
   dialogOverrides.delete(pageId);
   pendingDownloads.delete(pageId);
   pendingChoosers.delete(pageId);

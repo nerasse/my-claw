@@ -1,7 +1,8 @@
+import { BrowserCast } from "../../browser/cast.ts";
 import { BrowserClient } from "../../browser/client.ts";
 import type { MyClawConfig } from "../../core/config.ts";
 import { type Tool, type ToolResult } from "../types.ts";
-import { BrowserWindows } from "./windows.ts";
+import { BrowserWindows, taskLabel } from "./windows.ts";
 
 export const DEFAULT_NOVNC_URL = "http://localhost:6080";
 export const DEFAULT_SIDECAR_URL = "http://127.0.0.1:9223";
@@ -16,10 +17,13 @@ export const DEFAULT_SIDECAR_URL = "http://127.0.0.1:9223";
 export class BrowserSession {
   readonly client: BrowserClient;
   readonly windows: BrowserWindows;
+  /** The live pictures the owner's devices watch -- docs/browser-live.md. */
+  readonly cast: BrowserCast;
 
   constructor(private config: MyClawConfig) {
     this.client = new BrowserClient(this.sidecarUrl(), config.browser?.viewport, config.browser?.timeoutsMs);
     this.windows = new BrowserWindows(this.client);
+    this.cast = new BrowserCast(() => this.sidecarUrl());
     this.client.keepOpenWhen((pageId) => this.windows.keptForHuman(pageId));
   }
 
@@ -28,14 +32,26 @@ export class BrowserSession {
   }
 
   /** A browser run starts: the live config reaches the client, and the run gets an empty set of windows. */
-  beginRun(sessionId: string, parentSessionId?: string): void {
+  beginRun(sessionId: string, parentSessionId?: string, task?: string): void {
     this.client.reconfigure(this.sidecarUrl(), this.config.browser?.viewport, this.config.browser?.timeoutsMs);
-    this.windows.beginRun(sessionId, parentSessionId);
+    this.windows.beginRun(sessionId, parentSessionId, taskLabel(task));
   }
 
-  /** A browser run is over, however it ended. A human handoff keeps its windows for its conversation. */
-  endRun(sessionId: string): void {
-    this.windows.endRun(sessionId, outcomes.get(sessionId)?.needsHuman === true);
+  /**
+   * A browser run is over, however it ended. A human handoff keeps its windows for its conversation
+   * and puts the one it worked in last on the VNC screen, where the human is about to look.
+   */
+  async endRun(sessionId: string): Promise<void> {
+    const handoff = outcomes.get(sessionId)?.needsHuman === true;
+    const shown = this.windows.endRun(sessionId, handoff);
+    if (shown === undefined) return;
+    try {
+      await this.client.stage(shown);
+      recordBrowserOutcome(sessionId, { onScreen: this.windows.aliasOf(shown) });
+    } catch {
+      // The screen stays as it was: the handoff message then names no window, and the owner picks
+      // one from the app.
+    }
   }
 
   /**
@@ -64,6 +80,8 @@ export interface BrowserRunOutcome {
   summary?: string;
   needsHuman?: boolean;
   infraError?: string;
+  /** The window put on the VNC screen for the human, by the number agents use. */
+  onScreen?: number;
 }
 
 const outcomes = new Map<string, BrowserRunOutcome>();
