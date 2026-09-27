@@ -12,9 +12,18 @@ set -uo pipefail
 
 APP_DIR="/opt/my-claw"
 START_ORDER="my-claw-xvfb my-claw-chromium my-claw-browser-sidecar my-claw-whisper my-claw-vnc my-claw-novnc my-claw"
-STOP_ORDER="my-claw my-claw-whisper my-claw-browser-sidecar my-claw-chromium my-claw-vnc my-claw-novnc my-claw-xvfb"
+STOP_ORDER="my-claw my-claw-whisper my-claw-browser-sidecar my-claw-vnc my-claw-novnc"
+# The browser and the display it draws on. They hold the owner's work (open tabs, a sign-in, a form
+# stopped at its e-mail code), so stop and restart leave them running unless asked: two restarts on
+# the night of 2026-09-26 killed two applications at that screen. Xvfb is part of it because
+# Chromium requires it: stopping the display takes the browser down with it. docs/browser.md.
+BROWSER_ORDER="my-claw-chromium my-claw-xvfb"
 
 cmd="${1:-}"
+WITH_BROWSER=0
+for arg in "$@"; do
+  [ "$arg" = "--with-browser" ] && WITH_BROWSER=1
+done
 
 if [ -L "${APP_DIR}/current" ]; then
   MODE="user"
@@ -103,14 +112,14 @@ usage() {
   echo ""
   echo "Commands:"
   echo "  start     Start my-claw and all dependencies"
-  echo "  stop      Stop my-claw and all dependencies"
-  echo "  restart   Restart all services"
+  echo "  stop      Stop my-claw and its services; the browser keeps running (--with-browser: stop it too)"
+  echo "  restart   Restart my-claw and its services; the browser keeps running (--with-browser: restart it too)"
   echo "  status    Show status of my-claw service"
   echo "  logs      Follow the server log"
   echo "  dev       Stop the service and run development mode (bun --watch) from the current directory"
   echo "  device    Pair and revoke app/browser devices (add, ls, rm, disable, enable)"
   echo "  web       Install and switch the web client bundle (install, ls, use, rm)"
-  echo "  update    Update to the latest release, web client bundle included (or myclaw update <version>)"
+  echo "  update    Update to the latest release, web client bundle included (or myclaw update <version>); the browser keeps running (--with-browser)"
   echo "  codex     ChatGPT/Codex auth: myclaw codex <login|status|logout>"
   echo "  claude    Claude subscription auth: myclaw claude <login|set-token <token>|status|logout>"
   echo ""
@@ -129,20 +138,28 @@ require_sudo() {
   fi
 }
 
+# A process is stale when nothing manages it: its unit is not running. `myclaw start` used to kill
+# every Chromium on the CDP port, including the one its own unit was running, open tabs and all.
 kill_stale() {
   local user="${TARGET_USER:-$(id -un)}" pid
-  for pid in $(pgrep -u "$user" -f "Xvfb :99" 2>/dev/null || true); do
-    echo "  Killing stale Xvfb :99 (PID $pid)..."
-    kill -9 "$pid" 2>/dev/null || true
-  done
-  for pid in $(pgrep -u "$user" -f "chromium.*9222" 2>/dev/null || true); do
-    echo "  Killing stale Chromium CDP (PID $pid)..."
-    kill -9 "$pid" 2>/dev/null || true
-  done
-  for pid in $(pgrep -u "$user" -f "whisper-server.py" 2>/dev/null || true); do
-    echo "  Killing stale Whisper server (PID $pid)..."
-    kill -9 "$pid" 2>/dev/null || true
-  done
+  if ! "${SYSCTL[@]}" is-active --quiet my-claw-xvfb.service 2>/dev/null; then
+    for pid in $(pgrep -u "$user" -f "Xvfb :99" 2>/dev/null || true); do
+      echo "  Killing stale Xvfb :99 (PID $pid)..."
+      kill -9 "$pid" 2>/dev/null || true
+    done
+  fi
+  if ! "${SYSCTL[@]}" is-active --quiet my-claw-chromium.service 2>/dev/null; then
+    for pid in $(pgrep -u "$user" -f "chromium.*9222" 2>/dev/null || true); do
+      echo "  Killing stale Chromium CDP (PID $pid)..."
+      kill -9 "$pid" 2>/dev/null || true
+    done
+  fi
+  if ! "${SYSCTL[@]}" is-active --quiet my-claw-whisper.service 2>/dev/null; then
+    for pid in $(pgrep -u "$user" -f "whisper-server.py" 2>/dev/null || true); do
+      echo "  Killing stale Whisper server (PID $pid)..."
+      kill -9 "$pid" 2>/dev/null || true
+    done
+  fi
 }
 
 start_services() {
@@ -164,6 +181,14 @@ stop_services() {
     echo "  Stopping ${svc}..."
     "${SYSCTL[@]}" stop "${svc}.service" 2>/dev/null || true
   done
+  if [ "$WITH_BROWSER" -eq 1 ]; then
+    for svc in $BROWSER_ORDER; do
+      echo "  Stopping ${svc}..."
+      "${SYSCTL[@]}" stop "${svc}.service" 2>/dev/null || true
+    done
+  else
+    echo "  Browser left running (its tabs are the owner's work): add --with-browser to stop it too."
+  fi
   echo "Done."
 }
 

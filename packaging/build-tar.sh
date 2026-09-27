@@ -39,6 +39,9 @@ cp "${SCRIPT_DIR}/auto-update.sh" "${TAR_DIR}/packaging/"
 cp "${SCRIPT_DIR}/web-bundle.sh" "${TAR_DIR}/packaging/"
 # The /usr/local/bin/myclaw stub, installed once by install.sh or the migration.
 cp "${SCRIPT_DIR}/myclaw-stub.sh" "${TAR_DIR}/packaging/"
+# Run by the Chromium unit before every start: without it in the tarball the unit's ExecStartPre
+# points at nothing, and a browser that went down hard comes back on a blank page.
+cp "${SCRIPT_DIR}/chromium-prestart.sh" "${TAR_DIR}/packaging/"
 chmod 755 "${TAR_DIR}/packaging/"*.sh
 # The local STT sidecar the whisper unit runs. Without it in the tarball the unit points at a file
 # that is not there, which is the shape of the bug it replaces.

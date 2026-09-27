@@ -243,7 +243,7 @@ describe("cron scheduler", () => {
       expect(callCount).toBe(2);
     });
 
-    test("cron.timeoutMs aborts a runaway job and marks it error", async () => {
+    test("cron.timeoutMs aborts a runaway job and marks it interrupted, not failed", async () => {
       // Without the wall-clock guard, a job that never returns would pin the tick forever.
       config.cron = { enabled: true, timeoutMs: 10 };
       scheduler = new CronScheduler(router, sessionManager, config);
@@ -274,8 +274,11 @@ describe("cron scheduler", () => {
       expect(sentMessages).toHaveLength(0); // nothing delivered
 
       const jobs = await loadJobs();
-      expect(jobs[0]!.lastStatus).toBe("error");
-      expect(jobs[0]!.lastError).toContain("timed out");
+      // The limit is not the agent failing: a job that hits it needs a longer limit, not a new prompt.
+      expect(jobs[0]!.lastStatus).toBe("interrupted");
+      expect(jobs[0]!.lastError).toContain("Timed out");
+      expect(jobs[0]!.lastError).toContain("cron.timeoutMs");
+      expect(jobs[0]!.runningSince).toBeUndefined();
     });
 
     test("guard against concurrent ticks", async () => {

@@ -360,11 +360,12 @@ export interface SessionData {
    * The capability switches of a cron run, the sibling of `scopeOverride` and set by the same
    * caller from the same job. Never persisted, for the same reason: a run session outlives its run
    * and the app opens it as a chat, so a copy would outlive the job settings it came from. Absent
-   * means granted. docs/cron.md.
+   * means granted, except for `conversations`, which is withheld unless true. docs/cron.md.
    */
   scopeCapabilities?: {
     subagents?: boolean;
     browser?: boolean;
+    conversations?: boolean;
   };
   /**
    * Key of the workspace this conversation runs in (config.workspaces). Absent = the default

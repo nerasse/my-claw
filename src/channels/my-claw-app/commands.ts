@@ -31,6 +31,7 @@ import { hooks } from "../../hooks/index.ts";
 import { log } from "../../utils/logger.ts";
 import type { UndoMode } from "./undo.ts";
 import type { MyClawAppCommandHandler } from "./controllers.ts";
+import { describeHold } from "../../tools/browser/held.ts";
 import {
   handleRetryCommand,
   handleBranchesCommand,
@@ -58,6 +59,8 @@ export interface MyClawAppCommandDeps {
   customDir?: string;
   workspaceSkillsDir?: string;
   listCronJobs?: () => ReturnType<typeof loadJobs>;
+  /** The kept browser windows, and the owner's release of any of them (`/windows`). */
+  browserWindows?: Pick<import("../../tools/browser/windows.ts").BrowserWindows, "kept" | "release">;
   postMessage?: (owner: string, text: string, threadId?: string) => Promise<void>;
   onAuthChanged?: (provider: "codex" | "claude") => void | Promise<void>;
   reloadConfigNow?: () => Promise<{ changed: string[]; rebootRequired: string[] }>;
@@ -288,6 +291,29 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
         return jobs
           .map((j) => `${j.id} | ${j.name} | ${j.schedule.display} | ${j.enabled ? j.state : "paused"} | next: ${j.nextRunAt ? new Date(j.nextRunAt).toLocaleString() : "-"}`)
           .join("\n");
+      }
+
+      case "windows": {
+        // The owner's view of the windows kept after a browsing task, and the one release that is
+        // not limited to the conversation that kept them.
+        if (!deps.browserWindows) return "Browser not available.";
+        const [verb, target] = args.trim().split(/\s+/);
+        try {
+          if (verb === "release") {
+            if (!target) return "Usage: /windows release <number>|all";
+            const all = target === "all";
+            const alias = Number(target);
+            if (!all && !Number.isInteger(alias)) return "Usage: /windows release <number>|all";
+            const released = await deps.browserWindows.release(all ? { all: true } : { alias });
+            return released > 0 ? `Released ${released} window${released > 1 ? "s" : ""}.` : `No kept window ${target}.`;
+          }
+          const kept = await deps.browserWindows.kept();
+          if (kept.length === 0) return "No browser window is kept.";
+          const now = Date.now();
+          return [...kept.map((hold) => describeHold(hold, now)), "", "Release one: /windows release <number>, or /windows release all."].join("\n");
+        } catch (err) {
+          return `Could not read the browser's windows: ${err instanceof Error ? err.message : String(err)}`;
+        }
       }
 
       case "stop": {

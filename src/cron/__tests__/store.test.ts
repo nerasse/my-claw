@@ -259,7 +259,7 @@ describe("cron store", () => {
   describe("markJobRun", () => {
     test("sets lastRunAt, lastStatus, completedRuns", () => {
       const job = createJob({ prompt: "test", schedule: "every 30m", origin: null, deliver: "local" });
-      markJobRun(job, true);
+      markJobRun(job, "ok");
       expect(job.lastRunAt).not.toBeNull();
       expect(job.lastStatus).toBe("ok");
       expect(job.completedRuns).toBe(1);
@@ -267,7 +267,7 @@ describe("cron store", () => {
 
     test("completes one-shot after 1 run", () => {
       const job = createJob({ prompt: "test", schedule: "30m", origin: null, deliver: "local" });
-      markJobRun(job, true);
+      markJobRun(job, "ok");
       expect(job.state).toBe("completed");
       expect(job.enabled).toBe(false);
       expect(job.nextRunAt).toBeNull();
@@ -276,23 +276,23 @@ describe("cron store", () => {
     test("completes repeat=3 after 3 runs", () => {
       const job = createJob({ prompt: "test", schedule: "every 30m", origin: null, deliver: "local" });
       job.repeat = 3;
-      markJobRun(job, true);
-      markJobRun(job, true);
-      markJobRun(job, true);
+      markJobRun(job, "ok");
+      markJobRun(job, "ok");
+      markJobRun(job, "ok");
       expect(job.state).toBe("completed");
       expect(job.completedRuns).toBe(3);
     });
 
     test("recomputes nextRunAt for recurring", () => {
       const job = createJob({ prompt: "test", schedule: "every 30m", origin: null, deliver: "local" });
-      markJobRun(job, true);
+      markJobRun(job, "ok");
       expect(job.nextRunAt).not.toBeNull();
       expect(job.state).toBe("scheduled");
     });
 
     test("sets error on failure", () => {
       const job = createJob({ prompt: "test", schedule: "every 30m", origin: null, deliver: "local" });
-      markJobRun(job, false, "Timeout");
+      markJobRun(job, "error", "Timeout");
       expect(job.lastStatus).toBe("error");
       expect(job.lastError).toBe("Timeout");
     });

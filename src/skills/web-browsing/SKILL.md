@@ -36,6 +36,11 @@ own tools, or a gap to report, never something to work around.
    for the files and do not reference them with `MEDIA:`. Describe the result from the summary.
 4. **A paused task** means a human barrier (CAPTCHA, 2FA, payment, a decision only the user can
    make): relay the live-browser link and wait for "continue". Read `references/handoff.md`.
+5. **A kept window** means the task stopped on purpose at a step it will come back to (the answer
+   says which window, until when, and what is needed). Get what is needed, then delegate the next
+   step: the new task is offered that window first. A code the site e-mails is fetched by the
+   browser agent itself (`browser_mail_verification`); you only step in when it could not. List or
+   release kept windows with `held_browser_windows`; the owner has `/windows`.
 
 ## The browser persists
 

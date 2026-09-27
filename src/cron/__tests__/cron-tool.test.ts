@@ -13,6 +13,7 @@ describe("cron tool", () => {
     tickCalled = false;
     scheduler = {
       tick: async () => { tickCalled = true; return 1; },
+      runningOf: () => undefined,
       adapters: new Map(),
       start: () => {},
       stop: () => {},

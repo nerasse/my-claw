@@ -25,10 +25,11 @@ const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "list_agents", "kill_agent", "
 
 /**
  * What the cron role is never given, however a job is configured. A job has no one to ask
- * (`question`), no conversation to search (`conversation_search`), and one that could schedule
- * jobs or edit skills would be a machine nobody can audit. docs/cron.md.
+ * (`question`, `workspaces`), `memory` would rewrite what the owner is known for with nobody there
+ * to see it, and one that could schedule jobs or edit skills would be a machine nobody can audit.
+ * docs/cron.md.
  */
-const CRON_ALWAYS_EXCLUDED = ["cron", "manage_skills", "memory", "conversation_search", "workspaces", "question"];
+const CRON_ALWAYS_EXCLUDED = ["cron", "manage_skills", "memory", "workspaces", "question"];
 
 /**
  * The two families a cron job carries a switch for. Granted unless the job turned them off: the
@@ -39,14 +40,33 @@ const CRON_ALWAYS_EXCLUDED = ["cron", "manage_skills", "memory", "conversation_s
  */
 export const CRON_CAPABILITIES = {
   subagents: ["spawn", "send", "list_agents", "kill_agent", "reset_agent"],
-  browser: ["delegate_browser_task"],
+  browser: ["delegate_browser_task", "held_browser_windows"],
 } as const;
 
-/** Names to withhold from a job given its switches. Absent means granted (the role's default). */
-export function cronCapabilityDeny(capabilities: { subagents?: boolean; browser?: boolean } | undefined): string[] {
+/**
+ * The one family a job must ask for. The archive is global, which is exactly what a job checking
+ * "was this follow-up already sent from another conversation" needs; it is off by default because
+ * a job that does not need other conversations should not read them. It used to be excluded
+ * outright on the ground that a job has "no conversation to search", which mistook the archive for
+ * the job's own history.
+ */
+export const CRON_OPT_IN = { conversations: ["conversation_search"] } as const;
+
+/**
+ * Names to withhold from a job given its switches. `subagents` and `browser` are granted unless the
+ * job turned them off; `conversations` is withheld unless the job turned it on, or named the tool
+ * in its own `tools` list.
+ */
+export function cronCapabilityDeny(
+  capabilities: { subagents?: boolean; browser?: boolean; conversations?: boolean } | undefined,
+  tools?: readonly string[],
+): string[] {
+  const conversationsGranted = capabilities?.conversations === true
+    || CRON_OPT_IN.conversations.some((name) => tools?.includes(name));
   return [
     ...(capabilities?.subagents === false ? CRON_CAPABILITIES.subagents : []),
     ...(capabilities?.browser === false ? CRON_CAPABILITIES.browser : []),
+    ...(conversationsGranted ? [] : CRON_OPT_IN.conversations),
   ];
 }
 
@@ -60,11 +80,19 @@ export function isBrowserTool(name: string): boolean {
   return name.startsWith("browser_");
 }
 
+/**
+ * The only non-browser tools the browser agent gets: reading the workspace's skills, which carry the
+ * rules of what it fills in (an application's wording, what never to state). Read-only, scoped by
+ * the agent's `skills` like everyone's, and a skill holds no secret (those live in ~/.my-claw/.env
+ * and secrets/). Nothing that writes, runs or reaches another machine: docs/browser.md.
+ */
+export const BROWSER_SKILL_TOOLS = ["list_skills", "read_skill"];
+
 /** The tool names a file agent of the given base may narrow from. Exported so the app channel can
  *  offer exactly the names `getForAgent` will intersect the file's `tools:` against. */
 export function baselineToolNames(base: "general" | "research" | "browser", staticNames: readonly string[]): string[] {
   if (base === "research") return READ_ONLY_TOOLS.filter((n) => staticNames.includes(n));
-  if (base === "browser") return staticNames.filter(isBrowserTool);
+  if (base === "browser") return staticNames.filter((n) => isBrowserTool(n) || BROWSER_SKILL_TOOLS.includes(n));
   return staticNames.filter((n) => !SUBAGENT_EXCLUDED_TOOLS.includes(n) && !isBrowserTool(n));
 }
 
@@ -135,7 +163,7 @@ export class ToolRegistry {
       // A closed set: the browser tools and nothing else, dynamic tools included. The browser
       // agent reads untrusted pages all day; an MCP server or a plugin reached from there would
       // be one prompt injection away from the rest of the machine.
-      set = [...this.tools.values()].filter((t) => isBrowserTool(t.name));
+      set = [...this.tools.values()].filter((t) => isBrowserTool(t.name) || BROWSER_SKILL_TOOLS.includes(t.name));
     } else if (agentType === "main") {
       set = [...this.tools.values(), ...dynamic].filter((t) => !isBrowserTool(t.name));
     } else if (agentType === "research") {

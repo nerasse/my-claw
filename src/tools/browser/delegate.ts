@@ -49,7 +49,9 @@ export function createDelegateBrowserTool(
       try {
         // The open windows are part of the task, not of a tool the agent would have to think of
         // calling: the window rules in its prompt name this section.
-        const task = `Task: ${instructions}\nStart URL: ${url}\n\n${await session.describeWindows()}`;
+        // Described for the caller: a window kept for this conversation is the one this run is
+        // meant to continue in, and without the caller it read as somebody else's.
+        const task = `Task: ${instructions}\nStart URL: ${url}\n\n${await session.describeWindows(callerSessionId)}`;
         const { id, result, attachments } = await runner.spawn({
           displayName: "browser",
           type: "browser",
@@ -83,6 +85,9 @@ export function createDelegateBrowserTool(
           return { success: false, output: "", error: result || "Browser task ended without a result.", attachments };
         }
         const summary = outcome.summary;
+        const keptNote = outcome.kept
+          ? `\nKept for this conversation until ${new Date(outcome.kept.until).toLocaleString("fr-FR", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}: window ${outcome.kept.windows.join(", ")}. To continue there, delegate the next step: the task will be offered that window first. Release it with held_browser_windows once it is no longer needed.`
+          : "";
         if (outcome.needsHuman) {
           const novncUrl = config.browser?.novncUrl ?? DEFAULT_NOVNC_URL;
           // Same host as the web viewer: whatever host the server is reached on, the VNC
@@ -94,11 +99,11 @@ export function createDelegateBrowserTool(
           const screen = outcome.onScreen !== undefined ? ` Window ${outcome.onScreen} is on the VNC screen.` : "";
           return {
             success: false,
-            output: `Browser task paused — a human must take over.\n${summary}\nLive browser: the app's Browser page (live view), ${novncUrl} (web) or ${vncHost}:5900 (VNC app).${screen} Resolve the blocker, then reply "continue".`,
+            output: `Browser task paused — a human must take over.\n${summary}\nLive browser: the app's Browser page (live view), ${novncUrl} (web) or ${vncHost}:5900 (VNC app).${screen} Resolve the blocker, then reply "continue".${keptNote}`,
             attachments,
           };
         }
-        return { success: true, output: summary, attachments };
+        return { success: true, output: `${summary}${keptNote}`, attachments };
       } catch (e) {
         // Same rule as spawn/send: the caller's Stop is the caller's, and a delegated run that was
         // stopped on its own says that instead (docs/stop.md).

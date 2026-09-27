@@ -4977,7 +4977,7 @@ describe("scheduled jobs (jobs.*)", () => {
         browser: job.browser !== false,
         nextRunAt: job.nextRunAt,
         lastRunAt: job.lastRunAt,
-        lastStatus: job.lastStatus,
+        lastStatus: job.lastStatus === "interrupted" ? "error" : job.lastStatus,
         lastError: job.lastError,
         createdAt: job.createdAt,
         unknownModel: job.model !== undefined && !modelIds.has(job.model),

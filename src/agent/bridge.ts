@@ -450,7 +450,7 @@ export class AgentBridge implements AgentBackend {
     const disabled = [
       ...(this.config.tools?.disabled ?? []),
       ...(agent.deny ?? []),
-      ...(agentToolType === "cron" ? cronCapabilityDeny(session.scopeCapabilities) : []),
+      ...(agentToolType === "cron" ? cronCapabilityDeny(session.scopeCapabilities, session.scopeOverride?.tools) : []),
     ];
     const tools = this.toolRegistry.getForAgent(
       agent.base,

@@ -3,6 +3,9 @@
 // evaluate config.ts before MY_CLAW_DIR is redirected. Keeping the src imports in a separate,
 // later preload guarantees the temp dir is already in place.
 import { beforeEach } from "bun:test";
+import { rmSync } from "node:fs";
+import { join } from "node:path";
+import { MY_CLAW_DIR } from "../src/core/config.ts";
 import { resetCircuitBreaker } from "../src/llm/provider.ts";
 import { resetLearnedRepairs } from "../src/llm/request-repair.ts";
 import { resetBashScopeProbe, setBashLimits } from "../src/tools/bash.ts";
@@ -47,6 +50,9 @@ beforeEach(() => {
   // Keyed on baseUrl + model, so one file's refusing endpoint would silence another file's
   // cache-breakpoint assertions without any visible link between them.
   resetLearnedRepairs();
+  // Kept browser windows are persisted: a BrowserSession built by one test would find the windows
+  // another test kept, and refuse its own run the window it asked for.
+  rmSync(join(MY_CLAW_DIR, "browser", "holds.json"), { force: true });
   // Keyed on MY_CLAW_WORKSPACE, which tests move around; mtime equality is also blind to two
   // writes inside one tick.
   resetPromptFileCache();

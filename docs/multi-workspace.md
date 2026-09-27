@@ -131,6 +131,11 @@ Skills come from three tiers (built-in, custom, workspace). With multiple worksp
 `__workspaceDir` already injected into tool args), not against the process environment, and
 the spawned sub-agent runs with the parent's workspace.
 
+The browser agent too (`delegate_browser_task`), and it now reads that workspace's AGENTS.md and
+skills: a browser task started from a `career` conversation or job knows the rules of an
+application without the brief repeating them. See `docs/browser.md`, "What the browser agent is
+told".
+
 ## Cron runs are kept per run, and per job
 
 Each cron run creates a fresh session `cron/<jobId>/<runTs>` seeded with the job's model,
@@ -143,8 +148,12 @@ retention still applies on top.
   Moving a project = one line in the config, no job edit.
 - An unknown key pauses the job with a `pausedReason`; it never runs silently in the default
   workspace.
-- Per-run durability lives in the job record (`lastStatus`, `lastError`, `lastRunAt`), the
-  output store, and now the run session itself. See `docs/cron.md`.
+- Per-run durability lives in the job record (`lastStatus`, `lastError`, `lastRunAt`, and the
+  last run's start, duration, model and cost), the output store, and the run session itself. See
+  `docs/cron.md`.
+- Jobs run side by side, so two jobs of one workspace can overlap. Each run is told which other job
+  of its workspace is running, and to re-read a file before changing it with a targeted edit. A job
+  never overlaps itself. See `docs/cron.md`.
 
 ## What stays global
 

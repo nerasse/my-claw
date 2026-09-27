@@ -1,7 +1,7 @@
 import type { Tool, ToolResult } from "../tools/types.ts";
 import type { SessionManager } from "../sessions/manager.ts";
 import { SkillRegistry } from "../skills/registry.ts";
-import { mkdir, readFile, access, rm } from "node:fs/promises";
+import { mkdir, readFile, access, rm, realpath } from "node:fs/promises";
 import { join, dirname, resolve } from "node:path";
 import { formatError } from "../utils/errors.ts";
 import { hooks } from "../hooks/index.ts";
@@ -139,6 +139,12 @@ export function createReadSkillTool(registry: SkillRegistry, config: MyClawConfi
           return { success: false, output: `Blocked: "${filePath}" escapes skill directory.` };
         }
         try {
+          // The path check above reads names, and a link inside the skill directory can still point
+          // anywhere (a skill is often a cloned repository). Where the file really is decides.
+          const [realDir, realTarget] = await Promise.all([realpath(skillDir), realpath(targetPath)]);
+          if (!realTarget.startsWith(realDir + "/")) {
+            return { success: false, output: `Blocked: "${filePath}" leads out of the skill directory.` };
+          }
           rawContent = await readFile(targetPath, "utf-8");
         } catch (err) {
           return { success: false, output: formatError(`File "${filePath}" in skill "${name}"`, err) };

@@ -1,5 +1,5 @@
-import { open, mkdir, rename } from "node:fs/promises";
-import { openSync, writeSync, fsyncSync, closeSync, mkdirSync, renameSync } from "node:fs";
+import { open, mkdir, rename, unlink } from "node:fs/promises";
+import { openSync, writeSync, fsyncSync, closeSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 
 // A fixed `${path}.tmp` name lets two concurrent writers interleave (the second renames a file the
@@ -19,12 +19,18 @@ export async function writeFileAtomically(path: string, content: string, options
   const tmp = tmpNameFor(path);
   const handle = await open(tmp, "w", options?.mode ?? 0o644);
   try {
-    await handle.writeFile(content);
-    await handle.sync();
-  } finally {
-    await handle.close();
+    try {
+      await handle.writeFile(content);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(tmp, path);
+  } catch (err) {
+    // A write that failed leaves no temporary behind: nothing else would ever remove it.
+    await unlink(tmp).catch(() => undefined);
+    throw err;
   }
-  await rename(tmp, path);
 }
 
 export async function writeJsonFileAtomically(path: string, value: unknown, pretty = false): Promise<void> {
@@ -36,12 +42,21 @@ export function writeFileAtomicallySync(path: string, content: string, options?:
   const tmp = tmpNameFor(path);
   const fd = openSync(tmp, "w", options?.mode ?? 0o644);
   try {
-    writeSync(fd, content);
-    fsyncSync(fd);
-  } finally {
-    closeSync(fd);
+    try {
+      writeSync(fd, content);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, path);
+  } catch (err) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // Already gone.
+    }
+    throw err;
   }
-  renameSync(tmp, path);
 }
 
 export function writeJsonFileAtomicallySync(path: string, value: unknown, pretty = false): void {

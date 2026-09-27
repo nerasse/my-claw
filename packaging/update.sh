@@ -3,7 +3,7 @@ set -euo pipefail
 
 # my-claw updater. Runs as the service user; nothing here needs root.
 #
-# Usage: update.sh [version|latest] [--force] [--file <tarball>]
+# Usage: update.sh [version|latest] [--force] [--file <tarball>] [--with-browser]
 #        update.sh --activate      render the current tree's user units, start, health gate
 #
 # Layout (docs/install-layout.md): /opt/my-claw belongs to the service user.
@@ -41,20 +41,30 @@ TMP_BASE="/var/tmp"
 
 # Restart order matters: the browser stack before the server that talks to it. Xvfb is not
 # stopped across an update, a display that survives makes the restart shorter and keeps VNC alive.
+#
+# Chromium is not stopped either, unless asked (--with-browser). It holds the owner's work: open
+# tabs, a sign-in, an application stopped at the screen of its e-mail code. Two updates on the night
+# of 2026-09-26 killed two applications at exactly that screen. Nothing in a release needs a new
+# Chromium: the binary is the system's, and the sidecar, which is ours, re-adopts every open tab
+# when it restarts (a page id is the CDP target id). A changed browser unit or an upgraded binary is
+# announced below instead, and applies at the browser's next start. docs/browser.md.
 START_ORDER="my-claw-xvfb my-claw-chromium my-claw-browser-sidecar my-claw-whisper my-claw-vnc my-claw-novnc my-claw"
-STOP_ORDER="my-claw my-claw-browser-sidecar my-claw-whisper my-claw-chromium my-claw-vnc my-claw-novnc"
+STOP_ORDER="my-claw my-claw-browser-sidecar my-claw-whisper my-claw-vnc my-claw-novnc"
+BROWSER_UNIT="my-claw-chromium"
+WITH_BROWSER=0
 
 warn() { echo "$*" >&2; }
 die() { echo "Error: $*" >&2; exit 1; }
 
 usage() {
   cat <<EOF
-Usage: $(basename "$0") [version|latest] [--force] [--file <tarball>]
+Usage: $(basename "$0") [version|latest] [--force] [--file <tarball>] [--with-browser]
        $(basename "$0") --activate
 
   version      install this release instead of the latest (a pin never moves the web bundle)
   --force      reinstall even when this version is already running
   --file PATH  install from a local tarball instead of the registry
+  --with-browser  restart Chromium too (its open tabs are restored, but a page mid-form is lost)
   --activate   render the user units of the current tree, enable, start, health-check
 EOF
 }
@@ -213,6 +223,37 @@ stop_services() {
   for svc in $STOP_ORDER; do
     "${SYSCTL[@]}" stop "${svc}.service" 2>/dev/null || true
   done
+  if [ "$WITH_BROWSER" -eq 1 ]; then
+    "${SYSCTL[@]}" stop "${BROWSER_UNIT}.service" 2>/dev/null || true
+  fi
+}
+
+# The rendered browser unit, to tell whether a release changed it.
+browser_unit_sum() {
+  sha256sum "${UNIT_DIR}/${BROWSER_UNIT}.service" 2>/dev/null | cut -d' ' -f1 || true
+}
+
+# What the running browser would need a restart for, said once at the end instead of done behind
+# the owner's back: a unit this release changed, or a binary the system upgraded under it.
+report_browser() {
+  local before="$1" after pid exe
+  [ "$WITH_BROWSER" -eq 0 ] || return 0
+  "${SYSCTL[@]}" is-active --quiet "${BROWSER_UNIT}.service" 2>/dev/null || return 0
+  after="$(browser_unit_sum)"
+  if [ -n "$before" ] && [ "$before" != "$after" ]; then
+    echo "Browser left running: this release changed its unit, which applies at Chromium's next start."
+    echo "  Apply it when no task is using the browser: myclaw restart --with-browser"
+  fi
+  pid="$("${SYSCTL[@]}" show -p MainPID --value "${BROWSER_UNIT}.service" 2>/dev/null || true)"
+  if [ -n "$pid" ] && [ "$pid" != "0" ]; then
+    exe="$(readlink "/proc/${pid}/exe" 2>/dev/null || true)"
+    case "$exe" in
+      *" (deleted)")
+        echo "Browser left running: Chromium was upgraded on this machine while it ran."
+        echo "  It keeps working; restart it when no task is using it: myclaw restart --with-browser"
+        ;;
+    esac
+  fi
 }
 
 # Catch a build that boots and dies immediately, while the rollback is still warm. Three
@@ -486,6 +527,7 @@ install_user() {
   OLD_CURRENT="$(readlink "${APP_DIR}/current")"
   OLD_PREV="$(readlink "${APP_DIR}/prev" 2>/dev/null || true)"
   NEW_RELEASE="releases/${VERSION}"
+  BROWSER_UNIT_BEFORE="$(browser_unit_sum)"
 
   echo "Stopping services..."
   SERVICES_STOPPED=1
@@ -528,6 +570,7 @@ install_user() {
   fi
 
   prune_releases
+  report_browser "$BROWSER_UNIT_BEFORE"
   echo ""
   echo "Updated to my-claw ${VERSION}"
   echo "Previous version kept at ${APP_DIR}/prev (rollback: myclaw update $(jq -r .version "${APP_DIR}/prev/package.json" 2>/dev/null || echo '<version>'))"
@@ -864,6 +907,7 @@ while [ $# -gt 0 ]; do
     --force) FORCE=1 ;;
     --file) shift; FILE="${1:-}"; [ -n "$FILE" ] || die "--file needs a path" ;;
     --activate) MODE="activate" ;;
+    --with-browser) WITH_BROWSER=1 ;;
     -h|--help) usage; exit 0 ;;
     -*) usage >&2; die "unknown option: $1" ;;
     *) VERSION="$1" ;;

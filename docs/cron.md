@@ -14,6 +14,21 @@ Jobs created via chat capture `origin` automatically. Jobs created manually (edi
 
 `origin` tracks where the job was created. `deliver` decides where output goes. They often match (`deliver: "origin"`) but separating them allows a job created in one chat to deliver elsewhere, and allows manual jobs with no origin to still have a delivery target.
 
+`deliver: "thread:<title>"` names a conversation instead: the owner's thread with that title, created
+in the job's workspace when there is none, found by title otherwise. Resolved once, when the job is
+created or updated, and stored as the thread's id, so renaming the thread later does not break the
+job. It is how a family of jobs (every `career` job) lands in one place instead of the chat each was
+created from.
+
+### A delivery is written into the conversation
+
+A delivery used to be a frame sent to whichever devices were connected: gone on reload, and never
+there at all when the phone was asleep -- which is when a morning job delivers. Measured on
+2026-09-27: four mail checks delivered to their thread, none of them in its history. The scheduler
+now writes the result into the target conversation first (`journal`, wired in `index.ts`), the way a
+sub-agent's handoff note is filed: a quiet `command` entry, shown on every reload, never sent to a
+model. Then the frame goes out for the devices that are online.
+
 ### At-most-once execution
 
 `nextRunAt` is advanced before the job runs. If the process crashes mid-execution, the job will not re-fire on restart. This prevents duplicate deliveries and runaway jobs. One-shot jobs are excluded from pre-advancement to allow retry.
@@ -22,9 +37,13 @@ Jobs created via chat capture `origin` automatically. Jobs created manually (edi
 
 Cron jobs get a filtered toolset. Never granted, whatever a job is configured with: `cron` (no
 recursive scheduling), `manage_skills` (no skill mutations), `memory` (would corrupt user
-representations without a user present), `conversation_search` (nothing to search), `workspaces`
-and `question` (there is nobody to ask). The raw `browser_*` tools stay out too: the browser agent
-is reached through `delegate_browser_task`, one task at a time on the one shared Chromium.
+representations without a user present), `workspaces` and `question` (there is nobody to ask). The
+raw `browser_*` tools stay out too: the browser agent is reached through `delegate_browser_task`.
+
+`conversation_search` used to be on that list, on the ground that a job has "no conversation to
+search". That mistook the archive for the job's own history: the archive is global, and a job that
+sends follow-ups needs exactly that -- was this one already sent from another conversation, was this
+mail already handled. It is now a switch a job turns on (below).
 
 ### Capability switches (`subagents`, `browser`)
 
@@ -40,8 +59,14 @@ That second family is the whole door: the browser agent is in `NOT_SPAWNABLE`
 (`agents/registry.ts`), so `spawn` cannot reach it and turning the switch off really does deny the
 browser rather than moving it one step away.
 
-Both are **granted unless the job turned them off** (`false`), so only `false` is stored and an
-untouched job keeps a clean shape, exactly like `silent`. A job created before the switches
+- `conversations` — `conversation_search`. The one switch that is **off** by default: a job that does
+not need other conversations should not read them. `true` is the only value stored, and naming the
+tool in the job's own `tools` list grants it as well. Security-wise it widens nothing a job could not
+already reach (it has `bash` and can read the session files), so the default is about focus, not a
+boundary.
+
+`subagents` and `browser` are **granted unless the job turned them off** (`false`), so only `false`
+is stored and an untouched job keeps a clean shape, exactly like `silent`. A job created before the switches
 existed therefore keeps the browser it already had. The switch travels the same road as the scope
 overrides — the scheduler sets `session.scopeCapabilities` from the job before the run, and the
 bridge resolves it at the one place a run's tools are built (`getForAgent`) by withholding the
@@ -70,20 +95,41 @@ Absent means notify, so an existing job keeps the behaviour it had. Failures hon
 silent job that fails stays silent, which is the whole point for a job that runs every ten minutes.
 Editable from the app (Jobs editor, Notify/Silent) and carried by the `jobs.save` frame.
 
-### Sequential execution
+### Jobs run side by side, never twice at once
 
-Hermes uses a ThreadPoolExecutor for parallel cron jobs. MyClaw runs them sequentially. Rationale: Bun is single-threaded; the overhead of parallelism is not worth the complexity for a single-tenant bot. If a job is slow, it blocks the tick — acceptable for personal use.
+Jobs used to run one after the other inside the tick. A long job held every other one up: on
+2026-09-27 a thirty-minute research delayed the evening mail check, and giving the research the
+hours it needs would have pushed the check out of its grace window, so it would have been skipped.
 
-### Safety net for heavy jobs
+The tick now only dispatches: it advances each due job's `nextRunAt` and starts its run, and the run
+goes on without holding the next tick. What stays exclusive is a job with itself. A run still going
+when the job's next time comes makes that occurrence skip (logged, `nextRunAt` moves on); `trigger`
+refuses a job that is running and says since when.
 
-Because a slow job blocks the tick, a runaway job (e.g. an agent stuck in a loop) could stall all
-scheduling. Two config knobs cap that without getting in the way of legitimately long work:
+Two jobs of the same workspace can now overlap. Each run is told in its prompt which other job of
+its workspace is running, and to re-read a file right before changing it with a targeted edit:
+neither can see the other's edits coming, and that is what keeps one from writing over the other.
 
-- `cron.timeoutMs` — hard wall-clock limit per job; on expiry the run is aborted (`router.stop`) and
-  the job is marked failed. Default is deliberately long (30 min) so heavy/voluminous jobs (deep
-  research, many sub-agents) can finish; it only kills genuine runaways.
-- `cron.maxIterations` — overrides the tool-calling loop budget for cron runs (defaults to the
-  orchestrator's 90). Raise it for jobs that legitimately need many steps.
+### Time limits, and a run told to finish before it is stopped
+
+- `cron.timeoutMs` — the install-wide wall-clock limit (30 min).
+- A job's own `timeout` (`cron create/update ... timeout: "3h"`, stored as `timeoutMs`, at most
+  24 h) — above the install-wide one. A weekly research that fans out to six sub-agents and a mail
+  check that takes five minutes do not share a limit.
+- `cron.maxIterations` — overrides the tool-calling loop budget for cron runs.
+
+A run killed at the wall loses everything it had not written, its sub-agents' work included: the
+weekly research of 2026-09-27 lost six passes that way, each twenty-eight minutes in. So a run is
+told first. At a tenth of its limit before the wall (between one and ten minutes, never more than
+half the limit), the scheduler injects a wrap-up message into the run **and into every live
+sub-agent under it**, through the same mailbox the owner steers a run with. The sub-agents are the
+ones that matter: a parent waiting on them only reads its mailbox once they return, and they are the
+ones who can hand back what they found. The tree is known from the `subagent:*` hooks, for cron runs
+only. The prompt also states the limit, so the run plans to write down what matters early.
+
+A run that hits the wall anyway is `interrupted`, not `error`: it needs a longer limit, not a fix to
+its prompt. A run the server lost when it stopped (`runningSince` still set at boot) is recognised at
+the first tick and marked `interrupted` too, instead of the job looking fine until its next run.
 
 ### Fresh session per run
 
@@ -94,21 +140,37 @@ state (`lastStatus`, `lastError`, `lastRunAt`) and the output store, not the ses
 whose `workspace` key left `config.workspaces` is paused with a `pausedReason` instead of
 running silently in the default workspace. See `docs/multi-workspace.md`.
 
-### No file locking
+### Every write of jobs.json is one load-change-write, in turn
 
-Hermes uses `fcntl.flock` for cross-process tick isolation. MyClaw has one process. File locking is unnecessary.
+The atomic write protects the file from being half written. It did nothing for two writers that
+each loaded the file, changed their copy and wrote it back: the second write erased the first, and
+both callers were told it worked. Two `cron` calls in one tool block did exactly that on 2026-09-26
+(a create and an update lost, no error anywhere).
 
-One process, but not one moment: a tick runs for as long as its jobs do (up to `cron.timeoutMs`),
-and the owner can pause, edit or remove a job through the tool while it runs. So the write at the
-end of a tick re-reads the file and merges by id rather than dumping the array it loaded.
+Every writer -- the tool, the app's job editor, the scheduler -- goes through `mutateJobs`, which
+loads, applies the change and writes with nothing in between, one writer after the other. They all
+live in one process, so an in-process queue is the whole lock; a file lock would add nothing a second
+process could honour. A change that throws writes nothing.
 
-The scheduling and run fields (`nextRunAt`, `lastRunAt`, `lastStatus`, `lastError`,
-`completedRuns`) always belong to the tick. The lifecycle ones (`state`, `enabled`,
-`pausedReason`) only get written when **the tick itself moved them**, which is what
-`snapshotLifecycle` is taken for: a job paused while a long tick ran used to come back enabled,
-because the tick's copy predated the pause and won. A pause the tick decides -- an unreadable
-schedule, a workspace that left the config -- still lands, because that one really did change
-under the tick's hand.
+The scheduler writes only what it owns, and only for the job it ran: the start mark before the run,
+the run fields after it (`nextRunAt`, `lastRunAt`, `lastStatus`, `lastError`, `completedRuns`, and the
+last run's start, duration, model and cost). Each write re-reads the file, so a pause or an edit the
+owner typed while the run went on is still there after it.
+
+A write that fails removes its temporary file (`atomic-write.ts`), and the temporaries of a writer
+that died mid-write (`jobs.json.<pid>.<rand>.tmp`, the pid in the name) are removed at the first tick
+when that pid is gone.
+
+### What `cron list`, `create` and `update` show
+
+Each job reads back as every setting its run will use -- model, effort, workspace, delivery, time
+limit, scopes, switches, notifications -- then the run in flight if there is one, then the last run:
+when it started, its status (`ok`, `error`, `interrupted`), how long it lasted, the model it ran on
+once its tag resolved, and what it cost with its sub-agents (from the analytics the calls already
+wrote; `>=` when only some calls were priced), with the error when there was one. `create` and
+`update` answer with the same block, so a setting is checked without opening jobs.json. The app's
+job list carries the same fields, additively; `interrupted` is folded into `error` in the field older
+builds read.
 
 ### No pre-run scripts, no `context_from`
 

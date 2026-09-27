@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   BrowserWindows,
-  HANDOFF_HOLD_MS,
+  DEFAULT_HOLD_MS,
   type BrowserWindowView,
   type WindowsBackend,
 } from "../../src/tools/browser/windows.ts";
@@ -119,7 +119,7 @@ describe("BrowserWindows: holding", () => {
     const w = new BrowserWindows(b.backend);
     w.beginRun("A", "conv-1");
     await w.page(run("A", 1));
-    w.endRun("A", false);
+    w.endRun("A");
     w.beginRun("B", "conv-2");
     expect(await w.page(run("B", 1))).toBe("r1");
   });
@@ -150,11 +150,11 @@ describe("BrowserWindows: human handoff", () => {
     const w = new BrowserWindows(b.backend, () => clock);
     w.beginRun("A", "conv-1");
     await w.page(run("A", 1));
-    w.endRun("A", true);
+    w.endRun("A", { reason: "human" });
 
     w.beginRun("OTHER", "conv-2");
     const refusal = await w.page(run("OTHER", 1)).catch((e: Error) => e.message);
-    expect(refusal).toContain("kept for a human");
+    expect(refusal).toContain("for a human who is solving a blocker");
 
     // The same conversation takes it back, whether through `send` or a new delegation.
     w.beginRun("A2", "conv-1");
@@ -167,8 +167,8 @@ describe("BrowserWindows: human handoff", () => {
     const w = new BrowserWindows(b.backend, () => clock);
     w.beginRun("A", "conv-1");
     await w.page(run("A", 1));
-    w.endRun("A", true);
-    clock += HANDOFF_HOLD_MS + 1;
+    w.endRun("A", { reason: "human" });
+    clock += DEFAULT_HOLD_MS + 1;
     w.beginRun("OTHER", "conv-2");
     expect(await w.page(run("OTHER", 1))).toBe("r1");
   });
@@ -182,17 +182,17 @@ describe("BrowserWindows: human handoff", () => {
     w.beginRun("A", "conv-1");
     await w.page(run("A", 1));
     await w.page(run("A", 2));
-    w.endRun("A", false);
+    w.endRun("A");
     expect(w.keptForHuman("r1")).toBe(false);
 
     w.beginRun("H", "conv-2");
     await w.page(run("H", 1));
-    w.endRun("H", true);
+    w.endRun("H", { reason: "human" });
     expect(w.keptForHuman("r1")).toBe(true);
     expect(w.keptForHuman("r2")).toBe(false);
     expect(w.keptForHuman("unknown")).toBe(false);
 
-    clock += HANDOFF_HOLD_MS + 1;
+    clock += DEFAULT_HOLD_MS + 1;
     expect(w.keptForHuman("r1")).toBe(false);
   });
 });
@@ -269,7 +269,7 @@ describe("BrowserWindows: no sweep", () => {
     const agentWindow = b.windows.find((x) => x.tabs.some((t) => t.pageId === result.pageId))!;
     for (let i = 1; i < 40; i++) agentWindow.tabs.push({ pageId: `a${i}`, url: `https://agent.test/${i}`, title: "" });
     await w.describe("A");
-    w.endRun("A", false);
+    w.endRun("A");
     clock += 7 * 24 * 60 * 60_000;
     w.beginRun("B");
     await w.newWindow(run("B"), "https://fresh.test");
@@ -328,14 +328,14 @@ describe("BrowserWindows: the owner's live view", () => {
     await w.page(run("R1", 1));
     w.beginRun("R2", "conv-2", "solve the login");
     await w.page(run("R2", 2));
-    w.endRun("R2", true);
+    w.endRun("R2", { reason: "human" });
     const overview = await w.overview();
     expect(overview).toEqual([
       { alias: 1, windowId: 11, onStage: true, state: "working", task: "search the jobs", tabs: [{ pageId: "a", title: "A", url: "https://a.test", active: true }] },
-      { alias: 2, windowId: 12, onStage: false, state: "waiting", task: "solve the login", tabs: [{ pageId: "b", title: "B", url: "https://b.test", active: false }] },
+      { alias: 2, windowId: 12, onStage: false, state: "waiting", keptUntil: 1_000 + DEFAULT_HOLD_MS, task: "solve the login", tabs: [{ pageId: "b", title: "B", url: "https://b.test", active: false }] },
       { alias: 3, windowId: 13, onStage: false, state: "free", tabs: [{ pageId: "c", title: "C", url: "https://c.test", active: false }] },
     ]);
-    clock += HANDOFF_HOLD_MS + 1;
+    clock += DEFAULT_HOLD_MS + 1;
     expect((await w.overview())[1]).toMatchObject({ state: "free" });
     expect((await w.overview())[1]!.task).toBeUndefined();
   });
@@ -348,10 +348,10 @@ describe("BrowserWindows: the owner's live view", () => {
     await w.page(run("A", 2));
     clock += 10;
     await w.page(run("A", 1));
-    expect(w.endRun("A", true)).toBe(11);
+    expect(w.endRun("A", { reason: "human" })?.windowIds[0]).toBe(11);
     w.beginRun("B", "conv-1");
     await w.page(run("B", 2));
-    expect(w.endRun("B", false)).toBeUndefined();
+    expect(w.endRun("B")).toBeUndefined();
   });
 });
 

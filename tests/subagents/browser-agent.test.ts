@@ -169,10 +169,11 @@ describe("the browser agent's toolbox", () => {
     }
   });
 
-  test("the browser agent resolves on its own base: closed set, no skills, no MCP, the low-level tools gated by config", () => {
+  test("the browser agent resolves on its own base: closed set, its skills readable, no MCP, the low-level tools gated by config", () => {
     const off = resolveAgent(makeConfig({ enabled: true }), agents, "browser");
     expect(off.base).toBe("browser");
-    expect(off.skills).toEqual([]);
+    // It reads its workspace's skills now, under the ordinary scope (docs/browser.md).
+    expect(off.skills).toBe("all");
     expect(off.mcp).toEqual([]);
     expect([...(off.deny ?? [])].sort()).toEqual(["browser_cdp", "browser_eval"]);
     // The file's budget is the default; `browser.maxSteps` keeps meaning the budget of one task.

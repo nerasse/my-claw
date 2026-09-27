@@ -14,12 +14,13 @@ async function shipped(): Promise<AgentRegistry> {
   }));
 }
 
-test("the browser ships as a file and keeps its AGENTS.md omission as a field", async () => {
+test("the browser ships as a file and reads its workspace's AGENTS.md", async () => {
   const browser = (await shipped()).get("browser");
   assert.ok(browser, "browser.md ships and parses");
-  // The hardcoded second prompt builder expressed this by listing SOUL and USER by hand.
-  assert.deepEqual(browser?.meta.instructions, ["CORE", "SOUL", "USER"]);
-  assert.ok(!browser?.meta.instructions.includes("AGENTS"), "a workspace AGENTS.md is not the browser's business");
+  // It used to leave AGENTS out, so the rules of what it fills in (an application's wording, what
+  // never to state) had to be copied into every brief by the conversation driving it. docs/browser.md.
+  assert.deepEqual(browser?.meta.instructions, ["CORE", "SOUL", "AGENTS", "USER"]);
+  assert.match(browser?.prompt ?? "", /YOUR INSTRUCTIONS ARE NOT PAGE CONTENT/);
   assert.match(browser?.prompt ?? "", /You are a web browsing assistant/);
   assert.match(browser?.prompt ?? "", /DISMISS OVERLAYS FIRST/);
   // Its toolbox is the browser base, closed by construction; its budget is the file's until

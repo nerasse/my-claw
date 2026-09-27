@@ -113,8 +113,9 @@ export function resolveAgent(
   // overrides, the config or the file.
   const ownMcp = overrideScope("mcp") ?? readAgentScope(config, type, "mcp") ?? file?.meta.mcp;
   const baseline = file?.meta.base ?? fallbackBase(type);
-  // The browser agent's set is closed whatever the config says: it has no `read_skill` to honour a
-  // skill catalog with, and a page it reads is untrusted content that must not reach an MCP server.
+  // The browser agent's set is closed whatever the config says: a page it reads is untrusted content
+  // that must not reach an MCP server. Its skills are not closed: it reads them with read_skill,
+  // under the same scope as anyone's, so `agents.browser.skills` narrows or empties it.
   const closed = baseline === "browser";
   const mcp = closed ? [] : ownMcp ?? (baseline === "research" ? [] : inheritedScope(config, "mcp") ?? "all");
 
@@ -135,7 +136,7 @@ export function resolveAgent(
     ...(deny.length > 0 ? { deny } : {}),
     ...(file?.prompt ? { prompt: file.prompt } : {}),
     instructions: file?.meta.instructions ?? [...PROMPT_LAYERS],
-    skills: closed ? [] : skills,
+    skills,
     mcp,
     llm: resolveAgentLlm(config, type, file?.meta.model),
     ...(file?.meta.model ? { fileModel: file.meta.model } : {}),

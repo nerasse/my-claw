@@ -1,9 +1,9 @@
 import { join } from "node:path";
-import { readFile, mkdir, writeFile, rename } from "node:fs/promises";
+import { readFile, mkdir, writeFile, rename, readdir, unlink } from "node:fs/promises";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
-import type { CronJob, CronJobsFile, CronSchedule, CronOrigin, CronDeliver } from "./types.ts";
+import type { CronJob, CronJobsFile, CronSchedule, CronOrigin, CronDeliver, CronRunStatus } from "./types.ts";
 import { CronExpressionParser } from "cron-parser";
 
 const CRON_DIR = join(MY_CLAW_DIR, "cron");
@@ -50,6 +50,20 @@ export function parseSchedule(input: string): CronSchedule {
   }
 
   throw new Error(`Cannot parse schedule: "${trimmed}". Use cron expr, "every Xm/h/d", ISO timestamp, or bare duration.`);
+}
+
+/** A job's own limit is capped: a run that needs more than a day is a loop, not a long job. */
+export const MAX_JOB_TIMEOUT_MS = 24 * 60 * 60_000;
+const MIN_JOB_TIMEOUT_MS = 60_000;
+
+/** `90m`, `3h`, `1d`: a job's own wall-clock limit, in the schedule grammar's units. */
+export function parseJobTimeout(input: string): number {
+  const match = DURATION_RE.exec(input.trim());
+  if (!match) throw new Error(`Cannot parse timeout: "${input}". Use a duration like "45m", "3h" or "1d".`);
+  const ms = parseDurationMinutes(match[1]!, match[2]!) * 60_000;
+  if (ms < MIN_JOB_TIMEOUT_MS) throw new Error("A job timeout under one minute would stop every run before it started.");
+  if (ms > MAX_JOB_TIMEOUT_MS) throw new Error("A job timeout is capped at 24h: a run that needs more is a loop, not a long job.");
+  return ms;
 }
 
 export function computeNextRun(schedule: CronSchedule, lastRunAt?: string): string | null {
@@ -117,11 +131,12 @@ export function advanceNextRun(job: CronJob): void {
   }
 }
 
-export function markJobRun(job: CronJob, success: boolean, error?: string): void {
+export function markJobRun(job: CronJob, status: CronRunStatus, error?: string): void {
   job.lastRunAt = new Date().toISOString();
-  job.lastStatus = success ? "ok" : "error";
+  job.lastStatus = status;
   job.lastError = error ?? null;
   job.completedRuns += 1;
+  delete job.runningSince;
 
   if (job.repeat !== null && job.completedRuns >= job.repeat) {
     job.state = "completed";
@@ -182,6 +197,8 @@ export interface CreateJobParams {
   browser?: boolean;
   /** Suppresses the job's push notifications; delivery and output are untouched. */
   silent?: boolean;
+  /** The job's own wall-clock limit, in ms (see parseJobTimeout). */
+  timeoutMs?: number;
 }
 
 export function createJob(params: CreateJobParams): CronJob {
@@ -211,6 +228,7 @@ export function createJob(params: CreateJobParams): CronJob {
     ...(params.browser === false ? { browser: false } : {}),
     // Absent rather than false: notifying is the default, and an untouched job keeps a clean shape.
     ...(params.silent ? { silent: true } : {}),
+    ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
     nextRunAt: computeNextRun(schedule),
     lastRunAt: null,
     lastStatus: null,
@@ -237,6 +255,8 @@ export interface UpdateJobParams {
   browser?: boolean;
   /** Suppresses the job's push notifications; delivery and output are untouched. */
   silent?: boolean;
+  /** The job's own limit in ms; 0 clears it back to cron.timeoutMs. */
+  timeoutMs?: number;
 }
 
 export function updateJob(jobs: CronJob[], jobId: string, updates: UpdateJobParams): CronJob | null {
@@ -268,6 +288,10 @@ export function updateJob(jobs: CronJob[], jobId: string, updates: UpdateJobPara
   if (updates.subagents !== undefined) job.subagents = updates.subagents === false ? false : undefined;
   if (updates.browser !== undefined) job.browser = updates.browser === false ? false : undefined;
   if (updates.silent !== undefined) job.silent = updates.silent || undefined;
+  if (updates.timeoutMs !== undefined) {
+    if (updates.timeoutMs > 0) job.timeoutMs = updates.timeoutMs;
+    else delete job.timeoutMs;
+  }
   if (updates.schedule !== undefined) {
     job.schedule = parseSchedule(updates.schedule);
     job.nextRunAt = computeNextRun(job.schedule, job.lastRunAt ?? undefined);
@@ -283,6 +307,7 @@ export function removeJob(jobs: CronJob[], jobId: string): boolean {
   return true;
 }
 
+/** A read. The file is only ever replaced by rename, so a read sees a whole version, never half. */
 export async function loadJobs(): Promise<CronJob[]> {
   try {
     const raw = await readFile(JOBS_FILE, "utf-8");
@@ -293,51 +318,107 @@ export async function loadJobs(): Promise<CronJob[]> {
   }
 }
 
-export async function saveJobs(jobs: CronJob[]): Promise<void> {
+async function writeJobs(jobs: CronJob[]): Promise<void> {
   const data: CronJobsFile = { jobs, updatedAt: new Date().toISOString() };
   await writeJsonFileAtomically(JOBS_FILE, data, true);
 }
 
 /**
- * A tick can run for a long time (jobs up to cron.timeoutMs). Writing the whole in-memory array
- * back at the end would clobber any create/update/pause/remove the agent or user performed via the
- * cron tool meanwhile. Instead, re-load the current file and merge ONLY the scheduling/run fields
- * by id, so concurrent structural edits survive. Jobs removed concurrently are left removed.
+ * Every write of jobs.json, one after another.
+ *
+ * The atomic write protects a file from being half written; it does nothing for two writers that
+ * each loaded the file, changed their copy and wrote it back -- the second write erases the first,
+ * and both callers were told it worked. Two `cron` calls in one tool block did exactly that on
+ * 2026-09-26: a create and an update lost, no error anywhere. Every writer is in this process (the
+ * tool, the app's job editor, the scheduler), so a queue is the whole lock: no file lock would add
+ * anything a second process could honour.
  */
-export async function persistJobRunUpdates(updated: CronJob[], lifecycleBefore?: LifecycleSnapshot): Promise<void> {
-  const current = await loadJobs();
-  const byId = new Map(current.map((j) => [j.id, j]));
-  let changed = false;
-  for (const job of updated) {
-    const target = byId.get(job.id);
-    if (!target) continue;
-    target.nextRunAt = job.nextRunAt;
-    target.lastRunAt = job.lastRunAt;
-    target.lastStatus = job.lastStatus;
-    target.lastError = job.lastError;
-    target.completedRuns = job.completedRuns;
-    // Only when this tick moved them. Writing them unconditionally is what let a tick that had
-    // been running for a minute resurrect a job the owner paused while it ran: the tick's copy
-    // was loaded before the pause, and it won.
-    const before = lifecycleBefore?.get(job.id);
-    if (!before || before.state !== job.state || before.enabled !== job.enabled || before.pausedReason !== job.pausedReason) {
-      target.state = job.state;
-      target.enabled = job.enabled;
-      target.pausedReason = job.pausedReason;
-    }
-    changed = true;
-  }
-  if (changed) await saveJobs(current);
+let jobsQueue: Promise<unknown> = Promise.resolve();
+
+function serialised<T>(work: () => Promise<T>): Promise<T> {
+  const turn = jobsQueue.then(work, work);
+  jobsQueue = turn.catch(() => undefined);
+  return turn;
 }
 
 /**
- * The lifecycle fields as a tick found them, so the write can tell what the tick itself decided
- * from what it merely read. Taken right after `loadJobs`, handed back to `persistJobRunUpdates`.
+ * Load, change, write, with nothing in between: the one way to modify jobs.json. `change` must not
+ * call back into this module's writers -- it would wait for its own turn forever. Throwing from it
+ * writes nothing.
  */
-export type LifecycleSnapshot = Map<string, { state: CronJob["state"]; enabled: boolean; pausedReason: string | undefined }>;
+export function mutateJobs<T>(change: (jobs: CronJob[]) => T | Promise<T>): Promise<T> {
+  return serialised(async () => {
+    const jobs = await loadJobs();
+    const result = await change(jobs);
+    await writeJobs(jobs);
+    return result;
+  });
+}
 
-export function snapshotLifecycle(jobs: CronJob[]): LifecycleSnapshot {
-  return new Map(jobs.map((job) => [job.id, { state: job.state, enabled: job.enabled, pausedReason: job.pausedReason }]));
+/** Replaces the whole list, in turn with every other writer. */
+export function saveJobs(jobs: CronJob[]): Promise<void> {
+  return serialised(() => writeJobs(jobs));
+}
+
+const ORPHAN_TMP_RE = /^jobs\.json\.(\d+)\.[a-z0-9]+\.tmp$/;
+
+function processAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * The temporary files of writes a dead process never finished. The name carries the writer's pid,
+ * so only files whose writer is gone are touched: a write still in flight, here or in a dev server
+ * sharing the directory, keeps its file.
+ */
+export async function cleanupOrphanJobTemps(): Promise<number> {
+  let names: string[];
+  try {
+    names = await readdir(CRON_DIR);
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of names) {
+    const match = ORPHAN_TMP_RE.exec(name);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (pid === process.pid || processAlive(pid)) continue;
+    try {
+      await unlink(join(CRON_DIR, name));
+      removed++;
+    } catch {
+      // Gone already, or not ours to remove: either way nothing is left to do.
+    }
+  }
+  return removed;
+}
+
+/**
+ * A run that was in flight when the server went down never wrote its end. At boot its job still
+ * says `runningSince`, and nothing else would ever tell the owner the run was lost: the job looked
+ * fine until its next run. Called once, before the first tick.
+ */
+export async function recoverInterruptedRuns(now: Date = new Date()): Promise<string[]> {
+  return mutateJobs((jobs) => {
+    const recovered: string[] = [];
+    for (const job of jobs) {
+      if (!job.runningSince) continue;
+      job.lastStartedAt = job.runningSince;
+      job.lastRunAt = now.toISOString();
+      job.lastDurationMs = Math.max(0, now.getTime() - new Date(job.runningSince).getTime());
+      job.lastStatus = "interrupted";
+      job.lastError = "The server stopped during this run; its result was lost.";
+      delete job.runningSince;
+      recovered.push(job.id);
+    }
+    return recovered;
+  });
 }
 
 export async function saveJobOutput(jobId: string, output: string): Promise<void> {

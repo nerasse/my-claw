@@ -4,10 +4,10 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createCronTool, type CronToolContext } from "../../src/tools/cron.ts";
 import type { CronScheduler } from "../../src/cron/scheduler.ts";
-import { loadJobs, persistJobRunUpdates, snapshotLifecycle } from "../../src/cron/store.ts";
+import { loadJobs } from "../../src/cron/store.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 
-const fakeScheduler = { tick: async () => 0 } as unknown as CronScheduler;
+const fakeScheduler = { tick: async () => 0, runningOf: () => undefined } as unknown as CronScheduler;
 
 function context(over: Partial<CronToolContext> = {}): CronToolContext {
   return {
@@ -94,50 +94,6 @@ test("scope spellings map: all/* to the wildcard, none to an empty list", async 
   const jobs = await loadJobs();
   assert.deepEqual(jobs[0]!.skills, ["*"]);
   assert.deepEqual(jobs[0]!.mcp, []);
-});
-
-test("a pause typed during a long tick survives the tick's own write", async () => {
-  // A tick can run for minutes. It writes back the array it loaded before starting, and it used
-  // to write the lifecycle fields too: a job the owner paused meanwhile came back enabled,
-  // because the tick's copy predated the pause and won.
-  const tool = createCronTool(fakeScheduler, context());
-  await tool.execute({ action: "create", name: "Long", prompt: "work", schedule: "every 24h", deliver: "local" });
-
-  const loaded = await loadJobs();
-  const lifecycle = snapshotLifecycle(loaded);
-  const job = loaded[0]!;
-  // The tick moves what a tick moves, and nothing else.
-  job.lastRunAt = new Date().toISOString();
-  job.completedRuns = (job.completedRuns ?? 0) + 1;
-
-  // Meanwhile, through the tool.
-  await tool.execute({ action: "pause", job_id: job.id, reason: "on hold" });
-
-  await persistJobRunUpdates(loaded, lifecycle);
-
-  const after = (await loadJobs())[0]!;
-  assert.equal(after.enabled, false, "the pause must survive");
-  assert.equal(after.state, "paused");
-  assert.equal(after.pausedReason, "on hold");
-  assert.equal(after.completedRuns, job.completedRuns, "the tick's own numbers still land");
-});
-
-test("a pause the tick itself decides is written", async () => {
-  const tool = createCronTool(fakeScheduler, context());
-  await tool.execute({ action: "create", name: "Broken", prompt: "work", schedule: "every 24h", deliver: "local" });
-
-  const loaded = await loadJobs();
-  const lifecycle = snapshotLifecycle(loaded);
-  const job = loaded[0]!;
-  job.enabled = false;
-  job.state = "paused";
-  job.pausedReason = "unreadable schedule";
-
-  await persistJobRunUpdates(loaded, lifecycle);
-
-  const after = (await loadJobs())[0]!;
-  assert.equal(after.state, "paused");
-  assert.equal(after.pausedReason, "unreadable schedule");
 });
 
 test("the capability switches are stored, reported per job, and granted back by clearing them", async () => {

@@ -6,12 +6,19 @@ Requires=my-claw-xvfb.service
 [Service]
 Type=simple
 Environment=DISPLAY=:99
-# Kill stale Chromium CDP from same user before starting
-ExecStartPre=-/bin/sh -c 'for pid in $(pgrep -u {{USER}} -f "chromium.*9222" 2>/dev/null || true); do kill -9 "$pid" 2>/dev/null; done'
+# A stale Chromium on the CDP port is killed, and a profile a hard stop left marked "Crashed" is
+# marked clean, or Chromium would ignore --restore-last-session below (packaging/chromium-prestart.sh).
+ExecStartPre=-/bin/sh {{APP_DIR}}/packaging/chromium-prestart.sh {{HOME}}/.config/chromium
 # No --no-sandbox: the renderer sandbox is the one boundary between a page the agent was told to
 # open and this host, and it works here (unprivileged user namespaces are enabled). It was on the
 # command line as a habit, not for a reason -- verified by running this exact line without it.
-ExecStart=/usr/bin/chromium --use-gl=angle --use-angle=swiftshader --disable-dev-shm-usage --lang=fr-FR --accept-lang=fr-FR,fr --remote-debugging-port=9222 --window-size=1920,1080 about:blank
+# The profile is named rather than implied: it is where the sign-ins, the cookies and the open
+# tabs live, and it is the one this browser always used (Chromium's default for the user). A run
+# that stops mid-form survives a my-claw restart because Chromium is not restarted with it
+# (docs/browser.md); when Chromium itself goes down, --restore-last-session reopens the windows and
+# tabs it had, where it used to start on a single blank page. No start URL: one would open beside
+# the restored tabs.
+ExecStart=/usr/bin/chromium --user-data-dir={{HOME}}/.config/chromium --restore-last-session --use-gl=angle --use-angle=swiftshader --disable-dev-shm-usage --lang=fr-FR --accept-lang=fr-FR,fr --remote-debugging-port=9222 --window-size=1920,1080
 Restart=always
 RestartSec=5
 

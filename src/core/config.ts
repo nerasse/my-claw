@@ -143,6 +143,20 @@ export interface BrowserConfig {
   // The X display the unlocking commands talk to (:99 by default, the one
   // my-claw-chromium.service runs on). See docs/browser-page.md.
   display?: string;
+  // How long a window stays kept after a browsing task asked for it (browser_done keep_window, or a
+  // human handoff): "30m", "72h", "7d", or milliseconds. holdDefault when the task names no
+  // duration (30 min), holdMax as the ceiling (7 days), holdMaxWindows as the number kept at once
+  // (8). See docs/browser-windows.md.
+  holdDefault?: string | number;
+  holdMax?: string | number;
+  holdMaxWindows?: number;
+  // browser_mail_verification: a code or link from a recent mail of the page's own site, for the
+  // browser agent, which never reads mail otherwise. `sites` adds groups of domains that are one
+  // site (an ATS that sends from a domain other than its pages'). See docs/mail-verification.md.
+  mailVerification?: {
+    enabled?: boolean;
+    sites?: string[][];
+  };
 }
 
 export interface LlmProviderConfig {

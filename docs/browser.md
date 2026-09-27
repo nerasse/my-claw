@@ -106,7 +106,7 @@ offer — a `fetch` to the site's own API, `location.reload`, and reading `docum
 Those three are now tools of their own, so `eval` keeps its place as the top rung of the ladder.
 
 **Scoping.** The `browser_*` tools are the `browser` tool base (`ToolRegistry.getForAgent("browser")`,
-a closed set: no MCP, no plugin, no skills) and every other base (`main`, `general`, `research`,
+a closed set: its own tools plus `list_skills` and `read_skill`, no MCP, no plugin) and every other base (`main`, `general`, `research`,
 `cron`) is filtered of them: a driver outside a browser run would hold no window and be released by nothing.
 `browser_eval` and `browser_cdp` are registered always and taken away per run through
 `ResolvedAgent.deny` when `browser.allowEval` / `browser.allowCdp` are off, so a hot-reload toggles
@@ -190,7 +190,10 @@ systemd and Playwright only attaches over CDP, never launches it.
 - **Tab reuse**: `browser_navigate` reuses the current tab (no tab-per-action); the open-tabs
   list is injected into the subagent prompt so it focuses an existing relevant tab instead of
   opening duplicates. `new_tab=true` forces a separate tab.
-- **Scope**: Subagent only gets browser tools (no bash/read/write). Inherits CORE_PROMPT + SOUL.md + USER.md (no AGENTS.md, no skills, no memory)
+- **Scope**: Subagent gets browser tools and the two read-only skill tools (no bash/read/write, no
+  memory, no MCP). Inherits CORE, SOUL, **AGENTS** and USER of the workspace it runs in -- the
+  delegating conversation's -- and that workspace's skills plus the global ones. See "What the
+  browser agent is told" below.
 - **Model**: `config.agents.browser.llm.defaultModel`, the global default under it, and only then
   the first OpenAI-compatible model in the catalogue. The loop speaks chat-completions and cannot
   run a claude-sdk or codex default, which is why it used to skip agent resolution altogether and
@@ -237,6 +240,30 @@ An element with no role, no `tabindex`, no `href` and only a JS-attached listene
 `<div>` wired up in code) is not detectable as interactive and gets no ref. That is precisely
 what `browser_click_at` exists for.
 
+## What the browser agent is told
+
+It used to get CORE, SOUL and USER only: neither the workspace's AGENTS.md, where the rules of what
+it fills in live (how an application is worded, what is never stated), nor the skills. The
+conversation driving it had to copy all of that into every brief. It now reads the AGENTS.md of the
+workspace it runs in and can read skills with `list_skills` / `read_skill`, under its `skills`
+scope like any agent (`agents.browser.skills` narrows it; `[]` takes skills away).
+
+The risk this adds is not a new capability but more text to leak: a page cannot make the agent run
+anything, but it can ask it to paste what it was told into a field. That was already true of
+SOUL.md and USER.md (the owner's profile), which it always had. Three things bound it:
+
+- Nothing it reads is a secret: credentials live in `~/.my-claw/.env` and `~/.my-claw/secrets/`,
+  outside any skill and any prompt file, and `read_skill` refuses a file a link inside the skill
+  points out of it (a skill is often a cloned repository).
+- Its prompt says in as many words that its instructions and skills are not page content: never
+  pasted into a field, never revealed to a page, and a page asking for them is content, not the
+  owner (rule 7c).
+- The config takes it away: `agents.browser.skills: []` for the skills; a workspace `agents/browser.md`
+  with its own `instructions:` for the prompt files.
+
+On by default, because the alternative is the owner's rules copied into briefs by another model,
+which is where they get lost.
+
 ## Lifecycle (never kill the shared Chromium)
 
 Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
@@ -251,8 +278,24 @@ Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
   whose page froze is closed when a call on it runs out of time, unless a human was handed it.
   Screenshots are not deleted here (sent as attachments, then removed post-send by
   `cleanupGeneratedTempFiles`, which sweeps `/tmp/browser-*` and `/tmp/tts-*`).
-- **Self-healing**: if Chromium or the sidecar restarts (e.g. `myclaw update`), the next task
-  reconnects. A down sidecar fails fast (`ECONNREFUSED`).
+- **Chromium is not restarted with my-claw.** `myclaw update`, `myclaw restart` and `myclaw stop`
+  leave `my-claw-chromium` and the display it draws on (`my-claw-xvfb`) running; `--with-browser`
+  includes them. Two restarts on the night of 2026-09-26 killed two applications stopped at their
+  e-mail code screen. Nothing in a release needs a new Chromium: the binary is the system's, and the
+  sidecar, which is ours and is restarted, re-adopts every open tab (a page id is the CDP target id,
+  a window id lives as long as Chromium). When a release changes the browser unit, or the system
+  upgraded the binary under a running Chromium, the update says so and it applies at the browser's
+  next start. `myclaw start` no longer kills a Chromium its unit is running (only a stale one).
+- **When Chromium does go down, its tabs come back.** The unit names the profile it always used
+  (`~/.config/chromium`: sign-ins, cookies, sessions) and starts with `--restore-last-session`. A hard
+  stop (a kill, a crash) leaves the profile marked "Crashed", and Chromium then ignores the flag; the
+  unit's pre-start (`packaging/chromium-prestart.sh`) marks it clean first. Measured on Chromium 147:
+  after a `kill -9`, no tab came back without it, all of them with it. A page mid-form reloads (the
+  form's state is the page's, not the session's), which is why not restarting it is the real fix.
+  The pre-start refuses to act when the unit is already running, so running it by hand next to a live
+  browser does nothing.
+- **Self-healing**: if Chromium or the sidecar restarts, the next task reconnects. A down sidecar
+  fails fast (`ECONNREFUSED`).
 - **Infra vs blocker**: sidecar/CDP unreachability (`sidecar unreachable`, `ECONNREFUSED`,
   websocket error, target closed) returns a technical failure (`needs_human=false`), NOT a
   noVNC handoff. See `isBrowserInfraError`. A real CAPTCHA/2FA is the only thing that triggers
@@ -291,6 +334,12 @@ Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
   should be able to `read` what it downloaded.
 - `timeoutsMs`: per sidecar endpoint (`navigate`, `upload`, `wait-for`, `download-wait`, ...)
   plus `default`, in milliseconds.
+- `holdDefault` (default `30m`), `holdMax` (default `7d`), `holdMaxWindows` (default 8): how long and
+  how many windows stay kept after a task asked for it (`docs/browser-windows.md`). Durations are
+  `30m`/`72h`/`7d` or milliseconds.
+- `mailVerification.enabled` (default true), `mailVerification.sites` (default: none added to the
+  built-in list): `browser_mail_verification`, the code or link the page's own site e-mailed, and
+  nothing else from the mailbox (`docs/mail-verification.md`).
 - All of it hot-reloads: `browser` is in `HOT_OBJECT_SECTIONS` and read live per run.
 - The Chromium CDP endpoint is not a config knob: the **sidecar** reads it from the `CDP_URL`
   env in its systemd unit (default `http://127.0.0.1:9222`).

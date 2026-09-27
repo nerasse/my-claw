@@ -29,18 +29,49 @@ pointer.
   what to do instead: take a free window, or open one, even for the same site. It does not wait,
   and it is not an infrastructure failure (`guardedBrowserTool` must not end the run over it).
 - **Release is the run's end.** The runner's `finally` releases every window the run held, whether
-  it answered, failed, was stopped or crashed. Holds live in the server's memory only: after a
-  server crash they are gone, but so is every run that could have held one. There is nothing to
-  clean up at boot, and no hold can outlive its run.
-- **A human handoff keeps its window.** A run that ends on `browser_done(needs_human=true)` leaves
-  its windows held for its conversation (the `parentSessionId`) for 30 minutes: the owner solves the
-  captcha there, and whichever browser run that conversation starts next (a `send` to the same
-  agent, or a new delegation) takes them back. Anyone else is refused, like a held window.
+  it answered, failed, was stopped or crashed. A run's own lock lives in the server's memory only:
+  after a crash it is gone, but so is the run that held it.
+- **A window can be kept after the run.** See "Kept windows" below: for a human handoff, and for a
+  run that stops at a step it will be sent back to.
 - **Every action names its window** (`window`, the short number `browser_list_windows` shows). A run
   may hold several.
 - **No cap, anywhere.** The owner removed every concurrency cap (sub-agents included), then every
   browser one (2026-09-26: "Il faut éviter tout blocage ou limitation. Au pire les navigateurs lag
   avec moins de RAM, c'est un souci pour l'infra"). See "Nothing is capped" below.
+
+## Kept windows
+
+A run that ends on `browser_done(needs_human=true)` (a captcha, an SMS code) or on
+`browser_done(keep_window=true, hold?)` (an e-mail code the caller has to fetch first, a form to
+finish after the weekend) leaves its windows **kept for its conversation** instead of free. The
+first is for a human; the second needs none: "I stop at the code screen, the conversation that sent
+me reads the mail and sends me back here". Before, only the handoff kept a window, for thirty
+minutes, in memory: every other end let the next task take the tab (`browser_navigate` reuses the
+current tab), and a restart freed everything.
+
+- **Whose.** The conversation that delegated the run. A scheduled job's runs are one session each,
+  and the run that comes back is the next one, so every run of a job counts as the job
+  (`holderOf`: `cron/<job>/<run>` -> `cron/<job>`). Anyone else is refused, with what to do instead.
+- **Offered back.** The window list handed to a new browser task is computed for the conversation
+  that sends it, so its kept window reads `kept for you: continue here (<the task it was kept by>)`.
+  It used to be computed for nobody, which made the conversation's own kept window read "do not
+  use". The delegation's answer names the window and the deadline.
+- **How long.** `hold` (`30m`, `72h`, `3d`), else `browser.holdDefault` (30 min), never more than
+  `browser.holdMax` (7 days). An unreadable duration is refused, never turned into zero.
+- **How many.** `browser.holdMaxWindows` (8) kept at once. Past it, the windows a run used least
+  recently are given back, and `browser_done` says so before the run ends.
+- **Across restarts.** Kept windows are work waiting, not a run's lock, so they are persisted
+  (`~/.my-claw/browser/holds.json`) with the pages they showed, kept current while the window is
+  open. A my-claw restart finds them on the same windows (Chromium is not restarted with it, and its
+  window ids live as long as it does). A browser restart renumbers windows: the restored window
+  showing the same pages takes the hold (`bindHolds`). A hold whose window never comes back stays
+  until it expires, listed as "not open right now".
+- **Released** by the run's conversation when it takes the window back, by that conversation through
+  `held_browser_windows` (list, release), by the owner with `/windows` (list with deadlines,
+  `/windows release <n>|all`), when the window is closed, or at its deadline. The owner's live view
+  shows a kept window as waiting, with `keptUntil`.
+- **Never closed for the browser's sake.** A tab of a kept window is not closed even when frozen
+  (`keptForHuman`): someone is coming back to it.
 
 ## What a window is
 
@@ -150,7 +181,10 @@ a click opened is kept for the page, the next snapshot says so, and `browser_upl
 
 | piece | file |
 |---|---|
-| holds, aliases, each run's page per window, handoff hold, `keptForHuman` | `src/tools/browser/windows.ts` (`BrowserWindows`) |
+| holds, aliases, each run's page per window, kept windows (`endRun`, `bindHolds`, `release`), `keptForHuman` | `src/tools/browser/windows.ts` (`BrowserWindows`) |
+| where kept windows are persisted, the hold policy from config, `browser_done(keep_window, hold)` | `src/tools/browser/session.ts` |
+| `held_browser_windows` (the delegating side) | `src/tools/browser/held.ts` |
+| `/windows` (the owner) | `src/channels/my-claw-app/commands.ts` |
 | a frozen tab: probe, close, keep the human's | `src/browser/client.ts` (`call`), `sidecar/browser.mjs` (`responsive`, `frozenPages`, `closeTarget`, the connect budget) |
 | a run's long results | `src/tools/browser/output.ts` (`browser_read_output`) |
 | run start and end | `src/subagents/runner.ts` (`beginRun` before, `endRun` in the `finally`), through `BrowserSession` |
@@ -172,7 +206,6 @@ the prompt carries the strategy: each place says only its part.
 
 ## Left out
 
-- **Taking windows back on a `send`** (plan F12): after a normal end, a run's windows are free, and
-  a `send` to the same browser agent starts from what is free like any run. Of 348 browser sessions
-  up to 2026-09-26, none was ever continued, so there is nothing to take back yet. The handoff case,
-  the one that matters, is covered by the hold.
+- **Taking windows back after a normal end** (plan F12): a run's windows are free once it ends,
+  unless it asked to keep them. Keeping is the run's decision, stated in `browser_done`, because only
+  the run knows whether it stopped at a step it will come back to.

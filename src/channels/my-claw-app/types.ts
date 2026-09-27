@@ -3281,8 +3281,20 @@ export interface MyClawAppJobEntry {
   browser: boolean;
   nextRunAt: string | null;
   lastRunAt: string | null;
+  /** `interrupted` (a timeout, a server stop) is folded into `error` here for the builds that read two values; `lastRunStatus` carries it. */
   lastStatus: "ok" | "error" | null;
   lastError: string | null;
+  /** The last run as `cron list` shows it -- docs/cron.md. Additive: an older build ignores them. */
+  lastRunStatus?: "ok" | "error" | "interrupted";
+  lastStartedAt?: string;
+  lastDurationMs?: number;
+  lastModel?: string;
+  lastCostUsd?: number;
+  lastCostPartial?: boolean;
+  /** Set while a run of the job is in flight. */
+  runningSince?: string;
+  /** The job's own wall-clock limit, when it has one. */
+  timeoutMs?: number;
   createdAt: string;
   /** True when the model is not in the live catalog: shown red, saved anyway. */
   unknownModel: boolean;
