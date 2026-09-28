@@ -87,7 +87,10 @@ async function runHome(
     config, registry, skills, undefined, undefined,
     opts.depth ?? 0, undefined, opts.agentKind,
   );
-  const sess = session(`telegram/dm/u1-${Math.random()}`);
+  // A cron run is a cron session: the role is read off the session, not the message.
+  const sess = opts.platform === "cron"
+    ? { ...session(`cron/0123456789ab/${Date.now()}`), platform: "cron" }
+    : session(`telegram/dm/u1-${Math.random()}`);
   const { signal, end } = runRegistry.startRoot(sess.id);
 
   const bodies: Array<{ messages: Array<{ role: string; content: unknown }>; tools?: Array<{ function: { name: string } }> }> = [];

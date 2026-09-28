@@ -23,6 +23,7 @@ import { createCronTool, type CronToolContext } from "../../src/tools/cron.ts";
 import { cronCapabilityDeny, ToolRegistry } from "../../src/tools/registry.ts";
 import { writeFileAtomically } from "../../src/utils/atomic-write.ts";
 import { hooks } from "../../src/hooks/index.ts";
+import { sessionLogOf } from "../../src/sessions/log-access.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import { MY_CLAW_DIR, type MyClawConfig } from "../../src/core/config.ts";
 import type { MessageRouter, RouteResult } from "../../src/core/router.ts";
@@ -399,6 +400,51 @@ describe("a long run is announced, not stopped", () => {
     expect(prompts[0]).not.toContain("Time limit");
     ctl.finish(ctl.started[0]!);
     expect(await run).toBe(1);
+  });
+
+  test("the alert says what the run is doing: its sub-agents at work, how deep, what it cost", async () => {
+    const ctl = controllableRouter();
+    const scheduler = new CronScheduler(ctl.router, sessions(), config({ cron: { enabled: true, alertAfter: 60, alertEvery: 10_000 } }), () => ({ costUsd: 1.8 }));
+    const alerts: Array<{ working: number; depth: number; costUsd?: number }> = [];
+    const onLong = ({ working, depth, costUsd }: { working: number; depth: number; costUsd?: number }): void => { alerts.push({ working, depth, ...(costUsd !== undefined ? { costUsd } : {}) }); };
+    hooks.on("cron:job:long", onLong);
+    try {
+      await saveJobs([due(createJob({ name: "weekly", prompt: "p", schedule: "every 1h", origin: null, deliver: "local" }))]);
+      const run = scheduler.tick();
+      await until(() => ctl.started.length === 1);
+      const root = ctl.started[0]!;
+      // Two volets, and a browser task under one of them.
+      for (const [id, parent] of [["subagent/a", root], ["subagent/b", root], ["subagent/a-browser", "subagent/a"]] as const) {
+        hooks.emit("subagent:spawn", { id, displayName: id, type: "general", mode: "run", parentSessionId: parent, action: "spawn" });
+      }
+      await until(() => alerts.length >= 1);
+      expect(alerts[0]).toEqual({ working: 3, depth: 2, costUsd: 1.8 });
+      ctl.finish(root);
+      await run;
+    } finally {
+      hooks.off("cron:job:long", onLong);
+    }
+  });
+
+  test("a run stopped from the app is interrupted, not a failure", async () => {
+    const ctl = controllableRouter();
+    const scheduler = new CronScheduler(ctl.router, sessions(), config(), () => ({}));
+    await saveJobs([due(createJob({ name: "veille", prompt: "p", schedule: "every 1h", origin: null, deliver: "local" }))]);
+    const run = scheduler.tick();
+    await until(() => ctl.started.length === 1);
+    const root = ctl.started[0]!;
+    // What the run leaves behind when its Stop reaches it, as the bridge writes it.
+    const log = await sessionLogOf(root);
+    log.append({ type: "user", prompt: true, text: "p" });
+    log.append({ type: "run_start", prompt: false });
+    log.append({ type: "run_end", prompt: false, reason: "aborted" });
+    await log.flush();
+    ctl.finish(root, "");
+    await run;
+    const after = (await loadJobs())[0]!;
+    // It used to read "error: Agent returned empty response".
+    expect(after.lastStatus).toBe("interrupted");
+    expect(after.lastError).toContain("Stopped before it finished");
   });
 
   test("a job's own alert time is set, shown, and cleared back", async () => {

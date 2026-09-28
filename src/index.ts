@@ -757,13 +757,16 @@ async function main() {
   // A run still going past its alert time: announced every interval, whatever `silent` says --
   // a job that runs that long is the one the owner has to decide about. The tap opens the run
   // itself, where its Stop is. docs/cron.md.
-  hooks.on("cron:job:long", ({ jobName, sessionId, runningMs }) => {
+  hooks.on("cron:job:long", ({ jobName, sessionId, runningMs, working, depth, costUsd }) => {
     const threadId = cronSessionToThread(sessionId);
     const hours = Math.floor(runningMs / 3_600_000);
     const minutes = Math.round((runningMs % 3_600_000) / 60_000);
+    const span = hours > 0 ? `${hours} h${minutes > 0 ? ` ${minutes} min` : ""}` : `${minutes} min`;
+    const doing = working > 0 ? `${working} sub-agent${working > 1 ? "s" : ""} working, ${depth} level${depth > 1 ? "s" : ""} deep` : "no sub-agent working";
+    const spent = costUsd !== undefined ? ` · $${costUsd.toFixed(2)}` : "";
     void publishNotification({
       title: jobName,
-      body: `Still running after ${hours > 0 ? `${hours} h${minutes > 0 ? ` ${minutes} min` : ""}` : `${minutes} min`}. Open it to follow it or stop it.`,
+      body: `Still running after ${span} · ${doing}${spent}. Open it to follow it or stop it.`,
       url: threadId ? `myclaw://thread/${threadId}` : "myclaw://jobs",
     });
   });

@@ -9,6 +9,9 @@ description: Delegate web browsing tasks (forms, searches, accounts, booking) to
 one shared Chromium: it navigates, fills forms, uploads files, handles dialogs and downloads, and
 returns a summary with its screenshots.
 
+This skill is for whoever hands a task to the browser. If you are the browser agent, it is not
+yours: you drive the page with your own `browser_*` tools, and you never delegate.
+
 ## When to use
 
 - Search or retrieve info from a specific website that needs interaction

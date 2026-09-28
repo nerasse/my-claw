@@ -247,6 +247,21 @@ export class SubAgentRunner {
     };
   }
 
+  /**
+   * The level a sub-agent started by this caller would sit at: a run's own sub-agents are level 1.
+   * Read off the sessions' own parent links, so no caller and no tool set has to count it.
+   */
+  private async depthUnder(parentSessionId: string): Promise<number> {
+    let depth = 1;
+    const seen = new Set<string>();
+    for (let id: string | undefined = parentSessionId; id?.startsWith("subagent/") && !seen.has(id);) {
+      seen.add(id);
+      depth++;
+      id = (await loadSession(id))?.meta?.parentSessionId;
+    }
+    return depth;
+  }
+
   // An options object rather than positional arguments: this call already carried eleven of them,
   // and a caller or a test asserting on argument position silently binds to the wrong one as soon
   // as a parameter is inserted.
@@ -283,6 +298,18 @@ export class SubAgentRunner {
     // a callback, so this is the one place every caller passes through, and it keeps the stored
     // displayName equal to the name inside the id.
     const displayName = sanitizeDisplayName(opts.displayName);
+
+    // Both spawn and delegate_browser_task arrive here, so this is where nesting is bounded, whatever
+    // tools a role happens to hold.
+    const depth = await this.depthUnder(parentSessionId);
+    if (depth > MAX_SUBAGENT_DEPTH) {
+      void log("warn", "sub-agent refused: nested too deep", { parentSessionId, type, depth });
+      return {
+        id: "",
+        result: `Error: this would start a level-${depth} sub-agent, and sub-agents nest at most ${MAX_SUBAGENT_DEPTH} deep. Do this step with your own tools, or return what you have to your caller and say what is left.`,
+        attachments: [],
+      };
+    }
 
     const resolved = this.resolveWorkspace(type, workspaceDir, parentWorkspaceDir);
     if ("error" in resolved) return { id: "", result: `Error: ${resolved.error}`, attachments: [] };
@@ -809,7 +836,8 @@ export class SubAgentRunner {
     /** Continue the session as it stands, adding no turn (docs/continue.md). */
     resume?: boolean,
   ): Promise<string> {
-    const depth = 1;
+    // Its real level, for the run tree and the tools: a browser task under a sub-agent is level 2.
+    const depth = session.meta?.parentSessionId ? await this.depthUnder(session.meta.parentSessionId) : 1;
     // Adopt the session into the shared cache before the run: the app channel's history/peek
     // then sees the live object (pre-pushed task, streaming tokens in memory) instead of the
     // file that only contains the pre-pushed task. The manager persists it on its own ticks.
@@ -975,6 +1003,15 @@ export class SubAgentRunner {
     return `${content}\n\n[Attachments]\n${lines.join("\n")}`;
   }
 }
+
+/**
+ * How deep sub-agents nest. A run's own sub-agents are level 1; what a level-1 agent may start is a
+ * browser task, level 2, and a browser task starts nothing. The tool sets imply it, and on
+ * 2026-09-28 they were the only thing that did: a role read off the wrong field handed every
+ * sub-agent of a cron job the delegation tools, and browser tasks delegated to browser tasks 325
+ * levels deep for six hours. docs/agent-roles.md.
+ */
+export const MAX_SUBAGENT_DEPTH = 2;
 
 /** An error carrying the sub-agent it came from, for the tool that reports it to the caller. */
 export function withSubagentId(err: unknown, id: string): unknown {

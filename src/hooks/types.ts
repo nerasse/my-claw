@@ -381,7 +381,7 @@ export interface HookEventMap {
   };
   "cron:job:error": { jobId: string; jobName: string; error: unknown; silent: boolean };
   /** A run of the job is still going past its alert time: announced, never stopped. */
-  "cron:job:long": { jobId: string; jobName: string; sessionId: string; runningMs: number };
+  "cron:job:long": { jobId: string; jobName: string; sessionId: string; runningMs: number; working: number; depth: number; costUsd?: number };
   "cron:job:delivered": {
     jobId: string;
     platform: string;

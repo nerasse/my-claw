@@ -18,8 +18,10 @@ import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { cleanupGeneratedTempFiles } from "../utils/media.ts";
 import { runRegistry } from "../core/run-registry.ts";
-import { getDelegatedModelUsage, getSessionModelUsage, type SessionModelRow } from "../analytics/usage-db.ts";
+import { getTreeModelUsage, getSessionModelUsage, type SessionModelRow } from "../analytics/usage-db.ts";
 import { parseDurationMs } from "../utils/duration.ts";
+import { sessionLogOf } from "../sessions/log-access.ts";
+import { continuable } from "../sessions/resume.ts";
 
 const SILENT_MARKER = "[SILENT]";
 
@@ -81,7 +83,7 @@ export interface RunUsage {
 
 export function usageOfRun(sessionId: string): RunUsage {
   const own = getSessionModelUsage(sessionId, "own");
-  const delegated = getDelegatedModelUsage(sessionId);
+  const delegated = getTreeModelUsage(sessionId);
   const rows: SessionModelRow[] = [...own, ...delegated];
   const main = [...own].sort((a, b) => b.calls - a.calls)[0];
   let cost = 0;
@@ -381,7 +383,15 @@ export class CronScheduler {
       let alertTimer: ReturnType<typeof setTimeout> | undefined;
       const scheduleAlert = (delay: number): void => {
         alertTimer = setTimeout(() => {
-          hooks.emit("cron:job:long", { jobId: job.id, jobName: job.name, sessionId, runningMs: Date.now() - jobStartedAt });
+          // What the run is doing, not only how long: a job busy with four sub-agents reads as one,
+          // and a tree that keeps growing reads as the anomaly it is.
+          const tree = this.liveTreeOf(sessionId);
+          const usage = this.usage(sessionId);
+          hooks.emit("cron:job:long", {
+            jobId: job.id, jobName: job.name, sessionId, runningMs: Date.now() - jobStartedAt,
+            working: tree.working, depth: tree.depth,
+            ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {}),
+          });
           scheduleAlert(alertEvery);
         }, delay);
         if (alertTimer.unref) alertTimer.unref();
@@ -407,6 +417,11 @@ export class CronScheduler {
         throw new CronInterruptedError(
           `Timed out after ${formatMinutes(timeoutMs)} (${limit}); it had been told to finish ${formatMinutes(lead)} before.`,
         );
+      }
+      // Stopped from the app: the run's own log says so, and a stop is not a failure. Read off the
+      // log rather than flagged by whoever stopped it, so every door that can stop a run agrees.
+      if (await this.endedStopped(sessionId)) {
+        throw new CronInterruptedError("Stopped before it finished; Continue picks it up from its thread.");
       }
       const responseText = result?.text ?? "";
       const attachments = result?.attachments ?? [];
@@ -455,6 +470,34 @@ export class CronScheduler {
     if (sessionId.startsWith("cron/")) return true;
     for (const set of this.children.values()) if (set.has(sessionId)) return true;
     return false;
+  }
+
+  /** Whether the last run of this session ended on a Stop. */
+  private async endedStopped(sessionId: string): Promise<boolean> {
+    try {
+      const entries = await sessionLogOf(sessionId);
+      const ended = continuable(entries.entries(), entries.leaf());
+      return ended.ok && ended.ended === "aborted";
+    } catch {
+      return false;
+    }
+  }
+
+  /** How many sub-agents under a run are working now, and the deepest level they reach. */
+  private liveTreeOf(sessionId: string): { working: number; depth: number } {
+    let working = 0;
+    let depth = 0;
+    const stack: Array<[string, number]> = [[sessionId, 0]];
+    const seen = new Set<string>();
+    while (stack.length > 0) {
+      const [id, level] = stack.pop()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      if (level > 0) working++;
+      if (level > depth) depth = level;
+      for (const child of this.children.get(id) ?? []) stack.push([child, level + 1]);
+    }
+    return { working, depth };
   }
 
   /** The run and every sub-agent under it that is still working. */

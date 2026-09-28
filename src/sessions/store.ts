@@ -257,8 +257,12 @@ export function recordSubAgentCaller(session: SessionData, sessionId: string, no
  * research sub-agent came to be summarized by the orchestrator's model.
  */
 export function agentTypeOf(session: SessionData): string {
-  if (session.platform === "cron") return "cron";
-  return session.meta?.type ?? "main";
+  // What the session is, before where its root came from: a sub-agent inherits its caller's
+  // platform, so reading the platform first made every sub-agent of a cron job the cron role --
+  // spawn and delegate instead of its own tools, and a browser task that could only delegate
+  // another browser task, 325 levels deep (2026-09-28, docs/agent-roles.md).
+  if (session.meta?.type) return session.meta.type;
+  return session.platform === "cron" ? "cron" : "main";
 }
 
 export function attributionParent(session: SessionData): string {

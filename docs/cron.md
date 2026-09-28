@@ -117,8 +117,10 @@ nothing written. A longer wall only moves that loss, and the reason for a wall a
 held every other one up -- went away when jobs started running side by side. So by default there is
 **no wall**: a run still going is announced, and the owner decides.
 
-- `cron.alertAfter` (default `1h`) — the first push, "<job> still running after 3 h. Open it to
-  follow it or stop it." Its tap opens the run itself, where its Stop is.
+- `cron.alertAfter` (default `1h`) — the first push, "Still running after 3 h · 4 sub-agents
+  working, 2 levels deep · $1.80. Open it to follow it or stop it." What the run is doing, not only
+  how long, so a normal long job reads as one (docs/agent-roles.md). Its tap opens the run itself,
+  where its Stop is.
 - `cron.alertEvery` (default `1h`) — again at every interval while it goes: 3 h, 4 h, 5 h...
 - A job's own `alert` (`cron create/update ... alert: "3h"`, stored as `alertAfterMs`) — above
   `cron.alertAfter`.
@@ -133,7 +135,12 @@ mailbox once they return. The prompt states the limit, so the run plans to write
 early. A run that hits the wall anyway is `interrupted`, not `error`, and so is a run the server lost
 when it stopped (`runningSince` still set at boot).
 
-A run stopped or interrupted can be picked back up from its thread with Continue (docs/continue.md).
+A run stopped from the app is `interrupted` too, read off its own log. A run stopped or interrupted
+can be picked back up from its thread with Continue (docs/continue.md).
+
+A cron run's sub-agents have their own roles, not the cron role, and nest at most two deep: the run's
+sub-agents, then the browser tasks they delegate (docs/agent-roles.md). The cost shown for a run is
+its whole tree's.
 
 - `cron.maxIterations` — overrides the tool-calling loop budget for cron runs.
 

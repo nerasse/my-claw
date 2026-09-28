@@ -12,7 +12,7 @@ import {
 import type { SubAgentType } from "../subagents/types.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage, Attachment } from "../channels/types.ts";
 import type { SessionData, SessionAttachment } from "../sessions/store.ts";
-import { attributionParent, markSessionDirty, usageFolderOf, usageWorkspaceOf } from "../sessions/store.ts";
+import { agentTypeOf, attributionParent, markSessionDirty, usageFolderOf, usageWorkspaceOf } from "../sessions/store.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
 import { promptOf, contextEntries } from "../sessions/projection.ts";
 import type { Entry, SessionLog, ToolEntry } from "../sessions/log.ts";
@@ -439,12 +439,12 @@ export class AgentBridge implements AgentBackend {
   ): Promise<string> {
     await this.preprocessor.preprocessForHandle(message);
 
-    const isCron = message.platform === "cron";
-    const agentToolType = isCron
-      ? "cron"
-      : this.depth === 0
-        ? "main"
-        : this.agentKind ?? "general";
+    // The role is the session's, never the message's: a sub-agent's message carries its root's
+    // platform, and that is how every sub-agent of a cron job ran with the cron role's tools.
+    const agentToolType: AgentToolType = this.depth === 0
+      ? (agentTypeOf(session) === "cron" ? "cron" : "main")
+      : this.agentKind ?? "general";
+    const isCron = agentToolType === "cron";
     const agent = resolveAgent(this.config, this.agentRegistry, agentToolType, session.workspace, session.scopeOverride);
     // A cron job's own switches are the same layer as its scope overrides: the role's floor is the
     // registry's (never granted), what this job was handed is the job's. docs/cron.md.

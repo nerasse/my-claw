@@ -1,6 +1,6 @@
 import { tagNameOf, type MyClawConfig, type ResolvedLlmConfig } from "../core/config.ts";
 import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage } from "../channels/types.ts";
-import type { SessionData } from "../sessions/store.ts";
+import { agentTypeOf, type SessionData } from "../sessions/store.ts";
 import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback, MediaStoreHook } from "./backend.ts";
 import { AgentBridge } from "./bridge.ts";
 import { MessagePreprocessor } from "./preprocess.ts";
@@ -51,7 +51,8 @@ export class BackendDispatcher implements AgentBackend {
    */
   private resolveRun(message: UnifiedMessage, session: SessionData, forcedModelId?: string): RunModel {
     const hasImages = message.attachments.some((a) => a.type === "image" && Boolean(a.path));
-    const agent = message.platform === "cron" ? "cron" : "main";
+    // A root run, so cron or main -- read off the session like every other place that asks.
+    const agent = agentTypeOf(session) === "cron" ? "cron" : "main";
     // Stale per-session override after a config edit: a removed *model* falls through the
     // resolver silently (default provider + unknown id sent to the API), a removed
     // *provider* throws on every message. Both self-heal to the default model. A forced

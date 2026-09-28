@@ -52,7 +52,8 @@ function session(over?: Partial<SessionData>): SessionData {
 async function modelSentToProvider(
   config: MyClawConfig,
   platform: "telegram" | "cron" = "telegram",
-  sess: SessionData = session(),
+  // A cron run is a cron session: the role is read off the session, not the message.
+  sess: SessionData = platform === "cron" ? { ...session(), id: "cron/0123456789ab/1", platform: "cron" } : session(),
 ): Promise<string> {
   const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
   let sent = "";

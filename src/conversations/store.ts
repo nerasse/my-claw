@@ -375,7 +375,7 @@ export function archiveAssistantMessage(message: UnifiedMessage, sessionId: stri
       chatType: message.chatType,
       threadId: message.threadId,
       sessionId,
-      agentType: sessionId.startsWith("subagent/") ? "subagent" : message.platform === "cron" ? "cron" : "main",
+      agentType: sessionId.startsWith("subagent/") ? "subagent" : sessionId.startsWith("cron/") ? "cron" : "main",
       role: "assistant",
       content,
       occurredAt: timestamp,

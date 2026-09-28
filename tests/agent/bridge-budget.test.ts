@@ -214,7 +214,8 @@ test("cron messages use config.cron.maxIterations, not the orchestrator budget",
   );
 
   const cronMessage: UnifiedMessage = { ...createMessage(), platform: "cron" };
-  const session = createSession();
+  // A cron run is a cron session: the role is read off the session, not the message.
+  const session = { ...createSession(), platform: "cron" };
 
   let callCount = 0;
   const fetchMock = mockFetch(async (_input, init) => {

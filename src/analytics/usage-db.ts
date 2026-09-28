@@ -472,6 +472,57 @@ export function getDelegatedModelUsage(parentSessionId: string): DelegatedModelR
 }
 
 /**
+ * Everything the sessions under a run spent for it, at every level: its sub-agents, the browser
+ * tasks they delegated, and so on down. `getDelegatedModelUsage` stops at the first level, which is
+ * how a cron run's cost left out every browser task it paid for. Each row is still counted for the
+ * parent recorded on it, so a named sub-agent driven from elsewhere brings none of that here.
+ */
+export function getTreeModelUsage(rootSessionId: string): DelegatedModelRow[] {
+  try {
+    const d = getDb();
+    const rows = d
+      .prepare(
+        `WITH RECURSIVE tree(id) AS (
+           SELECT ?1
+           UNION
+           SELECT a.session_id FROM api_calls a JOIN tree t ON a.parent_session_id = t.id
+           WHERE a.session_id <> a.parent_session_id
+         )
+         SELECT
+           session_id                      AS sessionId,
+           model,
+           base_url                        AS baseUrl,
+           MAX(upstream_api_base)          AS upstreamApiBase,
+           COUNT(*)                        AS calls,
+           COALESCE(SUM(prompt_tokens), 0)     AS promptTokens,
+           COALESCE(SUM(completion_tokens), 0) AS completionTokens,
+           COALESCE(SUM(cache_read_tokens), 0) AS cacheReadTokens,
+           COALESCE(SUM(cache_write_tokens), 0) AS cacheWriteTokens,
+           SUM(proxy_cost_usd)             AS proxyCostUsd,
+           SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END) AS errorCount,
+           MAX(timestamp)                  AS lastUsedAt,
+           SUM(cost_usd)                   AS pinnedUsd,
+           COUNT(cost_usd)                 AS pinnedRows,
+           COUNT(DISTINCT cost_source)     AS costSources,
+           MAX(cost_source)                AS costSource,
+           MAX(cost_billed)                AS costBilled,
+           MAX(cost_approximate)           AS costApproximate
+         FROM api_calls
+         WHERE session_id <> ?1
+           AND session_id IN (SELECT id FROM tree)
+           AND parent_session_id IN (SELECT id FROM tree)
+         GROUP BY session_id, model, base_url
+         ORDER BY MAX(timestamp) DESC, SUM(total_tokens) DESC`,
+      )
+      .all(rootSessionId) as Array<AggregatedModelRow & { sessionId: string }>;
+    return rows.map((row) => ({ ...withPinnedCost(row), sessionId: row.sessionId }));
+  } catch (err) {
+    void log("warn", "analytics getTreeModelUsage failed", { error: String(err) });
+    return [];
+  }
+}
+
+/**
  * Input tokens the provider counted on the most recent successful call. This is the only measured
  * context occupancy available: everything else in the codebase estimates it from character counts.
  */
