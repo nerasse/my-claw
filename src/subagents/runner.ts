@@ -15,7 +15,7 @@ import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import type { SessionAttachment, SessionData } from "../sessions/store.ts";
 import { loadSession, deleteStoredSession, archiveSession, recordSubAgentCaller, subagentSessionIdsSync } from "../sessions/store.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
-import { metaOf, writeMeta } from "../sessions/meta.ts";
+import { metaOf, readMeta, writeMeta } from "../sessions/meta.ts";
 import type { SessionLog, UserEntry } from "../sessions/log.ts";
 import { continuable, lastAnswer } from "../sessions/resume.ts";
 import { log } from "../utils/logger.ts";
@@ -677,22 +677,32 @@ export class SubAgentRunner {
       // The shared walk, not a glob: a sub-agent is a directory since the storage switch, and
       // looking for `*.json` here listed none of them at all.
       for (const id of subagentSessionIdsSync()) {
-        const session = await loadSession(id);
-        if (!session?.meta) continue;
-        if (!isReachableFrom(session.meta, caller)) continue;
-        // Get entry count from the log
-        const entryLog = await sessionLogOf(id);
+        // The settings half first: who may reach it and the numbers a row needs are in meta.json.
+        // Opening every sub-agent's log to answer a roster -- which the app asks for at every run
+        // end -- read hundreds of megabytes each time. A session with no meta.json (the old flat
+        // file) is loaded as it was.
+        const stored = await readMeta(id).catch(() => null);
+        const session = stored?.meta ? undefined : await loadSession(id);
+        const meta = stored?.meta ?? session?.meta;
+        if (!meta) continue;
+        if (!isReachableFrom(meta, caller)) continue;
+        const running = registry.isRunning(id);
+        // A running one is counted off its log, which moves before the meta is next written.
+        const messageCount = !running && stored?.promptCount !== undefined
+          ? stored.promptCount
+          : (await sessionLogOf(id)).entries().filter(e => e.prompt).length;
+        const model = stored ? stored.modelOverride : session?.modelOverride;
         out.push({
           id,
-          displayName: session.meta.displayName,
-          type: session.meta.type,
-          messageCount: entryLog.entries().filter(e => e.prompt).length,
-          status: registry.isRunning(id) ? "running" : "idle",
-          visibility: session.meta.visibility,
-          ...(session.meta.workspaceKey ? { workspaceKey: session.meta.workspaceKey } : {}),
-          ...(session.meta.workspaceDir ? { workspaceDir: session.meta.workspaceDir } : {}),
-          ...(session.modelOverride ? { model: session.modelOverride } : {}),
-          createdAt: session.meta.createdAt,
+          displayName: meta.displayName,
+          type: meta.type,
+          messageCount,
+          status: running ? "running" : "idle",
+          visibility: meta.visibility,
+          ...(meta.workspaceKey ? { workspaceKey: meta.workspaceKey } : {}),
+          ...(meta.workspaceDir ? { workspaceDir: meta.workspaceDir } : {}),
+          ...(model ? { model } : {}),
+          createdAt: meta.createdAt,
         });
       }
     } catch {
