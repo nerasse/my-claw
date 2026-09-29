@@ -37,7 +37,7 @@ export const COMMANDS: readonly CommandInfo[] = [
   { command: "status", description: "Session diagnostics: context, tokens, cost, active runs" },
   { command: "stop", description: "Stop the running agent and its sub-agents" },
   { command: "cron", description: "List scheduled tasks" },
-  { command: "windows", description: "Browser windows kept after a task: list, or release <number>|all" },
+  { command: "windows", description: "Browser windows kept after a task: list, keep <number> [24h], or release <number>|all" },
   { command: "codex", description: "ChatGPT/Codex login: login|status|logout" },
   { command: "claude", description: "Claude subscription: login|set-token|status|logout" },
   { command: "config", description: "Config snapshots: history|diff|rollback" },

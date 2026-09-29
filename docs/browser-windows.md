@@ -67,9 +67,14 @@ current tab), and a restart freed everything.
   showing the same pages takes the hold (`bindHolds`). A hold whose window never comes back stays
   until it expires, listed as "not open right now".
 - **Released** by the run's conversation when it takes the window back, by that conversation through
-  `held_browser_windows` (list, release), by the owner with `/windows` (list with deadlines,
-  `/windows release <n>|all`), when the window is closed, or at its deadline. The owner's live view
-  shows a kept window as waiting, with `keptUntil`.
+  `held_browser_windows` (list, extend, release), by the owner with `/windows` (list with deadlines,
+  `/windows keep <n> [24h]`, `/windows release <n>|all`), when the window is closed, or at its
+  deadline. A release or a deadline closes the pages the run opened in it (see "Who closes a page").
+  The owner's live view shows a kept window as waiting, with `keptUntil`.
+- **Announced before it closes.** A hold kept two hours or more is announced once, an hour before
+  its end: "closes at HH:MM with its tabs. /windows keep <n> 24h keeps it", the tap opening the
+  conversation that kept it (`expiring`, `browser:hold:expiring`). Extending clears the mark, so the
+  new end is announced too. A shorter hold is not: it was just handed over, and the handoff said so.
 - **Never closed for the browser's sake.** A tab of a kept window is not closed even when frozen
   (`keptForHuman`): someone is coming back to it.
 
@@ -96,12 +101,41 @@ too. Neither is ever refused: they are what a click did, not a decision.
 A window a site opened belongs to the run that holds the window of its opener, and a tab born
 inside a held window is that run's.
 
+## Who closes a page
+
+A page a run opened is the run's (`OwnedPage`), and it is closed once nothing needs it: **its run has
+ended, no run works in its window, and no hold keeps the window.** One rule, applied by `sweep`:
+
+- **What a run opened**: its `browser_new_window` (and every tab of that window), its
+  `browser_navigate(new_tab)`, and what a site opened from one of its pages (a popup, a `_blank`).
+  A window whose every tab goes is closed whole; in a window it borrowed, only its own tabs go.
+- **When**: at the run's end (the runner's `finally`), at a release, and on the housekeeping tick
+  (every 5 min, first one a minute after boot), which is where an expired hold's pages go and where
+  the pages of a run the server lost with a restart go.
+- **Across restarts**: ownership is persisted (`~/.my-claw/browser/pages.json`). A browser restart
+  renumbers every page; when none of the owned ids is open any more, each entry finds its page again
+  by address. An entry whose page stays missing ten minutes is dropped (it was closed by hand).
+- **Never**: a page nobody here opened. The owner's own tabs, and anything open before this existed,
+  stay until someone closes them.
+
+Why (2026-09-29). Until 24/09 a run's end closed what it opened. The parallel windows replaced that
+with a 12-tab cap and an idle-tab sweep; on 27/09 the cap and the sweep went ("nothing is capped")
+and nothing replaced the close. Over 237 browser runs, 29 windows and 173 tabs were opened, 2 and 12
+closed; expired holds became free windows that the next runs piled tabs into; `--restore-last-session`
+brought all of it back after every restart. 52 tabs, 6.2 GB, the swap full, an APK build killed three
+times. Ownership keeps "no cap": a run opens what it needs, and what is its own goes with it.
+
+## A frozen tab found while nothing runs
+
+The same tick probes every tab (`frozen` on the sidecar: `frozenPages`, one socket per tab, 3 s)
+while no run works, and closes the frozen ones, unless a human was handed their window. Before, a
+frozen tab was only found when a call tripped on it: on 29/09 a cord.com tab held every connection
+of the sidecar until the next run paid for it.
+
 ## Nothing is capped
 
 - **No window cap.** Runs open as many windows as they need (it was 8 agent windows until
-  2026-09-26; it was never reached). Closing what is no longer needed is `browser_close_window`.
-- **No sweep.** Nothing closes a tab behind anyone's back (it closed idle agent tabs past 12). Tabs
-  and windows persist between runs until someone closes them.
+  2026-09-26; it was never reached). What a run opened is closed when it ends (above).
 - **Nothing a page gives back is cut by the sidecar**: `browser_text`, `browser_eval`, `browser_cdp`,
   `browser_response`, `browser_fetch`, `browser_find`, `browser_network` and the snapshot's refs
   (400 until then) come back whole, and the per-page response log keeps every JSON response. A long
@@ -181,8 +215,9 @@ a click opened is kept for the page, the next snapshot says so, and `browser_upl
 
 | piece | file |
 |---|---|
-| holds, aliases, each run's page per window, kept windows (`endRun`, `bindHolds`, `release`), `keptForHuman` | `src/tools/browser/windows.ts` (`BrowserWindows`) |
-| where kept windows are persisted, the hold policy from config, `browser_done(keep_window, hold)` | `src/tools/browser/session.ts` |
+| holds, aliases, each run's page per window, kept windows (`endRun`, `bindHolds`, `release`, `extend`, `expiring`), `keptForHuman`, page ownership (`OwnedPage`, `bindPages`, `sweep`) | `src/tools/browser/windows.ts` (`BrowserWindows`) |
+| where kept windows and owned pages are persisted, the hold policy from config, `browser_done(keep_window, hold)`, the housekeeping tick | `src/tools/browser/session.ts` |
+| the notification before a hold ends | `src/notifications/run-notifications.ts` (`browser:hold:expiring`) |
 | `held_browser_windows` (the delegating side) | `src/tools/browser/held.ts` |
 | `/windows` (the owner) | `src/channels/my-claw-app/commands.ts` |
 | a frozen tab: probe, close, keep the human's | `src/browser/client.ts` (`call`), `sidecar/browser.mjs` (`responsive`, `frozenPages`, `closeTarget`, the connect budget) |

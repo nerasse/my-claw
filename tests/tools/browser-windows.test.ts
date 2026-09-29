@@ -256,10 +256,11 @@ describe("BrowserWindows: windows and tabs", () => {
   });
 });
 
-// Owner, 2026-09-26: nothing closes a tab behind anyone's back. Tabs pile up until someone
-// closes them; what that costs is the machine's.
-describe("BrowserWindows: no sweep", () => {
-  test("idle agent tabs are never closed, however many and however old", async () => {
+// Owner, 2026-09-26: nothing closes a tab behind anyone's back. Still true of the owner's tabs; a
+// run's own are closed when it ends (owner, 2026-09-29: 52 tabs left by ended runs, 6.2 GB). The
+// ownership rules themselves are in browser-pages.test.ts.
+describe("BrowserWindows: nothing but a run's own pages", () => {
+  test("the owner's tab outlives any number of runs and a week; the run's forty tabs go with it", async () => {
     let clock = 1_000;
     const b = fakeBrowser([{ windowId: 1, tabs: [{ pageId: "owner", url: "https://owner.test", title: "" }] }]);
     const w = new BrowserWindows(b.backend, () => clock);
@@ -271,9 +272,8 @@ describe("BrowserWindows: no sweep", () => {
     await w.describe("A");
     w.endRun("A");
     clock += 7 * 24 * 60 * 60_000;
-    w.beginRun("B");
-    await w.newWindow(run("B"), "https://fresh.test");
-    await w.page(run("B", 2, { tab: 1 }));
+    expect(await w.sweep()).toBe(40);
+    expect(b.windows.map((x) => x.tabs.map((t) => t.pageId))).toEqual([["owner"]]);
     expect(b.closedTabs).toEqual([]);
   });
 });

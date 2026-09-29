@@ -12,8 +12,11 @@ import {
   taskLabel,
   type HoldPolicy,
   type HoldStore,
+  type OwnedPage,
+  type PageStore,
   type WindowHold,
 } from "./windows.ts";
+import { log } from "../../utils/logger.ts";
 
 /** Kept windows survive a restart of my-claw: they are work waiting, not a run's lock. */
 export function fileHoldStore(path = join(MY_CLAW_DIR, "browser", "holds.json")): HoldStore {
@@ -29,6 +32,24 @@ export function fileHoldStore(path = join(MY_CLAW_DIR, "browser", "holds.json"))
     save: (holds) => writeJsonFileAtomicallySync(path, { holds }, true),
   };
 }
+
+/** Who opened which page survives a restart of my-claw, so what the ended runs opened still gets closed. */
+export function filePageStore(path = join(MY_CLAW_DIR, "browser", "pages.json")): PageStore {
+  return {
+    load: () => {
+      try {
+        const data = JSON.parse(readFileSync(path, "utf8")) as { pages?: OwnedPage[] };
+        return Array.isArray(data.pages) ? data.pages : [];
+      } catch {
+        return [];
+      }
+    },
+    save: (pages) => writeJsonFileAtomicallySync(path, { pages }, true),
+  };
+}
+
+/** How often the browser tidies itself: an expired hold, a page left by a run the server lost, a frozen tab. */
+export const HOUSEKEEPING_EVERY_MS = 5 * 60_000;
 
 /** The config's hold settings, read live; an unreadable value falls back to its default. */
 export function holdPolicyOf(config: MyClawConfig): HoldPolicy {
@@ -64,9 +85,9 @@ export class BrowserSession {
   /** The live pictures the owner's devices watch -- docs/browser-live.md. */
   readonly cast: BrowserCast;
 
-  constructor(private config: MyClawConfig, holdStore: HoldStore = fileHoldStore()) {
+  constructor(private config: MyClawConfig, holdStore: HoldStore = fileHoldStore(), pageStore: PageStore = filePageStore()) {
     this.client = new BrowserClient(this.sidecarUrl(), config.browser?.viewport, config.browser?.timeoutsMs);
-    this.windows = new BrowserWindows(this.client, Date.now, holdStore, () => holdPolicyOf(this.config));
+    this.windows = new BrowserWindows(this.client, Date.now, holdStore, () => holdPolicyOf(this.config), pageStore);
     this.cast = new BrowserCast(() => this.sidecarUrl());
     this.client.keepOpenWhen((pageId) => this.windows.keptForHuman(pageId));
   }
@@ -88,6 +109,17 @@ export class BrowserSession {
    * is about to look.
    */
   async endRun(sessionId: string): Promise<void> {
+    try {
+      await this.settleRun(sessionId);
+    } finally {
+      // What the run opened and does not keep goes now, not at the next tick -- docs/browser-windows.md.
+      await this.windows.sweep().catch((err: unknown) => {
+        void log("warn", "browser sweep after a run failed", { sessionId, error: String(err) });
+      });
+    }
+  }
+
+  private async settleRun(sessionId: string): Promise<void> {
     const outcome = outcomes.get(sessionId);
     const keep = outcome?.needsHuman
       ? { reason: "human" as const, ...(outcome.keepMs !== undefined ? { ms: outcome.keepMs } : {}) }
@@ -106,6 +138,39 @@ export class BrowserSession {
       // The screen stays as it was: the handoff message then names no window, and the owner picks
       // one from the app.
     }
+  }
+
+  /**
+   * One tidy-up of the browser: the pages nothing needs any more (a run the server lost, a hold
+   * that ended), the frozen tabs when no run is working -- a frozen tab otherwise waits for the next
+   * run to trip on it -- and the holds about to end, handed to `onExpiring` once each.
+   */
+  async housekeep(onExpiring: (hold: WindowHold & { alias: number }) => void = () => {}): Promise<{ closed: number; frozen: number }> {
+    if (this.config.browser?.enabled === false) return { closed: 0, frozen: 0 };
+    const closed = await this.windows.sweep();
+    const frozen = this.windows.busy() ? 0 : await this.client.closeFrozenTabs();
+    for (const hold of this.windows.expiring()) onExpiring({ ...hold, alias: this.windows.aliasOf(hold.windowId) });
+    if (closed + frozen > 0) void log("info", "browser housekeeping", { closed, frozen });
+    return { closed, frozen };
+  }
+
+  /** The tick, from boot: a first pass soon after, then every `everyMs`. Returns what stops it. */
+  startHousekeeping(onExpiring: (hold: WindowHold & { alias: number }) => void, everyMs = HOUSEKEEPING_EVERY_MS): () => void {
+    let running = false;
+    const tick = (): void => {
+      if (running) return;
+      running = true;
+      // A browser that is down or not started yet is not an error here: the next tick tries again.
+      void this.housekeep(onExpiring).catch(() => undefined).finally(() => { running = false; });
+    };
+    const first = setTimeout(tick, 60_000);
+    const every = setInterval(tick, everyMs);
+    first.unref?.();
+    every.unref?.();
+    return () => {
+      clearTimeout(first);
+      clearInterval(every);
+    };
   }
 
   /**

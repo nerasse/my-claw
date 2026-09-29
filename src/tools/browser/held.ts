@@ -1,5 +1,5 @@
 import { type Tool, type ToolResult } from "../types.ts";
-import { formatDuration } from "../../utils/duration.ts";
+import { formatDuration, parseDurationMs } from "../../utils/duration.ts";
 import { holderOf, type BrowserWindows, type WindowHold } from "./windows.ts";
 
 /** One kept window as a line: its number, what it waits for, until when, and whose it is. */
@@ -20,12 +20,13 @@ export function describeHold(hold: WindowHold & { alias?: number; open: boolean 
 export function createHeldBrowserWindowsTool(windows: BrowserWindows): Tool {
   return {
     name: "held_browser_windows",
-    description: "The browser windows kept after a browsing task (for a human, or for this conversation to continue in): list them with what each waits for and until when, or release the ones kept for this conversation once they are no longer needed. To continue in a kept window, delegate a new browsing task: it is offered that window first.",
+    description: "The browser windows kept after a browsing task (for a human, or for this conversation to continue in): list them with what each waits for and until when, keep one of this conversation's longer (extend), or release them once they are no longer needed. A kept window closes with its tabs when its time is up. To continue in a kept window, delegate a new browsing task: it is offered that window first.",
     parameters: {
       type: "object",
       properties: {
-        action: { type: "string", enum: ["list", "release"] },
-        window: { type: "number", description: "The window number to release (release)" },
+        action: { type: "string", enum: ["list", "release", "extend"] },
+        window: { type: "number", description: "The window number to release or extend" },
+        hold: { type: "string", description: "How long to keep it from now (extend), e.g. 24h. Capped at browser.holdMax." },
         all: { type: "boolean", description: "Release every window kept for this conversation (release)" },
       },
       required: ["action"],
@@ -33,6 +34,20 @@ export function createHeldBrowserWindowsTool(windows: BrowserWindows): Tool {
     async execute(args): Promise<ToolResult> {
       const caller = typeof args["__sessionId"] === "string" ? args["__sessionId"] : "";
       try {
+        if (args["action"] === "extend") {
+          const alias = typeof args["window"] === "number" ? args["window"] : undefined;
+          if (alias === undefined) return { success: false, output: "", error: "Name the window to keep longer." };
+          let ms: number;
+          try {
+            ms = parseDurationMs(typeof args["hold"] === "string" ? args["hold"] : "24h");
+          } catch (err) {
+            return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
+          }
+          const hold = await windows.extend({ alias, holder: caller }, ms);
+          return hold
+            ? { success: true, output: describeHold({ ...hold, alias, open: true }, Date.now(), caller) }
+            : { success: false, output: "", error: "No window of that number is kept for this conversation." };
+        }
         if (args["action"] === "release") {
           const alias = typeof args["window"] === "number" ? args["window"] : undefined;
           const all = args["all"] === true;

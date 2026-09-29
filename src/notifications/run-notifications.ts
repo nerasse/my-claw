@@ -106,6 +106,19 @@ export function registerRunNotifications(deps: RunNotificationDeps): () => void 
     });
   });
 
+  // A long hold is about to close its window: the one chance to keep it. The tap opens the
+  // conversation that kept it, whose next browsing task continues there.
+  on("browser:hold:expiring", ({ holder, alias, until, label, url }) => {
+    const at = new Date(until).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+    const what = cleanNotificationText(label ?? url ?? `window ${alias}`).slice(0, 120);
+    const target = targetOfSession(holder);
+    void publishNotification({
+      title: "Browser window closing",
+      body: `${what}: closes at ${at} with its tabs. /windows keep ${alias} 24h keeps it.`,
+      ...(target ? { target } : {}),
+    });
+  });
+
   return () => {
     for (const off of offs.splice(0)) off();
   };

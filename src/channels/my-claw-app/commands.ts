@@ -32,6 +32,7 @@ import { log } from "../../utils/logger.ts";
 import type { UndoMode } from "./undo.ts";
 import type { MyClawAppCommandHandler } from "./controllers.ts";
 import { describeHold } from "../../tools/browser/held.ts";
+import { parseDurationMs } from "../../utils/duration.ts";
 import {
   handleRetryCommand,
   handleBranchesCommand,
@@ -60,7 +61,7 @@ export interface MyClawAppCommandDeps {
   workspaceSkillsDir?: string;
   listCronJobs?: () => ReturnType<typeof loadJobs>;
   /** The kept browser windows, and the owner's release of any of them (`/windows`). */
-  browserWindows?: Pick<import("../../tools/browser/windows.ts").BrowserWindows, "kept" | "release">;
+  browserWindows?: Pick<import("../../tools/browser/windows.ts").BrowserWindows, "kept" | "release" | "extend">;
   postMessage?: (owner: string, text: string, threadId?: string) => Promise<void>;
   onAuthChanged?: (provider: "codex" | "claude") => void | Promise<void>;
   reloadConfigNow?: () => Promise<{ changed: string[]; rebootRequired: string[] }>;
@@ -297,8 +298,20 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
         // The owner's view of the windows kept after a browsing task, and the one release that is
         // not limited to the conversation that kept them.
         if (!deps.browserWindows) return "Browser not available.";
-        const [verb, target] = args.trim().split(/\s+/);
+        const [verb, target, span] = args.trim().split(/\s+/);
         try {
+          if (verb === "keep") {
+            const alias = Number(target);
+            if (!Number.isInteger(alias)) return "Usage: /windows keep <number> [duration, e.g. 24h]";
+            let ms: number;
+            try {
+              ms = parseDurationMs(span ?? "24h");
+            } catch {
+              return "Usage: /windows keep <number> [duration, e.g. 24h]";
+            }
+            const hold = await deps.browserWindows.extend({ alias }, ms);
+            return hold ? describeHold({ ...hold, alias, open: true }, Date.now()) : `No kept window ${target}.`;
+          }
           if (verb === "release") {
             if (!target) return "Usage: /windows release <number>|all";
             const all = target === "all";
@@ -310,7 +323,7 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
           const kept = await deps.browserWindows.kept();
           if (kept.length === 0) return "No browser window is kept.";
           const now = Date.now();
-          return [...kept.map((hold) => describeHold(hold, now)), "", "Release one: /windows release <number>, or /windows release all."].join("\n");
+          return [...kept.map((hold) => describeHold(hold, now)), "", "Keep one longer: /windows keep <number> [24h]. Release one: /windows release <number>, or /windows release all."].join("\n");
         } catch (err) {
           return `Could not read the browser's windows: ${err instanceof Error ? err.message : String(err)}`;
         }

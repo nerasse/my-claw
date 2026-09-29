@@ -713,6 +713,15 @@ async function main() {
     return session?.title?.trim() || cleanNotificationText(fallback).slice(0, 60);
   };
   registerRunNotifications({ titleOf: threadTitle, publish: publishNotification, isForegroundOn });
+  // The browser tidies itself while it runs: pages of ended runs and ended holds, frozen tabs, and
+  // a word to the owner before a long hold closes -- docs/browser-windows.md.
+  browserSession.startHousekeeping((hold) => {
+    hooks.emit("browser:hold:expiring", {
+      holder: hold.holder, alias: hold.alias, until: hold.until,
+      ...(hold.label ? { label: hold.label } : {}),
+      ...(hold.urls[0] ? { url: hold.urls[0] } : {}),
+    });
+  });
 
   // A question the run is waiting on: the owner left the app open on another thread, or it is
   // in the background, or closed. The push is the only way the question reaches him; a device

@@ -273,9 +273,10 @@ Both the sidecar (`my-claw-browser-sidecar.service`, Node) and Chromium
 - **One CDP connection**: the sidecar connects to Chromium once and reuses it across every
   task. It never calls `browser.close()` (with `connectOverCDP` that would kill the external
   Chromium); on `disconnected` it resets and reconnects on the next task.
-- **Nothing closes at a run's end**: windows and tabs stay open so the browser persists for the
-  next task, until someone closes them: nothing sweeps them (`docs/browser-windows.md`). A tab
-  whose page froze is closed when a call on it runs out of time, unless a human was handed it.
+- **A run's end closes what it opened** and does not keep (`docs/browser-windows.md`, "Who closes a
+  page"): its windows, its tabs, what a site opened from them. A kept window's go when its hold
+  ends. The owner's tabs are never closed. A tab whose page froze is closed when a call on it runs
+  out of time, or by the housekeeping probe while no run works, unless a human was handed it.
   Screenshots are not deleted here (sent as attachments, then removed post-send by
   `cleanupGeneratedTempFiles`, which sweeps `/tmp/browser-*` and `/tmp/tts-*`).
 - **Chromium is not restarted with my-claw.** `myclaw update`, `myclaw restart` and `myclaw stop`

@@ -48,6 +48,8 @@ export interface WindowHold {
    * ids change; the restored window with the same pages is the kept one.
    */
   urls: string[];
+  /** When the owner was told it is about to close (`expiring`), so it is said once. */
+  warnedAt?: number;
 }
 
 /** Where holds survive a restart. The tests keep them in memory. */
@@ -55,6 +57,35 @@ export interface HoldStore {
   load(): WindowHold[];
   save(holds: WindowHold[]): void;
 }
+
+/**
+ * A page a run opened, and so the run's to close -- docs/browser-windows.md, "Who closes a page".
+ * Persisted: a my-claw restart ends every run, and the pages they opened must not outlive that as
+ * nobody's.
+ */
+export interface OwnedPage {
+  pageId: string;
+  /** The run that opened it (or opened the page or the window it came from). */
+  owner: string;
+  /** Its last known address: a browser restart renumbers pages, and this is how it is found again. */
+  url: string;
+  /** The first page of a window the run opened: every tab of that window is the run's too. */
+  window?: boolean;
+  /** When it was last seen missing, so an entry for a page closed by hand is dropped. */
+  missingSince?: number;
+}
+
+export interface PageStore {
+  load(): OwnedPage[];
+  save(pages: OwnedPage[]): void;
+}
+
+/** How long an owned page may be missing before its entry is dropped: longer than a browser restart. */
+const PAGE_MISSING_GRACE_MS = 10 * 60_000;
+/** A hold is announced before it ends when it was kept this long at least: a short one was just handed over. */
+export const WARN_HOLDS_FROM_MS = 2 * 60 * 60_000;
+/** How long before its end a hold is announced. */
+export const WARN_BEFORE_MS = 60 * 60_000;
 
 /**
  * Who a window is kept for. A conversation is its own session; a scheduled job's run is one
@@ -129,8 +160,10 @@ function tabArg(args: Record<string, unknown>): number | undefined {
  * human, or for the conversation to come back to) is different: that is work waiting, and it is
  * persisted so a restart does not hand it to the next task (docs/browser-windows.md).
  *
- * Nothing here caps the browser or closes a tab behind anyone's back: how many windows the runs
- * open is theirs to decide, and what that costs is the machine's.
+ * Nothing here caps the browser, and nothing closes a tab behind anyone's back. What a run opens
+ * is the run's (`OwnedPage`): it is closed when nothing needs it any more -- its run has ended, no
+ * run works in its window and no hold keeps that window. A page nobody here opened (the owner's, a
+ * window restored from before) is never closed. The sweep that applies it is `sweep`.
  */
 export class BrowserWindows {
   private readonly windowByAlias = new Map<number, number>();
@@ -146,13 +179,96 @@ export class BrowserWindows {
   private readonly runs = new Map<string, RunWindows>();
   private readonly lastUsed = new Map<string, number>();
   private layout: BrowserWindowView[] = [];
+  /** pageId -> the run it belongs to. Loaded from the store at the first read, saved on every change. */
+  private readonly owned = new Map<string, OwnedPage>();
+  private pagesLoaded = false;
 
   constructor(
     private readonly backend: WindowsBackend,
     private readonly now: () => number = Date.now,
     private readonly store?: HoldStore,
     private readonly policy: () => HoldPolicy = () => DEFAULT_HOLD_POLICY,
+    private readonly pageStore?: PageStore,
   ) {}
+
+  /** Whether a run is working, for what should only happen when none is (the frozen-tab probe). */
+  busy(): boolean {
+    return this.runs.size > 0 || this.locks.size > 0;
+  }
+
+  /**
+   * Closes every page a run opened that nothing needs any more: its run has ended, no run works in
+   * its window, and no hold keeps that window. A window whose every tab goes is closed whole.
+   * Returns how many pages were closed. Called when a run ends, when a hold is released, and on
+   * the browser's housekeeping tick, which is where an expired hold's pages go.
+   */
+  async sweep(): Promise<number> {
+    const windows = await this.refresh();
+    const closeable = new Set<string>();
+    for (const w of windows) {
+      if (this.locks.has(w.windowId) || this.heldNow(w.windowId)) continue;
+      for (const t of w.tabs) {
+        const page = this.owned.get(t.pageId);
+        if (page && !this.runs.has(page.owner)) closeable.add(t.pageId);
+      }
+    }
+    if (closeable.size === 0) return 0;
+    let closed = 0;
+    for (const w of windows) {
+      const gone = w.tabs.filter((t) => closeable.has(t.pageId));
+      if (gone.length === 0) continue;
+      try {
+        if (gone.length === w.tabs.length) {
+          await this.backend.closeWindow(w.windowId);
+          this.forgetWindow(w.windowId);
+        } else {
+          for (const t of gone) {
+            await this.backend.closeTab(t.pageId);
+            this.forgetPage(t.pageId);
+          }
+        }
+        for (const t of gone) this.owned.delete(t.pageId);
+        closed += gone.length;
+      } catch {
+        // Left for the next sweep: a tab the browser refused to close now is still nobody's.
+      }
+    }
+    this.savePages();
+    return closed;
+  }
+
+  /**
+   * The holds about to end that the owner has not been told about yet, marked as told. Only a hold
+   * kept for a while (`WARN_HOLDS_FROM_MS`): one of thirty minutes was just handed over, and the
+   * handoff said so. The pages go at the end; this is the chance to keep them.
+   */
+  expiring(): WindowHold[] {
+    this.loadHolds();
+    const now = this.now();
+    const due = this.activeHolds().filter(
+      (h) => h.warnedAt === undefined && h.until - h.since >= WARN_HOLDS_FROM_MS && h.until - now <= WARN_BEFORE_MS,
+    );
+    for (const hold of due) hold.warnedAt = now;
+    if (due.length > 0) this.saveHolds();
+    return due;
+  }
+
+  /**
+   * Keeps a kept window longer: `ms` from now, capped at the maximum. `holder` limits it to the
+   * windows kept for that conversation; without it, any (the owner). Returns the hold, or undefined
+   * when no such window is kept.
+   */
+  async extend(target: { alias: number; holder?: string }, ms: number): Promise<WindowHold | undefined> {
+    await this.refresh();
+    const windowId = this.windowByAlias.get(target.alias);
+    const hold = windowId !== undefined ? this.holds.get(windowId) : undefined;
+    if (!hold || hold.until <= this.now()) return undefined;
+    if (target.holder !== undefined && hold.holder !== holderOf(target.holder)) return undefined;
+    hold.until = this.now() + Math.min(ms, this.policy().maxMs);
+    delete hold.warnedAt;
+    this.saveHolds();
+    return hold;
+  }
 
   beginRun(session: string, parent?: string, label?: string): void {
     this.runs.set(session, { ...(parent ? { parent } : {}), ...(label ? { label } : {}), current: new Map() });
@@ -236,7 +352,11 @@ export class BrowserWindows {
       this.unbound.delete(hold.windowId);
       released++;
     }
-    if (released > 0) this.saveHolds();
+    if (released > 0) {
+      this.saveHolds();
+      // Released is done with: what the run opened in it goes now, not at the next tick.
+      await this.sweep().catch(() => 0);
+    }
     return released;
   }
 
@@ -315,10 +435,12 @@ export class BrowserWindows {
 
   /** A navigation landed on `pageId`: it is the run's page in that window from now on. */
   moved(args: Record<string, unknown>, windowId: number, pageId: string, opened: boolean): void {
-    const run = this.runOf(sessionOf(args));
+    const session = sessionOf(args);
+    const run = this.runOf(session);
     run.current.set(windowId, pageId);
     this.lastUsed.set(pageId, this.now());
     if (!opened) return;
+    this.own(pageId, session);
     const window = this.layout.find((w) => w.windowId === windowId);
     if (window && !window.tabs.some((t) => t.pageId === pageId)) window.tabs.push({ pageId, url: "", title: "" });
   }
@@ -329,6 +451,7 @@ export class BrowserWindows {
     this.locks.set(result.windowId, sessionOf(args));
     this.layout.push({ windowId: result.windowId, tabs: [{ pageId: result.pageId, url: result.url, title: "" }] });
     this.moved(args, result.windowId, result.pageId, true);
+    this.own(result.pageId, sessionOf(args), { url: result.url, window: true });
     return { alias: this.alias(result.windowId), result };
   }
 
@@ -347,9 +470,11 @@ export class BrowserWindows {
   async closeWindow(args: Record<string, unknown>): Promise<number> {
     const windowId = await this.window(args);
     const alias = this.alias(windowId);
+    const pages = this.tabsOf(windowId).map((t) => t.pageId);
     await this.backend.closeWindow(windowId);
     this.forgetWindow(windowId);
     if (this.holds.delete(windowId)) this.saveHolds();
+    this.disown(pages);
     return alias;
   }
 
@@ -368,6 +493,7 @@ export class BrowserWindows {
     const run = this.runOf(sessionOf(args));
     if (run.current.get(windowId) === pageId) run.current.delete(windowId);
     this.forgetPage(pageId);
+    this.disown([pageId]);
     return { alias: this.alias(windowId), tab };
   }
 
@@ -426,6 +552,105 @@ export class BrowserWindows {
       this.saveHolds();
     }
     this.locks.set(windowId, session);
+  }
+
+  /** A window kept by a hold that has not ended. */
+  private heldNow(windowId: number): boolean {
+    const hold = this.holds.get(windowId);
+    return hold !== undefined && hold.until > this.now();
+  }
+
+  private own(pageId: string, owner: string, extra: { url?: string; window?: boolean } = {}): void {
+    this.loadPages();
+    const known = this.owned.get(pageId);
+    this.owned.set(pageId, {
+      pageId,
+      owner,
+      url: extra.url ?? known?.url ?? "",
+      ...(extra.window || known?.window ? { window: true } : {}),
+    });
+    this.savePages();
+  }
+
+  private disown(pageIds: string[]): void {
+    let changed = false;
+    for (const id of pageIds) changed = this.owned.delete(id) || changed;
+    if (changed) this.savePages();
+  }
+
+  private loadPages(): void {
+    if (this.pagesLoaded) return;
+    this.pagesLoaded = true;
+    for (const page of this.pageStore?.load() ?? []) this.owned.set(page.pageId, page);
+  }
+
+  private savePages(): void {
+    try {
+      this.pageStore?.save([...this.owned.values()]);
+    } catch {
+      // Ownership still holds for this process; only a restart would forget it.
+    }
+  }
+
+  /**
+   * Keeps ownership on the pages it belongs to: a tab a site opened from an owned page is its
+   * owner's, and so is any tab of a window a run opened. After a restart that renumbered every page
+   * (none of the owned ids is open any more), each entry finds its page again by address. An entry
+   * whose page stays missing past the grace is dropped: it was closed by hand.
+   */
+  private bindPages(windows: BrowserWindowView[]): void {
+    this.loadPages();
+    let changed = false;
+    const openIds = new Set(windows.flatMap((w) => w.tabs.map((t) => t.pageId)));
+    const entries = [...this.owned.values()];
+    const renumbered = entries.length > 0 && openIds.size > 0 && entries.every((p) => !openIds.has(p.pageId));
+    if (renumbered) {
+      const unowned = windows.flatMap((w) => w.tabs).filter((t) => !this.owned.has(t.pageId) && meaningful(t.url));
+      for (const entry of entries) {
+        const match = unowned.findIndex((t) => t.url === entry.url);
+        if (match < 0) continue;
+        const [page] = unowned.splice(match, 1);
+        this.owned.delete(entry.pageId);
+        const { missingSince: _gone, ...rest } = entry;
+        this.owned.set(page!.pageId, { ...rest, pageId: page!.pageId });
+        changed = true;
+      }
+    }
+    for (const entry of [...this.owned.values()]) {
+      if (openIds.has(entry.pageId)) {
+        if (entry.missingSince !== undefined) {
+          delete entry.missingSince;
+          changed = true;
+        }
+        continue;
+      }
+      if (entry.missingSince === undefined) {
+        entry.missingSince = this.now();
+        changed = true;
+      } else if (this.now() - entry.missingSince > PAGE_MISSING_GRACE_MS) {
+        this.owned.delete(entry.pageId);
+        changed = true;
+      }
+    }
+    for (const w of windows) {
+      const opener = w.tabs.map((t) => this.owned.get(t.pageId)).find((p) => p?.window);
+      for (const t of w.tabs) {
+        const page = this.owned.get(t.pageId);
+        if (page) {
+          if (meaningful(t.url) && page.url !== t.url) {
+            page.url = t.url;
+            changed = true;
+          }
+          continue;
+        }
+        const from = t.openerPageId ? this.owned.get(t.openerPageId) : undefined;
+        const owner = from?.owner ?? opener?.owner;
+        if (owner === undefined) continue;
+        this.owned.set(t.pageId, { pageId: t.pageId, owner, url: t.url });
+        changed = true;
+      }
+    }
+    if (changed) this.savePages();
   }
 
   private stateFor(windowId: number, session: string, caller?: string): "yours" | "held" | "kept" | "kept-for-you" | "free" {
@@ -509,6 +734,7 @@ export class BrowserWindows {
   private async refresh(): Promise<BrowserWindowView[]> {
     const windows = await this.backend.listWindows();
     this.bindHolds(windows);
+    this.bindPages(windows);
     const open = new Set(windows.map((w) => w.windowId));
     const windowOfPage = new Map<string, number>();
     for (const w of windows) for (const t of w.tabs) windowOfPage.set(t.pageId, w.windowId);

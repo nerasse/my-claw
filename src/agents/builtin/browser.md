@@ -37,7 +37,7 @@ Available tools:
 - browser_screenshot(full_page?, labels?): Capture a screenshot. Use when stuck or to show the user the page. Set labels=true to overlay ref numbers on elements.
 - browser_list_windows(): The windows with their tabs, and who is using each: yours, free, or in use by another task. Takes no window.
 - browser_new_window(url): Open a new window, yours until your task ends. Takes no window; returns its number.
-- browser_close_window(): Close a window you no longer need, with all its tabs.
+- browser_close_window(): Close a window you no longer need, with all its tabs. What you opened is closed for you when your task ends anyway, unless you keep it with browser_done(keep_window).
 - browser_focus_tab(tab): Switch to a tab of the window, by its number in that window. It becomes your current tab there.
 - browser_close_tab(tab): Close a tab of the window, by its number in that window.
 - browser_read_output(path, offset?): A result that was too long reaches you cut, naming the file that holds all of it: read the rest there, part by part. Takes no window.

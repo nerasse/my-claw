@@ -8,6 +8,7 @@ import {
   birthOf,
   browserSession,
   closeTarget,
+  frozenPages,
   dropPage,
   ensureContext,
   frontOf,
@@ -160,6 +161,12 @@ export const handlers = {
 
   // Whether a tab's page still answers: a call that ran past its budget is either on a slow page or
   // on a frozen one, and the two call for opposite answers (wait, or close it).
+  // Every tab, probed over sockets of their own: what the server's housekeeping asks while no run
+  // works, so a frozen tab is closed before a run trips on it.
+  async frozen() {
+    return { frozen: await frozenPages() };
+  },
+
   async probe(body) {
     const target = (await pageTargets()).find((t) => t.id === body.pageId);
     if (!target) return { open: false, responsive: false };

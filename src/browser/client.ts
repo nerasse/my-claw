@@ -38,6 +38,8 @@ const DEFAULT_TIMEOUTS_MS: Record<string, number> = {
   pdf: 60000,
   // The probe waits up to 3 s for a page by design: it must never inherit a shorter default.
   probe: 10000,
+  // Every tab probed in parallel, each for up to 3 s.
+  frozen: 10000,
   "close-target": 10000,
   // The owner's own clicks and keys: a long wait here is a hand that feels nothing.
   input: 10000,
@@ -164,6 +166,17 @@ export class BrowserClient {
     return new Error(
       `The tab stopped responding: its page is frozen, and it was closed so it cannot hold up the browser. Open ${url} again in a new tab (browser_navigate with new_tab) if you still need it.`,
     );
+  }
+
+  /**
+   * Probes every tab and closes the frozen ones, unless a human was handed their window. Asked
+   * while no run works: a frozen tab found this way holds nobody up, instead of the next run.
+   */
+  async closeFrozenTabs(): Promise<number> {
+    const { frozen } = await this.send<{ frozen: FrozenTab[] }>("frozen", {});
+    const closeable = frozen.filter((t) => !this.keptForHuman(t.pageId));
+    await Promise.all(closeable.map((t) => this.closeFrozen(t.pageId)));
+    return closeable.length;
   }
 
   private async closeFrozen(pageId: string): Promise<void> {

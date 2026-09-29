@@ -372,6 +372,8 @@ export interface HookEventMap {
   // === CRON LIFECYCLE ===
   "cron:tick": { dueCount: number; totalJobs: number };
   "cron:job:start": { jobId: string; jobName: string };
+  /** A browser window kept for a while is about to close with its pages: the owner may keep it. */
+  "browser:hold:expiring": { holder: string; alias: number; until: number; label?: string; url?: string };
   "cron:job:end": {
     jobId: string;
     jobName: string;
