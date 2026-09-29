@@ -187,7 +187,7 @@ function stepAvailability(
   return availabilityOf(effectiveLlm, leaf, world);
 }
 
-function directRouteOf(effectiveLlm: LlmConfig, modelId: string): RunModelRoute | undefined {
+export function directRouteOf(effectiveLlm: LlmConfig, modelId: string): RunModelRoute | undefined {
   const name = tagNameOf(modelId);
   if (name === undefined || name === "Default") return undefined;
   const tag = effectiveLlm.tags?.[name];

@@ -13,7 +13,7 @@
 import { resolveAgentLlm, type MyClawConfig, type ResolvedLlmConfig } from "../core/config.ts";
 import { resolveLlmConfigForAgentMessage } from "./resolver.ts";
 import type { EffortLevel } from "../core/config.ts";
-import type { RunModelRoute } from "./run-model.ts";
+import { directRouteOf, type RunModelRoute } from "./run-model.ts";
 
 export interface ProviderFallbackTarget {
   /** The model id the run moves to, for the note and the log. */
@@ -51,23 +51,41 @@ export function providerFallbackTargets(request: ProviderFallbackRequest): Provi
     }
   };
 
-  if (route) {
-    route.candidates.forEach((candidate, index) => {
-      if (index === route.selectedIndex) return;
-      if (route.unavailableIndices?.includes(index)) return;
+  const isCurrent = (resolved: ResolvedLlmConfig): boolean =>
+    resolved.model === request.current.model && (request.current.provider === undefined || resolved.provider === request.current.provider);
+  const walk = (walked: RunModelRoute): ProviderFallbackTarget[] => {
+    walked.candidates.forEach((candidate, index) => {
+      if (index === walked.selectedIndex) return;
+      if (walked.unavailableIndices?.includes(index)) return;
       if (attempted.has(candidate.model)) return;
       const resolved = candidateConfig(candidate.model, candidate.effort);
-      if (!resolved) return;
-      targets.push({ model: candidate.model, config: resolved, label: `${route.tag} route candidate ${index + 1}` });
+      if (!resolved || attempted.has(resolved.model) || isCurrent(resolved)) return;
+      targets.push({ model: candidate.model, config: resolved, label: `${walked.tag} route candidate ${index + 1}` });
     });
-    if (route.fallbackToGlobalDefault) {
+    if (walked.fallbackToGlobalDefault) {
       const global = resolveLlmConfigForAgentMessage(config.llm, undefined, undefined, hasImages);
-      if (!attempted.has(global.model)) {
-        targets.push({ model: global.model, config: global, label: `${route.tag} global default` });
+      if (!attempted.has(global.model) && !isCurrent(global) && !targets.some((t) => t.model === global.model)) {
+        targets.push({ model: global.model, config: global, label: `${walked.tag} global default` });
       }
     }
     return targets;
+  };
+
+  if (route) return walk(route);
+
+  // Off its route -- a model the caller picked, like a spawn's `model` -- a run whose agent default
+  // is a tag falls back along that tag's whole route, not only its first candidate: taking the first
+  // alone left a volet dead when mimo's quota and then deepseek failed, with opus unused further down
+  // the same route (2026-09-29).
+  const agentModel = resolveAgentLlm(config, request.agent)?.defaultModel;
+  const tagged = config.tags === undefined ? config.llm : { ...config.llm, tags: config.tags };
+  let agentRoute: RunModelRoute | undefined;
+  try {
+    agentRoute = agentModel ? directRouteOf(tagged, agentModel) : undefined;
+  } catch {
+    agentRoute = undefined;
   }
+  if (agentRoute) return walk({ ...agentRoute, selectedIndex: -1 });
 
   const agentDefault = resolveLlmConfigForAgentMessage(config.llm, resolveAgentLlm(config, request.agent), undefined, hasImages);
   if (agentDefault.provider === request.current.provider || agentDefault.model === request.current.model) return targets;

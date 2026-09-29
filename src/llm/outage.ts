@@ -59,6 +59,19 @@ export function isOutageClass(err: unknown): boolean {
   return /LLM circuit breaker open|circuit breaker is open|timeout|timed out|stalled|stream.*closed|empty (?:response|completion)|no (?:content|output)|auth|unauthori[sz]ed|credential|api[- ]?key|no endpoints|model.*not found/i.test(message) || OUTAGE_TEXT.test(message);
 }
 
+/**
+ * A quota or a balance spent. Rerouted like any outage, but never waited for: no wait inside a run
+ * refills it, and the three waits it used to get cost the veille of 2026-09-29 four minutes per
+ * volet before it moved on.
+ */
+const QUOTA_SPENT = /quota (?:exhausted|exceeded)|insufficient[_ ]quota|exceeded your current quota|insufficient (?:credits|balance|funds)|out of credits|credit balance is too low|can only afford/i;
+
+export function isQuotaSpent(err: unknown): boolean {
+  const status = (err as { status?: number } | undefined)?.status;
+  const message = String((err as Error | undefined)?.message ?? err ?? "");
+  return (status === undefined || status === 402 || status === 429) && QUOTA_SPENT.test(message);
+}
+
 /** A refusal the provider owns: the content, not the request. */
 export function isPolicyRefusal(err: unknown): boolean {
   const status = (err as { status?: number } | undefined)?.status;

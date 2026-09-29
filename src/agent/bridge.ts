@@ -23,7 +23,7 @@ import { selectRelevantSkills } from "../skills/retrieval.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ProviderMeta } from "../llm/provider.ts";
 import { llmComplete, llmCompleteStream } from "../llm/transport.ts";
 import { resolveRunModel, type RunModel, type RunModelOverride } from "../llm/run-model.ts";
-import { isCapabilityRefusal, isProviderOutage } from "../llm/outage.ts";
+import { isCapabilityRefusal, isProviderOutage, isQuotaSpent } from "../llm/outage.ts";
 import { providerFallbackTargets } from "../llm/provider-fallback.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
@@ -317,7 +317,8 @@ export class AgentBridge implements AgentBackend {
         const failed = { model: config.model, provider: config.provider };
         // A capability the model does not have is not a wait: the next target is the only cure.
         const capability = (err as { capability?: string }).capability;
-        const wait = capability ? undefined : params.waits.shift();
+        // Nor is a spent quota: nothing refills it within the run.
+        const wait = capability || isQuotaSpent(err) ? undefined : params.waits.shift();
         if (wait !== undefined) {
           this.recordFailedCall({ ...params, config, durationMs: Date.now() - startedAt, error: err });
           await this.noteFallback(

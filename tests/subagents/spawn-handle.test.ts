@@ -128,7 +128,9 @@ test("a one-shot answers without a handle: nothing is meant to drive it", async 
   }
 });
 
-test("a spawn whose first run dies leaves no sub-agent behind", async () => {
+test("a spawn whose first run dies keeps its work and tells the caller how to resume it", async () => {
+  // It used to be deleted, the caller having no id to name it by, and the caller then redid its
+  // task from nothing (the veille of 2026-09-29). Kept, named, resumable: docs/continue.md.
   const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
   const { spawn } = tools(runner, new SubAgentRegistry());
   const before = new Set(subagentSessionIdsSync());
@@ -146,11 +148,10 @@ test("a spawn whose first run dies leaves no sub-agent behind", async () => {
     });
     assert.equal(out.success, false);
     assert.match(out.error ?? "", /400|credits/);
-
-    // The caller was handed an error and no id, so anything left here is unreachable forever.
-    const leftovers = subagentSessionIdsSync().filter((id) => !before.has(id));
-    assert.deepEqual(leftovers, [], "a failed spawn left a session nobody can name");
-    assert.equal(await loadSession("subagent/doomed"), null);
+    const kept = subagentSessionIdsSync().filter((id) => !before.has(id));
+    assert.equal(kept.length, 1, "the failed spawn's session is kept");
+    assert.match(out.error ?? "", new RegExp(`send\\(id: "${kept[0]}"\\) with no message resumes it`));
+    assert.notEqual(await loadSession(kept[0]!), null);
   } finally {
     mock.restore();
     for (const id of subagentSessionIdsSync()) if (!before.has(id)) await deleteSession(id);

@@ -357,11 +357,10 @@ export class SubAgentRunner {
       try {
         result = await (enqueue ? enqueue(id, run) : run());
       } catch (err) {
-        // The caller is handed an error and no id, so nobody can name this agent again: leaving it
-        // on disk means a roster entry that answers nothing and cannot be killed. An abort is the
-        // exception -- the owner stopped a live agent and its transcript is the point.
-        if (!isAbort(err, trackedSignal)) await this.discardFailedSpawn(id);
-        throw err;
+        // Kept, and named to the caller, like a one-shot: its work so far is the point. Discarding
+        // it (the caller had no id to name it by) is how the veille of 2026-09-29 redid a volet from
+        // nothing after its model timed out 24 tool calls in (docs/continue.md).
+        throw withSubagentId(err, id);
       }
       hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
       return { id, result, attachments: this.takeAttachments(id) };
@@ -508,15 +507,6 @@ export class SubAgentRunner {
    * left the runner. Failing quietly here is deliberate, the caller is already carrying the run's
    * own error and a stuck file is the lesser fault to report.
    */
-  private async discardFailedSpawn(id: string): Promise<void> {
-    try {
-      if (this.sessionManager) await this.sessionManager.deleteSession(id);
-      else await deleteStoredSession(id);
-    } catch (err) {
-      void log("warn", "failed spawn left its session behind", { id, error: String(err) });
-    }
-  }
-
   async kill(id: string, callerSessionId: string): Promise<string> {
     // deleteSession takes any session id, so without this guard `kill_agent` could be pointed at
     // a chat session and delete a conversation.

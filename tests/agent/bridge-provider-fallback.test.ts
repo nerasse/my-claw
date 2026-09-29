@@ -86,7 +86,7 @@ function failure(status: number, message: string): Response {
 /**
  * The non-streaming path reads a JSON body, the streaming one an SSE stream -- and the provider
  * layer retries a 503 three times on its own, which would blur every model sequence asserted
- * here. The failures below are therefore 402 (out of credits: outage-class, never retried) or a
+ * here. The failures below are therefore 402 (outage-class, never retried by the transport) or a
  * 400 (never retried either), so one call is one request.
  */
 function jsonAnswer(text: string): Response {
@@ -143,7 +143,7 @@ test("a run on a failing provider waits, then finishes on the configured default
     const model = modelOf(init);
     models.push(model);
     // The session's own choice fails twice: once, then once more after the wait.
-    if (model === "alpha-1") return failure(402, "out of credits");
+    if (model === "alpha-1") return failure(402, "upstream unavailable");
     return jsonAnswer("fini sur le defaut");
   });
   const bridge = new AgentBridge(config(), new ToolRegistry(), new SkillRegistry());
@@ -179,7 +179,7 @@ test("a failure between two calls costs the wait, not the work: the run continue
     // First turn: a real tool call, answered by the session's own provider.
     if (call === 1) return toolCall("bash", { command: "echo hello" });
     // Then that provider falls: once, and once more after the wait.
-    if (model === "alpha-1") return failure(402, "out of credits");
+    if (model === "alpha-1") return failure(402, "upstream unavailable");
     return jsonAnswer("termine sur le defaut");
   });
   const registry = new ToolRegistry();
@@ -255,7 +255,7 @@ test("a failure after the call wrote something is not reroutable", async () => {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "moitie de ph" } }] })}\n\n`));
         // The delta has to be read before the failure lands: enqueuing and erroring in the same
         // tick reads as a stream that never said anything, which is a different test.
-        setTimeout(() => controller.error(new Error("LLM stream request failed: HTTP 503 — out of credits")), 20);
+        setTimeout(() => controller.error(new Error("LLM stream request failed: HTTP 503 — upstream unavailable")), 20);
       },
     });
     return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
@@ -289,7 +289,7 @@ test("a route walks what is left of it, then the tag's global default", async ()
     const model = modelOf(init);
     models.push(model);
     if (model === "beta-1") return jsonAnswer("le defaut global");
-    return failure(402, "out of credits");
+    return failure(402, "upstream unavailable");
   });
   const bridge = new AgentBridge(cfg, new ToolRegistry(), new SkillRegistry());
   const { signal, end } = runRegistry.startRoot(SESSION_ID);
@@ -308,9 +308,36 @@ test("a route walks what is left of it, then the tag's global default", async ()
   }
 });
 
+test("a spent quota is not waited for: the run moves to the next model at once", async () => {
+  // The veille of 2026-09-29: mimo's quota was exhausted, and each volet spent its three waits and
+  // the transport's own backoff on it before moving on. No wait refills a quota.
+  const models: string[] = [];
+  const mock = mockFetch(async (_input, init) => {
+    const model = modelOf(init);
+    models.push(model);
+    if (model === "alpha-1") return failure(429, "litellm.RateLimitError: Custom_openaiException - quota exhausted");
+    return jsonAnswer("fini ailleurs");
+  });
+  const cfg = config();
+  cfg.llm.providerRetry = { delaysMs: [60_000] };
+  const bridge = new AgentBridge(cfg, new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+  try {
+    const text = await run(bridge, createSession("alpha-1"), signal);
+    assert.match(text, /fini ailleurs/, text);
+    assert.doesNotMatch(text, /\[retry\]/, text);
+    assert.match(text, /\[fallback\] alpha-1/, text);
+    // One request to the spent model: neither the transport nor the run tried it again.
+    assert.deepEqual(models, ["alpha-1", "beta-1"]);
+  } finally {
+    end();
+    mock.restore();
+  }
+});
+
 test("the owner's turn is written once, whatever the run went through", async () => {
   const mock = mockFetch(async (_input, init) => {
-    if (modelOf(init) === "alpha-1") return failure(402, "out of credits");
+    if (modelOf(init) === "alpha-1") return failure(402, "upstream unavailable");
     return jsonAnswer("ok");
   });
   const bridge = new AgentBridge(config(), new ToolRegistry(), new SkillRegistry());
@@ -331,13 +358,13 @@ test("nothing left to try: the run fails as it is", async () => {
   const models: string[] = [];
   const mock = mockFetch(async (_input, init) => {
     models.push(modelOf(init));
-    return failure(402, "out of credits");
+    return failure(402, "upstream unavailable");
   });
   const bridge = new AgentBridge(config(), new ToolRegistry(), new SkillRegistry());
   const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
   try {
-    await assert.rejects(() => run(bridge, createSession("beta-1"), signal), /out of credits/);
+    await assert.rejects(() => run(bridge, createSession("beta-1"), signal), /upstream unavailable/);
     // The run was already on its default: there is no target, so the schedule is all it gets.
     assert.deepEqual(models, ["beta-1", "beta-1"]);
   } finally {
@@ -353,7 +380,7 @@ test("the streaming path announces the fallback as it happens", async () => {
   const mock = mockFetch(async (_input, init) => {
     const model = modelOf(init);
     models.push(model);
-    if (model === "alpha-1") return failure(402, "out of credits");
+    if (model === "alpha-1") return failure(402, "upstream unavailable");
     return answer("la reponse");
   });
   const bridge = new AgentBridge(config(), new ToolRegistry(), new SkillRegistry());

@@ -61,8 +61,10 @@ as a chat has the same button, which reaches it through the router's sub-agent p
 `send` also takes the id the way models write it: without the `subagent/` prefix, or as the display
 name when exactly one sub-agent the caller can reach carries it.
 
-A one-shot sub-agent that fails on its own (its provider, not the parent's Stop) keeps its session;
-the error its caller gets now names it and says the same thing: resume it, do not start over.
+A sub-agent that fails on its own (its provider, not the parent's Stop) keeps its session, whatever
+its mode; the error its caller gets names it and says the same thing: resume it, do not start over.
+A `mode: "session"` spawn used to be deleted on a failure instead, its caller having no id to name
+it by, and the caller redid its task from nothing (the veille of 2026-09-29, 24 tool calls lost).
 
 ## Tested
 

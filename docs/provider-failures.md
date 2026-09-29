@@ -123,13 +123,23 @@ There is no new setting. A `tag:` with a `route` **is** a chain, and `providerFa
 1. **The route's remaining candidates**, skipping the one that just failed, any marked unavailable
    before the run, and anything this run already tried. A candidate the resolver refuses is skipped
    rather than fatal.
-2. **The tag's global default**, when the route says `fallbackToGlobalDefault`.
+2. **The tag's global default**, when the route says `fallbackToGlobalDefault`, unless the route
+   already tried it.
 3. **The agent's configured default**, for a run that is not on a route -- and only when the run is
-   not already there. A run on its default has no target, because the target would be the model
+   not already there. When that default is itself a tag with a route (`general` on `tag:Medium`),
+   the whole route is walked, then its global default: a sub-agent spawned on a model of its own
+   used to get the route's first candidate only, and died when that one failed too while the rest
+   of the route sat unused (the veille volet of 2026-09-29: mimo's quota, then a deepseek timeout,
+   opus never tried). A run on its default has no target, because the target would be the model
    that just failed; the schedule is all it gets, and the failure is then real.
 
 One schedule per run (`llm.providerRetry`), then one visit per target. A chain that rearmed at every
 attempt would be a loop.
+
+A **spent quota** (`isQuotaSpent`: `quota exhausted`, `insufficient_quota`, `out of credits`, ...
+on a 402 or 429) is never waited for, by the run or by the transport's own backoff: nothing inside a
+run refills it. It goes straight to the next target. It cost each volet of that veille four minutes
+of waits before it moved on.
 
 ## What counts as the provider's own failure
 

@@ -66,7 +66,6 @@ test("a route walks what is left of it, in order, then the global default when i
     candidates: [
       { model: "claude-sonnet-5", effort: "max" as const, contextCap: 120000 },
       { model: "claude-opus-5" },
-      { model: "mimo" },
     ],
     fallbackToGlobalDefault: true,
     selectedIndex: 0,
@@ -81,11 +80,35 @@ test("a route walks what is left of it, in order, then the global default when i
   });
   // The selected candidate is skipped -- it is the one that just failed -- and the tag's own
   // global default comes last, after the route is exhausted.
-  assert.deepEqual(targets.map((t) => t.model), ["claude-opus-5", "mimo", "mimo"]);
+  assert.deepEqual(targets.map((t) => t.model), ["claude-opus-5", "mimo"]);
   assert.equal(targets[0]?.label, "Cheap route candidate 2");
   assert.equal(targets[0]?.config.effort, undefined);
-  assert.equal(targets[1]?.label, "Cheap route candidate 3");
-  assert.equal(targets[2]?.label, "Cheap global default");
+  assert.equal(targets[1]?.label, "Cheap global default");
+});
+
+test("a global default already on the route is not tried twice", () => {
+  // It used to come back as a last target after the route had tried it: a second go at a model
+  // that just failed is a retry, and the retry schedule is what owns retries.
+  const route = { tag: "Cheap", candidates: [{ model: "claude-sonnet-5" }, { model: "mimo" }], fallbackToGlobalDefault: true, selectedIndex: 0 };
+  const targets = providerFallbackTargets({
+    config: config(), agent: "main", route,
+    current: { model: "claude-sonnet-5", provider: "anthropic" }, hasImages: false, attempted: attempted(["claude-sonnet-5"]),
+  });
+  assert.deepEqual(targets.map((t) => t.model), ["mimo"]);
+});
+
+test("off its route, a run whose agent default is a tag falls back along the whole route", () => {
+  // A volet spawned on a model of its own (mimo) with `general` on tag:Medium. Only the route's
+  // first candidate used to be offered, and the volet died once it failed too, opus unused.
+  const cfg = config();
+  cfg.tags = { Medium: { route: [{ model: "claude-sonnet-5" }, { model: "mimo" }, { model: "claude-opus-5" }], fallbackToGlobalDefault: true } };
+  cfg.agents = { general: { llm: { defaultModel: "tag:Medium" } } } as MyClawConfig["agents"];
+  const targets = providerFallbackTargets({
+    config: cfg, agent: "general",
+    current: { model: "mimo", provider: "litellm" }, hasImages: false, attempted: attempted(["mimo"]),
+  });
+  assert.deepEqual(targets.map((t) => t.model), ["claude-sonnet-5", "claude-opus-5"]);
+  assert.deepEqual(targets.map((t) => t.label), ["Medium route candidate 1", "Medium route candidate 3"]);
 });
 
 test("a candidate the resolver refuses is skipped, not fatal", () => {
