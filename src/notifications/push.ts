@@ -9,6 +9,7 @@
 // killed, and the app's native renderer (expo-unified-push) turns it into a system
 // notification. Publishing to a UnifiedPush endpoint is a plain HTTP POST — the endpoint URL
 // itself carries the secret, so no Web-Push/VAPID signing library is needed.
+import { linkOf, type NotificationTarget } from "./target.ts";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { generateKeyPairSync } from "node:crypto";
@@ -193,8 +194,11 @@ export const foregroundStore: DeviceForegroundStore = {
 export interface PushNotification {
   title: string;
   body: string;
-  /** Deep link opened when the notification is tapped: myclaw://thread/<id> or myclaw://job/<id>. */
-  url?: string;
+  /**
+   * Where the tap lands. Typed, never a hand-built URL: see `target.ts`. Absent opens the app as
+   * it is.
+   */
+  target?: NotificationTarget;
   /**
    * Ask for the phone to ring rather than buzz: the payload names the `ring` channel, which the
    * app pre-creates louder and longer than the ordinary one. It is a notification on the
@@ -240,12 +244,13 @@ let lastRingAt = 0;
  * what a device with no choice of its own receives.
  */
 export function buildPushPayload(notification: PushNotification, options?: { channel?: string }): string {
+  const url = notification.target ? linkOf(notification.target) : undefined;
   return JSON.stringify({
-    id: notification.url ? notificationIdFor(notification.url) : notificationCounter++,
+    id: url ? notificationIdFor(url) : notificationCounter++,
     type: options?.channel ?? (notification.ring === true ? CHANNEL_RING : CHANNEL_ORDINARY),
     title: notification.title,
     body: notification.body,
-    ...(notification.url ? { url: notification.url } : {}),
+    ...(url ? { url } : {}),
   });
 }
 

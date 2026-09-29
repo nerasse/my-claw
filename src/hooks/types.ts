@@ -375,11 +375,13 @@ export interface HookEventMap {
   "cron:job:end": {
     jobId: string;
     jobName: string;
+    /** The run's session: its thread is where the tap lands. */
+    sessionId: string;
     success: boolean;
     silent: boolean;
     durationMs: number;
   };
-  "cron:job:error": { jobId: string; jobName: string; error: unknown; silent: boolean };
+  "cron:job:error": { jobId: string; jobName: string; sessionId: string; error: unknown; silent: boolean };
   /** A run of the job is still going past its alert time: announced, never stopped. */
   "cron:job:long": { jobId: string; jobName: string; sessionId: string; runningMs: number; working: number; depth: number; costUsd?: number };
   "cron:job:delivered": {

@@ -120,11 +120,24 @@ l'agent avait à dire arrive quand même, il arrête juste de crier.
 
 | Événement serveur | Titre | Body | Deep link |
 | --- | --- | --- | --- |
-| `message:route:complete` | titre de session (ou premiers mots du message) | `Run finished in <durée>: <extrait>` | `myclaw://thread/<id>` |
-| `message:route:error` | idem | `Run failed after <durée>: <erreur>` | `myclaw://thread/<id>` |
-| `cron:job:end` (succès) | nom du job | `Job finished` | `myclaw://job/<id>` |
-| tool `notify` | `my-claw` ou le titre donné | le texte de l'agent | `myclaw://thread/<id>` ou `myclaw://job/<id>` |
-| `cron:job:error` | nom du job | `Job failed: <erreur>` | `myclaw://job/<id>` |
+| `message:route:complete` (conversation seulement) | titre de session (ou premiers mots du message) | `Run finished in <durée>: <extrait>` | `myclaw://thread/<id>` |
+| `message:route:error` (conversation seulement) | idem | `Run failed after <durée>: <erreur>` | `myclaw://thread/<id>` |
+| `cron:job:end` | nom du job | `Job finished` / `Job failed` | `myclaw://thread/cron-<job>-<ts>` (le run) |
+| `cron:job:error` | nom du job | `Job failed: <erreur>` | le run |
+| `cron:job:long` | nom du job | `Still running after …` | le run |
+| question en attente | titre de session | l'intitulé de la question | le fil de la session |
+| tool `notify` | `my-claw` ou le titre donné | le texte de l'agent | le fil de la session du run (un run cron : le run) |
+
+**La cible est typée et dérivée de la session** (`src/notifications/target.ts`) :
+`PushNotification.target` est une union `{ kind: "thread" } | { kind: "job" }`, et `linkOf` est le
+seul endroit qui écrit un `myclaw://`. Il n'y a plus de champ `url` libre : une adresse bricolée par
+un émetteur ne compile pas. Pourquoi (29/09/2026) : un run cron passait aussi par le hook générique
+`message:route:complete`, qui construisait `myclaw://thread/${message.threadId ?? "default"}` ; un
+message cron n'a pas de fil, donc chaque fin de job envoyait une seconde notification qui ouvrait la
+conversation `default`, vide. Les notifications de job, elles, n'ouvraient que la liste des jobs.
+Une session qu'aucun écran ne montre (un sous-agent) ne donne pas de cible : la notification ouvre
+l'app telle quelle plutôt qu'un mauvais fil. `tests/notifications/targets.test.ts` joue les vrais
+hooks et lit le lien de chaque notification.
 
 Règles :
 
@@ -174,8 +187,13 @@ Règles :
 Le rendu natif d'expo-unified-push met le champ `url` dans le PendingIntent d'ouverture :
 un tap ouvre le deep link (schéma `myclaw://`, intent-filter déclaré dans l'AndroidManifest).
 L'app résout au démarrage (`Linking.getInitialURL`) ou en direct (listener) :
-- `myclaw://thread/<threadId>` → ouvre la session ;
-- `myclaw://job/<jobId>` → ouvre la page Jobs.
+- `myclaw://thread/<threadId>` → ouvre la session ; un run cron (`cron-<job>-<ts>`) s'ouvre comme un
+  chat, avec son résultat, ses outils et Continue ;
+- `myclaw://job/<jobId>` → ouvre la page des runs de ce job (la page Jobs si l'app ne le connaît pas).
+  Ce n'est plus qu'un repli, pour un job dont le run n'a pas de session.
+
+L'app lit la cible par un `switch` exhaustif sur la même union : une nouvelle forme non traitée ne
+compile pas.
 
 Limitation connue : le rendu natif relance l'activité avec `FLAG_ACTIVITY_CLEAR_TASK`, donc un
 tap alors que l'app est déjà ouverte **recharge** l'écran (état de navigation perdu). À

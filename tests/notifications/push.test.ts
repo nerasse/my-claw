@@ -88,7 +88,7 @@ test("publishNotification encrypts the payload: the connector drops anything it 
   const outcome = await publishNotification({
     title: "Nightly digest",
     body: "Run finished",
-    url: "myclaw://thread/t1",
+    target: { kind: "thread", threadId: "t1" },
   });
 
   assert.deepEqual(outcome, { delivered: 2, rang: false });
@@ -104,7 +104,7 @@ test("publishNotification encrypts the payload: the connector drops anything it 
 });
 
 test("the payload carries the channel type the app pre-creates as IMPORTANCE_HIGH", async () => {
-  const payload = JSON.parse(buildPushPayload({ title: "t", body: "b", url: "myclaw://thread/x" }));
+  const payload = JSON.parse(buildPushPayload({ title: "t", body: "b", target: { kind: "thread", threadId: "x" } }));
   assert.equal(payload.type, "runs");
   assert.equal(payload.title, "t");
   assert.equal(payload.url, "myclaw://thread/x");
@@ -165,9 +165,9 @@ test("an invalid channel name is ignored: the stored selection does not move", a
 });
 
 test("a notification that names a thread is addressable: same link, same id, and it fits an Android Int", () => {
-  const first = JSON.parse(buildPushPayload({ title: "a", body: "1", url: "myclaw://thread/abc" }));
-  const again = JSON.parse(buildPushPayload({ title: "b", body: "2", url: "myclaw://thread/abc" }));
-  const other = JSON.parse(buildPushPayload({ title: "c", body: "3", url: "myclaw://thread/def" }));
+  const first = JSON.parse(buildPushPayload({ title: "a", body: "1", target: { kind: "thread", threadId: "abc" } }));
+  const again = JSON.parse(buildPushPayload({ title: "b", body: "2", target: { kind: "thread", threadId: "abc" } }));
+  const other = JSON.parse(buildPushPayload({ title: "c", body: "3", target: { kind: "thread", threadId: "def" } }));
   assert.equal(first.id, again.id);
   assert.notEqual(first.id, other.id);
   assert.equal(first.id, notificationIdFor("myclaw://thread/abc"));
@@ -226,7 +226,7 @@ test("publishNotification skips a device foreground on the same thread", async (
   await foregroundStore.set("dev-1", { foreground: true, threadId: "t1" });
 
   const outcome = await publishNotification(
-    { title: "t", body: "b", url: "myclaw://thread/t1" },
+    { title: "t", body: "b", target: { kind: "thread", threadId: "t1" } },
     { skipDevice: (deviceId) => isForegroundOn(deviceId, "t1") },
   );
   assert.equal(outcome.delivered, 1);

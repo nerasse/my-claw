@@ -432,7 +432,7 @@ export class CronScheduler {
 
       const silent = responseText.startsWith(SILENT_MARKER);
       if (silent) {
-        hooks.emit("cron:job:end", { jobId: job.id, jobName: job.name, success: true, silent: true, durationMs: Date.now() - jobStartedAt });
+        hooks.emit("cron:job:end", { jobId: job.id, jobName: job.name, sessionId, success: true, silent: true, durationMs: Date.now() - jobStartedAt });
         void log("info", "cron job silent", { jobId: job.id, jobName: job.name });
         return;
       }
@@ -452,14 +452,14 @@ export class CronScheduler {
       // `job.silent` suppresses the notification only: the result is still delivered and still
       // saved. That is the difference with SILENT_MARKER above, which means the run had nothing
       // to say at all and therefore returns before delivery.
-      hooks.emit("cron:job:end", { jobId: job.id, jobName: job.name, success: true, silent: job.silent === true, durationMs: Date.now() - jobStartedAt });
+      hooks.emit("cron:job:end", { jobId: job.id, jobName: job.name, sessionId, success: true, silent: job.silent === true, durationMs: Date.now() - jobStartedAt });
       if (delivered) {
         hooks.emit("cron:job:delivered", { jobId: job.id, platform: delivered.platform, chatId: delivered.chatId });
       }
       void log("info", "cron job completed", { jobId: job.id, jobName: job.name });
     } catch (err) {
       if (!(err instanceof CronWorkspaceMissingError)) {
-        hooks.emit("cron:job:error", { jobId: job.id, jobName: job.name, error: err, silent: job.silent === true });
+        hooks.emit("cron:job:error", { jobId: job.id, jobName: job.name, sessionId, error: err, silent: job.silent === true });
       }
       throw err;
     }

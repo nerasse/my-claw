@@ -1,6 +1,6 @@
 import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
-import { createNotifyTool, notifyLink } from "../../src/tools/notify.ts";
+import { createNotifyTool, notifyTarget } from "../../src/tools/notify.ts";
 import { endpointStore, resetPushState } from "../../src/notifications/push.ts";
 import { withRunContext } from "../../src/utils/run-context.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
@@ -99,16 +99,15 @@ test("a second ring inside ten minutes is downgraded, and what it had to say sti
   restore();
 });
 
-test("the tap follows the run: its thread, or the job when a job is what runs", async () => {
-  const inThread = await withRunContext({ platform: "my-claw-app", sessionId: "s1", threadId: "t-42" }, () =>
-    Promise.resolve(notifyLink()),
+test("the tap follows the run's session: its thread, and a cron run's own thread", async () => {
+  const inThread = await withRunContext({ platform: "my-claw-app", sessionId: "my-claw-app/thread/neras/t-42", threadId: "t-42" }, () =>
+    Promise.resolve(notifyTarget()),
   );
-  const inJob = await withRunContext({ platform: "cron", sessionId: "cron/j1/1", jobId: "j1", threadId: "t-ignored" }, () =>
-    Promise.resolve(notifyLink()),
+  const inJob = await withRunContext({ platform: "cron", sessionId: "cron/0123456789ab/1790658020173", jobId: "0123456789ab" }, () =>
+    Promise.resolve(notifyTarget()),
   );
-
-  assert.equal(inThread, "myclaw://thread/t-42");
-  // A job wins: its result is listed under the job, the session it ran in is an internal detail.
-  assert.equal(inJob, "myclaw://job/j1");
-  assert.equal(notifyLink(), undefined);
+  assert.deepEqual(inThread, { kind: "thread", threadId: "t-42" });
+  // The run itself, where the agent that rang is. The job page listed the job and nothing of it.
+  assert.deepEqual(inJob, { kind: "thread", threadId: "cron-0123456789ab-1790658020173" });
+  assert.equal(notifyTarget(), undefined);
 });

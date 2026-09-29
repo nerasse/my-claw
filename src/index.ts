@@ -126,6 +126,8 @@ import { CronScheduler, DEFAULT_ALERT_AFTER_MS } from "./cron/scheduler.ts";
 import { parseDurationMs } from "./utils/duration.ts";
 import { createJob, loadJobs, mutateJobs, removeJob, updateJob } from "./cron/store.ts";
 import { endpointStore, foregroundStore, loadOrCreateVapid, publishNotification, isForegroundOn, cleanNotificationText } from "./notifications/push.ts";
+import { targetOfSession } from "./notifications/target.ts";
+import { registerRunNotifications } from "./notifications/run-notifications.ts";
 import { SubAgentRunner, type SubAgentStream } from "./subagents/runner.ts";
 import { SubAgentRegistry } from "./subagents/registry.ts";
 import { SkillRegistry } from "./skills/registry.ts";
@@ -704,88 +706,22 @@ async function main() {
   const router = new MessageRouter(sessionManager, agent, config);
   const cronScheduler = new CronScheduler(router, sessionManager, config);
 
-  // Run-completion notifications to the app's devices (docs/notifications.md). Best-effort by
+  // Run and job notifications to the app's devices (docs/notifications.md). Best-effort by
   // design: a dead push endpoint must never fail the run that produced the result.
-  const formatDuration = (ms: number): string => {
-    const seconds = Math.round(ms / 1000);
-    if (seconds < 60) return `${seconds}s`;
-    return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-  };
   const threadTitle = async (sessionId: string, fallback: string): Promise<string> => {
     const session = await sessionManager.peek(sessionId);
     return session?.title?.trim() || cleanNotificationText(fallback).slice(0, 60);
   };
-
-  hooks.on("message:route:complete", ({ message, sessionId, response, durationMs }) => {
-    const threadId = message.threadId ?? "default";
-    void threadTitle(sessionId, message.text).then((title) =>
-      publishNotification(
-        {
-          title,
-          body: `Run finished in ${formatDuration(durationMs)}: ${cleanNotificationText(response).slice(0, 160)}`,
-          url: `myclaw://thread/${threadId}`,
-        },
-        // The one case the user chose to stay silent: a device that is already looking at
-        // the very thread that just finished (the stream is on screen).
-        { skipDevice: (deviceId) => isForegroundOn(deviceId, threadId) },
-      ),
-    );
-  });
-  hooks.on("message:route:error", ({ message, sessionId, error, durationMs }) => {
-    const threadId = message.threadId ?? "default";
-    void threadTitle(sessionId, message.text).then((title) =>
-      publishNotification(
-        {
-          title,
-          body: `Run failed after ${formatDuration(durationMs)}: ${cleanNotificationText(String(error)).slice(0, 200)}`,
-          url: `myclaw://thread/${threadId}`,
-        },
-        { skipDevice: (deviceId) => isForegroundOn(deviceId, threadId) },
-      ),
-    );
-  });
-  // Silent jobs suppress their output by design; a completion notification would be just as
-  // noisy, so it is skipped with the delivery.
-  hooks.on("cron:job:end", ({ jobId, jobName, success, silent }) => {
-    if (silent) return;
-    void publishNotification({
-      title: jobName,
-      body: success ? "Job finished" : "Job failed",
-      url: `myclaw://job/${jobId}`,
-    });
-  });
-  // A run still going past its alert time: announced every interval, whatever `silent` says --
-  // a job that runs that long is the one the owner has to decide about. The tap opens the run
-  // itself, where its Stop is. docs/cron.md.
-  hooks.on("cron:job:long", ({ jobName, sessionId, runningMs, working, depth, costUsd }) => {
-    const threadId = cronSessionToThread(sessionId);
-    const hours = Math.floor(runningMs / 3_600_000);
-    const minutes = Math.round((runningMs % 3_600_000) / 60_000);
-    const span = hours > 0 ? `${hours} h${minutes > 0 ? ` ${minutes} min` : ""}` : `${minutes} min`;
-    const doing = working > 0 ? `${working} sub-agent${working > 1 ? "s" : ""} working, ${depth} level${depth > 1 ? "s" : ""} deep` : "no sub-agent working";
-    const spent = costUsd !== undefined ? ` · $${costUsd.toFixed(2)}` : "";
-    void publishNotification({
-      title: jobName,
-      body: `Still running after ${span} · ${doing}${spent}. Open it to follow it or stop it.`,
-      url: threadId ? `myclaw://thread/${threadId}` : "myclaw://jobs",
-    });
-  });
-  // A silent job stays silent when it fails: it used to notify anyway, which made "silent"
-  // useless for the failing job that needed it most.
-  hooks.on("cron:job:error", ({ jobId, jobName, error, silent }) => {
-    if (silent) return;
-    void publishNotification({
-      title: jobName,
-      body: `Job failed: ${cleanNotificationText(String(error)).slice(0, 200)}`,
-      url: `myclaw://job/${jobId}`,
-    });
-  });
+  registerRunNotifications({ titleOf: threadTitle, publish: publishNotification, isForegroundOn });
 
   // A question the run is waiting on: the owner left the app open on another thread, or it is
   // in the background, or closed. The push is the only way the question reaches him; a device
   // already looking at the very thread sees the sheet itself and gets no double noise.
   questionManager.setNotifier((question) => {
-    const threadId = question.threadId || "default";
+    // The session the question waits in names its thread; the thread id it carries is the
+    // fallback, never "default", which is a conversation of its own.
+    const target = targetOfSession(question.sessionId) ?? (question.threadId ? { kind: "thread" as const, threadId: question.threadId } : undefined);
+    const threadId = target?.kind === "thread" ? target.threadId : "";
     const first = question.questions[0];
     const label = first?.header?.trim() || first?.question?.trim() || "Question";
     void threadTitle(question.sessionId, label).then((title) =>
@@ -793,9 +729,9 @@ async function main() {
         {
           title,
           body: cleanNotificationText(label).slice(0, 160),
-          url: `myclaw://thread/${threadId}`,
+          ...(target ? { target } : {}),
         },
-        { skipDevice: (deviceId) => isForegroundOn(deviceId, threadId) },
+        { skipDevice: (deviceId) => (threadId ? isForegroundOn(deviceId, threadId) : Promise.resolve(false)) },
       ),
     );
   });

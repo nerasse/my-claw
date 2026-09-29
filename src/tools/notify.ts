@@ -2,19 +2,21 @@ import type { Tool, ToolResult } from "./types.ts";
 import { bool, str, strOpt } from "./types.ts";
 import { cleanNotificationText, publishNotification } from "../notifications/push.ts";
 import { currentRun } from "../utils/run-context.ts";
+import { targetOfSession, type NotificationTarget } from "../notifications/target.ts";
 
 /**
- * Where the tap lands, from the run this call is part of.
- *
- * A job wins over a thread: a cron run's result is listed under the job, and the session it ran in
- * is an implementation detail. Outside a run -- a plugin, a tool call nobody routed -- there is no
- * link to build, and the notification is simply one that opens the app.
+ * Where the tap lands, from the run this call is part of: the session it runs in, which is the
+ * root's for a sub-agent too (the run context carries it down). A cron run opens as its own thread,
+ * where the agent that rang is -- the job page it used to open listed the job and none of what it
+ * said. Outside a run there is no place to name, and the notification opens the app.
  */
-export function notifyLink(): string | undefined {
+export function notifyTarget(): NotificationTarget | undefined {
   const run = currentRun();
   if (!run) return undefined;
-  if (run.jobId) return `myclaw://job/${run.jobId}`;
-  if (run.threadId) return `myclaw://thread/${run.threadId}`;
+  const target = targetOfSession(run.sessionId);
+  if (target) return target;
+  if (run.jobId) return { kind: "job", jobId: run.jobId };
+  if (run.threadId) return { kind: "thread", threadId: run.threadId };
   return undefined;
 }
 
@@ -49,9 +51,9 @@ export function createNotifyTool(): Tool {
       if (!body) return { success: false, output: "", error: "notify: body is required" };
       const title = cleanNotificationText(strOpt(args, "title") ?? "").slice(0, 120) || "my-claw";
       const ring = bool(args, "ring", false);
-      const url = notifyLink();
+      const target = notifyTarget();
 
-      const outcome = await publishNotification({ title, body, ring, ...(url ? { url } : {}) });
+      const outcome = await publishNotification({ title, body, ring, ...(target ? { target } : {}) });
       if (outcome.delivered === 0) {
         return { success: false, output: "", error: "notify: no device is registered for push notifications" };
       }
