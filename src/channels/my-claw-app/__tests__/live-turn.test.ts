@@ -13,6 +13,10 @@ function delta(id: string, text: string): MyClawAppServerFrame {
   return { type: "chat.stream.delta", id, threadId: THREAD, text };
 }
 
+function thinking(id: string, since: string): MyClawAppServerFrame {
+  return { type: "chat.turn.thinking", id, threadId: THREAD, since };
+}
+
 function reasoning(id: string, text: string, since?: string): MyClawAppServerFrame {
   return { type: "chat.reasoning.delta", id, threadId: THREAD, text, ...(since === undefined ? {} : { since }) };
 }
@@ -113,6 +117,24 @@ describe("live turn journal", () => {
     // the delta that already carries it would print the run's prose twice, permanently.
     const replay = live.replay(OWNER, THREAD);
     expect(replay.every((frame) => !("id" in frame) || frame.id === "s2")).toBe(true);
+  });
+
+  test("replays the wait before a call's first token, and forgets it with the bubble", () => {
+    const live = new LiveTurnJournal();
+    live.open(OWNER, THREAD);
+    live.record(OWNER, THREAD, streamStart("s1"));
+    live.record(OWNER, THREAD, thinking("s1", "2026-01-01T00:00:00.000Z"));
+
+    // Mid-call: the window that joins sees the line, counting from the call's own start.
+    const mid = live.replay(OWNER, THREAD);
+    expect(types(mid)).toEqual(["chat.stream.start", "chat.turn.thinking"]);
+
+    // The answer landed: the bubble settles and takes the line with it. Replayed after the fact
+    // it would say the model is thinking about a turn the log already holds.
+    live.record(OWNER, THREAD, delta("s1", "voila"));
+    live.record(OWNER, THREAD, { type: "chat.stream.done", id: "s1", threadId: THREAD });
+    const after = live.replay(OWNER, THREAD);
+    expect(after.some((frame) => frame.type === "chat.turn.thinking")).toBe(false);
   });
 
   test("replays a running tool card, and forgets it when it settles", () => {

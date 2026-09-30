@@ -73,6 +73,7 @@ function subjectOf(frame: MyClawAppServerFrame): string | null {
     case "chat.stream.abort":
     case "chat.reasoning.delta":
     case "chat.reasoning.tokens":
+    case "chat.turn.thinking":
     case "chat.tool.start":
     case "chat.tool.delta":
     case "chat.tool":

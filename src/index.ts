@@ -117,6 +117,7 @@ import { createTtsTool } from "./tools/tts.ts";
 import { createVoiceModeTool } from "./tools/voice-mode.ts";
 import { createWebSearchTool } from "./tools/web-search.ts";
 import { BrowserSession, createDelegateBrowserTool, registerBrowserTools } from "./tools/browser/index.ts";
+import { subAgentStreamFor } from "./channels/my-claw-app/subagent-stream.ts";
 import { createCronTool } from "./tools/cron.ts";
 import { createNotifyTool } from "./tools/notify.ts";
 import { createQuestionTool } from "./tools/question.ts";
@@ -641,29 +642,9 @@ async function main() {
   const subAgentStreamRenew = new Map<string, (injected: UnifiedMessage) => MyClawAppStreamer>();
   registerSubAgentTools(
     toolRegistry, subAgentRunner, subAgentRegistry, config, agentRegistry, browserSession,
-    (subagentId) => {
-      const streamer = subAgentStreamers.get(subagentId);
-      if (!streamer) return undefined;
-      return {
-        // Read from the map on every call, never captured: a steered child swaps its streamer
-        // mid-run and a captured one would keep painting into the sealed bubble.
-        onToken: async (token) => { await subAgentStreamers.get(subagentId)?.push(token); },
-        onToolUse: async (tools, verbose) => { await subAgentStreamers.get(subagentId)?.appendToolUse(tools, verbose); },
-        onToolStart: async (call) => { await subAgentStreamers.get(subagentId)?.appendToolStart([call]); },
-        // A sub-agent driven by the model gets the same turn-switch contract as one driven from the
-        // app: the bubble in flight is sealed and the answer to the steering message opens a fresh
-        // one. Without it the reply melted into the previous bubble and `message:injected` was never
-        // emitted, so the owner's message stayed marked "queued for the next turn" for good.
-        onTurnSwitch: async (injected) => {
-          const current = subAgentStreamers.get(subagentId);
-          if (current) await current.finish();
-          const renew = subAgentStreamRenew.get(subagentId);
-          if (renew) subAgentStreamers.set(subagentId, renew(injected));
-          else subAgentStreamers.delete(subagentId);
-          hooks.emit("message:injected", { message: injected, sessionId: subagentId });
-        },
-      };
-    },
+    (subagentId) => subAgentStreamFor(subAgentStreamers, subAgentStreamRenew, subagentId, (injected) => {
+      hooks.emit("message:injected", { message: injected, sessionId: subagentId });
+    }),
   );
 
   // Before anything opens a session. Awaited, not fired off: a channel coming up while the pass is
@@ -2471,6 +2452,21 @@ async function main() {
             };
             hooks.on("tool:execute:progress", onProgress);
 
+            // Every model call of this run, and of the sub-agents it shows: the app draws a line
+            // saying the wait is work. Nothing else covers that silence -- the first token of a
+            // Codex turn can be twenty seconds out, and a provider being retried is minutes of
+            // nothing at all, which read as a dead run with the Stop button as its only sign
+            // (2026-09-30). The frame is taken down by the first thing the turn produces.
+            const onCallStart = ({ sessionId }: { sessionId: string }): void => {
+              if (sessionId === runSessionId) {
+                void active.beginThinking();
+                return;
+              }
+              if (!subAgentContexts.has(sessionId)) return;
+              void subAgentStreamers.get(sessionId)?.beginThinking();
+            };
+            hooks.on("llm:call:start", onCallStart);
+
             // Sub-agent lifecycle is also a global hook; route this run's spawns to its streamer so
             // the spawn card lives where the parent run paints. rosterEverywhere runs one shared
             // subscription registered once at boot (see below), so nothing here broadcasts twice.
@@ -2600,6 +2596,7 @@ async function main() {
               throw err;
             } finally {
               hooks.off("tool:execute:progress", onProgress);
+              hooks.off("llm:call:start", onCallStart);
               hooks.off("subagent:spawn", onSubagentSpawn);
               hooks.off("subagent:complete", onSubagentComplete);
               hooks.off("subagent:error", onSubagentError);

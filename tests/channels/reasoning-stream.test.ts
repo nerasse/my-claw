@@ -179,6 +179,63 @@ describe("reasoning belongs to its segment", () => {
   });
 });
 
+describe("a call that has produced nothing yet", () => {
+  // The wait before a first token is the whole screen on the engines that think before they
+  // write, and the thread looked dead through it (2026-09-30).
+  test("opens the bubble the turn will write into, and dates the wait", async () => {
+    const { streamer, frames } = collect();
+    await streamer.beginThinking();
+    expect(types(frames)).toEqual(["chat.stream.start", "chat.turn.thinking"]);
+    const thinking = frames[1] as MyClawAppServerFrame & { type: "chat.turn.thinking"; id: string; since: string };
+    expect(thinking.id).toBe(bubbleId(frames, 0));
+    expect(Number.isFinite(Date.parse(thinking.since))).toBe(true);
+  });
+
+  test("the first token lands on that same bubble, so the line sits where the words arrive", async () => {
+    const { streamer, frames } = collect();
+    await streamer.beginThinking();
+    await streamer.push("Bonjour");
+    expect(types(frames)).toEqual(["chat.stream.start", "chat.turn.thinking", "chat.stream.delta"]);
+    expect((frames[2] as MyClawAppServerFrame & { id: string }).id).toBe(bubbleId(frames, 0));
+  });
+
+  test("a thought and its estimate land on it too, rather than opening a second bubble", async () => {
+    const { streamer, frames } = collect();
+    await streamer.beginThinking();
+    await streamer.pushReasoning("weighing");
+    expect(types(frames)).toEqual(["chat.stream.start", "chat.turn.thinking", "chat.reasoning.delta"]);
+    expect((frames[2] as MyClawAppServerFrame & { id: string }).id).toBe(bubbleId(frames, 0));
+  });
+
+  test("the call that follows a tool announces its own bubble", async () => {
+    const { streamer, frames } = collect();
+    await streamer.beginThinking();
+    await streamer.appendToolStart([{ id: "call-1", name: "bash", arguments: {} }]);
+    await streamer.beginThinking();
+    const announced = frames.filter((f): f is MyClawAppServerFrame & { type: "chat.turn.thinking"; id: string } => f.type === "chat.turn.thinking");
+    expect(announced).toHaveLength(2);
+    expect(announced[0]!.id).toBe(bubbleId(frames, 0));
+    expect(announced[1]!.id).toBe(bubbleId(frames, 1));
+  });
+
+  test("a call that follows prose opens its own bubble, instead of landing under the answer", async () => {
+    const { streamer, frames } = collect();
+    await streamer.push("the answer");
+    await streamer.beginThinking();
+    const announced = frames.filter((f): f is MyClawAppServerFrame & { type: "chat.turn.thinking"; id: string } => f.type === "chat.turn.thinking");
+    expect(announced).toHaveLength(1);
+    expect(announced[0]!.id).toBe(bubbleId(frames, 1));
+  });
+
+  test("a run that is over announces nothing: the wait it described has no end to show", async () => {
+    const { streamer, frames } = collect();
+    await streamer.finish();
+    const settled = frames.length;
+    await streamer.beginThinking();
+    expect(frames.length).toBe(settled);
+  });
+});
+
 describe("a reasoning-only bubble", () => {
   test("finish still closes it, so the app has a done to act on", async () => {
     const { streamer, frames } = collect();

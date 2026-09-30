@@ -796,6 +796,7 @@ export class AgentBridge implements AgentBackend {
 
         const llmStartedAt = Date.now();
         hooks.emit("llm:call:start", {
+          sessionId: session.id,
           model: llmConfig.model,
           streaming,
           messageCount: chatMessages.length,
@@ -1483,6 +1484,7 @@ export class AgentBridge implements AgentBackend {
     });
 
     hooks.emit("llm:call:start", {
+      sessionId: session.id,
       model: llmConfig.model,
       streaming: false,
       messageCount: chatMessages.length,

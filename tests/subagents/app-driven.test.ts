@@ -193,6 +193,49 @@ test("the app's sink reaches the sub-agent: tokens stream and the run is queued 
   }
 });
 
+test("the app's sink carries the child's own thinking, into the child's log", async () => {
+  const id = "subagent/thinking-b2c3";
+  await writeLegacySessionFile(id, subSession(id));
+  const setup = await setupSessionLog(id);
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const thoughts: string[] = [];
+
+  // An engine that thinks before it writes, like every one the app shows: the deltas reach the
+  // sink the app fills, and the phase the log keeps carries the same text for a later reopening.
+  const fetchMock = mockFetch(async () => {
+    const parts = [
+      { choices: [{ delta: { reasoning_content: "weighing " } }] },
+      { choices: [{ delta: { reasoning_content: "the options" } }] },
+      { choices: [{ delta: { content: "dug it up" } }] },
+    ];
+    const body = parts.map((p) => `data: ${JSON.stringify(p)}\n`).join("") + "data: [DONE]\n";
+    return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }) as never;
+  });
+
+  try {
+    const out = await runner.send(id, "go", undefined, appMessage("main"), reg, "my-claw-app/thread/owner/main", undefined, {
+      onToken: async () => {},
+      reasoning: { onText: async (delta) => { thoughts.push(delta); } },
+    });
+    assert.equal(out, "dug it up");
+    // The field sat unfilled since the app first drove a sub-agent: a window watching one saw its
+    // prose and its cards and never a word of what it thought (2026-09-30).
+    assert.equal(thoughts.join(""), "weighing the options");
+
+    await setup.log.flush();
+    const phases = setup.log.entries().filter((e): e is PhaseEntry => e.type === "phase");
+    assert.ok(
+      phases.some((phase) => phase.reasoning?.includes("weighing the options")),
+      `no phase kept the thinking: ${JSON.stringify(phases.map((p) => p.reasoning))}`,
+    );
+  } finally {
+    fetchMock.restore();
+    setup.cleanup();
+    await deleteSession(id);
+  }
+});
+
 test("a parent-driven send stays non-streaming", async () => {
   const id = "subagent/quiet-a7b8";
   await writeLegacySessionFile(id, subSession(id));

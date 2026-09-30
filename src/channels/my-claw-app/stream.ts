@@ -75,6 +75,18 @@ export class MyClawAppStreamer {
     return this.enqueue(() => this.reasoningInternal(delta));
   }
 
+  /**
+   * The model began a call: nothing has come out of it yet.
+   *
+   * Opens the bubble the answer will land in -- so the line sits where the words will appear --
+   * and dates the wait. What takes it down is the next frame of the turn (a token, a reasoning
+   * delta, a tool card) or the run's end, and the app decides that: it is the one that knows
+   * what is already on screen.
+   */
+  async beginThinking(): Promise<void> {
+    return this.enqueue(() => this.thinkingInternal());
+  }
+
   /** Token estimate from a redacted engine; opens the bubble for the same reason. */
   async pushReasoningTokens(tokens: number): Promise<void> {
     if (!Number.isFinite(tokens) || tokens <= 0) return;
@@ -249,6 +261,20 @@ export class MyClawAppStreamer {
     }
 
     await this.emitDelta();
+  }
+
+  private async thinkingInternal(): Promise<void> {
+    if (this.finished) return;
+    // A call that follows prose belongs to the next bubble: the line would otherwise be appended
+    // under an answer the reader has already read.
+    await this.sealBeforeReasoning();
+    if (!this.started) await this.startSegment();
+    await this.opts.send({
+      type: "chat.turn.thinking",
+      id: this.currentId(),
+      threadId: this.opts.threadId,
+      since: new Date().toISOString(),
+    });
   }
 
   private async reasoningInternal(delta: string): Promise<void> {

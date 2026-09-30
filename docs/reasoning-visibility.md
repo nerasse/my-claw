@@ -230,12 +230,18 @@ Threading, per file:
 6. `index.ts` — only the app branch (`index.ts:1969`) builds a sink; the Telegram and Matrix
    branches pass none, which is how those channels stay untouched.
 
-A sub-agent's reasoning is not forwarded: sub-agent traffic already does not stream into the
-parent's bubbles, and the same rule applies here.
+A sub-agent's reasoning is not forwarded **to its parent**: sub-agent traffic does not stream into
+the parent's bubbles, and the same rule applies here. It goes to the sub-agent's own thread, which
+is a conversation the app can open (`docs/subagent-navigation.md`) -- its prose has streamed there
+since the app first drove a sub-agent, and the thinking joined it on 2026-09-30. The field sat on
+`SubAgentStream` unfilled until then: a window watching a child saw its cards and never a word of
+what it thought, while the child's log held every summary. `channels/my-claw-app/subagent-stream.ts`
+is the one door that builds it, read from the streamer map on every call so a steered child paints
+into the bubble it holds now.
 
 ## Wire protocol
 
-Two additive server frames, and one additive history field.
+Three additive server frames, and one additive history field.
 
 ```ts
 /** Incremental reasoning for the bubble `id`. Text engines only. */
@@ -243,6 +249,9 @@ Two additive server frames, and one additive history field.
 
 /** Running estimate while a redacted engine thinks. No text will follow. */
 { type: "chat.reasoning.tokens"; id: string; threadId: string; tokens: number; since?: string }
+
+/** A call began and has produced nothing yet. See "While nothing has come out of it". */
+{ type: "chat.turn.thinking"; id: string; threadId: string; since: string }
 ```
 
 `MyClawAppHistoryEntry`'s assistant entry gains `reasoning?: string`, filled by
@@ -321,9 +330,32 @@ Rules:
 - Truncation at `REASONING_LIMIT` happens once, server-side, and stops further deltas for that
   segment.
 
+## While nothing has come out of it
+
+Reasoning is not the only silence, and on Codex it is not even the common one: a call that goes
+straight to a tool sends **no summary at all** (measured: three live calls with tools, zero
+reasoning characters, four seconds each), and the first token of a turn that does summarise arrives
+13 to 20 seconds in at effort `max`. A provider being retried is minutes of it. The app drew
+nothing through all of that -- the thread looked dead, the Stop button its only sign a run was on
+(owner, 2026-09-30).
+
+So the run announces the call: `MyClawAppStreamer.beginThinking()`, driven by the `llm:call:start`
+hook the app channel listens to (the hook now carries the session, or a channel could not address
+what it draws). It opens the bubble the turn will write into and sends `chat.turn.thinking` with
+the instant the call began.
+
+- **The app takes it down, on the first thing the turn produces**: a token, a reasoning delta, a
+  token count, a tool card, an abort, the run's end. The server does not track what is on screen;
+  the client is the one that knows.
+- **It carries the bubble's id**, so the live journal drops it with that bubble when it settles: a
+  window that syncs mid-call is replayed the line, a window that syncs after the answer is not
+  (`docs/live-turn-replay.md`).
+- **One line with a counter**, muted, at the bottom of the thread -- the same shape as the
+  compaction's rule, and deliberately the quietest thing on the screen.
+
 ## App
 
-`core/protocol.ts` — the two frame types plus their entries in `FRAME_TYPES`.
+`core/protocol.ts` — the three frame types plus their entries in `FRAME_TYPES`.
 
 `core/chat.ts` — `TextItem` gains:
 
@@ -397,6 +429,16 @@ Server, each one failing before the change:
   emit once; an absent sink is a no-op; a chunk with neither field changes nothing.
 - `codex.ts`: `response.reasoning_summary_text.delta` and `response.reasoning_text.delta` reach the
   sink; unknown `response.reasoning_*` events are ignored rather than throwing.
+- `stream.ts` (`beginThinking`): it opens the bubble the turn will write into and dates the frame
+  with the segment's id; the first token lands on that same bubble; a call after a tool or after
+  prose announces its own; a finished run announces nothing.
+- `live-turn.ts`: the wait is replayed mid-call and forgotten with its bubble.
+- `subagent-stream.ts`: the child's thinking reaches the child's own thread, through the streamer of
+  the moment; no streamer, no stream.
+- `call-start-hook.test.ts`: the call names the session it belongs to.
+- App: `turnThinking.test.ts` (the frame starts the line, every content frame and the run end take
+  it down, a replay does not redraw it), `turnThinking.test.tsx` (the counter is formatted from the
+  server instant), `turnThinkingLine.test.tsx` (the screen draws it at the bottom of the thread).
 - `claude-sdk/backend.ts`: `thinking_tokens` reaches `onTokens`; `text_delta` still reaches
   `onToken` and never `onText`.
 - `stream.ts`: reasoning before any text opens the bubble; a tool seals and resets the accumulator;
@@ -433,5 +475,5 @@ App:
 - Reasoning in Matrix and Telegram.
 - Replaying reasoning to any model (see the constraint section).
 - `reasoning_details` / encrypted reasoning continuation.
-- Reasoning for sub-agent runs.
+- Reasoning for sub-agent runs **in the parent's thread**.
 - Search or export of reasoning text.

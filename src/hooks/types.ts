@@ -127,6 +127,8 @@ export interface HookEventMap {
 
   // === LLM LIFECYCLE ===
   "llm:call:start": {
+    /** The session the call belongs to, so a channel can address what it draws about it. */
+    sessionId: string;
     model: string;
     streaming: boolean;
     messageCount: number;
