@@ -339,19 +339,27 @@ reasoning characters, four seconds each), and the first token of a turn that doe
 nothing through all of that -- the thread looked dead, the Stop button its only sign a run was on
 (owner, 2026-09-30).
 
-So the run announces the call: `MyClawAppStreamer.beginThinking()`, driven by the `llm:call:start`
-hook the app channel listens to (the hook now carries the session, or a channel could not address
-what it draws). It opens the bubble the turn will write into and sends `chat.turn.thinking` with
-the instant the call began.
+So the run announces the call: `MyClawAppStreamer.beginThinking()`, through the reasoning sink it
+already hands the bridge (`ReasoningSink.onCallStart`). It opens the bubble the turn will write
+into and sends `chat.turn.thinking` with the instant the call began.
 
+- **On the sink, never a global hook.** It went through `hooks.on("llm:call:start")` first, and a
+  hook is heard by every listener on the session -- a message folded into a run in flight has one
+  too, so both announced the run's calls in their own bubble: every turn after the steering message
+  opened two, one of them never filled (owner, 2026-10-01). One door per run, read through the
+  streamer that is open now: `run-sink.ts` for a run, `subagent-stream.ts` for a child.
 - **The app takes it down, on the first thing the turn produces**: a token, a reasoning delta, a
   token count, a tool card, an abort, the run's end. The server does not track what is on screen;
   the client is the one that knows.
+- **The app decides when it is worth drawing**: the line waits three seconds of silence before it
+  appears, because the engines that stream their thinking answer in one to two seconds and the line
+  was a flicker there (measured: deepseek-v4.1-flash, 1658 ms). What it is for is the silence.
 - **It carries the bubble's id**, so the live journal drops it with that bubble when it settles: a
   window that syncs mid-call is replayed the line, a window that syncs after the answer is not
   (`docs/live-turn-replay.md`).
-- **One line with a counter**, muted, at the bottom of the thread -- the same shape as the
-  compaction's rule, and deliberately the quietest thing on the screen.
+- **One line with a counter**, drawn in the bubble in place of its caret, and deliberately the
+  quietest thing on the screen. It sat at the foot of the thread at first, beside the empty bubble
+  it had opened: a bare caret per turn, and a line that belonged to no bubble (owner, 2026-09-30).
 
 ## App
 
@@ -435,7 +443,12 @@ Server, each one failing before the change:
 - `live-turn.ts`: the wait is replayed mid-call and forgotten with its bubble.
 - `subagent-stream.ts`: the child's thinking reaches the child's own thread, through the streamer of
   the moment; no streamer, no stream.
-- `call-start-hook.test.ts`: the call names the session it belongs to.
+- `run-sink.ts`: the run's own sink carries the thinking, the count and the wait, read through the
+  streamer that is open now -- and a folded message announcing its own calls is asserted to be
+  impossible: a run's calls reach the run's sink, a folded message's sink hears nothing
+  (`tests/e2e/injection.test.ts`).
+- `call-start-hook.test.ts`: every call of a streamed run is announced on its own sink before its
+  first token, a sink that throws does not take the run down, and the call names its session.
 - App: `turnThinking.test.ts` (the frame starts the line, every content frame and the run end take
   it down, a replay does not redraw it), `turnThinking.test.tsx` (the counter is formatted from the
   server instant), `turnThinkingLine.test.tsx` (the screen draws it at the bottom of the thread).

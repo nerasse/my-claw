@@ -49,6 +49,60 @@ afterEach(() => {
   runRegistry.clear();
 });
 
+test("every model call of a streamed run is announced on the run's own sink, before its first token", async () => {
+  const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+  const order: string[] = [];
+
+  const fetchMock = mockFetch(async () => {
+    const body = `data: ${JSON.stringify({ choices: [{ delta: { content: "done" } }] })}\ndata: [DONE]\n`;
+    return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }) as never;
+  });
+
+  try {
+    await bridge.handleMessageStreaming(
+      createMessage(),
+      createSession(),
+      async () => { order.push("token"); },
+      undefined,
+      signal,
+      undefined,
+      undefined,
+      { onCallStart: async () => { order.push("call"); } },
+    );
+    assert.deepEqual(order.slice(0, 2), ["call", "token"]);
+    assert.equal(order.filter((step) => step === "call").length, 1);
+  } finally {
+    fetchMock.restore();
+    end();
+  }
+});
+
+test("a sink that throws on the announcement does not take the run down", async () => {
+  const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+  const fetchMock = mockFetch(async () => {
+    const body = `data: ${JSON.stringify({ choices: [{ delta: { content: "done" } }] })}\ndata: [DONE]\n`;
+    return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } }) as never;
+  });
+  try {
+    const out = await bridge.handleMessageStreaming(
+      createMessage(),
+      createSession(),
+      async () => {},
+      undefined,
+      signal,
+      undefined,
+      undefined,
+      { onCallStart: async () => { throw new Error("socket gone"); } },
+    );
+    assert.equal(out, "done");
+  } finally {
+    fetchMock.restore();
+    end();
+  }
+});
+
 test("a model call announces the session it belongs to", async () => {
   const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
   const { signal, end } = runRegistry.startRoot(SESSION_ID);

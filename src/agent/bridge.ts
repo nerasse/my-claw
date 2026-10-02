@@ -803,6 +803,12 @@ export class AgentBridge implements AgentBackend {
           toolCount: openaiTools.length,
           iteration,
         });
+        // Not a token, so not `markEmitted`: a retry on another provider announces its own wait.
+        try {
+          await reasoningSink?.onCallStart?.();
+        } catch {
+          // A display frame must never abort the run.
+        }
 
         /**
          * The gate is an estimate, so it can be wrong in the direction that hurts: a tool result

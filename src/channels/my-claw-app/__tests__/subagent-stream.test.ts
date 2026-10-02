@@ -41,6 +41,15 @@ describe("a sub-agent's stream", () => {
     expect(thread).toBe("child-thread");
   });
 
+  test("announces the child's calls in the child's own bubble", async () => {
+    const frames: MyClawAppServerFrame[] = [];
+    const streamers = new Map([["child", streamerFor(frames)]]);
+    const stream = subAgentStreamFor(streamers, new Map(), "child", () => {});
+    await stream!.reasoning!.onCallStart!();
+    expect(types(frames)).toEqual(["chat.stream.start", "chat.turn.thinking"]);
+    expect((frames[1] as MyClawAppServerFrame & { threadId: string }).threadId).toBe("child-thread");
+  });
+
   test("carries a redacted engine's count too", async () => {
     const frames: MyClawAppServerFrame[] = [];
     const streamers = new Map([["child", streamerFor(frames)]]);

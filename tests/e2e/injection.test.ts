@@ -82,6 +82,44 @@ describe("E2E mid-run injection", () => {
     }
   });
 
+  // The duplicate "Thinking" bubble of 2026-10-01: a message folded into a run in flight has a
+  // handler of its own, and when the wait was announced through a global hook both heard it --
+  // every call after the steering message opened two bubbles, one of them never filled.
+  test("the run's calls are announced to the run's own sink, never to a message folded into it", async () => {
+    runRegistry.clear();
+    const router = makeRouter(noopTool());
+    const announced = { run: 0, folded: 0 };
+    let folded: Promise<unknown> | undefined;
+
+    let call = 0;
+    const mock = mockFetch(async () => {
+      call++;
+      if (call === 1) {
+        // The owner speaks while the run works: routed like any message, with its own sink.
+        folded = router.route(message("m2", "and what about X?"), {
+          onToken: async () => {},
+          reasoning: { onCallStart: async () => { announced.folded += 1; } },
+        });
+        return sse([{ choices: [{ delta: { tool_calls: [{ index: 0, id: "tc1", function: { name: "noop", arguments: "{}" } }] } }] }]);
+      }
+      return sse([{ choices: [{ delta: { content: "final answer" } }] }]);
+    });
+
+    try {
+      const r1 = await router.route(message("m1", "tell me about X"), {
+        onToken: async () => {},
+        onTurnSwitch: async () => {},
+        reasoning: { onCallStart: async () => { announced.run += 1; } },
+      });
+      await folded;
+      expect(r1?.text).toBe("final answer");
+      expect(call).toBe(2);
+      expect(announced).toEqual({ run: 2, folded: 0 });
+    } finally {
+      mock.restore(); runRegistry.clear();
+    }
+  });
+
   test("non-streaming: an injected message is still answered in the same run", async () => {
     runRegistry.clear();
     const router = makeRouter(noopTool());

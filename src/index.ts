@@ -117,6 +117,7 @@ import { createTtsTool } from "./tools/tts.ts";
 import { createVoiceModeTool } from "./tools/voice-mode.ts";
 import { createWebSearchTool } from "./tools/web-search.ts";
 import { BrowserSession, createDelegateBrowserTool, registerBrowserTools } from "./tools/browser/index.ts";
+import { runReasoningSink } from "./channels/my-claw-app/run-sink.ts";
 import { subAgentStreamFor } from "./channels/my-claw-app/subagent-stream.ts";
 import { createCronTool } from "./tools/cron.ts";
 import { createNotifyTool } from "./tools/notify.ts";
@@ -2452,20 +2453,6 @@ async function main() {
             };
             hooks.on("tool:execute:progress", onProgress);
 
-            // Every model call of this run, and of the sub-agents it shows: the app draws a line
-            // saying the wait is work. Nothing else covers that silence -- the first token of a
-            // Codex turn can be twenty seconds out, and a provider being retried is minutes of
-            // nothing at all, which read as a dead run with the Stop button as its only sign
-            // (2026-09-30). The frame is taken down by the first thing the turn produces.
-            const onCallStart = ({ sessionId }: { sessionId: string }): void => {
-              if (sessionId === runSessionId) {
-                void active.beginThinking();
-                return;
-              }
-              if (!subAgentContexts.has(sessionId)) return;
-              void subAgentStreamers.get(sessionId)?.beginThinking();
-            };
-            hooks.on("llm:call:start", onCallStart);
 
             // Sub-agent lifecycle is also a global hook; route this run's spawns to its streamer so
             // the spawn card lives where the parent run paints. rosterEverywhere runs one shared
@@ -2569,10 +2556,7 @@ async function main() {
                 onToolStart: (call) => active.appendToolStart([call]),
                 // Only this channel builds a sink, which is what
                 // keeps them free of reasoning -- docs/reasoning-visibility.md.
-                reasoning: {
-                  onText: (delta) => active.pushReasoning(delta),
-                  onTokens: (tokens) => active.pushReasoningTokens(tokens),
-                },
+                reasoning: runReasoningSink(() => active),
                 onTurnSwitch: async (injMsg) => {
                   // The run drained a queued injection at this turn boundary: this is the real
                   // "injected" moment, not the enqueue. Emit before the new streamer opens so
@@ -2596,7 +2580,6 @@ async function main() {
               throw err;
             } finally {
               hooks.off("tool:execute:progress", onProgress);
-              hooks.off("llm:call:start", onCallStart);
               hooks.off("subagent:spawn", onSubagentSpawn);
               hooks.off("subagent:complete", onSubagentComplete);
               hooks.off("subagent:error", onSubagentError);

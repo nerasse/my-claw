@@ -30,6 +30,7 @@ export function subAgentStreamFor(
     reasoning: {
       onText: async (delta) => { await streamer()?.pushReasoning(delta); },
       onTokens: async (tokens) => { await streamer()?.pushReasoningTokens(tokens); },
+      onCallStart: async () => { await streamer()?.beginThinking(); },
     },
     // A sub-agent driven by the model gets the same turn-switch contract as one driven from the
     // app: the bubble in flight is sealed and the answer to the steering message opens a fresh

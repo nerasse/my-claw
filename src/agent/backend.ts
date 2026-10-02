@@ -25,6 +25,13 @@ export interface ReasoningSink {
   onText?: (delta: string) => Promise<void>;
   /** Running token estimate while a redacted engine thinks. No text will follow. */
   onTokens?: (estimated: number) => Promise<void>;
+  /**
+   * A model call of this run began; nothing has come out of it yet. On the run's own sink, never a
+   * global hook: a hook is heard by every listener on the session, and a message folded into a run
+   * in flight has one too -- each announced the run's calls in its own bubble, so every turn after
+   * a mid-run message wore two (2026-10-01).
+   */
+  onCallStart?: () => Promise<void>;
 }
 
 /**
