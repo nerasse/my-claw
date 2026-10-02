@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { chmod, mkdir, mkdtemp, rm, writeFile, readFile, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { captureWorkspace, diffSnapshots, restoreDepot } from "../../src/snapshots/capture.ts";
@@ -78,6 +78,21 @@ describe("snapshots: capture", () => {
   });
 });
 
+/**
+ * The shadow a depot captured into, found by the worktree it names.
+ *
+ * The test cannot just chmod a file: CI runs as root, and root reads a 000 file (the first
+ * version of this test passed here and failed there). Breaking the shadow itself is what a moved
+ * store or a pruned object directory does, and nothing runs as a user who can read through it.
+ */
+async function shadowOf(shadows: string, workTree: string): Promise<string> {
+  for (const name of await readdir(join(shadows, "shadow"))) {
+    const config = await readFile(join(shadows, "shadow", name, "config"), "utf8").catch(() => "");
+    if (config.includes(`worktree = ${workTree}\n`)) return join(shadows, "shadow", name);
+  }
+  throw new Error(`no shadow names ${workTree}`);
+}
+
 describe("snapshots: a depot that cannot be captured", () => {
   test("is left out, and the depot after it is still captured", async () => {
     // The failed depot used to be spliced out of the list the loop was walking: the next one was
@@ -91,15 +106,17 @@ describe("snapshots: a depot that cannot be captured", () => {
       await mkdir(repo, { recursive: true });
       await execGit(repo, ["init", "-q"]);
       await writeFile(join(repo, "file.txt"), "nested\n");
-      await writeFile(join(ws, "secret.txt"), "unreadable\n");
-      await chmod(join(ws, "secret.txt"), 0o000);
+      await captureWorkspace(ws, shadows);
+
+      const rootShadow = await shadowOf(shadows, ws);
+      await rm(rootShadow, { recursive: true, force: true });
+      await writeFile(rootShadow, "not a directory");
 
       const snap = await captureWorkspace(ws, shadows);
 
       expect(snap.depots.map((depot) => depot.root)).toEqual([repo]);
       expect(snap.depots[0]!.treeId).toHaveLength(40);
     } finally {
-      await chmod(join(ws, "secret.txt"), 0o644).catch(() => {});
       await rm(ws, { recursive: true, force: true });
       await rm(shadows, { recursive: true, force: true });
     }
