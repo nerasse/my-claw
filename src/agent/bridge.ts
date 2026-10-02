@@ -60,6 +60,7 @@ import { hooks } from "../hooks/index.ts";
 import { AbortedError, isAbort, rethrowIfAborted, sleep } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
 import { recordRunStart, recordRunEnd } from "../snapshots/store.ts";
+import { currentRunId, newRunId } from "../utils/run-context.ts";
 import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback, MediaStoreHook } from "./backend.ts";
 import { storeRunMedia, type StoredRunMedia } from "./media-store.ts";
 import { producesRemoteContent, cronCapabilityDeny } from "../tools/registry.ts";
@@ -526,9 +527,12 @@ export class AgentBridge implements AgentBackend {
     // run down with a capture failure (a non-git workspace with huge untracked files can be slow,
     // a read-only one can throw).
     const { workspaceDir } = this.workspaceFor(session);
+    // One id for the run's marker and its snapshot: `/undo` reads the markers after the turn it
+    // takes back and finds that turn's snapshots by it.
+    const runId = currentRunId() ?? newRunId();
     let runSnapshotId: string | undefined;
     try {
-      runSnapshotId = (await recordRunStart(session.id, workspaceDir)).runId;
+      runSnapshotId = (await recordRunStart(session.id, workspaceDir, runId)).runId;
     } catch (err) {
       void log("warn", "snapshot capture failed at run start", { sessionId: session.id, error: String(err) });
     }
@@ -642,7 +646,7 @@ export class AgentBridge implements AgentBackend {
       // The trigger turn is on the log: whatever this run writes from here on is its work, and
       // the marker lets a reopened thread fold that work until the matching runEnd -- the line
       // between the question and the work is exactly where a reader draws it.
-      recorder.runStart();
+      recorder.runStart(runId);
 
       // A Continue resumes the sub-agents the last run left interrupted before the model says
       // anything: each picks up its own work where it stopped, and its answer becomes the result

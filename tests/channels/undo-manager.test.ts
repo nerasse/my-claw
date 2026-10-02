@@ -20,7 +20,7 @@ describe("undo manager", () => {
       sessionId: "s1",
       owner: "o1",
       threadId: "t1",
-      diff: [{ root: "/ws", additions: 2, deletions: 1 }],
+      diff: [{ root: "/ws", files: 1, additions: 2, deletions: 1 }],
       turnPreview: "test",
     });
     expect(broadcasted).toBe(true);

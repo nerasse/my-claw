@@ -322,7 +322,7 @@ export interface MyClawAppUndoPrompt {
   /** The user turn being undone, clipped for the sheet. */
   turnPreview: string;
   /** Precomputed file diff, per depot. Empty = nothing to restore, the sheet says so. */
-  diff: Array<{ root: string; additions: number; deletions: number }>;
+  diff: Array<{ root: string; files: number; additions: number; deletions: number }>;
   ts: string;
 }
 

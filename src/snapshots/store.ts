@@ -6,20 +6,21 @@
  * run that produced the turn being undone. `undo` reads both: branch the log, and restore the
  * files to the snapshot of the run that wrote them.
  *
- * Snapshots live under `$MY_CLAW_DIR/snapshots/<sessionId>/<runId>.json`; the git trees they
- * reference live in the shared shadow store (`snapshots/shadow`). A session keeps its snapshots
- * until the next run replaces them: `/undo` restores the *previous* run's snapshot, so the last
- * run's snapshot must still be there when the owner asks.
+ * Snapshots live under `$MY_CLAW_DIR/snapshots/session/<sessionId>/<runId>.json`, named after the
+ * run id the log's `run_start` marker carries: that is how `/undo` finds the snapshots of the turn
+ * it takes back, rather than the newest of the session. The git trees they reference live in the
+ * shared shadow store, and only this module names its directory: `/undo` used to pass the diff and
+ * the restore a root one level off the capture's, so every diff it showed was +0/-0 and no hard
+ * undo ever restored a file (2026-10-02).
  */
 
 import { readFile, writeFile, mkdir, rm, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { log } from "../utils/logger.ts";
-import type { WorkspaceSnapshot } from "./capture.ts";
-import { captureWorkspace } from "./capture.ts";
+import type { DepotDiff, WorkspaceSnapshot } from "./capture.ts";
+import { captureWorkspace, diffSnapshots, restoreDepot } from "./capture.ts";
 import { MY_CLAW_DIR } from "../core/config.ts";
 
 const execFileAsync = promisify(execFile);
@@ -53,19 +54,25 @@ function shadowRoot(): string {
   return join(snapshotsRoot(), "shadow");
 }
 
-/** Captures the workspace and records it as this run's *before* snapshot. */
-export async function recordRunStart(sessionId: string, workspace: string): Promise<RunSnapshot> {
-  const run = await captureWorkspace(workspace, shadowRoot());
+/**
+ * Captures the workspace and records it as this run's *before* snapshot, under the run id the log
+ * marks the run with. A run that already has one keeps it: the earliest state is the one a restore
+ * goes back to.
+ */
+export async function recordRunStart(sessionId: string, workspace: string, runId: string): Promise<RunSnapshot> {
+  const dir = sessionDir(sessionId);
+  const file = join(dir, `${runId}.json`);
+  const existing = await readSnapshot(file);
+  if (existing) return existing;
   const entry: RunSnapshot = {
-    runId: randomUUID(),
+    runId,
     sessionId,
-    before: run,
+    before: await captureWorkspace(workspace, shadowRoot()),
     after: null,
     ts: Date.now(),
   };
-  const dir = sessionDir(sessionId);
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, `${entry.runId}.json`), JSON.stringify(entry), "utf8");
+  await writeFile(file, JSON.stringify(entry), "utf8");
   return entry;
 }
 
@@ -73,7 +80,7 @@ export async function recordRunStart(sessionId: string, workspace: string): Prom
 export async function recordRunEnd(sessionId: string, runId: string, workspace: string): Promise<void> {
   const dir = sessionDir(sessionId);
   const file = join(dir, `${runId}.json`);
-  const existing = await readFile(file, "utf8").then((t) => JSON.parse(t) as RunSnapshot).catch(() => null);
+  const existing = await readSnapshot(file);
   if (!existing) return;
   const after = await captureWorkspace(workspace, shadowRoot());
   existing.after = after;
@@ -133,23 +140,39 @@ export async function gcShadows(): Promise<void> {
   }
 }
 
-/** The most recent recorded snapshot for the session, if any. */
-export async function latestSnapshot(sessionId: string): Promise<RunSnapshot | null> {
+function readSnapshot(file: string): Promise<RunSnapshot | null> {
+  return readFile(file, "utf8").then((text) => JSON.parse(text) as RunSnapshot).catch(() => null);
+}
+
+/**
+ * The snapshot of the state before a turn: the earliest of those its runs recorded. A turn picked
+ * back up with Continue has two runs, and the files go back to before the first.
+ */
+export async function snapshotOfRuns(sessionId: string, runIds: readonly string[]): Promise<RunSnapshot | null> {
   const dir = sessionDir(sessionId);
-  const files = await readdir(dir).catch(() => [] as string[]);
-  if (files.length === 0) return null;
-  const entries = await Promise.all(
-    files
-      .filter((f) => f.endsWith(".json"))
-      .map(async (f) => {
-        const t = await readFile(join(dir, f), "utf8").then((s) => JSON.parse(s) as RunSnapshot).catch(() => null);
-        return t;
-      }),
-  );
-  const valid = entries.filter((e): e is RunSnapshot => e !== null);
-  if (valid.length === 0) return null;
-  valid.sort((a, b) => b.ts - a.ts);
-  return valid[0]!;
+  const found = await Promise.all(runIds.map((runId) => readSnapshot(join(dir, `${runId}.json`))));
+  const recorded = found.filter((snapshot): snapshot is RunSnapshot => snapshot !== null);
+  if (recorded.length === 0) return null;
+  return recorded.reduce((earliest, snapshot) => (snapshot.ts < earliest.ts ? snapshot : earliest));
+}
+
+/**
+ * What restoring the snapshot would change in the workspace as it stands now, per depot.
+ *
+ * Against now rather than against the run's own end: a hard undo writes the *before* state over
+ * the current files, and a run that /undo stopped never reached its end -- its after snapshot does
+ * not exist while the files it wrote do.
+ */
+export async function changesSince(snapshot: RunSnapshot): Promise<DepotDiff[]> {
+  const now = await captureWorkspace(snapshot.before.root, shadowRoot());
+  return diffSnapshots(snapshot.before, now, shadowRoot());
+}
+
+/** Puts every depot of the snapshot back as it was. */
+export async function restoreSnapshot(snapshot: RunSnapshot): Promise<void> {
+  for (const depot of snapshot.before.depots) {
+    await restoreDepot(depot, shadowRoot());
+  }
 }
 
 /** Removes a session's snapshots (session deleted, or a fork made it stale). */

@@ -78,7 +78,7 @@ export interface MyClawAppCommandDeps {
     sessionId: string;
     owner: string;
     threadId: string;
-    diff: Array<{ root: string; additions: number; deletions: number }>;
+    diff: Array<{ root: string; files: number; additions: number; deletions: number }>;
     turnPreview: string;
   }) => Promise<UndoMode | null>;
   /**

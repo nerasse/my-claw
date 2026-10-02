@@ -1074,6 +1074,36 @@ Acceptable. Sur un dépôt de code, la première capture sera plus lente si `nod
 n'est pas ignoré, donc **respecter `.gitignore` est obligatoire**, et le premier snapshot
 d'un workspace se fait en tâche de fond avec un log.
 
+## 7.3 bis Ce que `/undo` lit, et quand il ne demande rien
+
+Corrigé le 2026-10-02, après « +0/-0 partout et le menu s'ouvre quand même » (owner).
+
+- **Un snapshot porte l'id du run que son marqueur `run_start` porte.** `/undo` lit les
+  marqueurs qui suivent le tour qu'il retire et prend le plus ancien de leurs snapshots : un tour
+  repris par Continue a deux runs, et les fichiers reviennent à avant le premier. L'id était
+  aléatoire, et `/undo` prenait le snapshot le plus récent de la session, qui pouvait être celui
+  d'une autre branche ou d'un tour déjà retiré.
+- **Seul `snapshots/store.ts` nomme le répertoire des shadows.** `/undo` passait au diff et à la
+  restauration une racine décalée d'un niveau par rapport à celle de la capture : `git diff-tree`
+  échouait, l'échec était lu comme « aucun changement », donc **tous les diffs affichés valaient
+  +0/-0 et aucun `/undo hard` n'a jamais restauré un fichier**. Le diff ne masque plus une erreur :
+  il lève, et `/undo` demande dans ce cas (inconnu n'est pas rien).
+- **Le diff compare l'état d'avant avec les fichiers tels qu'ils sont**, pas avec la fin du run :
+  un hard écrit l'état d'avant par-dessus l'état courant, et un run que le `/undo` vient de
+  stopper n'a pas atteint sa fin (pas de snapshot « after ») alors que ses fichiers sont écrits.
+- **On compte des fichiers, pas des lignes.** Un binaire, un fichier vidé, un changement de mode
+  font +0/-0 et sont pourtant réécrits par un hard.
+- **`/undo` sans argument n'ouvre le menu que si un fichier reviendrait.** Pas de snapshot pour ce
+  tour, ou aucun fichier différent : c'est un soft immédiat, et la réponse le dit
+  (« (aucun fichier modifié) »). Un menu dont les deux lignes font la même chose est une question
+  sans réponse.
+- Une capture qui échoue sur un dépôt l'écarte sans faire sauter le suivant (il était retiré de la
+  liste en cours de parcours : le dépôt d'après restait dans le snapshot avec un arbre vide).
+
+Tests : `tests/channels/branch-commands.test.ts` (« /undo and the files »), qui passe par les
+snapshots que les runs enregistrent vraiment ; `tests/agent/run-snapshot.test.ts` (le marqueur et
+le snapshot portent le même id) ; `tests/snapshots/capture.test.ts`. 11 mutations tuées.
+
 ## 7.4 Rétention
 
 Rien ne supprimait jamais rien : 22 shadows, 247 Mo, pour des snapshots dont plus aucun `/undo`

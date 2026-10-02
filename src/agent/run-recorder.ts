@@ -137,8 +137,8 @@ export class RunRecorder {
    * tells a reopened thread that the run is still in flight. It carries the run context's id, the
    * same one `chat.run.start` put on the wire, so the fold names the run the app already knows.
    */
-  runStart(): Entry {
-    return this.entries.append({ type: "run_start", prompt: false, runId: currentRunId() ?? newRunId() });
+  runStart(runId: string = currentRunId() ?? newRunId()): Entry {
+    return this.entries.append({ type: "run_start", prompt: false, runId });
   }
 
   /**

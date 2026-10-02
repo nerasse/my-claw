@@ -1,9 +1,9 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { mkdir, mkdtemp, rm, writeFile, readFile, readdir } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile, readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { captureWorkspace, diffSnapshots, restoreDepot } from "../../src/snapshots/capture.ts";
-import { recordRunStart, recordRunEnd, latestSnapshot, clearSessionSnapshots, pruneSessionSnapshots, gcShadows, snapshotsRoot } from "../../src/snapshots/store.ts";
+import { recordRunStart, snapshotOfRuns, clearSessionSnapshots, pruneSessionSnapshots, gcShadows, snapshotsRoot } from "../../src/snapshots/store.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 
 describe("snapshots: capture", () => {
@@ -78,8 +78,36 @@ describe("snapshots: capture", () => {
   });
 });
 
+describe("snapshots: a depot that cannot be captured", () => {
+  test("is left out, and the depot after it is still captured", async () => {
+    // The failed depot used to be spliced out of the list the loop was walking: the next one was
+    // skipped, and stayed in the snapshot with an empty tree a restore cannot read. The root is
+    // the one broken here because it is always first in the list; the discovery order of the
+    // nested depots is the directory's, not the alphabet's.
+    const ws = await mkdtemp(join(tmpdir(), "snap-ws5-"));
+    const shadows = await mkdtemp(join(tmpdir(), "snap-sh5-"));
+    try {
+      const repo = join(ws, "nested");
+      await mkdir(repo, { recursive: true });
+      await execGit(repo, ["init", "-q"]);
+      await writeFile(join(repo, "file.txt"), "nested\n");
+      await writeFile(join(ws, "secret.txt"), "unreadable\n");
+      await chmod(join(ws, "secret.txt"), 0o000);
+
+      const snap = await captureWorkspace(ws, shadows);
+
+      expect(snap.depots.map((depot) => depot.root)).toEqual([repo]);
+      expect(snap.depots[0]!.treeId).toHaveLength(40);
+    } finally {
+      await chmod(join(ws, "secret.txt"), 0o644).catch(() => {});
+      await rm(ws, { recursive: true, force: true });
+      await rm(shadows, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("snapshots: store", () => {
-  test("recordRunStart/end then latestSnapshot returns the after state", async () => {
+  test("a run's snapshot is found by the run id its marker carries, and recorded once", async () => {
     const sessionId = `test-snap-store-${process.pid}-${Date.now()}`;
     const ws = await mkdtemp(join(tmpdir(), "snap-ws2-"));
     const shadows = await mkdtemp(join(tmpdir(), "snap-sh2-"));
@@ -88,12 +116,16 @@ describe("snapshots: store", () => {
     // store uses MY_CLAW_DIR/snapshots — we cannot override it, but the fixture dirs are
     // under tmpdir() which the test harness also redirects. Cleanup is via clearSessionSnapshots.
     try {
-      const run = await recordRunStart(sessionId, ws);
-      expect(run.runId).toBeTruthy();
+      const run = await recordRunStart(sessionId, ws, "run-a");
+      expect(run.runId).toBe("run-a");
       expect(run.before.depots.length).toBeGreaterThan(0);
-      const snap = await latestSnapshot(sessionId);
-      expect(snap).not.toBeNull();
-      expect(snap!.runId).toBe(run.runId);
+      // The same run recording again (a retry inside it) keeps the earliest state.
+      await writeFile(join(ws, "later.txt"), "later\n");
+      const again = await recordRunStart(sessionId, ws, "run-a");
+      expect(again.before).toEqual(run.before);
+      const snap = await snapshotOfRuns(sessionId, ["unknown", "run-a"]);
+      expect(snap!.runId).toBe("run-a");
+      expect(await snapshotOfRuns(sessionId, ["unknown"])).toBeNull();
     } finally {
       await clearSessionSnapshots(sessionId);
       await rm(ws, { recursive: true, force: true });
@@ -137,14 +169,14 @@ describe("snapshots: store", () => {
     const ws = await mkdtemp(join(tmpdir(), "snap-ws4-"));
     try {
       await writeFile(join(ws, "note.txt"), "avant", "utf8");
-      const run = await recordRunStart(sessionId, ws);
+      const run = await recordRunStart(sessionId, ws, "run-gc");
       const treeBefore = run.before.depots[0]?.treeId;
       expect(treeBefore).toBeTruthy();
 
       await gcShadows();
 
       // Still there: the object is younger than the prune window.
-      const snap = await latestSnapshot(sessionId);
+      const snap = await snapshotOfRuns(sessionId, ["run-gc"]);
       expect(snap!.before.depots[0]!.treeId).toBe(treeBefore!);
     } finally {
       await clearSessionSnapshots(sessionId);

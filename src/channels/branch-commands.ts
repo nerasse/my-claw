@@ -9,14 +9,15 @@
 import { copyFile, mkdir, stat } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { SessionLog, UserEntry, Entry, Provisioned, CompactionEntry } from "../sessions/log.ts";
+import type { SessionLog, UserEntry, Entry, Provisioned, CompactionEntry, RunStartEntry } from "../sessions/log.ts";
 import { leavesOf, pathOf, openSessionLog } from "../sessions/log.ts";
 import { readMeta, writeMeta, metaOf, type BranchLabel, type ForkOrigin, type UndoState } from "../sessions/meta.ts";
 import type { SessionData, SessionAttachment } from "../sessions/store.ts";
 import type { SessionManager } from "../sessions/manager.ts";
 import { MY_CLAW_DIR } from "../core/config.ts";
-import { latestSnapshot, snapshotsRoot } from "../snapshots/store.ts";
-import { diffSnapshots, restoreDepot, type DepotDiff } from "../snapshots/capture.ts";
+import { changesSince, restoreSnapshot, snapshotOfRuns } from "../snapshots/store.ts";
+import type { DepotDiff } from "../snapshots/capture.ts";
+import { log } from "../utils/logger.ts";
 import { undoManager, type UndoMode } from "./my-claw-app/undo.ts";
 
 /** The outcome of a branch command: what to send back, and what side effects happened. */
@@ -251,8 +252,9 @@ export async function handleRetryCommand(
  *   historical behaviour, and the mode that never touches the disk.
  * - `/undo hard` — conversation plus files: restores the workspace to the snapshot taken at
  *   the start of the run that produced the undone turn (docs/session-log.md §7).
- * - `/undo` (no argument) — asks the owner which mode, via the app's undo sheet. The command
- *   waits on the owner's choice before doing anything.
+ * - `/undo` (no argument) — asks the owner which mode, via the app's undo sheet, when the
+ *   choice means something: at least one file would come back. Otherwise it is a soft undo at
+ *   once -- a sheet whose two rows do the same thing is a question with no answer.
  *
  * Unlike `/retry` and `/branches`, `/undo` aborts a running turn in every mode. The reasoning:
  * `/undo` targets the turn that is running, so killing it is part of the ask. `/retry` and
@@ -298,19 +300,30 @@ export async function handleUndoCommand(
     mode = argTrimmed;
   }
 
-  // The file diff, computed before the branch moves: it describes the run whose turn is undone.
-  const snapshot = await latestSnapshot(ctx.sessionId);
+  // The files as they were before this turn: the snapshot of its first run, never the newest of
+  // the session, which may belong to another branch or to a turn already undone.
+  const turnAt = path.indexOf(userTurn);
+  const runIds = path
+    .slice(turnAt + 1)
+    .filter((entry): entry is RunStartEntry => entry.type === "run_start")
+    .map((entry) => entry.runId ?? entry.id);
+  const snapshot = await snapshotOfRuns(ctx.sessionId, runIds);
+  // What a hard undo would change: computed before the branch moves, against the files as they
+  // are now. Unknown (git could not read the trees) is not "nothing": the owner is asked.
   let diff: DepotDiff[] = [];
-  if (snapshot?.before && snapshot.after) {
+  let unknown = false;
+  if (snapshot) {
     try {
-      diff = await diffSnapshots(snapshot.before, snapshot.after, snapshotsRoot());
-    } catch {
-      diff = [];
+      diff = (await changesSince(snapshot)).filter((depot) => depot.files > 0);
+    } catch (err) {
+      unknown = true;
+      void log("warn", "undo could not diff the files", { sessionId: ctx.sessionId, error: String(err) });
     }
   }
+  const filesWouldChange = diff.length > 0 || unknown;
 
-  // No argument and the app can show a sheet: ask instead of acting.
-  if (ask && ctx.undoPrompt) {
+  // No argument and the app can show a sheet: ask, when there is something to choose between.
+  if (ask && ctx.undoPrompt && filesWouldChange) {
     const chosen = await ctx.undoPrompt({
       sessionId: ctx.sessionId,
       owner: ctx.owner,
@@ -345,16 +358,14 @@ export async function handleUndoCommand(
   ctx.session.lastActiveAt = meta.lastActiveAt;
   await writeMeta(ctx.sessionId, meta);
 
-  // Hard mode: restore the files to the snapshot taken before the run that wrote this turn.
+  // Hard mode: restore the files to the snapshot taken before the turn's first run.
   let filesNote = "";
   if (mode === "hard") {
     if (!snapshot || snapshot.before.depots.length === 0) {
       filesNote = "\nAucun snapshot de fichiers à restaurer (workspace sans dépôt git ou capture impossible).";
     } else {
       try {
-        for (const depot of snapshot.before.depots) {
-          await restoreDepot(depot, snapshotsRoot());
-        }
+        await restoreSnapshot(snapshot);
         filesNote = diff.length > 0
           ? `\nFichiers restaurés (${diff.map((d) => d.root.split("/").pop() || d.root).join(", ")}).`
           : "\nAucune modification de fichier à restaurer.";
@@ -363,9 +374,11 @@ export async function handleUndoCommand(
       }
     }
   }
+  // Said only when the sheet was skipped for it: the owner asked a question and got no sheet.
+  const quiet = ask && !filesWouldChange ? " (aucun fichier modifié)" : "";
 
   return {
-    text: `Undo: conversation rembobinée avant "${preview}". /redo pour revenir.${filesNote}`,
+    text: `Undo: conversation rembobinée avant "${preview}"${quiet}. /redo pour revenir.${filesNote}`,
     reset: "branch-switch",
     compose: userTurn.text,
   };

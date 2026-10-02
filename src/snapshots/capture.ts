@@ -40,6 +40,11 @@ export interface WorkspaceSnapshot {
 
 export interface DepotDiff {
   root: string;
+  /**
+   * Files that differ, whatever they hold. The line counts below cannot say it: a binary, an
+   * emptied file or a mode change is +0/-0, and a restore still rewrites it.
+   */
+  files: number;
   additions: number;
   deletions: number;
 }
@@ -170,6 +175,9 @@ export async function captureWorkspace(workspace: string, shadowsRoot: string): 
     depots.push({ root: nestedRoot, treeId: "" });
   }
 
+  // Collected rather than spliced out of the list being walked: removing a failed depot from it
+  // skipped the next one, which stayed in the snapshot with an empty tree no restore can read.
+  const captured: DepotSnapshot[] = [];
   for (const depot of depots) {
     const shadowDir = join(shadowsRoot, "shadow", hash(depot.root));
     const exclude = depot.root === root && !rootIsRepo ? nested : [];
@@ -181,18 +189,22 @@ export async function captureWorkspace(workspace: string, shadowsRoot: string): 
         "-c", "safe.directory=*",
         "add", "--all",
       ]);
-      depot.treeId = await shadowGit(shadowDir, depot.root, ["write-tree"]);
+      captured.push({ root: depot.root, treeId: await shadowGit(shadowDir, depot.root, ["write-tree"]) });
     } catch {
-      // A depot that cannot be captured is dropped from the snapshot, not fatal: the workspace
+      // A depot that cannot be captured is left out of the snapshot, not fatal: the workspace
       // may contain a repo the shadow cannot read. The undo still covers the rest.
-      depots.splice(depots.indexOf(depot), 1);
     }
   }
 
-  return { root, depots, ts: Date.now() };
+  return { root, depots: captured, ts: Date.now() };
 }
 
-/** Diff between two snapshots of the same root, "before → after", per depot. */
+/**
+ * Diff between two snapshots of the same root, "before -> after", per depot.
+ *
+ * Throws when git cannot read the trees. It used to answer "no change" instead, which is how a
+ * wrong shadow directory went unnoticed: every diff /undo showed was +0/-0 (2026-10-02).
+ */
 export async function diffSnapshots(
   before: WorkspaceSnapshot,
   after: WorkspaceSnapshot,
@@ -207,16 +219,17 @@ export async function diffSnapshots(
       "git",
       ["diff-tree", "--numstat", depot.treeId, afterDepot.treeId],
       { env: { ...process.env, GIT_DIR: shadowDir } },
-    ).catch(() => ({ stdout: "" }));
+    );
+    const lines = stdout.trim().split("\n").filter(Boolean);
     let additions = 0;
     let deletions = 0;
-    for (const line of stdout.trim().split("\n").filter(Boolean)) {
+    for (const line of lines) {
       const [add, del] = line.split("\t");
-      if (add === "-") continue; // binary
+      // A binary has no line counts ("-"), and is still one of the files.
       additions += Number(add) || 0;
       deletions += Number(del) || 0;
     }
-    out.push({ root: depot.root, additions, deletions });
+    out.push({ root: depot.root, files: lines.length, additions, deletions });
   }
   return out;
 }
@@ -235,14 +248,4 @@ export async function restoreDepot(depot: DepotSnapshot, shadowsRoot: string): P
   await shadowGit(shadowDir, depot.root, ["read-tree", depot.treeId]);
   await shadowGit(shadowDir, depot.root, ["checkout-index", "-a", "-f"]);
   await shadowGit(shadowDir, depot.root, ["clean", "-fd"]).catch(() => {});
-}
-
-export function snapshotDiffText(diffs: DepotDiff[]): string {
-  if (diffs.length === 0) return "aucun changement de fichier";
-  return diffs
-    .map((d) => {
-      const name = d.root.split("/").pop() || d.root;
-      return `${name}: +${d.additions}/-${d.deletions}`;
-    })
-    .join(", ");
 }

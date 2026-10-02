@@ -15,6 +15,8 @@ import { randomUUID } from "node:crypto";
 
 export interface UndoDiffEntry {
   root: string;
+  /** Files that differ: a binary or an emptied file is one, at +0/-0. */
+  files: number;
   additions: number;
   deletions: number;
 }

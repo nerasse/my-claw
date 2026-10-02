@@ -1,6 +1,7 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { mkdir, rm, writeFile, stat, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile, readFile, stat, readdir } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   handleRetryCommand,
   handleBranchesCommand,
@@ -25,6 +26,7 @@ import { readMeta, writeMeta, metaOf } from "../../src/sessions/meta.ts";
 import type { LegacySessionData, SessionAttachment } from "../../src/sessions/store.ts";
 import { SessionManager } from "../../src/sessions/manager.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
+import { recordRunStart, recordRunEnd, clearSessionSnapshots } from "../../src/snapshots/store.ts";
 
 let counter = 0;
 function freshId(): string {
@@ -723,12 +725,24 @@ describe("branch-commands: /undo", () => {
     expect(result.text).toContain("Aucun snapshot");
   });
 
-  test("undo without argument asks and uses the chosen mode", async () => {
-    const id = freshId();
+  /** A turn whose run changed a file: the case where soft and hard differ, and the sheet asks. */
+  async function turnThatWroteAFile(id: string): Promise<{ log: SessionLog; ws: string }> {
+    const ws = await mkdtemp(join(tmpdir(), "undo-ask-"));
+    await writeFile(join(ws, "note.txt"), "v0\n");
+    await recordRunStart(id, ws, "r1");
+    await writeFile(join(ws, "note.txt"), "v1\n");
+    await recordRunEnd(id, "r1", ws);
     const log = await openSessionLog(id);
     log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<RunStartEntry>({ type: "run_start", prompt: false, runId: "r1" });
     log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
     await log.flush();
+    return { log, ws };
+  }
+
+  test("undo without argument asks and uses the chosen mode", async () => {
+    const id = freshId();
+    const { log, ws } = await turnThatWroteAFile(id);
 
     let asked = false;
     const ctx = await createContext(id, log);
@@ -744,14 +758,13 @@ describe("branch-commands: /undo", () => {
 
     expect(asked).toBe(true);
     expect(result.reset).toBe("branch-switch");
+    await clearSessionSnapshots(id);
+    await rm(ws, { recursive: true, force: true });
   });
 
   test("undo without argument and dismissed returns cancel text", async () => {
     const id = freshId();
-    const log = await openSessionLog(id);
-    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
-    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
-    await log.flush();
+    const { log, ws } = await turnThatWroteAFile(id);
 
     const ctx = await createContext(id, log);
     const withPrompt: BranchCommandContext = {
@@ -762,6 +775,8 @@ describe("branch-commands: /undo", () => {
 
     expect(result.text).toContain("Undo annulé");
     expect(result.reset).toBeUndefined();
+    await clearSessionSnapshots(id);
+    await rm(ws, { recursive: true, force: true });
   });
 
   test("undo with invalid argument returns usage", async () => {
@@ -885,6 +900,168 @@ describe("branch-commands: /undo", () => {
     expect(result.text).toContain("compaction");
     expect(log.leaf()).toBe(answer.id);
     expect((await readMeta(id))?.undo).toBeUndefined();
+  });
+});
+
+/**
+ * `/undo` and the files: the snapshots the runs really record, read back the way `/undo` reads
+ * them. The capture tests hand the same shadow directory to the capture and to the diff, so they
+ * could not see that the store wrote its shadows under one root and `/undo` read them from another:
+ * every diff came back +0/-0 and no hard undo ever restored a file (2026-10-02).
+ */
+describe("branch-commands: /undo and the files", () => {
+  const made: Array<{ ws: string; session: string }> = [];
+  afterEach(async () => {
+    for (const { ws, session } of made.splice(0)) {
+      await clearSessionSnapshots(session);
+      await rm(ws, { recursive: true, force: true });
+    }
+  });
+
+  async function workspace(session: string): Promise<string> {
+    const ws = await mkdtemp(join(tmpdir(), "undo-ws-"));
+    made.push({ ws, session });
+    return ws;
+  }
+
+  /** One turn on the log, with the run markers the bridge writes, named like the snapshots. */
+  async function turn(id: string, runIds: string[]): Promise<SessionLog> {
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    for (const runId of runIds) {
+      log.append<RunStartEntry>({ type: "run_start", prompt: false, runId });
+      log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId });
+      log.append<RunEndEntry>({ type: "run_end", prompt: false, reason: "done" });
+    }
+    await log.flush();
+    return log;
+  }
+
+  function asking(ctx: BranchCommandContext, asked: Array<Parameters<NonNullable<BranchCommandContext["undoPrompt"]>>[0]>, answer: "soft" | "hard" = "soft"): BranchCommandContext {
+    return { ...ctx, undoPrompt: async (input) => { asked.push(input); return answer; } };
+  }
+
+  test("a turn that changed no file is rewound at once: the sheet would offer nothing", async () => {
+    const id = freshId();
+    const ws = await workspace(id);
+    await writeFile(join(ws, "note.txt"), "v0\n");
+    await recordRunStart(id, ws, "r1");
+    await recordRunEnd(id, "r1", ws);
+    const log = await turn(id, ["r1"]);
+
+    const asked: unknown[] = [];
+    const result = await handleUndoCommand(asking(await createContext(id, log), asked as never), "");
+
+    expect(asked).toEqual([]);
+    expect(result.reset).toBe("branch-switch");
+    expect(result.text).toContain("aucun fichier modifié");
+  });
+
+  test("a turn with no snapshot to restore is rewound at once too", async () => {
+    const id = freshId();
+    const log = await turn(id, ["r1"]);
+    const asked: unknown[] = [];
+    const result = await handleUndoCommand(asking(await createContext(id, log), asked as never), "");
+    expect(asked).toEqual([]);
+    expect(result.reset).toBe("branch-switch");
+  });
+
+  test("a change git counts as +0/-0 still opens the sheet: a binary file is a changed file", async () => {
+    const id = freshId();
+    const ws = await workspace(id);
+    await writeFile(join(ws, "logo.bin"), Buffer.from([0, 1, 2]));
+    await recordRunStart(id, ws, "r1");
+    await writeFile(join(ws, "logo.bin"), Buffer.from([0, 9, 9, 9]));
+    await recordRunEnd(id, "r1", ws);
+    const log = await turn(id, ["r1"]);
+
+    const asked: Array<Parameters<NonNullable<BranchCommandContext["undoPrompt"]>>[0]> = [];
+    await handleUndoCommand(asking(await createContext(id, log), asked), "");
+
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.diff.reduce((sum, depot) => sum + depot.files, 0)).toBe(1);
+  });
+
+  test("what a run wrote before /undo stopped it counts: the diff is against the files as they are", async () => {
+    const id = freshId();
+    const ws = await workspace(id);
+    await writeFile(join(ws, "note.txt"), "v0\n");
+    await recordRunStart(id, ws, "r1");
+    await writeFile(join(ws, "note.txt"), "v0\nv1\n");
+    // The run is stopped by the /undo itself: it never reaches its end, nor its after snapshot.
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<RunStartEntry>({ type: "run_start", prompt: false, runId: "r1" });
+    await log.flush();
+
+    const asked: Array<Parameters<NonNullable<BranchCommandContext["undoPrompt"]>>[0]> = [];
+    await handleUndoCommand(asking(await createContext(id, log, { isRunning: true }), asked), "");
+
+    expect(asked).toHaveLength(1);
+    expect(asked[0]!.diff.some((depot) => depot.files === 1 && depot.additions === 1)).toBe(true);
+  });
+
+  test("files git cannot compare are not \"nothing changed\": the sheet asks", async () => {
+    const id = freshId();
+    const ws = await workspace(id);
+    await writeFile(join(ws, "note.txt"), "v0\n");
+    const run = await recordRunStart(id, ws, "r1");
+    // A tree the shadow no longer holds (pruned, or a store that moved): the diff cannot be read.
+    const file = join(MY_CLAW_DIR, "snapshots", "session", id, "r1.json");
+    await writeFile(file, JSON.stringify({ ...run, before: { ...run.before, depots: run.before.depots.map((depot) => ({ ...depot, treeId: "0123456789abcdef0123456789abcdef01234567" })) } }));
+    const log = await turn(id, ["r1"]);
+
+    const asked: Array<Parameters<NonNullable<BranchCommandContext["undoPrompt"]>>[0]> = [];
+    await handleUndoCommand(asking(await createContext(id, log), asked), "");
+
+    expect(asked).toHaveLength(1);
+  });
+
+  test("hard restores the files as they were before the turn, its Continue included", async () => {
+    const id = freshId();
+    const ws = await workspace(id);
+    await writeFile(join(ws, "note.txt"), "v0\n");
+    await recordRunStart(id, ws, "r1");
+    await writeFile(join(ws, "note.txt"), "v1\n");
+    await recordRunEnd(id, "r1", ws);
+    // The turn was picked back up with Continue: a second run, a second snapshot, newer.
+    await recordRunStart(id, ws, "r2");
+    await writeFile(join(ws, "note.txt"), "v2\n");
+    await writeFile(join(ws, "added.txt"), "later\n");
+    await recordRunEnd(id, "r2", ws);
+    const log = await turn(id, ["r1", "r2"]);
+
+    const result = await handleUndoCommand(await createContext(id, log), "hard");
+
+    expect(result.text).toContain("Fichiers restaurés");
+    expect(await readFile(join(ws, "note.txt"), "utf8")).toBe("v0\n");
+    expect(await stat(join(ws, "added.txt")).then(() => true, () => false)).toBe(false);
+  });
+
+  test("an older turn's snapshot is not this turn's: a turn whose runs recorded nothing restores nothing", async () => {
+    const id = freshId();
+    const ws = await workspace(id);
+    await writeFile(join(ws, "note.txt"), "v0\n");
+    // An earlier turn of the same conversation, whose run did record a snapshot.
+    await recordRunStart(id, ws, "earlier");
+    await recordRunEnd(id, "earlier", ws);
+    const log = await openSessionLog(id);
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Earlier" });
+    log.append<RunStartEntry>({ type: "run_start", prompt: false, runId: "earlier" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Done", runId: "earlier" });
+    log.append<RunEndEntry>({ type: "run_end", prompt: false, reason: "done" });
+    // The turn undone: its run recorded nothing (a capture that failed).
+    log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
+    log.append<RunStartEntry>({ type: "run_start", prompt: false, runId: "r1" });
+    log.append<PhaseEntry>({ type: "phase", prompt: true, text: "Réponse", runId: "r1" });
+    log.append<RunEndEntry>({ type: "run_end", prompt: false, reason: "done" });
+    await log.flush();
+    await writeFile(join(ws, "note.txt"), "edited by hand\n");
+
+    const result = await handleUndoCommand(await createContext(id, log), "hard");
+
+    expect(result.text).toContain("Aucun snapshot");
+    expect(await readFile(join(ws, "note.txt"), "utf8")).toBe("edited by hand\n");
   });
 });
 
