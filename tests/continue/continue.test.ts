@@ -78,6 +78,32 @@ describe("reading what a conversation stopped on", () => {
     expect(lastAnswer(log.entries(), log.leaf())).toBe("57 fichiers.");
   });
 
+  test("a message stopped before its run wrote anything is continuable, whatever the run before it did", () => {
+    // 2026-10-02: a run that finished, then the owner's next message stopped at once. Read from the
+    // last run, it was "the last run finished" -- about a message nothing had answered.
+    log.append({ type: "user", prompt: true, text: "bonjour" });
+    log.append({ type: "run_start", prompt: false });
+    log.append({ type: "phase", prompt: true, text: "Salut.", runId: "t0" });
+    log.append({ type: "run_end", prompt: false, reason: "done" });
+    log.append({ type: "user", prompt: true, text: "compte les fichiers" });
+    // Stopped before the run wrote its own marker: an end with no start.
+    log.append({ type: "run_end", prompt: false, reason: "aborted" });
+    expect(continuable(log.entries(), log.leaf())).toMatchObject({ ok: true, lastUserText: "compte les fichiers", ended: "aborted" });
+  });
+
+  test("a message no run ever took up is continuable; one whose run finished is not", () => {
+    log.append({ type: "user", prompt: true, text: "bonjour" });
+    log.append({ type: "run_start", prompt: false });
+    log.append({ type: "run_end", prompt: false, reason: "done" });
+    log.append({ type: "user", prompt: true, text: "et ensuite ?" });
+    expect(continuable(log.entries(), log.leaf())).toMatchObject({ ok: true, lastUserText: "et ensuite ?", ended: "lost" });
+    // A message folded into a run that then finished was answered by that run.
+    log.append({ type: "run_start", prompt: false });
+    log.append({ type: "user", prompt: true, text: "steer" });
+    log.append({ type: "run_end", prompt: false, reason: "done" });
+    expect(continuable(log.entries(), log.leaf()).ok).toBe(false);
+  });
+
   test("a sub-agent call the server lost is found from its card, in the turn that made it", () => {
     stoppedRun((t) => {
       log.append({ type: "phase", prompt: true, text: "", runId: t });
@@ -174,6 +200,24 @@ describe("Continue", () => {
       expect(log.entries().filter((e) => e.type === "user").length).toBe(users);
       const ends = log.entries().filter((e): e is Entry & { reason: string } => e.type === "run_end").map((e) => e.reason);
       expect(ends).toEqual(["error", "done"]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("after a Stop before anything was written: the message is answered once, and not written twice", async () => {
+    log.append({ type: "user", prompt: true, text: "compte les fichiers" });
+    log.append({ type: "run_start", prompt: false });
+    log.append({ type: "run_end", prompt: false, reason: "aborted" });
+    const { bodies, restore } = capture([answer("57.")]);
+    try {
+      const text = await new AgentBridge(config, new ToolRegistry(), new SkillRegistry()).handleMessage(message(true), session());
+      expect(text).toBe("57.");
+      const users = bodies[0]!.messages.filter((m) => m.role === "user").map((m) => m.content);
+      expect(users.filter((c) => typeof c === "string" && c.includes("compte les fichiers"))).toHaveLength(1);
+      expect(bodies[0]!.messages.at(-1)!.role).toBe("user");
+      await log.flush();
+      expect(log.entries().filter((e) => e.type === "user")).toHaveLength(1);
     } finally {
       restore();
     }

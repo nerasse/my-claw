@@ -559,6 +559,25 @@ describe("runFold: the branch read as runs", () => {
     expect([first.status, second.status]).toEqual(["done", "done"]);
   });
 
+  // 2026-10-02: a run that wrote nothing reached the app as nothing, and with it the signature
+  // and the Continue that picks the message back up.
+  test("a run that wrote nothing signs the message that triggered it", () => {
+    const entries = chain([user("q"), runStart({ runId: "r1" }), runEnd("aborted")]);
+    expect(runFold(entries).get(entries[0]!.id)).toMatchObject({ id: "r1", status: "aborted" });
+  });
+
+  test("so does an end with no start: a Stop before the run wrote its own marker", () => {
+    const entries = chain([user("q1"), runStart(), phase("a1"), runEnd(), user("q2"), runEnd("aborted")]);
+    const runs = runFold(entries);
+    expect(runs.get(entries[4]!.id)).toMatchObject({ status: "aborted" });
+    expect(runs.get(entries[0]!.id)).toBeUndefined();
+  });
+
+  test("a run that wrote something leaves its message alone", () => {
+    const entries = chain([user("q"), runStart(), phase("half"), runEnd("aborted")]);
+    expect(runFold(entries).get(entries[0]!.id)).toBeUndefined();
+  });
+
   test("the reason of the end marker is the run's status", () => {
     const entries = chain([user("q"), runStart(), tool("c1"), runEnd("error")]);
     expect(runFold(entries).get(entries[2]!.id)?.status).toBe("error");

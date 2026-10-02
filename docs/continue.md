@@ -33,8 +33,8 @@ when nothing the model said comes after that turn.
 `chat.continue { threadId, parentThreadId? }` goes through the same pipeline as a `chat.send`
 (`messageHandler`, router, streamer), with `UnifiedMessage.resume` set and no bubble of its own.
 
-1. **Refused** when a run is already going on the thread, or when the last run finished (`done`):
-   there is nothing to pick up. Checked at the frame, then again under the session's lock in the
+1. **Refused** when a run is already going on the thread, or when the owner's last message was
+   answered to the end (the last run marker after it is a `done`): there is nothing to pick up. Checked at the frame, then again under the session's lock in the
    bridge, since the run that was going when the button was pressed may have finished since.
 2. **No turn is written.** The prompt is the log, exactly as it stands. `message.text` carries the
    last question, for what reads it (skill suggestions, memory) and nothing else; it is not archived.
@@ -50,6 +50,25 @@ when nothing the model said comes after that turn.
 
 One press, one run: if the same error comes back, the run fails as it would have, and the button is
 there again.
+
+## A message stopped at once
+
+The owner sends, and stops before anything comes back. 51 runs of this install ended that way
+(and 25 failed on their first call): `user -> run_start -> run_end(aborted)`, nothing in between.
+Two things kept the button away from them (2026-10-02):
+
+- **The app had nothing to hang it on.** The button rides a run's signature, the signature rides
+  an item of that run, and a run that wrote nothing had none. `runFold` now puts the meta of an
+  empty run on the message that triggered it, so the message is signed (`run · 0.4 s · Stopped`)
+  and the button appears under it, live and on a reopened thread alike.
+- **A Stop before the run's own marker was refused.** A Stop during the snapshot, the
+  transcription or a compaction ahead of the run writes an end with no start; `continuable` read
+  the last *run*, found the one before, finished, and answered "the last run finished". It now
+  reads from the last message: the last run marker after it decides (an end says how it ended, a
+  start with no end is a lost run, no marker is a message no run took up).
+
+The Continue of such a message is the "after a question" shape: no turn is written, the prompt ends
+on the message, the model answers it once.
 
 ## Sub-agents
 

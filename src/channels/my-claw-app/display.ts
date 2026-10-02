@@ -209,10 +209,17 @@ function tsOf(entry: Entry): string {
  * dead run, and the turn that triggers the next run stays out of it: left open, the run rendered
  * as running forever (the app settles only the trailing run) and the new question read as a steer
  * folded into the old work.
+ *
+ * A run that ended having written nothing -- stopped right after the message was sent, or failed
+ * on its first call -- has no entry to carry it, so it would reach the app as nothing at all, and
+ * with it the run's signature and the Continue that picks the message back up. Its meta goes on
+ * the message that triggered it. So does an end with no start: a Stop before the run wrote its own
+ * marker (during the snapshot, the transcription, a compaction ahead of it) leaves exactly that.
  */
 export function runFold(path: readonly Entry[]): Map<string, MyClawAppRunMeta> {
   const out = new Map<string, MyClawAppRunMeta>();
   let current: MyClawAppRunMeta | null = null;
+  let currentAt = -1;
   let lastTs = "";
   const closeDead = () => {
     if (!current) return;
@@ -225,15 +232,18 @@ export function runFold(path: readonly Entry[]): Map<string, MyClawAppRunMeta> {
     if (entry.type === "run_start") {
       closeDead();
       current = { id: entry.runId ?? entry.id, status: "running", startTs: tsOf(entry) };
+      currentAt = i;
       out.set(entry.id, current);
       lastTs = tsOf(entry);
       continue;
     }
     if (entry.type === "run_end") {
-      if (current) {
-        current.status = entry.reason;
-        current.endTs = tsOf(entry);
-      }
+      const trigger = path[current ? currentAt - 1 : i - 1];
+      const empty = current ? currentAt === i - 1 : true;
+      const ended: MyClawAppRunMeta = current ?? { id: entry.id, status: entry.reason, startTs: tsOf(entry) };
+      ended.status = entry.reason;
+      ended.endTs = tsOf(entry);
+      if (empty && trigger?.type === "user") out.set(trigger.id, ended);
       current = null;
       continue;
     }

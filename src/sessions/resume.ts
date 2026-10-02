@@ -26,17 +26,35 @@ export type Continuable =
   | { ok: false; reason: string };
 
 /**
- * Whether the conversation's last run can be continued: it was stopped, it failed, or it never
- * ended (the server went down under it). A run that finished has nothing left to do, and a run
- * still going is the caller's to check -- only it knows what is live.
+ * Whether the conversation can be picked back up: the owner's last message has not been answered
+ * to the end. A run still going is the caller's to check -- only it knows what is live.
+ *
+ * Read from the last message rather than from the last run, and decided by the last run marker
+ * after it: an end says how it ended (`done` leaves nothing to do), a start with no end is a run
+ * the server lost, and no marker at all is a message no run ever took up. Reading the last run
+ * instead refused the message stopped before its run wrote its own marker (a Stop during the
+ * snapshot, the transcription, a compaction ahead of the run): it found the run before, finished,
+ * and answered "the last run finished" about a message nothing had answered (2026-10-02).
  */
 export function continuable(entries: readonly Entry[], leafId: string | null): Continuable {
   const path = pathOf(entries, leafId);
-  const run = lastRunOf(path);
-  if (!run) return { ok: false, reason: "Nothing to continue: this conversation has no run yet." };
-  if (run.end?.reason === "done") return { ok: false, reason: "Nothing to continue: the last run finished." };
-  const lastUser = [...path].reverse().find((entry): entry is UserEntry => entry.type === "user");
-  return { ok: true, lastUserText: lastUser?.text ?? "", ended: run.end?.reason ?? "lost" };
+  let userAt = -1;
+  for (let i = path.length - 1; i >= 0; i--) {
+    if (path[i]!.type === "user") {
+      userAt = i;
+      break;
+    }
+  }
+  if (userAt < 0) return { ok: false, reason: "Nothing to continue: this conversation has no run yet." };
+  const lastUserText = (path[userAt] as UserEntry).text;
+  for (let i = path.length - 1; i > userAt; i--) {
+    const entry = path[i]!;
+    if (entry.type === "run_start") return { ok: true, lastUserText, ended: "lost" };
+    if (entry.type !== "run_end") continue;
+    if (entry.reason === "done") return { ok: false, reason: "Nothing to continue: the last run finished." };
+    return { ok: true, lastUserText, ended: entry.reason };
+  }
+  return { ok: true, lastUserText, ended: "lost" };
 }
 
 /** A sub-agent call of the last run whose answer never reached the log, and what it was. */
