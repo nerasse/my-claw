@@ -8,7 +8,10 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { MY_CLAW_DIR, loadEnv, resetEnvFileHotReload, type MyClawConfig } from "../../src/core/config.ts";
-import { managesUnits, reconcileUnits, type Systemctl } from "../../src/services/on-demand.ts";
+import { managesUnits, onDemandUnits, reconcileUnits, type Systemctl } from "../../src/services/on-demand.ts";
+
+/** Engines already there: a real runtime would download faster-whisper. */
+const UNITS = onDemandUnits({ prepare: async () => true });
 
 const WHISPER = "my-claw-whisper.service";
 
@@ -41,43 +44,43 @@ afterEach(() => {
 describe("local Whisper follows the speech-to-text engine", () => {
   test("cloud speech stops a Whisper an update left running, and disables it", async () => {
     const m = manager({ enabled: "enabled", active: "active" });
-    const changes = await reconcileUnits(voice({ stt: { mode: "cloud" } }), m.systemctl);
+    const changes = await reconcileUnits(voice({ stt: { mode: "cloud" } }), m.systemctl, UNITS);
     expect(m.actions()).toEqual([["disable", "--now", WHISPER]]);
     expect(changes).toEqual([{ unit: WHISPER, action: "stopped" }]);
   });
 
   test("local speech starts it, enabled so a reboot brings it back", async () => {
     const m = manager({ enabled: "disabled", active: "inactive" });
-    await reconcileUnits(voice({ stt: { mode: "local" } }), m.systemctl);
+    await reconcileUnits(voice({ stt: { mode: "local" } }), m.systemctl, UNITS);
     expect(m.actions()).toEqual([["enable", "--now", WHISPER]]);
   });
 
   test("an older install on auto without a Groq key keeps the local engine it was using", async () => {
     const m = manager({ enabled: "enabled", active: "inactive" });
-    await reconcileUnits(voice({ mode: "auto" }), m.systemctl);
+    await reconcileUnits(voice({ mode: "auto" }), m.systemctl, UNITS);
     expect(m.actions()).toEqual([["enable", "--now", WHISPER]]);
   });
 
   test("auto with a Groq key is cloud: Whisper goes", async () => {
     process.env.GROQ_API_KEY = "gsk_real";
     const m = manager({ enabled: "enabled", active: "active" });
-    await reconcileUnits(voice({ mode: "auto" }), m.systemctl);
+    await reconcileUnits(voice({ mode: "auto" }), m.systemctl, UNITS);
     expect(m.actions()).toEqual([["disable", "--now", WHISPER]]);
   });
 
   test("a state that already matches is left alone, a restart loop included", async () => {
     const off = manager({ enabled: "disabled", active: "inactive" });
-    await reconcileUnits(voice({ stt: { mode: "cloud" } }), off.systemctl);
+    await reconcileUnits(voice({ stt: { mode: "cloud" } }), off.systemctl, UNITS);
     expect(off.actions()).toEqual([]);
     // Restarting a unit that crash-loops would only reset its back-off.
     const looping = manager({ enabled: "enabled", active: "activating" });
-    await reconcileUnits(voice({ stt: { mode: "local" } }), looping.systemctl);
+    await reconcileUnits(voice({ stt: { mode: "local" } }), looping.systemctl, UNITS);
     expect(looping.actions()).toEqual([]);
   });
 
   test("a box without the unit is not asked to start it", async () => {
     const m = manager({ enabled: "", active: "inactive" });
-    await reconcileUnits(voice({ stt: { mode: "local" } }), m.systemctl);
+    await reconcileUnits(voice({ stt: { mode: "local" } }), m.systemctl, UNITS);
     expect(m.actions()).toEqual([]);
   });
 

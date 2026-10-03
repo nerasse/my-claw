@@ -87,6 +87,7 @@ import { statsReport } from "./channels/stats-command.ts";
 import { startConfigWatcher, type ConfigWatcherHandle } from "./core/config-watcher.ts";
 import { managesUnits, scheduleReconcile } from "./services/on-demand.ts";
 import { choicesOf, installKind, probeService, serviceStates } from "./services/catalog.ts";
+import { TRANSFORMERS_CACHE, diskBytes, freeEmbeddingModels, whisperRuntime } from "./services/local-engines.ts";
 import { createMyClawAppCommandHandler } from "./channels/my-claw-app/commands.ts";
 import { askUndoMode } from "./channels/branch-commands.ts";
 import { effectiveEffort, EFFORT_LEVELS, leafModelId } from "./llm/resolver.ts";
@@ -523,6 +524,10 @@ async function main() {
     if (managesUnits()) void scheduleReconcile(config);
   };
   reconcileOnDemand();
+  // A download that just ended (faster-whisper installed) is what the unit was waiting for.
+  whisperRuntime.onChange(() => {
+    if (whisperRuntime.status().state === "ready") reconcileOnDemand();
+  });
   hooks.on("config:reloaded", reconcileOnDemand);
   hooks.on("env:refreshed", reconcileOnDemand);
   const sttPipeline = new SttPipeline(voiceManager);
@@ -901,8 +906,21 @@ async function main() {
       // the page would show it missing right after saving it.
       refreshEnvFile();
       const kind = installKind();
+      const local = async (id: string) => {
+        // Only a bare-metal install downloads engines; compose runs them as images.
+        if (kind !== "native") return undefined;
+        if (id === "stt") {
+          const prep = whisperRuntime.status();
+          return { state: prep.state, ...(prep.state === "failed" ? { error: prep.error } : {}), bytes: await diskBytes(whisperRuntime.paths()) };
+        }
+        if (id === "embeddings") return { state: "idle" as const, bytes: await diskBytes([TRANSFORMERS_CACHE]) };
+        return undefined;
+      };
       const services = await Promise.all(
-        serviceStates(source).map(async (state) => ({ ...state, choices: choicesOf(state.id, kind), health: await probeService(state) })),
+        serviceStates(source).map(async (state) => {
+          const held = await local(state.id);
+          return { ...state, choices: choicesOf(state.id, kind), health: await probeService(state), ...(held ? { local: held } : {}) };
+        }),
       );
       return { install: kind, services };
     };
@@ -912,6 +930,15 @@ async function main() {
         const written = await setService(choice);
         if (!written.ok) return written;
         return { ok: true, state: await describeServices(written.written as unknown as MyClawConfig) };
+      },
+      // Never the files of an engine in use: a transcription mid-flight would lose its model.
+      free: async (id) => {
+        const inUse = serviceStates(config).find((s) => s.id === id)?.source === "self-hosted";
+        if (inUse) return { ok: false, error: `${id} runs on this server: switch it to the cloud or a URL first` };
+        if (id === "stt") await whisperRuntime.free();
+        else await freeEmbeddingModels();
+        void log("info", "local engine freed", { id });
+        return { ok: true, state: await describeServices(config) };
       },
     });
 

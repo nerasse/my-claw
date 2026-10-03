@@ -1,6 +1,7 @@
 import type { MyClawConfig } from "../core/config.ts";
 import { VoiceManager } from "../voice/manager.ts";
 import { installKind, usesOwnWhisperUnit } from "./catalog.ts";
+import { whisperRuntime } from "./local-engines.ts";
 import { log } from "../utils/logger.ts";
 
 /**
@@ -17,16 +18,27 @@ export interface OnDemandUnit {
   /** What runs on it, for the log. */
   serves: string;
   needed: (config: MyClawConfig) => boolean;
+  /**
+   * Whether what the unit runs on is there. False starts its download and leaves the unit off: the
+   * download's end reconciles again (docs/services.md, "Local engines").
+   */
+  ready?: () => Promise<boolean>;
 }
 
-export const ON_DEMAND_UNITS: readonly OnDemandUnit[] = [
+/** The table, over the runtime that prepares each engine (injected by tests: a real one downloads). */
+export function onDemandUnits(whisper: { prepare(): Promise<boolean> } = whisperRuntime): readonly OnDemandUnit[] {
+  return [
   {
     unit: "my-claw-whisper.service",
     serves: "local speech-to-text",
     // Not when the owner's own URL is used instead: nothing then runs on this machine.
     needed: (config) => new VoiceManager(config).resolveMode("stt") === "local" && usesOwnWhisperUnit(config.voice),
+    ready: () => whisper.prepare(),
   },
-];
+  ];
+}
+
+export const ON_DEMAND_UNITS: readonly OnDemandUnit[] = onDemandUnits();
 
 export type Systemctl = (args: string[]) => Promise<{ code: number; stdout: string }>;
 
@@ -69,6 +81,7 @@ export async function reconcileUnits(
     const isUp = UP.has(active.stdout);
     if (entry.needed(config)) {
       if (isEnabled && isUp) continue;
+      if (entry.ready && !(await entry.ready())) continue;
       const done = await systemctl(["enable", "--now", entry.unit]);
       if (done.code === 0) changes.push({ unit: entry.unit, action: "started" });
       void log(done.code === 0 ? "info" : "warn", done.code === 0 ? "on-demand unit started" : "on-demand unit failed to start", { unit: entry.unit, serves: entry.serves });

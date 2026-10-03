@@ -5,7 +5,10 @@ Description=Faster Whisper STT server for my-claw
 Type=simple
 # Kill stale Whisper server from same user before starting
 ExecStartPre=-/bin/sh -c 'for pid in $(pgrep -u {{USER}} -f "whisper-server.py" 2>/dev/null || true); do kill -9 "$pid" 2>/dev/null; done'
-ExecStart={{PYTHON}} {{APP_DIR}}/packaging/whisper-server.py --host 127.0.0.1 --port 8000
+# The venv the server installs faster-whisper into when local speech-to-text is switched on, else
+# the system Python (an install that set faster-whisper up by hand). docs/services.md
+# $$: systemd expands $p itself (to nothing) before the shell ever sees it.
+ExecStart=/bin/sh -c 'p={{HOME}}/.my-claw/runtime/whisper/bin/python; [ -x "$$p" ] || p={{PYTHON}}; exec "$$p" {{APP_DIR}}/packaging/whisper-server.py --host 127.0.0.1 --port 8000'
 Restart=always
 RestartSec=5
 

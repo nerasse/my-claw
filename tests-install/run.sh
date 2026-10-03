@@ -60,13 +60,23 @@ ok "the sidecar drives Chromium"
 # 5. Local voice on demand: switching speech-to-text to local enables Whisper, back to cloud stops it.
 set_stt() { as_claw "tmp=\$(mktemp) && jq '.voice.stt.mode = \"$1\"' ~/.my-claw/config.json > \$tmp && cat \$tmp > ~/.my-claw/config.json && rm \$tmp"; }
 wait_enabled() {
-  for _ in $(seq 1 30); do
+  # Up to five minutes: the first switch to local installs faster-whisper before starting the unit.
+  for _ in $(seq 1 300); do
     [ "$(as_claw 'systemctl --user is-enabled my-claw-whisper.service' || true)" = "$1" ] && return 0
     sleep 1
   done
   return 1
 }
 set_stt local && wait_enabled enabled || fail "whisper not enabled after switching to local"
+as_claw 'test -x ~/.my-claw/runtime/whisper/bin/python' || fail "faster-whisper was not installed into its venv"
+answered=""
+for _ in $(seq 1 60); do
+  answered="$(as_claw 'curl -fsS http://127.0.0.1:8000/health' 2>/dev/null || true)"
+  [ -n "$answered" ] && break
+  sleep 1
+done
+[ -n "$answered" ] || fail "local Whisper does not answer on :8000"
+ok "switching to local installed faster-whisper, then started Whisper ($answered)"
 set_stt cloud && wait_enabled disabled || fail "whisper not disabled after switching back to cloud"
 ok "Whisper follows the speech-to-text mode"
 

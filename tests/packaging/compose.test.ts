@@ -69,3 +69,12 @@ describe("the compose file", () => {
     expect(await read("packaging/compose/whisper.Dockerfile")).toContain("faster-whisper==1.2.1 av==17.0.0");
   });
 });
+
+test("the whisper unit prefers the venv the server installs, and escapes $ from systemd", async () => {
+  const unit = await read("packaging/units/my-claw-whisper.service");
+  const exec = unit.split("\n").find((l) => l.startsWith("ExecStart="))!;
+  expect(exec).toContain("p={{HOME}}/.my-claw/runtime/whisper/bin/python");
+  // A bare $p is expanded by systemd itself, to nothing: the shell would exec "".
+  expect(exec).toContain('exec "$$p"');
+  expect(exec).not.toMatch(/[^$]\$p\b/);
+});

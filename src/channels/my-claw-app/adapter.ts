@@ -1610,6 +1610,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         this.detach(handleServices(this.settingsDeps(), ws, choice), "handleServices");
         break;
       }
+      case "services.free":
+        this.detach(handleServices(this.settingsDeps(), ws, { free: frame.id }), "handleServices");
+        break;
       case "uiPrefs.get":
         this.detach(handleUiPrefs(this.settingsDeps(), ws, undefined), "handleUiPrefs");
         break;

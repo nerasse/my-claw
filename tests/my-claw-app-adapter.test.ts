@@ -1732,6 +1732,7 @@ describe("MyClawAppAdapter", () => {
         choices.push(choice);
         return choice.url ? { ok: true, state: { install: "native", services: [view("url")] as never } } : { ok: false, error: "an http(s) URL is needed" };
       },
+      free: async (id) => ({ ok: false, error: `${id} runs on this server: switch it to the cloud or a URL first` }),
     });
 
     client.ws.send(JSON.stringify({ type: "services.get" }));
@@ -1750,6 +1751,11 @@ describe("MyClawAppAdapter", () => {
     assert.equal(refused.type, "error");
     assert.equal(refused.scope, "services");
     assert.equal(refused.message, "an http(s) URL is needed");
+
+    client.ws.send(JSON.stringify({ type: "services.free", id: "stt" }));
+    const freeRefused = (await nextFrame(client)) as { type: string; scope: string; message: string };
+    assert.equal(freeRefused.scope, "services");
+    assert.equal(freeRefused.message, "stt runs on this server: switch it to the cloud or a URL first");
   });
 
   test("an unusable voice mode is refused on the voice scope, not silently ignored", async () => {

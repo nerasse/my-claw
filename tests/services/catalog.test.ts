@@ -10,7 +10,10 @@ import { tmpdir } from "node:os";
 import { mkdtemp } from "node:fs/promises";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import { CLOUD_EMBEDDING, LOCAL_EMBEDDING_MODEL, applyServiceChoice, piperEndpoint, probeService, serviceStates, whisperEndpoint, type ServiceId } from "../../src/services/catalog.ts";
-import { reconcileUnits, type Systemctl } from "../../src/services/on-demand.ts";
+import { onDemandUnits, reconcileUnits, type Systemctl } from "../../src/services/on-demand.ts";
+
+/** Engines already there: a real runtime would download faster-whisper. */
+const UNITS = onDemandUnits({ prepare: async () => true });
 import { VoiceManager } from "../../src/voice/manager.ts";
 import { SttPipeline } from "../../src/voice/stt.ts";
 import { TtsPipeline } from "../../src/voice/tts.ts";
@@ -86,9 +89,9 @@ describe("a self-hosted engine is where the install runs it, an owner's URL wins
       actions.push(args);
       return { code: 0, stdout: "" };
     };
-    await reconcileUnits(config({ voice: { stt: { mode: "local", url: "https://stt.example.net" } } }), systemctl);
+    await reconcileUnits(config({ voice: { stt: { mode: "local", url: "https://stt.example.net" } } }), systemctl, UNITS);
     expect(actions).toEqual([]);
-    await reconcileUnits(config({ voice: { stt: { mode: "local" } } }), systemctl);
+    await reconcileUnits(config({ voice: { stt: { mode: "local" } } }), systemctl, UNITS);
     expect(actions).toEqual([["enable", "--now", "my-claw-whisper.service"]]);
   });
 });

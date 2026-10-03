@@ -1,6 +1,11 @@
-import { pipeline } from "@huggingface/transformers";
+import { env, pipeline } from "@huggingface/transformers";
 import type { EmbeddingConfig } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
+import { TRANSFORMERS_CACHE } from "../services/local-engines.ts";
+
+// Its default is inside its own node_modules, i.e. inside the release: every update downloaded the
+// model again, and the copies went with the old releases.
+env.cacheDir = TRANSFORMERS_CACHE;
 
 type FeatureExtractor = (
   text: string,

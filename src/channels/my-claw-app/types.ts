@@ -504,6 +504,12 @@ export interface MyClawAppServicesGet {
   type: "services.get";
 }
 
+/** Removes a local engine's files from this server; refused while it is in use. */
+export interface MyClawAppServicesFree {
+  type: "services.free";
+  id: "stt" | "embeddings";
+}
+
 /** Picks a service's source. Keys go through `providers.env.set`, never here. */
 export interface MyClawAppServicesSet {
   type: "services.set";
@@ -1067,6 +1073,7 @@ export type MyClawAppClientFrame =
   | MyClawAppVoiceModeSet
   | MyClawAppServicesGet
   | MyClawAppServicesSet
+  | MyClawAppServicesFree
   | MyClawAppUiPrefsGet
   | MyClawAppUiPrefsSet
   | MyClawAppUpdateRun
@@ -1970,6 +1977,8 @@ export interface MyClawAppServiceView {
   missing: string[];
   /** One request to `endpoint`: any answer is up. */
   health: "up" | "down" | "no-endpoint";
+  /** A local engine this server downloads when switched on, and frees on demand. */
+  local?: { state: "idle" | "installing" | "ready" | "failed"; error?: string; bytes: number };
 }
 
 export interface MyClawAppServicesResult {

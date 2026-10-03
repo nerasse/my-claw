@@ -172,7 +172,7 @@ export async function handleVoiceMode(
 export async function handleServices(
   d: MyClawAppSettingsDeps,
   ws: ServerWebSocket<MyClawAppSessionData>,
-  choice: Omit<MyClawAppServicesSet, "type"> | undefined,
+  choice: Omit<MyClawAppServicesSet, "type"> | { free: "stt" | "embeddings" } | undefined,
 ): Promise<void> {
   if (!d.services) {
     await d.refuse(ws, "services", "services unavailable");
@@ -183,9 +183,9 @@ export async function handleServices(
       d.sendFrame(ws, { type: "services.result", ...(await d.services.status()) });
       return;
     }
-    const outcome = await d.services.set(choice);
+    const outcome = "free" in choice ? await d.services.free(choice.free) : await d.services.set(choice);
     if (!outcome.ok) {
-      await d.refuse(ws, "services", outcome.error, { id: choice.id, source: choice.source });
+      await d.refuse(ws, "services", outcome.error, "free" in choice ? { free: choice.free } : { id: choice.id, source: choice.source });
       return;
     }
     d.broadcastFrame(ws.data.owner, { type: "services.result", ...outcome.state });

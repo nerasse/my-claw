@@ -75,6 +75,7 @@ export interface MyClawAppVoiceController {
 export interface MyClawAppServicesController {
   status(): Promise<Omit<MyClawAppServicesResult, "type">>;
   set(choice: Omit<MyClawAppServicesSet, "type">): Promise<{ ok: true; state: Omit<MyClawAppServicesResult, "type"> } | { ok: false; error: string }>;
+  free(id: "stt" | "embeddings"): Promise<{ ok: true; state: Omit<MyClawAppServicesResult, "type"> } | { ok: false; error: string }>;
 }
 
 /**

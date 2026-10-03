@@ -76,3 +76,27 @@ choice; the page sends them with `providers.env.set`.
 | embeddings `url` | `backend: "http"`, the URL, no key |
 | search `off` / `url` / `self-hosted` | `webSearch.baseUrl` = `""` / the URL / `http://searxng:8080` |
 | browser `off` / `self-hosted` / `url` | `browser.enabled`, and `sidecarUrl` for a URL |
+
+## Local engines
+
+Nothing local is downloaded at install. On bare metal, an engine is fetched the first time it is
+switched on, and can be freed once it is not in use (`src/services/local-engines.ts`).
+
+- **Speech-to-text (Whisper).** The reconcile pass asks `whisperRuntime.prepare()` before enabling
+  `my-claw-whisper`: ready if the system Python already imports `faster_whisper` (an install that set
+  it up by hand keeps working untouched), else it installs the pinned set (`faster-whisper 1.2.1`,
+  `av 17.0.0`, `ctranslate2 4.7.1`) into `~/.my-claw/runtime/whisper` once, in the background, and the
+  unit stays off until that ends (started without its package it restarts forever). The end of the
+  install reconciles again. The unit prefers that venv's Python, else the system one (`$$p`: systemd
+  expands a bare `$p` itself). The model (`small`, ~460 MB) is fetched by the server on its first
+  transcription. Verified on a fresh Debian 12 machine: `tests-install/`.
+- **Embeddings.** In-process: switching them to this server warms the model up, which downloads it,
+  into `~/.my-claw/models/transformers` (its default was inside `node_modules`, so every update
+  downloaded it again).
+- **Text-to-speech (Piper)** stays the `piper` binary on bare metal, set up by hand; the compose
+  profile is the packaged way.
+
+`services.result` carries `local: { state, error?, bytes }` per engine on bare metal; the page shows
+the download, its failure, and a "Free N on the server" button. `services.free { id }` removes the
+venv and the model (speech-to-text) or the model cache (embeddings), and is refused while the engine
+is the source in use.
