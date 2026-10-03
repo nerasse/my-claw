@@ -3095,6 +3095,13 @@ async function runDeviceCliCommand(args: string[]): Promise<number> {
   return runDeviceCli(args);
 }
 
+async function runSetupCliCommand(args: string[]): Promise<number> {
+  const { runSetupCli } = await import("./channels/my-claw-app/device-cli.ts");
+  const { loadEnv } = await import("./core/config.ts");
+  await loadEnv();
+  return runSetupCli(args);
+}
+
 async function runWebCliCommand(args: string[]): Promise<number> {
   const { runWebCli } = await import("./channels/my-claw-app/web-cli.ts");
   // The bundle lives on a private release: without the env the download is anonymous, and a
@@ -3104,7 +3111,7 @@ async function runWebCliCommand(args: string[]): Promise<number> {
   return runWebCli(args);
 }
 
-const CLI_COMMANDS = ["codex", "claude", "config", "device", "web"] as const;
+const CLI_COMMANDS = ["codex", "claude", "config", "device", "setup", "web"] as const;
 
 const cliArgs = process.argv.slice(2);
 if ((CLI_COMMANDS as readonly string[]).includes(cliArgs[0] ?? "")) {
@@ -3113,6 +3120,7 @@ if ((CLI_COMMANDS as readonly string[]).includes(cliArgs[0] ?? "")) {
     claude: runClaudeCli,
     config: runConfigCli,
     device: runDeviceCliCommand,
+    setup: runSetupCliCommand,
     web: runWebCliCommand,
   };
   const runner = runners[cliArgs[0]!]!;

@@ -1,0 +1,22 @@
+# Install tests (docs/install-test.md). Throwaway machines with systemd running, for the bare-metal
+# installer. `tests-install/run.sh` drives them; `down -v` leaves nothing behind.
+name: my-claw-install-test
+
+x-machine: &machine
+  # systemd as PID 1 needs the host's cgroups and a writable /run. Test machines only: never how
+  # my-claw is deployed (that is packaging/compose).
+  privileged: true
+  cgroup: host
+  tmpfs: [/run, /run/lock, /tmp]
+  volumes:
+    - ../dist:/dist:ro
+
+services:
+  debian12:
+    <<: *machine
+    build: { context: ., dockerfile: machine.Dockerfile, args: { BASE: "debian:bookworm" } }
+    image: my-claw-test-debian12:local
+  ubuntu2404:
+    <<: *machine
+    build: { context: ., dockerfile: machine.Dockerfile, args: { BASE: "ubuntu:24.04" } }
+    image: my-claw-test-ubuntu2404:local

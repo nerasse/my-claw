@@ -1,7 +1,7 @@
 # my-claw, compose install (docs/compose.md). From the repo root:
 #
 #   docker compose -f packaging/compose/compose.yml up -d --build
-#   docker compose -f packaging/compose/compose.yml exec my-claw myclaw device add --name Phone --kind app
+#   docker compose -f packaging/compose/compose.yml exec my-claw myclaw setup
 #
 # Two services by default: the server and its browser. Every local engine is a profile, off until
 # asked for (the default is always the cloud, docs/services.md):
@@ -27,6 +27,9 @@ services:
       - "${MYCLAW_BIND:-127.0.0.1}:${MYCLAW_PORT:-8080}:8080"
     environment:
       MYCLAW_NOVNC_URL: "http://${MYCLAW_PUBLIC_HOST:-localhost}:${VNC_WEB_PORT:-6080}/vnc.html?autoconnect=1"
+      # What `myclaw setup` and `device add` print: the address the devices dial, not the
+      # container's own port.
+      MYCLAW_PUBLIC_URL: "${MYCLAW_PUBLIC_URL:-http://${MYCLAW_PUBLIC_HOST:-localhost}:${MYCLAW_PORT:-8080}}"
     volumes:
       # The same home and /tmp as the browser, at the same paths: the agent hands the sidecar files
       # to upload and a path to save a download to, and the sidecar writes screenshots to /tmp.

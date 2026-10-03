@@ -51,39 +51,21 @@ répertoire parent de `/opt`. Un VPS de 10 Go passe, de justesse ; 20 Go est con
 
 ## 3. Dépendances système
 
-Prises en charge par `install.sh` (auto-install via apt/pacman/dnf) : `ffmpeg`, `chromium`,
-`xvfb`, `x11vnc`, `websockify`.
+**Rien à installer avant.** `install.sh` installe tout, et saute ce qui est déjà là :
 
-À installer **avant** (l'installer vérifie leur présence) :
+- paquets : `jq curl unzip ffmpeg xvfb x11vnc novnc websockify xdotool dbus-user-session python3
+  python3-venv` (apt ; pacman et dnf en best-effort) ;
+- Chromium : le paquet de la distribution, sinon (Ubuntu, qui ne le fournit qu'en snap) Chrome for
+  Testing dans `/opt/my-claw-chromium`, lié en `/usr/bin/chromium` ;
+- Node.js >= 20 (le sidecar du navigateur) : le Node LTS officiel sous `/usr/local`, épinglé et
+  vérifié, si la machine n'a rien de plus récent (Debian 12 a Node 18) ;
+- Bun (épinglé) dans le home de l'utilisateur de service ;
+- `edge-tts` (synthèse vocale cloud) dans `~/.my-claw/runtime/venv`.
 
-```bash
-# Runtime + package manager (>= 1.3.13, version impliquée par la CI)
-curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.13"
-export PATH="$HOME/.bun/bin:$PATH"
+Rien de local (Whisper, Piper, embeddings) n'est téléchargé : le défaut est le cloud
+(`docs/services.md`). Testé sur Debian 12 et Ubuntu 24.04 neufs : `docs/install-test.md`.
 
-# Utilitaire JSON : REQUIS par update.sh / auto-update.sh (ils refusent de tourner sans)
-sudo apt-get install -y jq
-
-# Python3 : requis (utilisé par la STT locale). git/curl : quasi requis.
-sudo apt-get install -y python3 git curl
-```
-
-**Optionnels mais recommandés :**
-
-```bash
-# Node >= 18 : active le browser-sidecar (browsing web automatisé). Sans lui, browsing désactivé.
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs
-
-# qrencode : affiche le QR du pairing dans le terminal (sinon seulement le code)
-sudo apt-get install -y qrencode
-
-# STT locale, seulement si vous la voulez (voice.stt.mode = "local") : le serveur ne démarre
-# my-claw-whisper que dans ce cas
-pip install --user faster-whisper
-```
-
-> ⚠️ `jq` est un piège classique : `auto-update.sh` fait `command -v jq || exit 1`.
-> Sans jq, aucune mise à jour automatique, aucune erreur visible sauf en journal.
+> Optionnel : `qrencode` n'est plus utile, `myclaw setup` affiche lui-même le QR.
 
 ---
 
@@ -414,7 +396,19 @@ curl -fsS "http://127.0.0.1:8888/search?q=test&format=json" | head -c 200
 
 ## 10. Pairing des clients — flow unifié
 
-Un seul mot d'ordre, quel que soit le client : **le serveur m'int, le client réclame, le serveur délivre.**
+**Premier appareil : `myclaw setup`.** L'installeur le lance à la fin et affiche un code, un lien et
+un QR (usage unique, dix minutes) :
+
+```
+Code    K7QW-3M2P   (single use, ten minutes)
+Web     http://10.0.0.7:8080/pair#K7QW3M2P
+App     server ws://10.0.0.7:8080/my-claw-app, then type the code
+```
+
+L'adresse est celle de la machine (`hostname -I`). Derrière un domaine ou un reverse proxy :
+`myclaw setup --url https://claw.exemple.fr`. Code raté ou expiré : relancer `myclaw setup`, qui
+redonne un code pour le même appareil. Dès qu'un appareil s'est connecté, `setup` ne fait plus rien :
+les suivants s'ajoutent depuis lui (Settings > Devices > Scan), ou avec `myclaw device add`.
 
 ### 10.1 Client web
 

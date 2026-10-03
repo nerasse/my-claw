@@ -90,7 +90,7 @@ resolve_entry() {
   fi
 }
 
-# Forward `myclaw codex|claude|device|web ...` to the app entrypoint. What they write (auth
+# Forward `myclaw codex|claude|device|setup|web ...` to the app entrypoint. What they write (auth
 # tokens, config.json) must be owned by the service user; a legacy install invoked as root drops
 # to that user (su preserves the TTY for the interactive `claude login`).
 run_cli() {
@@ -120,6 +120,7 @@ usage() {
   echo "  logs      Follow the server log"
   echo "  dev       Stop the service and run development mode (bun --watch) from the current directory"
   echo "  device    Pair and revoke app/browser devices (add, ls, rm, disable, enable)"
+  echo "  setup     Pair the first device of a fresh install (a code, a link, a QR)"
   echo "  web       Install and switch the web client bundle (install, ls, use, rm)"
   echo "  update    Update to the latest release, web client bundle included (or myclaw update <version>); the browser keeps running (--with-browser)"
   echo "  codex     ChatGPT/Codex auth: myclaw codex <login|status|logout>"
@@ -341,6 +342,10 @@ case "$cmd" in
   device)
     shift
     run_cli device "$@"
+    ;;
+  setup)
+    shift
+    run_cli setup "$@"
     ;;
   web)
     shift

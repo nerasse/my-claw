@@ -64,9 +64,10 @@ fi
 
 TARGET_UID="$(id -u "$TARGET_USER")"
 TARGET_HOME="$(getent passwd "$TARGET_USER" | cut -d: -f6)"
-VERSION="$(jq -r .version "${PROJECT_DIR}/package.json" 2>/dev/null || true)"
-if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
-  echo "Error: cannot read the version from ${PROJECT_DIR}/package.json (is jq installed?)"
+# Read without jq: on a fresh machine it is one of the packages this script is about to install.
+VERSION="$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "${PROJECT_DIR}/package.json" | head -1)"
+if [ -z "$VERSION" ]; then
+  echo "Error: cannot read the version from ${PROJECT_DIR}/package.json"
   exit 1
 fi
 
@@ -74,51 +75,77 @@ echo "Installing my-claw ${VERSION} for user: ${TARGET_USER}"
 echo "Home directory: ${TARGET_HOME}"
 
 # ---------------------------------------------------------------------------
-# System packages
+# System packages and runtimes: everything my-claw runs on, installed here, so a fresh VM needs
+# nothing but this script (docs/setup-guide.md). Each step is skipped when already satisfied.
 # ---------------------------------------------------------------------------
-MISSING_BINS=""
-for dep in jq curl ffmpeg chromium Xvfb x11vnc websockify; do
-  if ! command -v "$dep" >/dev/null 2>&1; then
-    MISSING_BINS="$MISSING_BINS $dep"
+# Pinned: the versions CI and the compose images run.
+BUN_VERSION="1.3.13"
+NODE_VERSION="22.22.2"
+NODE_SHA256="88fd1ce767091fd8d4a99fdb2356e98c819f93f3b1f8663853a2dee9b438068a"
+# Chrome for Testing goes here when the distribution has no Chromium package (Ubuntu ships it
+# only as a snap, which a systemd user unit cannot drive). Root-owned, outside /opt/my-claw, which
+# belongs to the service user: /usr/bin/chromium must not point at a file the agent can rewrite.
+CFT_DIR="/opt/my-claw-chromium"
+
+if command -v apt-get >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  # novnc: the pages under /usr/share/novnc the noVNC unit serves. xdotool: unsticks a native dialog
+  # on the browser's display. python3-venv: edge-tts and, when asked for, the local engines.
+  APT_PACKAGES="jq curl ca-certificates unzip xz-utils procps ffmpeg xvfb x11vnc novnc websockify xdotool dbus-user-session python3 python3-venv fonts-liberation fonts-noto-color-emoji"
+  # Captured, not piped into grep -q: grep exits at the first match, apt-cache takes a SIGPIPE, and
+  # under pipefail the test reads false -- every Debian box got Chrome for Testing that way.
+  chromium_policy="$(apt-cache policy chromium 2>/dev/null || true)"
+  if [[ "$chromium_policy" == *"Candidate: "[0-9]* ]]; then
+    APT_PACKAGES="${APT_PACKAGES} chromium"
   fi
-done
-# The user manager needs a session bus (dbus-user-session on Debian/Ubuntu); a server image
-# may lack it. Detected by the socket unit the package ships, not by the package name.
-if [ ! -e /usr/lib/systemd/user/dbus.socket ] && [ ! -e /lib/systemd/user/dbus.socket ]; then
-  MISSING_BINS="$MISSING_BINS dbus-user-session"
+  # shellcheck disable=SC2086
+  apt-get install -y -qq --no-install-recommends $APT_PACKAGES
+elif command -v pacman >/dev/null 2>&1; then
+  pacman -S --needed --noconfirm jq curl unzip xz ffmpeg chromium xorg-server-xvfb x11vnc novnc python-websockify xdotool python
+elif command -v dnf >/dev/null 2>&1; then
+  dnf install -y jq curl unzip xz ffmpeg chromium Xvfb x11vnc novnc python3-websockify xdotool python3
+else
+  echo "Warning: no apt, pacman or dnf. Install by hand: jq curl unzip ffmpeg chromium Xvfb x11vnc novnc websockify xdotool python3, and the systemd user session bus"
 fi
 
-if [ -n "$MISSING_BINS" ]; then
-  echo ""
-  echo "Missing dependencies:${MISSING_BINS}. Installing..."
-  echo ""
-  if command -v apt-get >/dev/null 2>&1; then
-    apt-get update
-    apt-get install -y jq curl ffmpeg chromium xvfb x11vnc websockify dbus-user-session
-  elif command -v pacman >/dev/null 2>&1; then
-    pacman -S --needed --noconfirm jq curl ffmpeg chromium xorg-server-xvfb x11vnc python-websockify
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y jq curl ffmpeg chromium Xvfb x11vnc python-websockify
-  else
-    echo "Warning: could not detect the package manager. Install by hand:"
-    echo "  jq curl ffmpeg chromium Xvfb x11vnc websockify, and the systemd user session bus"
-  fi
-  echo ""
+# Node >= 20 runs the browser sidecar (playwright-core asks for it). Debian 12 ships 18: the
+# official LTS build goes under /usr/local, checksum verified, when the machine has nothing newer.
+node_ok() {
+  "$1" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 20 ? 0 : 1)' >/dev/null 2>&1
+}
+NODE_BIN="$(command -v node || true)"
+if [ -z "$NODE_BIN" ] || ! node_ok "$NODE_BIN"; then
+  echo "Installing Node.js ${NODE_VERSION} under /usr/local..."
+  node_tar="$(mktemp -d)/node.tar.xz"
+  curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz" -o "$node_tar"
+  echo "${NODE_SHA256}  ${node_tar}" | sha256sum -c --quiet
+  rm -rf /usr/local/lib/my-claw-node
+  mkdir -p /usr/local/lib/my-claw-node
+  tar -xJf "$node_tar" -C /usr/local/lib/my-claw-node --strip-components=1
+  rm -rf "$(dirname "$node_tar")"
+  for bin in node npm npx; do ln -sfn "/usr/local/lib/my-claw-node/bin/${bin}" "/usr/local/bin/${bin}"; done
+  NODE_BIN="/usr/local/bin/node"
 fi
 
-# Runtimes are checked here only to fail early with a clear message; the service user's copy
-# (~/.bun) counts, root's PATH rarely has it.
+# Chromium: the package where there is one; otherwise Chrome for Testing, at the revision the
+# sidecar's playwright-core was built against, with the libraries it needs.
+if ! command -v chromium >/dev/null 2>&1; then
+  echo "No Chromium package here: installing Chrome for Testing in ${CFT_DIR}..."
+  PLAYWRIGHT_BROWSERS_PATH="$CFT_DIR" "$NODE_BIN" "${PROJECT_DIR}/node_modules/playwright-core/cli.js" install --with-deps chromium
+  chrome="$(ls -1d "${CFT_DIR}"/chromium-[0-9]*/chrome-linux*/chrome 2>/dev/null | sort -V | tail -1)"
+  [ -n "$chrome" ] || { echo "Error: Chrome for Testing did not install"; exit 1; }
+  ln -sfn "$chrome" /usr/bin/chromium
+fi
+
+as_user() {
+  runuser -u "$TARGET_USER" -- env "HOME=${TARGET_HOME}" "$@"
+}
+
+# Bun, the server's runtime, in the service user's home (where update.sh looks for it).
 if ! command -v bun >/dev/null 2>&1 && [ ! -x "${TARGET_HOME}/.bun/bin/bun" ]; then
-  echo "Error: bun is required. As ${TARGET_USER}: curl -fsSL https://bun.sh/install | bash"
-  exit 1
-fi
-if ! command -v python3 >/dev/null 2>&1 && ! command -v python >/dev/null 2>&1; then
-  echo "Error: python3 is required but not installed."
-  exit 1
-fi
-if ! command -v node >/dev/null 2>&1 && ! ls "${TARGET_HOME}"/.nvm/versions/node/*/bin/node >/dev/null 2>&1; then
-  echo "WARNING: node not found. The browser sidecar will be skipped (browsing disabled)."
-  echo "         Install Node.js and run 'myclaw update --force' to enable it."
+  echo "Installing Bun ${BUN_VERSION} for ${TARGET_USER}..."
+  as_user bash -c "curl -fsSL https://bun.sh/install | bash -s bun-v${BUN_VERSION}" >/dev/null
 fi
 
 # ---------------------------------------------------------------------------
@@ -142,6 +169,13 @@ if [ ! -f "${TARGET_HOME}/.my-claw/.env" ]; then
 fi
 chmod 600 "${TARGET_HOME}/.my-claw/config.json" "${TARGET_HOME}/.my-claw/.env"
 chown "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/.my-claw/config.json" "${TARGET_HOME}/.my-claw/.env"
+
+# edge-tts, the default (cloud) text-to-speech, in a venv the server's unit puts on its PATH.
+if [ ! -x "${TARGET_HOME}/.my-claw/runtime/venv/bin/edge-tts" ]; then
+  echo "Installing edge-tts for ${TARGET_USER}..."
+  as_user python3 -m venv "${TARGET_HOME}/.my-claw/runtime/venv"
+  as_user "${TARGET_HOME}/.my-claw/runtime/venv/bin/pip" install -q edge-tts
+fi
 
 # The tree: one release directory, `current` pointing at it. A reinstall of the same version
 # replaces the directory; another version becomes current and the old one the rollback.
@@ -201,10 +235,15 @@ runuser -u "$TARGET_USER" -- env "HOME=${TARGET_HOME}" "XDG_RUNTIME_DIR=/run/use
   "${APP_DIR}/current/packaging/update.sh" --activate
 
 echo ""
+# The first device, without knowing the device commands: a code, a link, a QR (docs/setup-guide.md).
+PORT="$(jq -r '.channels["my-claw-app"].port // 8080' "${TARGET_HOME}/.my-claw/config.json" 2>/dev/null || echo 8080)"
+HOST_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+PUBLIC_URL="${MYCLAW_PUBLIC_URL:-http://${HOST_IP:-127.0.0.1}:${PORT}}"
+
 echo "my-claw ${VERSION} installed for ${TARGET_USER}."
-echo "Next steps (as ${TARGET_USER}, no sudo):"
-echo "  1. Put your keys in ${TARGET_HOME}/.my-claw/.env (picked up live, no restart)"
-echo "  2. Pair a device: myclaw device add"
-echo "  3. Check: myclaw status"
 echo ""
-echo "Updates: myclaw update (the timer also checks every 15 minutes)"
+/usr/local/bin/myclaw setup --url "$PUBLIC_URL" || echo "No pairing code yet: run 'myclaw setup' once my-claw is up (myclaw status)."
+echo ""
+echo "Behind a reverse proxy or a domain: myclaw setup --url https://claw.example.com"
+echo "Then everything else is set from the app: Settings > Providers for the model, Settings > Services."
+echo "Updates: automatic (every 15 minutes), or myclaw update"

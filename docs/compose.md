@@ -9,7 +9,7 @@ locally from the repo (published images are phase 2). Files: `packaging/compose/
 ```sh
 git clone <repo> my-claw && cd my-claw
 docker compose -f packaging/compose/compose.yml up -d --build
-docker compose -f packaging/compose/compose.yml exec my-claw myclaw device add --name Phone --kind app
+docker compose -f packaging/compose/compose.yml exec my-claw myclaw setup
 ```
 
 The server listens on `127.0.0.1:8080` (`MYCLAW_BIND`, `MYCLAW_PORT`), noVNC on `127.0.0.1:6080`.

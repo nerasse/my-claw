@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import QRCode from "qrcode";
 import { CONFIG_PATH, type MyClawAppChannelConfig, type MyClawConfig } from "../../core/config.ts";
 import { listDevices, mintDevice, revokeDevice, setDeviceEnabled } from "./devices.ts";
 
@@ -11,9 +12,20 @@ import { listDevices, mintDevice, revokeDevice, setDeviceEnabled } from "./devic
  * credential that was just minted.
  */
 
+/** The name `myclaw setup` gives the device it mints: found again on a rerun, until it is used. */
+export const FIRST_DEVICE = "First device";
+
+const SETUP_USAGE = `usage: myclaw setup [--url <public url>] [--owner <name>]
+
+  Pairs the first device of a fresh install: prints a single-use code, a link and a QR, valid ten
+  minutes. Run it again for a new code. Once a device has connected, add the next ones from it
+  (Settings > Devices > Scan) or with \`myclaw device add\`.
+`;
+
 const USAGE = `usage: myclaw device <command>
 
-  add --name <name> [--owner <owner>] [--kind web|app]   mint a device and print a claim link
+  add --name <name> [--owner <owner>] [--kind web|app] [--url <public url>]
+                                                         mint a device and print a claim link
   ls                                                     list paired devices
   rm <deviceId>                                          revoke a device
   disable <deviceId> | enable <deviceId>                 keep the entry, close or open the door
@@ -94,6 +106,71 @@ function formatCode(code: string): string {
   return `${code.slice(0, 4)}-${code.slice(4)}`;
 }
 
+/**
+ * Where the owner's devices reach this server. The daemon only knows the Host it was asked on,
+ * which from this CLI is 127.0.0.1:<port> -- and in compose, the port inside the container. So the
+ * address is said by whoever knows it: `--url`, or MYCLAW_PUBLIC_URL (set by the compose file and
+ * the installer).
+ */
+export function publicBase(flagUrl: string | undefined, env: Record<string, string | undefined>, ticketHost: string): string {
+  const given = flagUrl?.trim() || env["MYCLAW_PUBLIC_URL"]?.trim();
+  return given ? given.replace(/\/+$/, "") : `http://${ticketHost}`;
+}
+
+/** Prints a claim: the code, the link for a browser, the address for the app, a QR of the link. */
+async function printClaim(base: string, code: string): Promise<void> {
+  const link = `${base}/pair#${code}`;
+  console.log(`Code    ${formatCode(code)}   (single use, ten minutes)`);
+  console.log(`Web     ${link}`);
+  console.log(`App     server ${base.replace(/^http/, "ws")}/my-claw-app, then type the code`);
+  const qr = await QRCode.toString(link, { type: "terminal", small: true, errorCorrectionLevel: "M" }).catch(() => "");
+  if (qr) console.log(`\n${qr}`);
+}
+
+/**
+ * `myclaw setup`: the first device of an install, without knowing the device commands. A device
+ * that has connected once ends it: from then on devices are added from a paired one, which shows
+ * who is asking before approving. Until then a rerun reuses the device it minted and only asks for
+ * a fresh code, so a missed code never leaves a pile of unused credentials behind.
+ */
+export async function runSetupCli(args: string[], env: Record<string, string | undefined> = process.env): Promise<number> {
+  const { flags } = parseArgs(args);
+  if (flags["help"] !== undefined) {
+    console.log(SETUP_USAGE);
+    return 0;
+  }
+  const { channel, port } = await readChannelConfig();
+  const devices = listDevices(channel);
+  const used = devices.filter((d) => d.lastSeenAt);
+  if (used.length > 0) {
+    console.log(`Already paired (${used.length} device${used.length > 1 ? "s" : ""} connected).`);
+    console.log("Add another from a paired device (Settings > Devices > Scan), or: myclaw device add --name <name>");
+    return 0;
+  }
+
+  let device = devices.find((d) => d.name === FIRST_DEVICE && d.enabled);
+  let token: string | undefined = device ? channel.devices?.[device.deviceId]?.token : undefined;
+  if (!device || !token) {
+    const minted = await mintDevice(channel, { name: FIRST_DEVICE, owner: flags["owner"] || env["USER"] || undefined, kind: "web" });
+    if (!minted.ok) {
+      console.error(minted.error);
+      return 1;
+    }
+    device = { deviceId: minted.device.deviceId, name: FIRST_DEVICE, kind: "web", owner: minted.device.owner, enabled: true };
+    token = minted.device.token;
+  }
+
+  const ticket = await requestTicket(port, device.deviceId, token);
+  if ("error" in ticket) {
+    console.error(`No code: ${ticket.error}. Is my-claw running? (myclaw status), then: myclaw setup`);
+    return 1;
+  }
+  console.log("Pair your first device:\n");
+  await printClaim(publicBase(flags["url"], env, ticket.host), ticket.code);
+  console.log("Missed it? Run: myclaw setup");
+  return 0;
+}
+
 export async function runDeviceCli(args: string[]): Promise<number> {
   const { positional, flags } = parseArgs(args);
   const command = positional[0];
@@ -140,8 +217,7 @@ export async function runDeviceCli(args: string[]): Promise<number> {
       console.log("        The device is written and live; pair with the token above.");
       return 0;
     }
-    console.log(`Claim   http://${ticket.host}/pair#${ticket.code}`);
-    console.log(`        or type ${formatCode(ticket.code)} in the pairing page`);
+    await printClaim(publicBase(flags["url"], process.env, ticket.host), ticket.code);
     return 0;
   }
 

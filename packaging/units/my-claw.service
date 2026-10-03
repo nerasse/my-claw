@@ -9,7 +9,8 @@ Wants=my-claw-xvfb.service my-claw-chromium.service my-claw-browser-sidecar.serv
 Type=simple
 WorkingDirectory={{HOME}}
 # No EnvironmentFile: the server loads {{HOME}}/.my-claw/.env itself at boot and hot-reloads it.
-Environment="PATH={{HOME}}/.local/bin:{{HOME}}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin"
+# runtime/venv: edge-tts (cloud text-to-speech), installed there by install.sh.
+Environment="PATH={{HOME}}/.my-claw/runtime/venv/bin:{{HOME}}/.local/bin:{{HOME}}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin"
 # A bare-metal install: this server starts and stops the on-demand units (my-claw-whisper) from its
 # config, and its self-hosted engines are on this machine. A dev server on the same box is not one
 # and touches no unit. docs/services.md, docs/on-demand-services.md
