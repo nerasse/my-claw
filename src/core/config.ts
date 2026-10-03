@@ -74,12 +74,16 @@ export interface VoiceFeatureConfig {
 
 export interface VoiceTtsConfig extends VoiceFeatureConfig {
   voice?: string;
+  /** A Piper HTTP server the owner runs elsewhere, used when the mode is local -- docs/services.md. */
+  url?: string;
 }
 
 export interface VoiceSttConfig extends VoiceFeatureConfig {
   echoTranscript?: boolean;
   echoFormat?: string;
   language?: string;
+  /** A Whisper server the owner runs elsewhere, used when the mode is local -- docs/services.md. */
+  url?: string;
 }
 
 export interface VoiceConfig {

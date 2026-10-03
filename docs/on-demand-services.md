@@ -46,7 +46,7 @@ elsewhere.
   its back-off. A unit that is not installed is skipped.
 - Passes are queued, one at a time: a reload and an app toggle never race an `enable` against a
   `disable`.
-- Only the installed server manages units. Its unit sets `MY_CLAW_MANAGES_UNITS=1`; a dev server on
+- Only the installed server manages units. Its unit sets `MY_CLAW_INSTALL=native` (docs/services.md); a dev server on
   the same box reads the same config and must not touch the units the installed one runs on.
 
 ## Errors that say what to do

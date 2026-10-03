@@ -1,6 +1,7 @@
 import { stat, readFile } from "node:fs/promises";
 import { basename } from "node:path";
 import type { VoiceManager } from "./manager.ts";
+import { whisperEndpoint } from "../services/catalog.ts";
 import type { STTResult, TranscriptionResult } from "./types.ts";
 
 export class SttPipeline {
@@ -86,7 +87,7 @@ export class SttPipeline {
   }
 
   private async transcribeLocal(filePath: string, language?: string): Promise<STTResult> {
-    const endpoint = process.env.FASTER_WHISPER_ENDPOINT ?? "http://127.0.0.1:8000";
+    const endpoint = whisperEndpoint(this.voiceManager.getVoiceConfig());
 
     const fileStat = await stat(filePath);
     const MAX_AUDIO_SIZE = 25 * 1024 * 1024;

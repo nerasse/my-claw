@@ -10,9 +10,10 @@ Type=simple
 WorkingDirectory={{HOME}}
 # No EnvironmentFile: the server loads {{HOME}}/.my-claw/.env itself at boot and hot-reloads it.
 Environment="PATH={{HOME}}/.local/bin:{{HOME}}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin"
-# This server starts and stops the on-demand units (my-claw-whisper) from its config. Only the
-# installed one: a dev server on the same box must not touch them. docs/on-demand-services.md
-Environment="MY_CLAW_MANAGES_UNITS=1"
+# A bare-metal install: this server starts and stops the on-demand units (my-claw-whisper) from its
+# config, and its self-hosted engines are on this machine. A dev server on the same box is not one
+# and touches no unit. docs/services.md, docs/on-demand-services.md
+Environment="MY_CLAW_INSTALL=native"
 ExecStart={{BUN}} run {{APP_DIR}}/src/index.ts
 Restart=always
 RestartSec=5

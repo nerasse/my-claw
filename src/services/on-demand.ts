@@ -1,5 +1,6 @@
 import type { MyClawConfig } from "../core/config.ts";
 import { VoiceManager } from "../voice/manager.ts";
+import { installKind, usesOwnWhisperUnit } from "./catalog.ts";
 import { log } from "../utils/logger.ts";
 
 /**
@@ -22,7 +23,8 @@ export const ON_DEMAND_UNITS: readonly OnDemandUnit[] = [
   {
     unit: "my-claw-whisper.service",
     serves: "local speech-to-text",
-    needed: (config) => new VoiceManager(config).resolveMode("stt") === "local",
+    // Not when the owner's own URL is used instead: nothing then runs on this machine.
+    needed: (config) => new VoiceManager(config).resolveMode("stt") === "local" && usesOwnWhisperUnit(config.voice),
   },
 ];
 
@@ -35,11 +37,11 @@ export const systemctlUser: Systemctl = async (args) => {
 };
 
 /**
- * Set by the installed server's unit. A dev server on the same machine reads the same config and
- * must never start or stop the units the installed one runs on.
+ * Only a bare-metal install's server: a dev server on the same machine reads the same config and
+ * must never start or stop the units the installed one runs on, and a compose one has no units.
  */
 export function managesUnits(env: Record<string, string | undefined> = process.env): boolean {
-  return env["MY_CLAW_MANAGES_UNITS"] === "1";
+  return installKind(env) === "native";
 }
 
 /** Running, or restarting after a crash: either way, starting it again would change nothing. */

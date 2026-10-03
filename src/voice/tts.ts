@@ -1,10 +1,11 @@
 import { execFile, spawn } from "node:child_process";
-import { mkdtemp, unlink, rmdir } from "node:fs/promises";
+import { mkdtemp, unlink, rmdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname as pathDirname } from "node:path";
 import { promisify } from "node:util";
 import type { VoiceManager } from "./manager.ts";
 import type { TTSResult } from "./types.ts";
+import { piperEndpoint } from "../services/catalog.ts";
 
 const execFileAsync = promisify(execFile);
 
@@ -65,9 +66,9 @@ export class TtsPipeline {
     }
     const mode = this.voiceManager.resolveMode("tts", overrides);
     try {
-      return mode === "cloud"
-        ? await this.generateEdgeTTS(text, overrides?.voice)
-        : await this.generatePiper(text, overrides?.voice);
+      if (mode === "cloud") return await this.generateEdgeTTS(text, overrides?.voice);
+      const endpoint = piperEndpoint(this.voiceManager.getVoiceConfig());
+      return endpoint ? await this.generatePiperHttp(endpoint, text, overrides?.voice) : await this.generatePiper(text, overrides?.voice);
     } catch (err) {
       throw new Error(`TTS ${mode} failed: ${err}`);
     }
@@ -147,6 +148,24 @@ export class TtsPipeline {
       await this.cleanup(outputPath);
       throw err;
     }
+  }
+
+  /** A Piper HTTP server (`python -m piper.http_server`): the compose service, or the owner's URL. */
+  private async generatePiperHttp(endpoint: string, text: string, voice?: string): Promise<TTSResult> {
+    const response = await fetch(`${endpoint}/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, ...(voice ? { voice } : {}) }),
+      signal: AbortSignal.timeout(30_000),
+    }).catch((err: unknown) => {
+      if (err instanceof Error && err.name === "TimeoutError") throw err;
+      throw new Error(`Piper is not answering at ${endpoint}: ${String(err)}`);
+    });
+    if (!response.ok) throw new Error(`Piper error ${response.status}: ${(await response.text()).slice(0, 200)}`);
+    const tmpDir = await mkdtemp(join(tmpdir(), "tts-"));
+    const outputPath = join(tmpDir, "output.wav");
+    await writeFile(outputPath, new Uint8Array(await response.arrayBuffer()));
+    return { path: outputPath, mimeType: "audio/wav" };
   }
 
   private async cleanup(path: string): Promise<void> {

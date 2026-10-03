@@ -679,7 +679,8 @@ See `docs/my-claw-app-channel.md` for the wire protocol and `docs/web-pairing.md
 ```
 
 - `mode` — global default: `"cloud"`, `"local"`, `"auto"` (cloud if credentials available, local otherwise).
-- `stt.mode` — override for STT. Cloud uses Groq Whisper, local uses faster-whisper at `FASTER_WHISPER_ENDPOINT`.
+- `stt.mode` — override for STT. Cloud uses Groq Whisper, local uses faster-whisper at `stt.url`, else `FASTER_WHISPER_ENDPOINT`, else the install's own engine.
+- `stt.url`, `tts.url` — a Whisper / Piper HTTP server run elsewhere, used when the mode is local. Without it, the engine this install runs: `docs/services.md`.
 - `stt.echoTranscript` — send transcription as reply before routing (default: true).
 - `stt.language` — Whisper language code. **No default: absent means auto-detect**, and it
   applies to the owner's voice notes only. Other audio files are always auto-detected, since

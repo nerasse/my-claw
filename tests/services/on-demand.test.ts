@@ -82,7 +82,8 @@ describe("local Whisper follows the speech-to-text engine", () => {
   });
 
   test("only the installed server manages the units, never a dev one on the same box", () => {
-    expect(managesUnits({ MY_CLAW_MANAGES_UNITS: "1" })).toBe(true);
+    expect(managesUnits({ MY_CLAW_INSTALL: "native" })).toBe(true);
+    expect(managesUnits({ MY_CLAW_INSTALL: "compose" })).toBe(false);
     expect(managesUnits({})).toBe(false);
   });
 });
@@ -103,7 +104,7 @@ describe("the shipped files", () => {
     expect(listVar(cli, "START_ORDER")).not.toContain("my-claw-whisper");
     expect(listVar(cli, "DEPS")).not.toContain("my-claw-whisper");
     expect(listVar(await read("scripts/dev.sh"), "DEPS")).not.toContain("my-claw-whisper");
-    expect(await read("packaging/units/my-claw.service")).toContain('Environment="MY_CLAW_MANAGES_UNITS=1"');
+    expect(await read("packaging/units/my-claw.service")).toContain('Environment="MY_CLAW_INSTALL=native"');
   });
 
   test("the .env template sets no fake key, and the config template no 30 min cron wall", async () => {
