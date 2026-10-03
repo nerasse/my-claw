@@ -13,6 +13,8 @@ export interface HookEventMap {
   "app:shutdown": { signal: string };
   "app:error": { error: unknown; type: "rejection" | "exception" };
   "config:reloaded": { changed: string[]; rebootRequired: string[] };
+  /** `.env` changed and no config section did: a key that appeared or went can still change which engine answers. */
+  "env:refreshed": Record<string, never>;
   /** config.json was unusable at boot; the agent started on a snapshot instead. */
   "config:fallback": { ref: string; error: string };
 

@@ -38,7 +38,8 @@ export class SttPipeline {
   private async transcribeGroq(filePath: string, language?: string): Promise<STTResult> {
     const apiKey = process.env.GROQ_API_KEY;
     if (!apiKey) {
-      throw new Error("GROQ_API_KEY not set");
+      // Said with the two ways out: nothing falls back to a local engine that is not running.
+      throw new Error("GROQ_API_KEY not set: add a Groq key to .env (Settings > Providers > env), or switch speech-to-text to local");
     }
 
     const fileStat = await stat(filePath);
@@ -103,6 +104,11 @@ export class SttPipeline {
       method: "POST",
       body: formData,
       signal: AbortSignal.timeout(60_000),
+    }).catch((err: unknown) => {
+      if (err instanceof Error && err.name === "TimeoutError") throw err;
+      // my-claw-whisper runs only while speech-to-text is local, and loads its model on the first
+      // request: refused means not started yet, or its Python package is missing.
+      throw new Error(`local Whisper is not answering at ${endpoint} (my-claw-whisper): ${String(err)}`);
     });
 
     if (!response.ok) {

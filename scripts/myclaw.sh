@@ -11,7 +11,9 @@ set -uo pipefail
 # old way, with sudo, until its next update moves it.
 
 APP_DIR="/opt/my-claw"
-START_ORDER="my-claw-xvfb my-claw-chromium my-claw-browser-sidecar my-claw-whisper my-claw-vnc my-claw-novnc my-claw"
+# my-claw-whisper is not started here: the server runs it while speech-to-text is local
+# (docs/on-demand-services.md). It is stopped with the rest.
+START_ORDER="my-claw-xvfb my-claw-chromium my-claw-browser-sidecar my-claw-vnc my-claw-novnc my-claw"
 STOP_ORDER="my-claw my-claw-whisper my-claw-browser-sidecar my-claw-vnc my-claw-novnc"
 # The browser and the display it draws on. They hold the owner's work (open tabs, a sign-in, a form
 # stopped at its e-mail code), so stop and restart leave them running unless asked: two restarts on
@@ -213,7 +215,7 @@ follow_logs() {
 
 dev_mode() {
   MAIN="my-claw"
-  DEPS="my-claw-xvfb my-claw-chromium my-claw-browser-sidecar my-claw-whisper my-claw-vnc my-claw-novnc"
+  DEPS="my-claw-xvfb my-claw-chromium my-claw-browser-sidecar my-claw-vnc my-claw-novnc"
   WAS_MAIN_ACTIVE=""
   local SUDO=""
   if [ "$MODE" = "legacy" ] && [ "$EUID" -ne 0 ]; then

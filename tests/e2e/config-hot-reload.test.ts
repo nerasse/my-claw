@@ -168,6 +168,33 @@ describe("E2E config hot-reload", () => {
     expect(reads).toBeGreaterThan(0);
   }, 15_000);
 
+  // A Groq key added to .env turns `auto` speech into cloud speech, which stops local Whisper:
+  // whoever derives something from the env must hear of an edit that changed no section.
+  test("a bare .env edit is announced as env:refreshed", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "myclaw-cfg-"));
+    const file = join(dir, "config.json");
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    await writeFile(file, JSON.stringify(initialConfig(), null, 2));
+    const envFile = join(dir, ".env");
+    await writeFile(envFile, "TOKEN=first\n");
+    const config = parseConfig(await Bun.file(file).text());
+
+    const gate = signalGate("env:refreshed");
+    const handler = () => gate.fired();
+    hooks.on("env:refreshed", handler);
+    cleanups.push(() => hooks.off("env:refreshed", handler));
+    const watcher = startConfigWatcher(config, {}, { path: file, read: async () => parseConfig(await Bun.file(file).text()), debounceMs: 20 });
+    cleanups.push(() => watcher.stop());
+
+    const retouch = setInterval(() => { void writeFile(envFile, `TOKEN=rotated-${Date.now()}\n`).catch(() => {}); }, 100);
+    cleanups.push(() => clearInterval(retouch));
+    try {
+      await gate.done;
+    } finally {
+      clearInterval(retouch);
+    }
+  }, 15_000);
+
   test("invalid JSON is skipped and the running config is preserved", async () => {
     const dir = await mkdtemp(join(tmpdir(), "myclaw-cfg-"));
     const file = join(dir, "config.json");

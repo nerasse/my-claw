@@ -48,8 +48,12 @@ TMP_BASE="/var/tmp"
 # Chromium: the binary is the system's, and the sidecar, which is ours, re-adopts every open tab
 # when it restarts (a page id is the CDP target id). A changed browser unit or an upgraded binary is
 # announced below instead, and applies at the browser's next start. docs/browser.md.
-START_ORDER="my-claw-xvfb my-claw-chromium my-claw-browser-sidecar my-claw-whisper my-claw-vnc my-claw-novnc my-claw"
+START_ORDER="my-claw-xvfb my-claw-chromium my-claw-browser-sidecar my-claw-vnc my-claw-novnc my-claw"
 STOP_ORDER="my-claw my-claw-browser-sidecar my-claw-whisper my-claw-vnc my-claw-novnc"
+# Rendered with the rest, never enabled nor started here: the server runs each one only while its
+# config needs it (docs/on-demand-services.md). Stopped with the rest, so a code change reaches it;
+# the server starts it again at boot if it is still needed.
+ON_DEMAND_UNITS="my-claw-whisper.service"
 BROWSER_UNIT="my-claw-chromium"
 WITH_BROWSER=0
 
@@ -200,6 +204,7 @@ render_units() {
   done
   "${SYSCTL[@]}" daemon-reload
   for name in $shipped; do
+    case " ${ON_DEMAND_UNITS} " in *" ${name} "*) continue ;; esac
     "${SYSCTL[@]}" enable "$name" >/dev/null 2>&1 || true
   done
 }

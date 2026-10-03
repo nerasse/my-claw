@@ -23,17 +23,6 @@
     "providers": {},
     "models": []
   },
-  "agents": {
-    "orchestrator": {
-      "maxIterations": 90
-    },
-    "general": {
-      "maxIterations": 50
-    },
-    "research": {
-      "maxIterations": 50
-    }
-  },
   "voice": {
     "mode": "auto",
     "stt": {
@@ -63,8 +52,7 @@
   "cron": {
     "enabled": true,
     "tickIntervalMs": 60000,
-    "maxIterations": 90,
-    "timeoutMs": 1800000
+    "maxIterations": 90
   },
   "injection": {
     "enabled": true,

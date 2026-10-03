@@ -84,6 +84,7 @@ import { openRouterModels } from "./llm/openrouter-endpoints.ts";
 import { ModelPricing, setSharedPricing } from "./llm/pricing.ts";
 import { statsReport } from "./channels/stats-command.ts";
 import { startConfigWatcher, type ConfigWatcherHandle } from "./core/config-watcher.ts";
+import { managesUnits, scheduleReconcile } from "./services/on-demand.ts";
 import { createMyClawAppCommandHandler } from "./channels/my-claw-app/commands.ts";
 import { askUndoMode } from "./channels/branch-commands.ts";
 import { effectiveEffort, EFFORT_LEVELS, leafModelId } from "./llm/resolver.ts";
@@ -513,6 +514,14 @@ async function main() {
   };
 
   const voiceManager = new VoiceManager(config);
+  // Local Whisper runs only while the config sends speech to it -- docs/on-demand-services.md.
+  // Read at call time, from the live config: the voice mode, a Groq key appearing in .env.
+  const reconcileOnDemand = (): void => {
+    if (managesUnits()) void scheduleReconcile(config);
+  };
+  reconcileOnDemand();
+  hooks.on("config:reloaded", reconcileOnDemand);
+  hooks.on("env:refreshed", reconcileOnDemand);
   const sttPipeline = new SttPipeline(voiceManager);
   const ttsPipeline = new TtsPipeline(voiceManager);
 
@@ -878,6 +887,7 @@ async function main() {
         // The file is the source of truth, but the watcher lands a beat later and the reply is
         // built now: apply it in memory too so the app is not told the old engine.
         voiceManager.setFeatureMode("stt", mode);
+        reconcileOnDemand();
       },
     });
 

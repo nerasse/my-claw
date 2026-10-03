@@ -306,6 +306,7 @@ export function startConfigWatcher(
       // read() already force-refreshed process.env; a bare .env rotation lands here
       // with no config-section diff. Confirm it so a token rotation is observable.
       void log("info", "config watcher fired with no section changes (env refreshed)");
+      hooks.emit("env:refreshed", {});
       return result;
     }
 

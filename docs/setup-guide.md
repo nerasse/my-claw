@@ -21,7 +21,7 @@ le pairing, les médias, la santé. Autour de lui, des services optionnels :
 | `my-claw-xvfb` | Display virtuel :99 pour le navigateur automatisé | Oui (installer) |
 | `my-claw-chromium` | Chromium CDP :9222 pour la navigation | Oui (installer) |
 | `my-claw-browser-sidecar` | Sidecar Node :9223 (Playwright, piloté par Bun) | Si Node installé |
-| `my-claw-whisper` | STT locale (faster-whisper) :8000 | Si Python + faster-whisper |
+| `my-claw-whisper` | STT locale (faster-whisper) :8000 | À la demande : démarré par le serveur seulement si la STT est en local (`docs/on-demand-services.md`) |
 | `my-claw-vnc` / `my-claw-novnc` | VNC :5900 / noVNC :6080 (voir le navigateur) | Oui (installer) |
 | `my-claw-auto-update.timer` | Mise à jour auto toutes les 15 min | **Oui** |
 
@@ -73,7 +73,8 @@ curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-ge
 # qrencode : affiche le QR du pairing dans le terminal (sinon seulement le code)
 sudo apt-get install -y qrencode
 
-# STT locale (utilisé par le service my-claw-whisper ; sans lui ce service crash-loope)
+# STT locale, seulement si vous la voulez (voice.stt.mode = "local") : le serveur ne démarre
+# my-claw-whisper que dans ce cas
 pip install --user faster-whisper
 ```
 
@@ -481,9 +482,12 @@ myclaw device disable <deviceId>  # fermer la porte sans supprimer
 | TTS locale | binaire `piper` + modèle | — |
 | Localisation | `GEOAPIFY_API_KEY` (reverse geocoding) | `GEOAPIFY_API_KEY=...` |
 
-`voice.mode` = `auto` | `cloud` | `local`. Le template part sur `auto` : cloud si clé présente,
-sinon local. Si aucun backend n'est disponible, la fonctionnalité est simplement absente
-(pas de crash). `GEOAPIFY_API_KEY` sans `.trim()` non vide ⇒ partage de localisation désactivé.
+`voice.mode` = `auto` | `cloud` | `local`, précisé par `voice.stt.mode` et `voice.tts.mode`. Le
+template met la STT et la TTS en `cloud` : rien de local ne tourne. Passer la STT en `local` (dans
+l'app ou la config) fait démarrer `my-claw-whisper` par le serveur, repasser en cloud l'arrête
+(`docs/on-demand-services.md`). En `auto` : cloud si `GROQ_API_KEY` est présente, sinon local.
+Sans clé Groq en cloud, l'erreur dit quoi faire ; elle ne bascule jamais vers un moteur arrêté.
+`GEOAPIFY_API_KEY` sans `.trim()` non vide ⇒ partage de localisation désactivé.
 
 ---
 
@@ -544,7 +548,7 @@ streamer la réponse et afficher les cartes d'outils.
 | Symptôme | Cause probable | Fix |
 |---|---|---|
 | `my-claw.service` ne démarre pas | Port 8080 pris (SearXNG mal configuré, autre service) | `ss -tlnp | grep 8080`, libérer ou changer `channels.my-claw-app.port` (reboot-only) |
-| `my-claw-whisper` crash-loop | `faster-whisper` pas installé | `pip install faster-whisper` ou `systemctl --user disable --now my-claw-whisper` |
+| `my-claw-whisper` crash-loop | STT en local et `faster-whisper` pas installé | `pip install faster-whisper`, ou repasser la STT en cloud (le serveur coupe alors le service) |
 | Auto-update ne fait rien | `jq` absent, ou `FORGEJO_TOKEN` manquant/dépassé | `apt install jq`, vérifier `~/.my-claw/.env` |
 | `systemctl --user` : « Failed to connect to bus » | Shell sans session (ssh sans login, `su`) | `export XDG_RUNTIME_DIR=/run/user/$(id -u)` ; `myclaw` le fait tout seul |
 | Rien ne démarre après un reboot | Linger désactivé | `sudo loginctl enable-linger <user>` |

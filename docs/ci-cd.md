@@ -104,7 +104,7 @@ bun run dev         # from repo (uses scripts/dev.sh)
 Both do the same thing. `package.json` defines `"dev": "bash scripts/dev.sh"`.
 
 - Stops only `my-claw.service` (the main app)
-- Keeps dependencies running: `xvfb`, `chromium`, `whisper`, `vnc`, `novnc`
+- Keeps dependencies running: `xvfb`, `chromium`, `vnc`, `novnc` (`whisper` is on demand: docs/on-demand-services.md)
 - Starts missing dependencies if needed
 - Launches `bun run --watch src/index.ts` with correct `HOME`
 - **Ctrl+C**: kills the watch process, then prompts:

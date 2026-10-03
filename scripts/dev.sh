@@ -3,7 +3,7 @@ set -uo pipefail
 
 # Dev wrapper for my-claw
 # Usage: bun run dev (via package.json)
-# Stops only my-claw app, keeps deps (xvfb, chromium, whisper, vnc, novnc).
+# Stops only my-claw app, keeps deps (xvfb, chromium, vnc, novnc). Whisper is on demand.
 # If deps are missing, starts them.
 
 # Resolve absolute bun path (not always in root PATH)
@@ -29,7 +29,7 @@ resolve_bun() {
 BUN_BIN="$(resolve_bun)"
 
 MAIN="my-claw"
-DEPS="my-claw-xvfb my-claw-chromium my-claw-whisper my-claw-vnc my-claw-novnc"
+DEPS="my-claw-xvfb my-claw-chromium my-claw-vnc my-claw-novnc"
 WAS_MAIN_ACTIVE=""
 
 # Stop main app if running

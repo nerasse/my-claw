@@ -1107,6 +1107,13 @@ export const MY_CLAW_DIR = process.env["MY_CLAW_DIR"] ?? join(homedir(), ".my-cl
  */
 let envFileMtime = 0;
 
+/**
+ * The values the shipped `.env.example` used to carry (`GROQ_API_KEY=your_groq_key_here`),
+ * which the installer copied as the live `.env`. A placeholder is not a key: read as one, it sent
+ * voice notes to Groq with a fake credential and providers a 401.
+ */
+const TEMPLATE_PLACEHOLDER = /^your_[a-z0-9_]+_here$/i;
+
 function applyEnvText(text: string, forceRefresh: boolean): void {
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
@@ -1115,6 +1122,7 @@ function applyEnvText(text: string, forceRefresh: boolean): void {
     if (eq === -1) continue;
     const key = trimmed.slice(0, eq).trim();
     const value = trimmed.slice(eq + 1).trim();
+    if (TEMPLATE_PLACEHOLDER.test(value)) continue;
     if (key && value && (forceRefresh || process.env[key] === undefined)) {
       process.env[key] = value;
     }

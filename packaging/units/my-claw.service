@@ -1,6 +1,6 @@
 [Unit]
 Description=my-claw - personal AI agent
-After=my-claw-xvfb.service my-claw-chromium.service my-claw-browser-sidecar.service my-claw-whisper.service
+After=my-claw-xvfb.service my-claw-chromium.service my-claw-browser-sidecar.service
 # Wants (not Requires): browsing is optional. A failing Xvfb/Chromium must not take the whole
 # assistant down with it.
 Wants=my-claw-xvfb.service my-claw-chromium.service my-claw-browser-sidecar.service
@@ -10,6 +10,9 @@ Type=simple
 WorkingDirectory={{HOME}}
 # No EnvironmentFile: the server loads {{HOME}}/.my-claw/.env itself at boot and hot-reloads it.
 Environment="PATH={{HOME}}/.local/bin:{{HOME}}/.bun/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/snap/bin"
+# This server starts and stops the on-demand units (my-claw-whisper) from its config. Only the
+# installed one: a dev server on the same box must not touch them. docs/on-demand-services.md
+Environment="MY_CLAW_MANAGES_UNITS=1"
 ExecStart={{BUN}} run {{APP_DIR}}/src/index.ts
 Restart=always
 RestartSec=5
