@@ -167,6 +167,20 @@ resolve_runtimes() {
   fi
 }
 
+# The VNC password the vnc unit asks for (docs/browser.md): created once, random, never replaced.
+# The app's Browser page shows it to a paired device. x11vnc keeps the first 8 characters.
+ensure_vnc_password() {
+  local file="${TARGET_HOME}/.vnc/passwd" pw
+  [ -s "$file" ] && return 0
+  command -v x11vnc >/dev/null 2>&1 || return 0
+  mkdir -p "${TARGET_HOME}/.vnc"
+  chmod 700 "${TARGET_HOME}/.vnc"
+  pw="$(head -c 64 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-8)"
+  x11vnc -storepasswd "$pw" "$file" >/dev/null 2>&1 || return 0
+  chmod 600 "$file"
+  echo "VNC password created (${file}): see it in the app, Browser > Connect with VNC."
+}
+
 # Write the units of a tree into UNIT_DIR, drop the ones this release no longer ships, reload,
 # enable. $1 is the tree, $2 the path units must point at ({{APP_DIR}}): the `current` link for
 # the user layout, the tree itself for the legacy one.
@@ -174,6 +188,7 @@ render_units() {
   local tree="$1" app_path="$2" src name template existing shipped=""
   src="${tree}/${UNIT_SRC}"
   [ -d "$src" ] || die "${src} missing: this release cannot be activated with this layout"
+  [ "$UNIT_SRC" = "units" ] && ensure_vnc_password
   mkdir -p "$UNIT_DIR"
   for template in "$src"/*.service "$src"/*.timer; do
     [ -e "$template" ] || continue

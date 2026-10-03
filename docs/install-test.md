@@ -61,3 +61,6 @@ from the app and answering; the app's update button answering with the host comm
 - Debian 12's Node is 18, playwright-core asks for 20: the official Node LTS is installed under
   `/usr/local` (pinned, checksum verified) when the machine has nothing newer.
 - `novnc` was never installed (the unit serves `/usr/share/novnc`), nor `xdotool`.
+- (2026-10-03, second pass) VNC answered with no password on every interface: the unit had `-nopw`.
+  `run.sh` now does the RFB handshake and requires password-only (security type 2); `upgrade.sh`
+  checks an old install gets its password on update.

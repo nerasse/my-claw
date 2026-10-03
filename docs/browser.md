@@ -408,3 +408,11 @@ docs/browser.md
 docs/browser-autonomy.md
   # Spec: root causes, tool surface, escalation ladder, security model, phases
 ```
+
+## VNC password
+
+Whoever reaches the VNC port drives the browser and every session signed in it. `update.sh`
+creates `~/.vnc/passwd` once (random, 8 characters, the VNC limit) and the vnc unit runs x11vnc
+with `-rfbauth`; without the file the unit falls back to `-localhost`. The app's Browser page shows
+the password to a paired device (`readVncPassword`). noVNC asks for it too. Installs from before
+0.7.80 ran `-nopw` on every interface; their next update creates the password.

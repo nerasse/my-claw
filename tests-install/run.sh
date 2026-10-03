@@ -14,8 +14,8 @@ trap cleanup EXIT
 boot_machine
 
 # 1. The install, one command, as root on a machine with nothing on it.
-install_tarball "/dist/$(basename "$tarball")" "/tmp/install-${machine}.log"
-ok "install.sh ($(wc -l < "/tmp/install-${machine}.log") lines of output)"
+install_tarball "/dist/$(basename "$tarball")" "/var/tmp/install-${machine}.log"
+ok "install.sh ($(wc -l < "/var/tmp/install-${machine}.log") lines of output)"
 
 # 2. What runs, and what does not.
 for unit in my-claw my-claw-xvfb my-claw-chromium my-claw-browser-sidecar my-claw-vnc my-claw-novnc; do
@@ -28,9 +28,15 @@ ok "local Whisper neither enabled nor running"
 as_claw 'edge-tts --help >/dev/null 2>&1 || ~/.my-claw/runtime/venv/bin/edge-tts --help >/dev/null' || fail "edge-tts missing"
 ok "edge-tts installed"
 
+# VNC drives the browser and every session signed in it: a password, created at install.
+as_claw 'test -s ~/.vnc/passwd' || fail "no VNC password created"
+types="$(as_claw "python3 -c 'import socket;s=socket.create_connection((\"127.0.0.1\",5900),5);s.recv(12);s.sendall(b\"RFB 003.008\\n\");n=s.recv(1)[0];print(list(s.recv(n)))'")" || fail "VNC handshake"
+[ "$types" = "[2]" ] || fail "VNC offers security types $types, not password only"
+ok "VNC asks for a password (security types $types)"
+
 # 3. The first device: the installer printed a code, and the device it is for answers /health.
-grep -q "^Code " "/tmp/install-${machine}.log" || fail "no pairing code printed"
-grep -q "/pair#" "/tmp/install-${machine}.log" || fail "no pairing link printed"
+grep -q "^Code " "/var/tmp/install-${machine}.log" || fail "no pairing code printed"
+grep -q "/pair#" "/var/tmp/install-${machine}.log" || fail "no pairing link printed"
 c="$(creds)"
 health="$(as_claw "curl -fsS 'http://127.0.0.1:8080/health?device=${c% *}&token=${c#* }'")" || fail "/health"
 [ "$health" = '{"activeRun":false}' ] || fail "/health answered $health"
@@ -82,8 +88,8 @@ as_claw 'test ! -e ~/.my-claw/models/transformers' || fail "the embedding model 
 ok "embeddings on this server: model downloaded and warmed up, then freed"
 
 # 8. An update: the same tarball, forced, through the real updater (swap, units, health gate).
-as_claw "myclaw update --file /dist/$(basename "$tarball") --force" > "/tmp/update-${machine}.log" 2>&1 \
-  || { tail -30 "/tmp/update-${machine}.log"; fail "myclaw update"; }
+as_claw "myclaw update --file /dist/$(basename "$tarball") --force" > "/var/tmp/update-${machine}.log" 2>&1 \
+  || { tail -30 "/var/tmp/update-${machine}.log"; fail "myclaw update"; }
 [ "$(unit_state active my-claw)" = "active" ] || fail "my-claw down after the update"
 [ "$(unit_state enabled my-claw-whisper)" != "enabled" ] || fail "the update enabled whisper"
 ok "update applied, server up, whisper still off"

@@ -27,8 +27,7 @@
     "mode": "auto",
     "stt": {
       "mode": "cloud",
-      "echoTranscript": true,
-      "language": "fr"
+      "echoTranscript": true
     },
     "tts": {
       "mode": "cloud",
@@ -37,7 +36,7 @@
   },
   "webSearch": {
     "baseUrl": "",
-    "language": "fr"
+    "language": "auto"
   },
   "browser": {
     "enabled": true,

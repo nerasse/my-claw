@@ -31,3 +31,14 @@ test("Chromium where the distribution has none: Chrome for Testing, root-owned, 
   expect(s.includes('CFT_DIR="/opt/my-claw-chromium"')).toBe(true);
   expect(s.includes('ln -sfn "$chrome" /usr/bin/chromium')).toBe(true);
 });
+
+test("VNC asks for a password, or stays on loopback without one", async () => {
+  const unit = await readFile(join(import.meta.dir, "..", "..", "packaging", "units", "my-claw-vnc.service"), "utf8");
+  const exec = unit.split("\n").find((line) => line.startsWith("ExecStart="))!;
+  expect(exec.includes('-rfbauth "$$f"')).toBe(true);
+  // -nopw only ever beside -localhost: the network never gets the browser without a password.
+  expect(exec.match(/-nopw/g)?.length).toBe(1);
+  expect(exec.includes("-localhost -nopw")).toBe(true);
+  const update = await readFile(join(import.meta.dir, "..", "..", "packaging", "update.sh"), "utf8");
+  expect(update.includes('[ "$UNIT_SRC" = "units" ] && ensure_vnc_password')).toBe(true);
+});

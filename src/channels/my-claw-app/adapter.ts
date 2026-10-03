@@ -452,6 +452,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
     const orphans = await pruneOrphanSessions(Object.keys(this.config.devices ?? {})).catch(() => 0);
     if (orphans > 0) await myClawAppLog("info", "dropped web sessions with no device", { orphans });
     await myClawAppLog("info", "adapter started", { port: this.server.port });
+    // Plain HTTP on every interface, with no reverse proxy declared: device tokens and the web
+    // cookie cross the network unencrypted. Said once per boot, where an owner looks.
+    if ((this.config.web?.trustedProxies ?? []).length === 0) {
+      await myClawAppLog("warn", "serving plain HTTP on all interfaces: put it behind HTTPS (a reverse proxy, then web.trustedProxies) or reach it over a VPN -- docs/setup-guide.md 7.3", { port: this.server.port });
+    }
   }
 
   async stop(): Promise<void> {

@@ -1756,6 +1756,11 @@ describe("MyClawAppAdapter", () => {
     const freeRefused = (await nextFrame(client)) as { type: string; scope: string; message: string };
     assert.equal(freeRefused.scope, "services");
     assert.equal(freeRefused.message, "stt runs on this server: switch it to the cloud or a URL first");
+
+    // Only two engines have files: any other id is refused before the controller deletes anything.
+    client.ws.send(JSON.stringify({ type: "services.free", id: "browser" }));
+    const unknownFree = (await nextFrame(client)) as { type: string; scope: string; message: string };
+    assert.equal(unknownFree.message, "only stt and embeddings have files to free");
   });
 
   test("an unusable voice mode is refused on the voice scope, not silently ignored", async () => {

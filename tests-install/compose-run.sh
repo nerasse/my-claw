@@ -13,7 +13,7 @@ in_claw() { "${C[@]}" exec -T my-claw sh -c "$1"; }
 cleanup() { [ "$keep" = "--keep" ] || "${C[@]}" --profile whisper --profile searxng down -v --remove-orphans >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
-"${C[@]}" up -d --build > /tmp/compose-up.log 2>&1 || { tail -20 /tmp/compose-up.log; fail "compose up"; }
+"${C[@]}" up -d --build > /var/tmp/compose-up.log 2>&1 || { tail -20 /tmp/compose-up.log; fail "compose up"; }
 for _ in $(seq 1 60); do
   [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18080/)" != "000" ] && break
   sleep 1

@@ -9,7 +9,10 @@ Type=simple
 # login-session x11vnc is enough), and my-claw-novnc then proxies a dead port. Kill the
 # squatter, then pin the port so the pair can never drift apart.
 ExecStartPre=-/bin/sh -c 'for pid in $(pgrep -u {{USER}} -x x11vnc 2>/dev/null || true); do kill -9 "$pid" 2>/dev/null; done'
-ExecStart=/usr/bin/x11vnc -display :99 -rfbport 5900 -nopw -forever -shared -noxdamage -noxkb -xkb -noxrecord -noxfixes -noxrandr
+# Whoever reaches this port drives the browser and every session signed in it. So a password
+# (~/.vnc/passwd, created by update.sh, shown in the app's Browser page), and without one the port
+# is loopback only. $$: systemd expands a bare $f itself.
+ExecStart=/bin/sh -c 'f={{HOME}}/.vnc/passwd; o="-display :99 -rfbport 5900 -forever -shared -noxdamage -noxkb -xkb -noxrecord -noxfixes -noxrandr"; if [ -s "$$f" ]; then exec /usr/bin/x11vnc $$o -rfbauth "$$f"; else exec /usr/bin/x11vnc $$o -localhost -nopw; fi'
 Restart=always
 RestartSec=5
 

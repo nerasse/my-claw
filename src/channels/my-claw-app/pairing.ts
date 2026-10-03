@@ -18,6 +18,11 @@ import { createGrant, secretsMatch } from "./web-session.ts";
  * the correct answer to "the server just changed underneath you".
  */
 
+/** A live code claims a device for ten minutes: the log only needs to tell two apart. */
+function logCode(code: string): string {
+  return `${code.slice(0, 2)}…`;
+}
+
 export type PairingKind = "web" | "native";
 
 export interface PairingDelivery {
@@ -232,7 +237,7 @@ export function openSession(
   };
   sessions.set(session.code, session);
   myClawAppLog("info", "pairing challenge opened", {
-    code: session.code,
+    code: logCode(session.code),
     kind: session.kind,
     ip: session.ip,
     origin: session.origin,
@@ -304,7 +309,7 @@ export function resumeSession(
   const session = sessions.get(normalized);
   if (!session) return { ok: false, reason: reasonFor(normalized) };
   if (!secretsMatch(session.resumeToken, resumeToken)) {
-    myClawAppLog("warn", "pairing resume refused", { code: normalized, ip: session.ip });
+    myClawAppLog("warn", "pairing resume refused", { code: logCode(normalized), ip: session.ip });
     return { ok: false, reason: "unknown" };
   }
 
@@ -376,7 +381,7 @@ export function deny(code: string, approver: string): boolean {
   session.reject?.("denied");
   sessions.delete(session.code);
   bury(session.code, "denied");
-  myClawAppLog("warn", "pairing denied", { code: session.code, approver });
+  myClawAppLog("warn", "pairing denied", { code: logCode(session.code), approver });
   return true;
 }
 

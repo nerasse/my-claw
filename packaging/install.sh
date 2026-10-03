@@ -82,6 +82,10 @@ echo "Home directory: ${TARGET_HOME}"
 BUN_VERSION="1.3.13"
 NODE_VERSION="22.22.2"
 NODE_SHA256="88fd1ce767091fd8d4a99fdb2356e98c819f93f3b1f8663853a2dee9b438068a"
+# bun-linux-x64.zip needs AVX2; the baseline build runs on any x86_64. Both checked.
+BUN_SHA256_X64="79c0771fa8b92c33aae41e15a0e0d307ea99d0e2f00317c71c6c53237a78e25a"
+BUN_SHA256_BASELINE="9d8a24292a7068090205daac0a5a223f5f69736f5287e37bf88d3b4031edc750"
+EDGE_TTS_VERSION="7.2.8"
 # Chrome for Testing goes here when the distribution has no Chromium package (Ubuntu ships it
 # only as a snap, which a systemd user unit cannot drive). Root-owned, outside /opt/my-claw, which
 # belongs to the service user: /usr/bin/chromium must not point at a file the agent can rewrite.
@@ -145,7 +149,20 @@ as_user() {
 # Bun, the server's runtime, in the service user's home (where update.sh looks for it).
 if ! command -v bun >/dev/null 2>&1 && [ ! -x "${TARGET_HOME}/.bun/bin/bun" ]; then
   echo "Installing Bun ${BUN_VERSION} for ${TARGET_USER}..."
-  as_user bash -c "curl -fsSL https://bun.sh/install | bash -s bun-v${BUN_VERSION}" >/dev/null
+  # The release zip, checksum verified, rather than a piped install script.
+  bun_build="bun-linux-x64"
+  bun_sha="$BUN_SHA256_X64"
+  if ! grep -qw avx2 /proc/cpuinfo; then
+    bun_build="bun-linux-x64-baseline"
+    bun_sha="$BUN_SHA256_BASELINE"
+  fi
+  bun_tmp="$(mktemp -d)"
+  curl -fsSL "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/${bun_build}.zip" -o "${bun_tmp}/bun.zip"
+  echo "${bun_sha}  ${bun_tmp}/bun.zip" | sha256sum -c --quiet
+  unzip -q "${bun_tmp}/bun.zip" -d "$bun_tmp"
+  install -d -o "$TARGET_USER" -g "$TARGET_USER" "${TARGET_HOME}/.bun" "${TARGET_HOME}/.bun/bin"
+  install -m 755 -o "$TARGET_USER" -g "$TARGET_USER" "${bun_tmp}/${bun_build}/bun" "${TARGET_HOME}/.bun/bin/bun"
+  rm -rf "$bun_tmp"
 fi
 
 # ---------------------------------------------------------------------------
@@ -174,7 +191,7 @@ chown "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/.my-claw/config.json" "${T
 if [ ! -x "${TARGET_HOME}/.my-claw/runtime/venv/bin/edge-tts" ]; then
   echo "Installing edge-tts for ${TARGET_USER}..."
   as_user python3 -m venv "${TARGET_HOME}/.my-claw/runtime/venv"
-  as_user "${TARGET_HOME}/.my-claw/runtime/venv/bin/pip" install -q edge-tts
+  as_user "${TARGET_HOME}/.my-claw/runtime/venv/bin/pip" install -q "edge-tts==${EDGE_TTS_VERSION}"
 fi
 
 # The tree: one release directory, `current` pointing at it. A reinstall of the same version
@@ -245,5 +262,5 @@ echo ""
 /usr/local/bin/myclaw setup --url "$PUBLIC_URL" || echo "No pairing code yet: run 'myclaw setup' once my-claw is up (myclaw status)."
 echo ""
 echo "Behind a reverse proxy or a domain: myclaw setup --url https://claw.example.com"
-echo "Then everything else is set from the app: Settings > Providers for the model, Settings > Services."
+echo "Open the link: the app walks you through the rest (model, voice, services)."
 echo "Updates: automatic (every 15 minutes), or myclaw update"

@@ -86,6 +86,7 @@ const PAGE = String.raw`<!DOCTYPE html>
     <button class="submit" type="submit">Claim</button>
   </form>
 
+  <p class="hint">First device? Run <code>myclaw setup</code> on the server and open the link it prints.</p>
   <p class="hint">This page never receives your device token.</p>
 </main>
 <script nonce="__NONCE__">

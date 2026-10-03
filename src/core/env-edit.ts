@@ -77,7 +77,7 @@ export async function setEnvValue(name: string, value: string): Promise<EnvEditR
   else lines[at] = line;
 
   await snapshot(envPath(), { origin: "pre-write", note: `avant écriture ${name} dans .env` });
-  await writeFileAtomically(envPath(), joinEnv(lines), { mode: read.mode });
+  await writeFileAtomically(envPath(), joinEnv(lines), { mode: 0o600 });
   await journal("edit", artifactId(envPath()), { name, kind: at === -1 ? "add" : "set" });
   process.env[name] = value;
   return { ok: true };
@@ -100,7 +100,7 @@ export async function renameEnvKey(from: string, to: string): Promise<EnvEditRes
   lines[at] = `${to}=${rest}`;
 
   await snapshot(envPath(), { origin: "pre-write", note: `avant renommage ${from} -> ${to} dans .env` });
-  await writeFileAtomically(envPath(), joinEnv(lines), { mode: read.mode });
+  await writeFileAtomically(envPath(), joinEnv(lines), { mode: 0o600 });
   await journal("edit", artifactId(envPath()), { from, to, kind: "rename" });
   process.env[to] = process.env[from];
   delete process.env[from];
@@ -115,7 +115,7 @@ export async function removeEnvKey(name: string): Promise<EnvEditResult> {
   if (lines.length === read.lines.length) return { ok: true };
 
   await snapshot(envPath(), { origin: "pre-write", note: `avant suppression ${name} de .env` });
-  await writeFileAtomically(envPath(), joinEnv(lines), { mode: read.mode });
+  await writeFileAtomically(envPath(), joinEnv(lines), { mode: 0o600 });
   await journal("edit", artifactId(envPath()), { name, kind: "remove" });
   delete process.env[name];
   return { ok: true };

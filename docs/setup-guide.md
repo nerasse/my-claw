@@ -77,7 +77,7 @@ Rien de local (Whisper, Piper, embeddings) n'est téléchargé : le défaut est 
 | 8000 | whisper STT | loopback (127.0.0.1) |
 | 9222 | Chromium CDP | loopback |
 | 9223 | sidecar (Node) | loopback |
-| 5900 / 6080 | x11vnc / noVNC | loopback ou réseau contrôlé |
+| 5900 / 6080 | x11vnc / noVNC | réseau contrôlé ; protégés par le mot de passe `~/.vnc/passwd` (créé à l'install, affiché dans l'app : Browser → Connect with VNC) |
 | 8888 | **SearXNG** (déployé par vous, voir §9) | loopback ou public |
 
 **Sécurité :** ne jamais exposer 9222/9223/5900/6080 sur Internet (CDP et VNC sans auth).
@@ -445,7 +445,7 @@ myclaw device add --name "Phone" --kind app --owner ton_owner
 4. **Taper le code** affiché par `device add` (ex. `K7QW-3M2P`).
 5. L'app reçoit le token minté, le stocke dans le Keystore et se reconnecte. Terminé.
 
-**Le scan QR** : le CLI n'imprime pas de QR. Pour scanner, générez-le vous-même depuis
+**Le scan QR** : `myclaw setup` et `myclaw device add` impriment un QR du lien. Sinon, depuis
 le claim link (si `qrencode` est installé) :
 
 ```bash

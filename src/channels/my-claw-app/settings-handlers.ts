@@ -183,6 +183,10 @@ export async function handleServices(
       d.sendFrame(ws, { type: "services.result", ...(await d.services.status()) });
       return;
     }
+    if ("free" in choice && choice.free !== "stt" && choice.free !== "embeddings") {
+      await d.refuse(ws, "services", "only stt and embeddings have files to free", { free: choice.free });
+      return;
+    }
     const outcome = "free" in choice ? await d.services.free(choice.free) : await d.services.set(choice);
     if (!outcome.ok) {
       await d.refuse(ws, "services", outcome.error, "free" in choice ? { free: choice.free } : { id: choice.id, source: choice.source });

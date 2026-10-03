@@ -11,7 +11,7 @@ FROM oven/bun:1.3.13
 RUN apt-get update \
  && apt-get install -y --no-install-recommends ffmpeg git curl jq ca-certificates python3 python3-venv xdotool procps tini \
  && rm -rf /var/lib/apt/lists/* \
- && python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir edge-tts \
+ && python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir edge-tts==7.2.8 \
  && usermod -l claw -d /home/claw -m bun && groupmod -n claw bun
 ENV PATH=/opt/venv/bin:$PATH \
     HOME=/home/claw \

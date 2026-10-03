@@ -17,9 +17,9 @@ boot_machine
 
 # The machine an old owner has: this tree's installer brings the packages (the old one needed them
 # beforehand), then the old release is what runs.
-install_tarball "/dist/$(basename "$new")" "/tmp/upgrade-install-${machine}.log"
-as_claw "myclaw update --file /dist/old/$(basename "$old") --force" > "/tmp/upgrade-down-${machine}.log" 2>&1 \
-  || { tail -20 "/tmp/upgrade-down-${machine}.log"; fail "installing $(basename "$old")"; }
+install_tarball "/dist/$(basename "$new")" "/var/tmp/upgrade-install-${machine}.log"
+as_claw "myclaw update --file /dist/old/$(basename "$old") --force" > "/var/tmp/upgrade-down-${machine}.log" 2>&1 \
+  || { tail -20 "/var/tmp/upgrade-down-${machine}.log"; fail "installing $(basename "$old")"; }
 oldv="$(as_claw 'jq -r .version /opt/my-claw/current/package.json')"
 ok "running the old release ($oldv)"
 
@@ -33,10 +33,13 @@ as_claw 'systemctl --user enable --now my-claw-whisper.service' >/dev/null 2>&1
 whisper_answers >/dev/null || fail "the old setup's Whisper does not answer"
 ok "old owner's local Whisper answers (system faster-whisper, voice auto, placeholder Groq key)"
 chromium_before="$(as_claw 'systemctl --user show -p MainPID --value my-claw-chromium.service')"
+# Old installs never had a VNC password: VNC open to the network with none.
+as_claw 'rm -f ~/.vnc/passwd'
+ip="$(on "hostname -I | awk '{print \$1}'")"
 
 # Their own updater (the old release's), to this tree.
-as_claw "myclaw update --file /dist/$(basename "$new") --force" > "/tmp/upgrade-up-${machine}.log" 2>&1 \
-  || { tail -30 "/tmp/upgrade-up-${machine}.log"; fail "the old updater could not install this tree"; }
+as_claw "myclaw update --file /dist/$(basename "$new") --force" > "/var/tmp/upgrade-up-${machine}.log" 2>&1 \
+  || { tail -30 "/var/tmp/upgrade-up-${machine}.log"; fail "the old updater could not install this tree"; }
 newv="$(as_claw 'jq -r .version /opt/my-claw/current/package.json')"
 [ "$newv" != "$oldv" ] || fail "still on $oldv"
 [ "$(unit_state active my-claw)" = "active" ] || fail "my-claw down after the update"
@@ -52,5 +55,16 @@ s="$(probe '{"type":"services.get"}' services.result)" || fail "services.get: $s
 ok "their Whisper still enabled and answering, nothing reinstalled, stt reads self-hosted"
 [ "$(as_claw 'systemctl --user show -p MainPID --value my-claw-chromium.service')" = "$chromium_before" ] || fail "the update restarted Chromium"
 ok "Chromium not restarted by the update"
+# Their own (old) updater renders the new unit but never ran the password step: the unit's fallback
+# keeps VNC on loopback until the next update creates the password.
+as_claw 'systemctl --user cat my-claw-vnc.service | grep -q -- "-rfbauth"' || fail "the VNC unit is not the password one"
+if as_claw "python3 -c 'import socket;socket.create_connection((\"${ip}\",5900),3)'" 2>/dev/null; then
+  as_claw 'test -s ~/.vnc/passwd' || fail "VNC reachable from the network without a password"
+fi
+ok "VNC not open to the network without a password after the update"
+# The next update (the new updater) creates the password.
+as_claw "myclaw update --file /dist/$(basename "$new") --force" > "/var/tmp/upgrade-again-${machine}.log" 2>&1 || fail "second update"
+as_claw 'test -s ~/.vnc/passwd' || fail "the next update did not create a VNC password"
+ok "the next update created the VNC password"
 
 echo "PASS [$machine] upgrade $oldv -> $newv"
