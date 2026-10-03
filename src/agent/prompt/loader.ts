@@ -73,7 +73,7 @@ async function readIfPresent(path: string): Promise<string | null> {
 
 /** The docs/prompt/<name> template, and the hardcoded CORE_PROMPT when even that is missing:
  *  CORE is the one layer the builder refuses to leave empty. */
-async function readShippedTemplate(name: string): Promise<string> {
+export async function readShippedTemplate(name: string): Promise<string> {
   const repoRoot = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
   const template = await readIfPresent(join(repoRoot, "docs", "prompt", name));
   if (template !== null) return template;

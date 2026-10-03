@@ -2,7 +2,7 @@ import { readFile, readdir, stat } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { writeFileAtomically } from "../../utils/atomic-write.ts";
 import { contentSha, snapshot, journal, artifactId } from "../../core/config-store.ts";
-import { resolvePromptFile } from "../../agent/prompt/loader.ts";
+import { readShippedTemplate, resolvePromptFile } from "../../agent/prompt/loader.ts";
 import { PROMPT_FILES, type PromptFile } from "../../agent/prompt/files.ts";
 import { resolvePromptPolicy, type WorkspacePromptPolicy } from "../../core/config.ts";
 
@@ -45,6 +45,9 @@ export interface InstructionEntry {
    *  that will never be read. Set by `off`, by `inherit: "none"`, and by a source that is itself
    *  cut with no file to hand over -- the page cannot derive the last one from this entry alone. */
   empty: boolean;
+  /** The content is still the shipped template, word for word: nobody wrote this file yet. The
+   *  setup assistant reads it on the default workspace's USER.md. */
+  template: boolean;
 }
 
 export interface NestedInstruction {
@@ -171,6 +174,8 @@ export async function readInstruction(
 /** One entry per file per workspace: the page shows the whole resolution, never a hole. */
 export async function listInstructions(roots: InstructionRoots): Promise<InstructionEntry[]> {
   const entries: InstructionEntry[] = [];
+  const templates = new Map<string, string>();
+  for (const file of PROMPT_FILES) templates.set(file, (await readShippedTemplate(file)).trim());
   for (const { key } of workspaceRoots(roots)) {
     for (const file of PROMPT_FILES) {
       const read = await readInstruction(roots, key, file);
@@ -185,6 +190,7 @@ export async function listInstructions(roots: InstructionRoots): Promise<Instruc
         inherit: read.inherit,
         off: read.off,
         empty: read.empty,
+        template: read.content.trim() === templates.get(file),
       });
     }
   }

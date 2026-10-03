@@ -108,6 +108,18 @@ describe("inheritance", () => {
     expect(entries.every((e) => e.sha.length > 0)).toBe(true);
   });
 
+  test("a file still holding the shipped template says so, and stops once written", async () => {
+    const shipped = await readFile(join(import.meta.dir, "..", "docs", "prompt", "USER.md"), "utf-8");
+    await writeFile(join(base, "default", "USER.md"), shipped, "utf-8");
+    resetPromptFileCache();
+    const user = (await listInstructions(roots)).filter((e) => e.file === "USER.md");
+    // The default's own copy, and the workspace that inherits it.
+    expect(user.map((e) => e.template)).toEqual([true, true]);
+    await writeFile(join(base, "default", "USER.md"), `${shipped}\n- **Name:** Yassir\n`, "utf-8");
+    resetPromptFileCache();
+    expect((await listInstructions(roots)).find((e) => e.workspace === "default" && e.file === "USER.md")?.template).toBe(false);
+  });
+
   test("the listed sha is the sha of the content that applies", async () => {
     const entries = await listInstructions(roots);
     const entry = entries.find((e) => e.workspace === "sofa" && e.file === "USER.md");

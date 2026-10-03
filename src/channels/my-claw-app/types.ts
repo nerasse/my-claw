@@ -2288,6 +2288,8 @@ export interface MyClawAppInstructionEntry {
    *  and owns no file. The row must not promise a template that is never read, and only the
    *  server knows the third case -- the entry alone does not carry it. */
   empty: boolean;
+  /** Still the shipped template, word for word: the setup assistant reads it on the default USER.md. */
+  template: boolean;
 }
 
 /** A nested AGENTS.md found under a workspace. Read-only: injected in tool results, not in the prompt. */

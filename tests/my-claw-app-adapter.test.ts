@@ -3908,8 +3908,8 @@ describe("instructions frames", () => {
     adapter.onInstructionsController({
       list: async () => ({
         entries: [
-          { workspace: "default", file: "AGENTS.md", origin: "own", from: "default", bytes: 12, sha: "abc123abc123", inherit: "default", off: false, empty: false },
-          { workspace: "sofa", file: "AGENTS.md", origin: "inherited", from: "default", bytes: 12, sha: "abc123abc123", inherit: "default", off: false, empty: false },
+          { workspace: "default", file: "AGENTS.md", origin: "own", from: "default", bytes: 12, sha: "abc123abc123", inherit: "default", off: false, empty: false, template: false },
+          { workspace: "sofa", file: "AGENTS.md", origin: "inherited", from: "default", bytes: 12, sha: "abc123abc123", inherit: "default", off: false, empty: false, template: false },
         ],
         nested: [{ workspace: "default", path: "svc/AGENTS.md", bytes: 40 }],
         files: ["CORE.md", "SOUL.md", "AGENTS.md", "USER.md"],
@@ -3929,7 +3929,7 @@ describe("instructions frames", () => {
       },
       setPolicy: async (workspace, file, inherit, off) => ({
         entries: [
-          { workspace, file, origin: "own", from: workspace, bytes: 12, sha: "abc123abc123", inherit: inherit ?? "default", off: off ?? false, empty: off ?? false },
+          { workspace, file, origin: "own", from: workspace, bytes: 12, sha: "abc123abc123", inherit: inherit ?? "default", off: off ?? false, empty: off ?? false, template: false },
         ],
         nested: [],
         files: ["CORE.md", "SOUL.md", "AGENTS.md", "USER.md"],
