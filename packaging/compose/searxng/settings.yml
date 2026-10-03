@@ -1,0 +1,10 @@
+# Web search for my-claw (profile `searxng`): reached at http://searxng:8080 on the compose network.
+use_default_settings: true
+server:
+  # Overridden by SEARXNG_SECRET from compose.
+  secret_key: "set-by-the-environment"
+  limiter: false
+  image_proxy: false
+search:
+  # The web_search tool reads JSON: without it every search answers HTML and fails to parse.
+  formats: [html, json]

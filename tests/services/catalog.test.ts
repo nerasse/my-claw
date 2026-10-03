@@ -119,7 +119,7 @@ describe("the engines are called at the URL the catalogue gives", () => {
     }).restore;
     const tts = new TtsPipeline(new VoiceManager(config({ voice: { tts: { mode: "local", url: "http://tts.lan:5000" } } })));
     const out = await tts.generate("salut");
-    expect(seen).toEqual([{ url: "http://tts.lan:5000/", body: { text: "salut" } }]);
+    expect(seen).toEqual([{ url: "http://tts.lan:5000/synthesize", body: { text: "salut" } }]);
     expect(out.mimeType).toBe("audio/wav");
     expect([...new Uint8Array(await readFile(out.path))]).toEqual([82, 73, 70, 70]);
   });

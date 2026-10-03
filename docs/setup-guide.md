@@ -28,6 +28,10 @@ le pairing, les médias, la santé. Autour de lui, des services optionnels :
 **Après installation vous avez :** une CLI `myclaw` (start/stop/status/dev/update/device/web/codex/claude),
 un serveur sur `:8080`, un client web pairé, des mises à jour automatiques.
 
+> **Autre format : compose.** `docker compose -f packaging/compose/compose.yml up -d --build`
+> depuis le dépôt, serveur et navigateur en conteneurs, moteurs locaux en profils :
+> `docs/compose.md`. Ce guide couvre l'install bare-metal.
+
 ---
 
 ## 2. Prérequis matériels

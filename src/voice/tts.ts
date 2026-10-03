@@ -150,9 +150,9 @@ export class TtsPipeline {
     }
   }
 
-  /** A Piper HTTP server (`python -m piper.http_server`): the compose service, or the owner's URL. */
+  /** Piper's HTTP server (`python -m piper.http_server`, piper-tts 1.8): the compose service, or the owner's URL. */
   private async generatePiperHttp(endpoint: string, text: string, voice?: string): Promise<TTSResult> {
-    const response = await fetch(`${endpoint}/`, {
+    const response = await fetch(`${endpoint}/synthesize`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text, ...(voice ? { voice } : {}) }),

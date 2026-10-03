@@ -1,4 +1,5 @@
 import { runRegistry } from "./run-registry.ts";
+import { installKind, type InstallKind } from "../services/catalog.ts";
 
 /**
  * Firing the maintenance gate on demand.
@@ -57,7 +58,12 @@ const startUnit: UnitStarter = async (unit) => {
   return { code: legacy.code, stderr: [own.stderr, legacy.stderr].filter(Boolean).join(" | ") };
 };
 
-export async function requestSelfUpdate(starter: UnitStarter = startUnit): Promise<UpdateOutcome> {
+/** A compose install is updated from the host: the server has no Docker socket (docs/compose.md). */
+export const COMPOSE_UPDATE =
+  "compose install: update from the host with `docker compose -f packaging/compose/compose.yml up -d --build` after pulling the repo";
+
+export async function requestSelfUpdate(starter: UnitStarter = startUnit, kind: InstallKind = installKind()): Promise<UpdateOutcome> {
+  if (kind === "compose") return { started: false, reason: "failed", detail: COMPOSE_UPDATE };
   if (runRegistry.hasAny()) return { started: false, reason: "busy" };
   try {
     const { code, stderr } = await starter(UNIT);

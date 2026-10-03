@@ -1,0 +1,10 @@
+# The images copy what they run, from a clean tree: never the host's builds, deps or data.
+.git
+node_modules
+dist
+coverage
+tests
+tests-e2e
+scripts/tmp
+tmp-att.mjs
+**/*.log

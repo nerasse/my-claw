@@ -1,0 +1,100 @@
+# my-claw, compose install (docs/compose.md). From the repo root:
+#
+#   docker compose -f packaging/compose/compose.yml up -d --build
+#   docker compose -f packaging/compose/compose.yml exec my-claw myclaw device add --name Phone --kind app
+#
+# Two services by default: the server and its browser. Every local engine is a profile, off until
+# asked for (the default is always the cloud, docs/services.md):
+#
+#   --profile whisper   local speech-to-text, then voice.stt.mode = "local"
+#   --profile piper     local text-to-speech, then voice.tts.mode = "local"
+#   --profile searxng   web search, then webSearch.baseUrl = "http://searxng:8080"
+#   --profile ntfy      push notifications server, instead of ntfy.sh
+#
+# Local embeddings need no service: they run inside my-claw once memory.embedding.backend = "local".
+
+name: my-claw
+
+x-claw: &claw
+  restart: unless-stopped
+
+services:
+  my-claw:
+    <<: *claw
+    build: { context: ../.., dockerfile: packaging/compose/my-claw.Dockerfile }
+    image: my-claw:local
+    ports:
+      - "${MYCLAW_BIND:-127.0.0.1}:${MYCLAW_PORT:-8080}:8080"
+    environment:
+      MYCLAW_NOVNC_URL: "http://${MYCLAW_PUBLIC_HOST:-localhost}:${VNC_WEB_PORT:-6080}/vnc.html?autoconnect=1"
+    volumes:
+      # The same home and /tmp as the browser, at the same paths: the agent hands the sidecar files
+      # to upload and a path to save a download to, and the sidecar writes screenshots to /tmp.
+      - home:/home/claw
+      - tmp:/tmp
+    # The agent runs shell commands: a runaway one is bounded by the container, not the host.
+    mem_limit: "${MYCLAW_MEM_LIMIT:-4g}"
+    depends_on: [browser]
+
+  browser:
+    <<: *claw
+    build: { context: ../.., dockerfile: packaging/compose/browser.Dockerfile }
+    image: my-claw-browser:local
+    ports:
+      # noVNC (in a web page) and VNC (a native client), to watch the browser or take it over.
+      # No password, as on bare metal: keep them on loopback or a trusted network.
+      - "${VNC_BIND:-127.0.0.1}:${VNC_WEB_PORT:-6080}:6080"
+      - "${VNC_BIND:-127.0.0.1}:${VNC_PORT:-5900}:5900"
+    volumes:
+      - home:/home/claw
+      - tmp:/tmp
+    shm_size: 1g
+    mem_limit: "${BROWSER_MEM_LIMIT:-3g}"
+
+  whisper:
+    <<: *claw
+    profiles: [whisper]
+    build: { context: ../.., dockerfile: packaging/compose/whisper.Dockerfile }
+    image: my-claw-whisper:local
+    environment:
+      FASTER_WHISPER_MODEL: "${WHISPER_MODEL:-small}"
+    volumes:
+      - whisper-models:/models
+
+  piper:
+    <<: *claw
+    profiles: [piper]
+    build: { context: ../.., dockerfile: packaging/compose/piper.Dockerfile }
+    image: my-claw-piper:local
+    environment:
+      PIPER_VOICE: "${PIPER_VOICE:-fr_FR-siwis-medium}"
+    volumes:
+      - piper-voices:/voices
+
+  searxng:
+    <<: *claw
+    profiles: [searxng]
+    image: docker.io/searxng/searxng:latest
+    environment:
+      # Signs SearXNG's own cookies; it is not published, my-claw is its only client.
+      SEARXNG_SECRET: "${SEARXNG_SECRET:-my-claw-compose}"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+
+  ntfy:
+    <<: *claw
+    profiles: [ntfy]
+    image: docker.io/binwiederhier/ntfy:latest
+    command: serve
+    ports:
+      # The phone reaches it: publish it where the phone can, behind TLS.
+      - "${NTFY_BIND:-127.0.0.1}:${NTFY_PORT:-8090}:80"
+    volumes:
+      - ntfy-cache:/var/cache/ntfy
+
+volumes:
+  home:
+  tmp:
+  whisper-models:
+  piper-voices:
+  ntfy-cache:

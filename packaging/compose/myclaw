@@ -1,0 +1,4 @@
+#!/bin/sh
+# `myclaw device add`, `myclaw web install`, ... inside the container: the commands that do not
+# touch systemd. `docker compose exec my-claw myclaw device add --name Phone --kind app`
+exec bun run /app/src/index.ts "$@"

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { runRegistry } from "../../src/core/run-registry.ts";
-import { requestSelfUpdate, type UnitStarter } from "../../src/core/self-update.ts";
+import { COMPOSE_UPDATE, requestSelfUpdate, type UnitStarter } from "../../src/core/self-update.ts";
 
 /**
  * The gate on the server's side of the update button.
@@ -70,5 +70,12 @@ describe("requestSelfUpdate", () => {
     expect(outcome.started).toBe(false);
     expect(outcome.reason).toBe("failed");
     expect(outcome.detail).toContain("no systemctl");
+  });
+
+  it("never starts a unit on a compose install, and says how it is updated", async () => {
+    const run = starter(0);
+    const outcome = await requestSelfUpdate(run.run, "compose");
+    expect(outcome).toEqual({ started: false, reason: "failed", detail: COMPOSE_UPDATE });
+    expect(run.units).toEqual([]);
   });
 });
