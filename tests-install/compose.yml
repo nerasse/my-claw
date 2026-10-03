@@ -10,6 +10,7 @@ x-machine: &machine
   tmpfs: [/run, /run/lock, /tmp]
   volumes:
     - ../dist:/dist:ro
+    - .:/t:ro
 
 services:
   debian12:

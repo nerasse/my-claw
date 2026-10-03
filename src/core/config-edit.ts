@@ -4,7 +4,8 @@ import { CONFIG_PATH, DEFAULT_PROVIDER_RETRY_DELAYS_MS, tagNameOf, tagRouteOf, t
 import { parseModelRef } from "../llm/model-ref.ts";
 import { PROMPT_FILES } from "../agent/prompt/files.ts";
 import { snapshot, journal, artifactId } from "./config-store.ts";
-import { applyServiceChoice, installKind, type ServiceChoice } from "../services/catalog.ts";
+import { applyServiceChoice, installKind, serviceStates, type ServiceChoice, type ServiceId } from "../services/catalog.ts";
+import type { MyClawConfig } from "./config.ts";
 
 /**
  * Targeted edits to config.json from a chat command.
@@ -1259,4 +1260,15 @@ export async function setService(choice: ServiceChoice): Promise<{ ok: true; wri
   await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
   await journal("edit", artifactId(CONFIG_PATH), { service: choice.id, source: choice.source });
   return { ok: true, written: read.data };
+}
+
+/**
+ * Whether this server's engine for a service is the source in use, per config.json. The file, not
+ * the live config: Free is offered from the answer to a set, which is the file as written, and
+ * the watcher may not have applied it yet.
+ */
+export async function engineInUse(id: ServiceId): Promise<boolean> {
+  const read = await readConfigFile();
+  if (!read.ok) return true;
+  return serviceStates(read.data as unknown as MyClawConfig).find((s) => s.id === id)?.source === "self-hosted";
 }

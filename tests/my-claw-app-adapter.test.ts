@@ -1727,10 +1727,10 @@ describe("MyClawAppAdapter", () => {
     const view = (source: string) => ({ id: "search", source, choices: ["off", "url"], missing: [], health: "no-endpoint" });
     const choices: unknown[] = [];
     adapter.onServicesController({
-      status: async () => ({ install: "native", services: [view("off")] as never }),
+      status: async () => ({ install: "native", services: [view("off")] as never, pushDevices: [], pairedDevices: 1 }),
       set: async (choice) => {
         choices.push(choice);
-        return choice.url ? { ok: true, state: { install: "native", services: [view("url")] as never } } : { ok: false, error: "an http(s) URL is needed" };
+        return choice.url ? { ok: true, state: { install: "native", services: [view("url")] as never, pushDevices: [], pairedDevices: 1 } } : { ok: false, error: "an http(s) URL is needed" };
       },
       free: async (id) => ({ ok: false, error: `${id} runs on this server: switch it to the cloud or a URL first` }),
     });

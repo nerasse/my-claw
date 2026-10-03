@@ -181,6 +181,7 @@ import {
 import {
   setVoiceSttMode,
   setService,
+  engineInUse,
   setUiPrefs,
   setDefaultModel,
   clearAgentModel,
@@ -922,7 +923,13 @@ async function main() {
           return { ...state, choices: choicesOf(state.id, kind), health: await probeService(state), ...(held ? { local: held } : {}) };
         }),
       );
-      return { install: kind, services };
+      const push = await endpointStore.endpoints().catch(() => []);
+      return {
+        install: kind,
+        services,
+        pushDevices: push.map((entry) => entry.deviceId),
+        pairedDevices: Object.keys(config.channels["my-claw-app"]?.devices ?? {}).length,
+      };
     };
     myClawApp.onServicesController({
       status: () => describeServices(config),
@@ -933,8 +940,7 @@ async function main() {
       },
       // Never the files of an engine in use: a transcription mid-flight would lose its model.
       free: async (id) => {
-        const inUse = serviceStates(config).find((s) => s.id === id)?.source === "self-hosted";
-        if (inUse) return { ok: false, error: `${id} runs on this server: switch it to the cloud or a URL first` };
+        if (await engineInUse(id)) return { ok: false, error: `${id} runs on this server: switch it to the cloud or a URL first` };
         if (id === "stt") await whisperRuntime.free();
         else await freeEmbeddingModels();
         void log("info", "local engine freed", { id });

@@ -45,10 +45,11 @@ afterEach(() => {
 
 describe("the defaults", () => {
   test("a fresh install: voice in the cloud, embeddings and search off, the browser its own", () => {
-    const states = serviceStates(config(), { ...NATIVE, GROQ_API_KEY: "gsk" });
+    const states = serviceStates(config(), { ...NATIVE, GROQ_API_KEY: "gsk", GEOAPIFY_API_KEY: "geo" });
     expect(Object.fromEntries(states.map((s) => [s.id, s.source]))).toEqual({
       stt: "cloud",
       tts: "cloud",
+      location: "cloud",
       embeddings: "off",
       search: "off",
       browser: "self-hosted",
@@ -58,6 +59,8 @@ describe("the defaults", () => {
 
   test("what a cloud source still needs is named", () => {
     expect(state(config(), NATIVE, "stt").missing).toEqual(["GROQ_API_KEY"]);
+    // GPS positions become an address through Geoapify: the key is all location needs.
+    expect(state(config(), NATIVE, "location")).toMatchObject({ source: "cloud", missing: ["GEOAPIFY_API_KEY"] });
     const embedding = { model: "text-embedding-3-small", backend: "http" as const, baseUrl: "https://api.openai.com/v1", apiKeyEnv: "OPENAI_API_KEY" };
     const cloud = state(config({ memory: { embedding } } as Partial<MyClawConfig>), NATIVE, "embeddings");
     expect(cloud).toMatchObject({ source: "cloud", endpoint: "https://api.openai.com/v1", missing: ["OPENAI_API_KEY"] });
@@ -195,6 +198,22 @@ test("setService writes the choice to config.json and answers with the file as w
     expect(JSON.parse(await readFile(CONFIG_PATH, "utf8")).webSearch).toEqual({ baseUrl: "https://search.lan", language: "fr" });
     expect(await setService({ id: "search", source: "url" })).toEqual({ ok: false, error: "an http(s) URL is needed" });
     expect(JSON.parse(await readFile(CONFIG_PATH, "utf8")).webSearch.baseUrl).toBe("https://search.lan");
+  } finally {
+    await rm(CONFIG_PATH, { force: true });
+  }
+});
+
+test("an engine switched off can be freed at once, before the watcher applies the switch", async () => {
+  const { CONFIG_PATH } = await import("../../src/core/config.ts");
+  const { engineInUse, setService } = await import("../../src/core/config-edit.ts");
+  const { mkdir, rm } = await import("node:fs/promises");
+  const { dirname } = await import("node:path");
+  await mkdir(dirname(CONFIG_PATH), { recursive: true });
+  await writeFile(CONFIG_PATH, JSON.stringify({ memory: { embedding: { backend: "local", model: LOCAL_EMBEDDING_MODEL } } }));
+  try {
+    expect(await engineInUse("embeddings")).toBe(true);
+    await setService({ id: "embeddings", source: "off" });
+    expect(await engineInUse("embeddings")).toBe(false);
   } finally {
     await rm(CONFIG_PATH, { force: true });
   }

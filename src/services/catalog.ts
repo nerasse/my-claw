@@ -48,7 +48,7 @@ export function piperEndpoint(voice: VoiceConfig | undefined, env: Env = process
   return trimmed(voice?.tts?.url) ?? SELF_HOSTED[installKind(env)].piper;
 }
 
-export type ServiceId = "stt" | "tts" | "embeddings" | "search" | "browser";
+export type ServiceId = "stt" | "tts" | "location" | "embeddings" | "search" | "browser";
 export type ServiceSource = "off" | "cloud" | "self-hosted" | "url";
 
 export interface ServiceState {
@@ -84,6 +84,8 @@ const SERVICES: Record<ServiceId, (config: MyClawConfig, env: Env) => Omit<Servi
     const endpoint = whisperEndpoint(config.voice, env);
     return { source: ownWhisperUrl(config.voice, env) ? selfOrUrl(endpoint, installKind(env), "whisper") : "self-hosted", endpoint, missing: [] };
   },
+  // Shared GPS positions are turned into an address by Geoapify: its key is the whole setup.
+  location: (_config, env) => ({ source: "cloud", missing: needsEnv("GEOAPIFY_API_KEY", env) }),
   tts: (config, env) => {
     // Edge needs no key; the `edge-tts` binary is what a probe would find missing.
     if (new VoiceManager(config).resolveMode("tts") === "cloud") return { source: "cloud", missing: [] };
@@ -135,6 +137,7 @@ export function choicesOf(id: ServiceId, kind: InstallKind): ServiceSource[] {
   const table: Record<ServiceId, ServiceSource[]> = {
     stt: ["cloud", "self-hosted", "url"],
     tts: ["cloud", "self-hosted", "url"],
+    location: ["cloud"],
     embeddings: ["off", "cloud", "self-hosted", "url"],
     search: kind === "compose" ? ["off", "self-hosted", "url"] : ["off", "url"],
     browser: ["off", "self-hosted", "url"],
@@ -193,6 +196,8 @@ function voicePatch(feature: "stt" | "tts") {
 const PATCHES: Record<ServiceId, (raw: Raw, choice: ServiceChoice, url: string | undefined) => void> = {
   stt: voicePatch("stt"),
   tts: voicePatch("tts"),
+  // Nothing in config.json: the key in .env is the switch.
+  location: () => {},
   embeddings: (raw, choice, url) => {
     const memory = child(raw, "memory");
     if (choice.source === "off") {

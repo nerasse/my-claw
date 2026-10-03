@@ -1963,7 +1963,7 @@ export interface MyClawAppUpdateResult {
   detail?: string;
 }
 
-export type MyClawAppServiceId = "stt" | "tts" | "embeddings" | "search" | "browser";
+export type MyClawAppServiceId = "stt" | "tts" | "location" | "embeddings" | "search" | "browser";
 export type MyClawAppServiceSource = "off" | "cloud" | "self-hosted" | "url";
 
 export interface MyClawAppServiceView {
@@ -1985,6 +1985,10 @@ export interface MyClawAppServicesResult {
   type: "services.result";
   install: "native" | "compose" | "dev";
   services: MyClawAppServiceView[];
+  /** The devices registered for push notifications: each window checks its own id (setup assistant). */
+  pushDevices: string[];
+  /** Paired devices, enabled or not. */
+  pairedDevices: number;
 }
 
 export interface MyClawAppVoiceModeResult {

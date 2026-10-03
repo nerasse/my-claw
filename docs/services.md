@@ -100,3 +100,18 @@ switched on, and can be freed once it is not in use (`src/services/local-engines
 the download, its failure, and a "Free N on the server" button. `services.free { id }` removes the
 venv and the model (speech-to-text) or the model cache (embeddings), and is refused while the engine
 is the source in use.
+
+## Location
+
+A shared GPS position is turned into an address by Geoapify: `location` is a cloud service whose
+whole setup is `GEOAPIFY_API_KEY` in `.env`, nothing in `config.json`. It is listed so the
+Services page and the setup assistant can ask for the key.
+
+## Setup assistant
+
+`services.result` also carries `pushDevices` (the device ids registered for push) and
+`pairedDevices`, so the assistant can tick "Notifications" for the window's own device and "Your
+other devices" once there is more than one. The steps (app, `src/core/setup.ts`): model, each
+service above (set on the assistant itself, its card unfolded under the row), the default
+workspace's USER.md, notifications where push exists, devices. Every step can be skipped; the
+skips are kept on the device (`setupSkipped`).
