@@ -4,6 +4,7 @@ import { CONFIG_PATH, DEFAULT_PROVIDER_RETRY_DELAYS_MS, tagNameOf, tagRouteOf, t
 import { parseModelRef } from "../llm/model-ref.ts";
 import { PROMPT_FILES } from "../agent/prompt/files.ts";
 import { snapshot, journal, artifactId } from "./config-store.ts";
+import { applyServiceChoice, installKind, type ServiceChoice } from "../services/catalog.ts";
 
 /**
  * Targeted edits to config.json from a chat command.
@@ -1241,4 +1242,21 @@ export async function removeDevice(deviceId: string): Promise<ConfigEditResult> 
   await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
   await journal("edit", artifactId(CONFIG_PATH), { deviceRemoved: deviceId });
   return { ok: true, previous: {} };
+}
+
+/**
+ * A service's source picked in the app (docs/services.md). Written to the file only: the watcher
+ * applies it, and its appliers are what re-register web_search and reload memory -- a live copy
+ * patched here first would leave it nothing to diff. Answers with the config as written, for the
+ * caller to describe.
+ */
+export async function setService(choice: ServiceChoice): Promise<{ ok: true; written: Record<string, unknown> } | { ok: false; error: string }> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+  const applied = applyServiceChoice(read.data, choice, installKind());
+  if (!applied.ok) return applied;
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant service ${choice.id} ${choice.source}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { service: choice.id, source: choice.source });
+  return { ok: true, written: read.data };
 }

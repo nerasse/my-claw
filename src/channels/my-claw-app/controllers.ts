@@ -5,6 +5,8 @@
  */
 
 import type {
+  MyClawAppServicesResult,
+  MyClawAppServicesSet,
   MyClawAppAgentFileResult,
   MyClawAppAgentFileSet,
   MyClawAppAgentsConfigResult,
@@ -63,6 +65,16 @@ export interface MyClawAppVoiceController {
   status(): { mode: "cloud" | "local" | "auto"; resolved: "cloud" | "local"; cloudAvailable: boolean };
   /** Persisted, not just applied: a switch flipped in the app must survive a restart. */
   setMode(mode: "cloud" | "local" | "auto"): Promise<void>;
+}
+
+/**
+ * The services page (docs/services.md), injected for the same reason as the voice controller.
+ * A set answers with the state of the config as written: the live one catches up through the
+ * watcher, which is what applies it.
+ */
+export interface MyClawAppServicesController {
+  status(): Promise<Omit<MyClawAppServicesResult, "type">>;
+  set(choice: Omit<MyClawAppServicesSet, "type">): Promise<{ ok: true; state: Omit<MyClawAppServicesResult, "type"> } | { ok: false; error: string }>;
 }
 
 /**

@@ -129,3 +129,109 @@ export async function probeService(state: ServiceState): Promise<"up" | "down" |
     return "down";
   }
 }
+
+/** What the owner can pick for a service on this install: self-hosting search needs the compose profile. */
+export function choicesOf(id: ServiceId, kind: InstallKind): ServiceSource[] {
+  const table: Record<ServiceId, ServiceSource[]> = {
+    stt: ["cloud", "self-hosted", "url"],
+    tts: ["cloud", "self-hosted", "url"],
+    embeddings: ["off", "cloud", "self-hosted", "url"],
+    search: kind === "compose" ? ["off", "self-hosted", "url"] : ["off", "url"],
+    browser: ["off", "self-hosted", "url"],
+  };
+  return table[id];
+}
+
+export interface ServiceChoice {
+  id: ServiceId;
+  source: ServiceSource;
+  /** The engine's address, for `url` (and a cloud embeddings provider other than OpenAI). */
+  url?: string;
+  /** Embeddings: the model id. */
+  model?: string;
+  /** Embeddings in the cloud: the .env name holding the key. */
+  keyEnv?: string;
+}
+
+/** The cloud embeddings default: OpenAI's small model, the cheapest that recall needs. */
+export const CLOUD_EMBEDDING = { baseUrl: "https://api.openai.com/v1", model: "text-embedding-3-small", apiKeyEnv: "OPENAI_API_KEY" };
+/** In-process, downloaded on first use: the model the recall tests prove (384 dimensions). */
+export const LOCAL_EMBEDDING_MODEL = "Xenova/all-MiniLM-L6-v2";
+
+type Raw = Record<string, unknown>;
+
+function child(parent: Raw, key: string): Raw {
+  const existing = parent[key];
+  if (existing !== null && typeof existing === "object" && !Array.isArray(existing)) return existing as Raw;
+  const created: Raw = {};
+  parent[key] = created;
+  return created;
+}
+
+function validUrl(url: string | undefined): string | undefined {
+  const value = url?.trim().replace(/\/+$/, "");
+  if (!value) return undefined;
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** A voice engine: cloud, the one this install runs, or the owner's at a URL. */
+function voicePatch(feature: "stt" | "tts") {
+  return (raw: Raw, choice: ServiceChoice, url: string | undefined): void => {
+    const section = child(child(raw, "voice"), feature);
+    section["mode"] = choice.source === "cloud" ? "cloud" : "local";
+    if (choice.source === "url") section["url"] = url;
+    else delete section["url"];
+  };
+}
+
+/** How each choice is written into config.json. One entry per service, no condition elsewhere. */
+const PATCHES: Record<ServiceId, (raw: Raw, choice: ServiceChoice, url: string | undefined) => void> = {
+  stt: voicePatch("stt"),
+  tts: voicePatch("tts"),
+  embeddings: (raw, choice, url) => {
+    const memory = child(raw, "memory");
+    if (choice.source === "off") {
+      delete memory["embedding"];
+      return;
+    }
+    if (choice.source === "self-hosted") {
+      memory["embedding"] = { backend: "local", model: choice.model?.trim() || LOCAL_EMBEDDING_MODEL };
+      return;
+    }
+    memory["embedding"] = {
+      backend: "http",
+      baseUrl: url ?? CLOUD_EMBEDDING.baseUrl,
+      model: choice.model?.trim() || CLOUD_EMBEDDING.model,
+      ...(choice.source === "cloud" ? { apiKeyEnv: choice.keyEnv?.trim() || CLOUD_EMBEDDING.apiKeyEnv } : {}),
+    };
+  },
+  search: (raw, choice, url) => {
+    child(raw, "webSearch")["baseUrl"] = choice.source === "off" ? "" : choice.source === "self-hosted" ? "http://searxng:8080" : url;
+  },
+  browser: (raw, choice, url) => {
+    const browser = child(raw, "browser");
+    browser["enabled"] = choice.source !== "off";
+    if (choice.source === "url") browser["sidecarUrl"] = url;
+  },
+};
+
+/**
+ * Writes a choice into a parsed config.json, or says why it cannot. The caller owns the file (read,
+ * snapshot, atomic write); this only knows what each choice means.
+ */
+export function applyServiceChoice(raw: Raw, choice: ServiceChoice, kind: InstallKind): { ok: true } | { ok: false; error: string } {
+  if (!(choice.id in PATCHES)) return { ok: false, error: `unknown service: ${String(choice.id)}` };
+  if (!choicesOf(choice.id, kind).includes(choice.source)) {
+    return { ok: false, error: `${choice.id} cannot be ${choice.source} on this install` };
+  }
+  const url = validUrl(choice.url);
+  if (choice.source === "url" && !url) return { ok: false, error: "an http(s) URL is needed" };
+  if (choice.url?.trim() && !url) return { ok: false, error: `not an http(s) URL: ${choice.url}` };
+  PATCHES[choice.id](raw, choice, url);
+  return { ok: true };
+}

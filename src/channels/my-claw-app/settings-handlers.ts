@@ -19,6 +19,7 @@ import type {
   MyClawAppToolsController,
   MyClawAppUiPrefsController,
   MyClawAppVoiceController,
+  MyClawAppServicesController,
   MyClawAppWorkspacesController,
 } from "./controllers.ts";
 import type {
@@ -65,6 +66,7 @@ import type {
   MyClawAppWorkspacesRemove,
   MyClawAppWorkspacesRename,
   MyClawAppWorkspacesSetPath,
+  MyClawAppServicesSet,
 } from "./types.ts";
 
 /**
@@ -84,6 +86,7 @@ export interface MyClawAppSettingsDeps {
   readonly instructions?: MyClawAppInstructionsController;
   readonly jobs?: MyClawAppJobsController;
   readonly uiPrefs?: MyClawAppUiPrefsController;
+  readonly services?: MyClawAppServicesController;
   readonly configEditor?: MyClawAppConfigController;
   readonly workspacesCtrl?: MyClawAppWorkspacesController;
   readonly commandHandler?: MyClawAppCommandHandler;
@@ -159,6 +162,35 @@ export async function handleVoiceMode(
     else d.sendFrame(ws, state);
   } catch (err) {
     await d.refuse(ws, "voice", "voice.mode failed", { mode, error: String(err) });
+  }
+}
+
+/**
+ * The services page: a get answers the asker, a set every window of the owner (a machine-wide
+ * setting moved), like the voice mode.
+ */
+export async function handleServices(
+  d: MyClawAppSettingsDeps,
+  ws: ServerWebSocket<MyClawAppSessionData>,
+  choice: Omit<MyClawAppServicesSet, "type"> | undefined,
+): Promise<void> {
+  if (!d.services) {
+    await d.refuse(ws, "services", "services unavailable");
+    return;
+  }
+  try {
+    if (!choice) {
+      d.sendFrame(ws, { type: "services.result", ...(await d.services.status()) });
+      return;
+    }
+    const outcome = await d.services.set(choice);
+    if (!outcome.ok) {
+      await d.refuse(ws, "services", outcome.error, { id: choice.id, source: choice.source });
+      return;
+    }
+    d.broadcastFrame(ws.data.owner, { type: "services.result", ...outcome.state });
+  } catch (err) {
+    await d.refuse(ws, "services", "services failed", { error: String(err) });
   }
 }
 

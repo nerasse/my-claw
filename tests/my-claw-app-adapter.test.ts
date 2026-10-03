@@ -1723,6 +1723,35 @@ describe("MyClawAppAdapter", () => {
     assert.equal(frame.scope, "uiPrefs");
   });
 
+  test("services: a get describes them, a set answers with the state written, a refusal names why", async () => {
+    const view = (source: string) => ({ id: "search", source, choices: ["off", "url"], missing: [], health: "no-endpoint" });
+    const choices: unknown[] = [];
+    adapter.onServicesController({
+      status: async () => ({ install: "native", services: [view("off")] as never }),
+      set: async (choice) => {
+        choices.push(choice);
+        return choice.url ? { ok: true, state: { install: "native", services: [view("url")] as never } } : { ok: false, error: "an http(s) URL is needed" };
+      },
+    });
+
+    client.ws.send(JSON.stringify({ type: "services.get" }));
+    const initial = (await nextFrame(client)) as { type: string; install: string; services: Array<{ source: string }> };
+    assert.equal(initial.type, "services.result");
+    assert.equal(initial.services[0]!.source, "off");
+
+    client.ws.send(JSON.stringify({ type: "services.set", id: "search", source: "url", url: "http://search.lan" }));
+    const after = (await nextFrame(client)) as { type: string; services: Array<{ source: string }> };
+    assert.equal(after.type, "services.result");
+    assert.equal(after.services[0]!.source, "url");
+    assert.deepEqual(choices[0], { id: "search", source: "url", url: "http://search.lan" });
+
+    client.ws.send(JSON.stringify({ type: "services.set", id: "search", source: "url" }));
+    const refused = (await nextFrame(client)) as { type: string; scope: string; message: string };
+    assert.equal(refused.type, "error");
+    assert.equal(refused.scope, "services");
+    assert.equal(refused.message, "an http(s) URL is needed");
+  });
+
   test("an unusable voice mode is refused on the voice scope, not silently ignored", async () => {
     adapter.onVoiceController({
       status: () => ({ mode: "auto", resolved: "cloud", cloudAvailable: true }),

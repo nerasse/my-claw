@@ -50,3 +50,29 @@ A URL in the config always wins, and then nothing is started on this machine.
 `{ id, source, endpoint?, missing[] }`, where `missing` names what the chosen source still needs
 (a key, a URL). `probeService` asks the endpoint once: any HTTP answer is up, a refused connection is
 down. The setup assistant and the Services page read this, nothing else.
+
+## The Services page
+
+`services.get` answers `services.result`: the install kind and, per service, its source, the
+sources this install can switch it to (`choicesOf`: self-hosted search only in compose), its
+endpoint, what it still needs, and one probe. `.env` is re-read first (`refreshEnvFile`), so a key
+just pasted on the page is not reported missing.
+
+`services.set { id, source, url?, model?, keyEnv? }` writes the choice into `config.json`
+(`applyServiceChoice`, one patch per service, `setService` for the file: snapshot, atomic write) and
+answers every window with the state of the file as written. It never touches the live config: the
+watcher applies the file, and its appliers are what re-register `web_search` and reload memory. A
+live copy patched first would leave the watcher no difference to apply. Keys are not part of a
+choice; the page sends them with `providers.env.set`.
+
+| Choice | Written |
+| --- | --- |
+| stt / tts `cloud` | `voice.<f>.mode = "cloud"`, `url` removed |
+| stt / tts `self-hosted` | `mode = "local"`, `url` removed |
+| stt / tts `url` | `mode = "local"`, `url` |
+| embeddings `off` | `memory.embedding` removed |
+| embeddings `cloud` | `backend: "http"`, OpenAI by default (`text-embedding-3-small`, `OPENAI_API_KEY`) |
+| embeddings `self-hosted` | `backend: "local"`, `Xenova/all-MiniLM-L6-v2` (downloaded on first use) |
+| embeddings `url` | `backend: "http"`, the URL, no key |
+| search `off` / `url` / `self-hosted` | `webSearch.baseUrl` = `""` / the URL / `http://searxng:8080` |
+| browser `off` / `self-hosted` / `url` | `browser.enabled`, and `sidecarUrl` for a URL |

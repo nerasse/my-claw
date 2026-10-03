@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp } from "node:fs/promises";
 import type { MyClawConfig } from "../../src/core/config.ts";
-import { piperEndpoint, probeService, serviceStates, whisperEndpoint, type ServiceId } from "../../src/services/catalog.ts";
+import { CLOUD_EMBEDDING, LOCAL_EMBEDDING_MODEL, applyServiceChoice, piperEndpoint, probeService, serviceStates, whisperEndpoint, type ServiceId } from "../../src/services/catalog.ts";
 import { reconcileUnits, type Systemctl } from "../../src/services/on-demand.ts";
 import { VoiceManager } from "../../src/voice/manager.ts";
 import { SttPipeline } from "../../src/voice/stt.ts";
@@ -134,4 +134,65 @@ describe("the engines are called at the URL the catalogue gives", () => {
     expect(await probeService({ id: "search", source: "url", endpoint: "http://search.lan", missing: [] })).toBe("down");
     expect(await probeService({ id: "search", source: "off", missing: [] })).toBe("no-endpoint");
   });
+});
+
+describe("a choice made in the app, written into config.json", () => {
+  const apply = (raw: Record<string, unknown>, choice: Parameters<typeof applyServiceChoice>[1], kind: "native" | "compose" = "native") =>
+    applyServiceChoice(raw, choice, kind);
+
+  test("voice: cloud, this install's engine, or the owner's URL -- the URL goes when it is no longer used", () => {
+    const raw: Record<string, unknown> = { voice: { stt: { mode: "cloud", language: "fr" } } };
+    expect(apply(raw, { id: "stt", source: "url", url: "http://stt.lan:9000/" })).toEqual({ ok: true });
+    expect(raw).toEqual({ voice: { stt: { mode: "local", language: "fr", url: "http://stt.lan:9000" } } });
+    apply(raw, { id: "stt", source: "self-hosted" });
+    expect(raw).toEqual({ voice: { stt: { mode: "local", language: "fr" } } });
+    apply(raw, { id: "tts", source: "cloud" });
+    expect((raw.voice as { tts: unknown }).tts).toEqual({ mode: "cloud" });
+  });
+
+  test("embeddings: off by default, the cloud with its key name, or in-process; each read back by the catalogue", () => {
+    const raw: Record<string, unknown> = {};
+    apply(raw, { id: "embeddings", source: "cloud" });
+    const asConfig = () => raw as unknown as MyClawConfig;
+    expect(state(asConfig(), NATIVE, "embeddings")).toMatchObject({ source: "cloud", endpoint: CLOUD_EMBEDDING.baseUrl, missing: [CLOUD_EMBEDDING.apiKeyEnv] });
+    apply(raw, { id: "embeddings", source: "self-hosted" });
+    expect(state(asConfig(), NATIVE, "embeddings")).toMatchObject({ source: "self-hosted" });
+    expect((raw.memory as { embedding: { model: string } }).embedding.model).toBe(LOCAL_EMBEDDING_MODEL);
+    apply(raw, { id: "embeddings", source: "off" });
+    expect(state(asConfig(), NATIVE, "embeddings").source).toBe("off");
+  });
+
+  test("search: off empties the URL; self-hosting it is a compose profile, refused on bare metal", () => {
+    const raw: Record<string, unknown> = { webSearch: { baseUrl: "https://search.example", language: "fr" } };
+    expect(apply(raw, { id: "search", source: "self-hosted" })).toEqual({ ok: false, error: "search cannot be self-hosted on this install" });
+    expect(apply(raw, { id: "search", source: "self-hosted" }, "compose")).toEqual({ ok: true });
+    expect(raw.webSearch).toEqual({ baseUrl: "http://searxng:8080", language: "fr" });
+    apply(raw, { id: "search", source: "off" });
+    expect(raw.webSearch).toEqual({ baseUrl: "", language: "fr" });
+  });
+
+  test("a URL source without a usable URL is refused, and nothing is written", () => {
+    const raw: Record<string, unknown> = {};
+    expect(apply(raw, { id: "stt", source: "url" })).toEqual({ ok: false, error: "an http(s) URL is needed" });
+    expect(apply(raw, { id: "stt", source: "url", url: "file:///etc/passwd" })).toEqual({ ok: false, error: "an http(s) URL is needed" });
+    expect(raw).toEqual({});
+  });
+});
+
+test("setService writes the choice to config.json and answers with the file as written", async () => {
+  const { CONFIG_PATH } = await import("../../src/core/config.ts");
+  const { setService } = await import("../../src/core/config-edit.ts");
+  const { mkdir, rm } = await import("node:fs/promises");
+  const { dirname } = await import("node:path");
+  await mkdir(dirname(CONFIG_PATH), { recursive: true });
+  await writeFile(CONFIG_PATH, JSON.stringify({ webSearch: { baseUrl: "", language: "fr" } }));
+  try {
+    const outcome = await setService({ id: "search", source: "url", url: "https://search.lan" });
+    expect(outcome.ok).toBe(true);
+    expect(JSON.parse(await readFile(CONFIG_PATH, "utf8")).webSearch).toEqual({ baseUrl: "https://search.lan", language: "fr" });
+    expect(await setService({ id: "search", source: "url" })).toEqual({ ok: false, error: "an http(s) URL is needed" });
+    expect(JSON.parse(await readFile(CONFIG_PATH, "utf8")).webSearch.baseUrl).toBe("https://search.lan");
+  } finally {
+    await rm(CONFIG_PATH, { force: true });
+  }
 });

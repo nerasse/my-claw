@@ -36,6 +36,7 @@ import {
   type AgentToolType,
   type EffortLevel,
   type MyClawConfig,
+  refreshEnvFile,
 } from "./core/config.ts";
 import {
   loadConfigOrFallback,
@@ -85,6 +86,7 @@ import { ModelPricing, setSharedPricing } from "./llm/pricing.ts";
 import { statsReport } from "./channels/stats-command.ts";
 import { startConfigWatcher, type ConfigWatcherHandle } from "./core/config-watcher.ts";
 import { managesUnits, scheduleReconcile } from "./services/on-demand.ts";
+import { choicesOf, installKind, probeService, serviceStates } from "./services/catalog.ts";
 import { createMyClawAppCommandHandler } from "./channels/my-claw-app/commands.ts";
 import { askUndoMode } from "./channels/branch-commands.ts";
 import { effectiveEffort, EFFORT_LEVELS, leafModelId } from "./llm/resolver.ts";
@@ -177,6 +179,7 @@ import {
 } from "./memory/index.ts";
 import {
   setVoiceSttMode,
+  setService,
   setUiPrefs,
   setDefaultModel,
   clearAgentModel,
@@ -888,6 +891,27 @@ async function main() {
         // built now: apply it in memory too so the app is not told the old engine.
         voiceManager.setFeatureMode("stt", mode);
         reconcileOnDemand();
+      },
+    });
+
+    // The services page (docs/services.md): the catalogue of the live config, each endpoint probed
+    // once. A set answers from the file as written; the watcher applies it to the live config.
+    const describeServices = async (source: MyClawConfig) => {
+      // A key just pasted on the page is in .env before the watcher re-reads it: read it now, or
+      // the page would show it missing right after saving it.
+      refreshEnvFile();
+      const kind = installKind();
+      const services = await Promise.all(
+        serviceStates(source).map(async (state) => ({ ...state, choices: choicesOf(state.id, kind), health: await probeService(state) })),
+      );
+      return { install: kind, services };
+    };
+    myClawApp.onServicesController({
+      status: () => describeServices(config),
+      set: async (choice) => {
+        const written = await setService(choice);
+        if (!written.ok) return written;
+        return { ok: true, state: await describeServices(written.written as unknown as MyClawConfig) };
       },
     });
 

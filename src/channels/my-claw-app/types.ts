@@ -499,6 +499,21 @@ export interface MyClawAppVoiceModeGet {
   type: "voice.mode.get";
 }
 
+/** Every optional service: where it runs and whether it answers -- docs/services.md. */
+export interface MyClawAppServicesGet {
+  type: "services.get";
+}
+
+/** Picks a service's source. Keys go through `providers.env.set`, never here. */
+export interface MyClawAppServicesSet {
+  type: "services.set";
+  id: MyClawAppServiceId;
+  source: MyClawAppServiceSource;
+  url?: string;
+  model?: string;
+  keyEnv?: string;
+}
+
 export interface MyClawAppVoiceModeSet {
   type: "voice.mode.set";
   mode: "cloud" | "local" | "auto";
@@ -1050,6 +1065,8 @@ export type MyClawAppClientFrame =
   | MyClawAppSessionWorkspaceSet
   | MyClawAppVoiceModeGet
   | MyClawAppVoiceModeSet
+  | MyClawAppServicesGet
+  | MyClawAppServicesSet
   | MyClawAppUiPrefsGet
   | MyClawAppUiPrefsSet
   | MyClawAppUpdateRun
@@ -1879,6 +1896,7 @@ export type MyClawAppErrorScope =
   | "diag"
   | "logs"
   | "voice"
+  | "services"
   | "uiPrefs"
   | "model"
   | "skills"
@@ -1936,6 +1954,28 @@ export interface MyClawAppUpdateResult {
   /** busy: a run is in flight. denied: no privilege to start the unit. failed: systemd said no. */
   reason?: "busy" | "denied" | "failed";
   detail?: string;
+}
+
+export type MyClawAppServiceId = "stt" | "tts" | "embeddings" | "search" | "browser";
+export type MyClawAppServiceSource = "off" | "cloud" | "self-hosted" | "url";
+
+export interface MyClawAppServiceView {
+  id: MyClawAppServiceId;
+  source: MyClawAppServiceSource;
+  /** The sources this install can switch it to. */
+  choices: MyClawAppServiceSource[];
+  /** The URL the server talks to, when it talks to one. */
+  endpoint?: string;
+  /** What the current source still needs: .env names (set with providers.env.set) or config keys. */
+  missing: string[];
+  /** One request to `endpoint`: any answer is up. */
+  health: "up" | "down" | "no-endpoint";
+}
+
+export interface MyClawAppServicesResult {
+  type: "services.result";
+  install: "native" | "compose" | "dev";
+  services: MyClawAppServiceView[];
 }
 
 export interface MyClawAppVoiceModeResult {
@@ -3869,6 +3909,7 @@ export type MyClawAppServerFrame =
   | MyClawAppChatHistory
   | MyClawAppSessionSyncResult
   | MyClawAppVoiceModeResult
+  | MyClawAppServicesResult
   | MyClawAppUiPrefsResult
   | MyClawAppUpdateResult
   | MyClawAppModelListResult

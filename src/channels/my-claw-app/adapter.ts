@@ -177,6 +177,7 @@ import type {
   MyClawAppToolsController,
   MyClawAppUiPrefsController,
   MyClawAppVoiceController,
+  MyClawAppServicesController,
   MyClawAppWorkspacesController,
 } from "./controllers.ts";
 import {
@@ -232,6 +233,7 @@ import {
   handleUpdateRun,
   handleUiPrefs,
   handleVoiceMode,
+  handleServices,
   handleWorkspacesAdd,
   handleWorkspacesList,
   handleWorkspacesRemove,
@@ -332,6 +334,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private tools?: MyClawAppToolsController;
   private instructions?: MyClawAppInstructionsController;
   private uiPrefs?: MyClawAppUiPrefsController;
+  private services?: MyClawAppServicesController;
   private sessionInstructions?: MyClawAppSessionInstructionsProvider;
   private jobs?: MyClawAppJobsController;
   private notifications?: MyClawAppNotificationsController;
@@ -725,6 +728,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   onVoiceController(controller: MyClawAppVoiceController): void {
     this.voice = controller;
+  }
+
+  onServicesController(controller: MyClawAppServicesController): void {
+    this.services = controller;
   }
 
   onUiPrefsController(controller: MyClawAppUiPrefsController): void {
@@ -1483,6 +1490,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       instructions: this.instructions,
       jobs: this.jobs,
       uiPrefs: this.uiPrefs,
+      services: this.services,
       configEditor: this.configEditor,
       workspacesCtrl: this.workspacesCtrl,
       commandHandler: this.commandHandler,
@@ -1594,6 +1602,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "voice.mode.set":
         this.detach(handleVoiceMode(this.settingsDeps(), ws, frame.mode), "handleVoiceMode");
         break;
+      case "services.get":
+        this.detach(handleServices(this.settingsDeps(), ws, undefined), "handleServices");
+        break;
+      case "services.set": {
+        const { type: _type, ...choice } = frame;
+        this.detach(handleServices(this.settingsDeps(), ws, choice), "handleServices");
+        break;
+      }
       case "uiPrefs.get":
         this.detach(handleUiPrefs(this.settingsDeps(), ws, undefined), "handleUiPrefs");
         break;
