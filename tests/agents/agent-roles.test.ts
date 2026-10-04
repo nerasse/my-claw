@@ -52,7 +52,7 @@ function runner(): SubAgentRunner {
   const tools = new ToolRegistry();
   // What the cron role holds besides the browser tools: every one of these reaching a browser task
   // or a research agent is the bug.
-  for (const name of ["read", "write", "bash", "fetch", "spawn", "send", "delegate_browser_task", "notify", "read_skill"]) {
+  for (const name of ["read", "write", "bash", "fetch", "spawn", "send", "delegate_browser_task", "notify", "skills"]) {
     tools.register({ name, description: name, parameters: { type: "object", properties: {} }, execute: async () => ({ success: true, output: "" }) });
   }
   const session = new BrowserSession(config);
@@ -95,7 +95,7 @@ describe("a sub-agent of a cron run has its own role", () => {
       expect(w.toolsSent.length).toBeGreaterThan(0);
       const tools = w.toolsSent[0]!;
       expect(tools).toContain("browser_navigate");
-      expect(tools.every((n) => n.startsWith("browser_") || n === "read_skill")).toBe(true);
+      expect(tools.every((n) => n.startsWith("browser_") || n === "skills")).toBe(true);
     } finally {
       w.restore();
     }

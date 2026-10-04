@@ -15,7 +15,7 @@ export function editableTierDirs(dirs: SkillDirs): string[] {
 }
 
 // Single source of truth for "rescan skill dirs and swap the registry contents".
-// Shared by the manage_skills tool (reload action) and the skills fs watcher so
+// Shared by the skills tool (reload action) and the skills fs watcher so
 // both refresh identically. list() is read live per run, so a swap is effective
 // on the next agent run.
 export async function reloadSkills(dirs: SkillDirs, registry: SkillRegistry): Promise<number> {

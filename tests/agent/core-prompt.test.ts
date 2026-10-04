@@ -25,7 +25,7 @@ async function workspaceWith(coreContent?: string): Promise<string> {
 }
 
 function ctx(): PromptContext {
-  return { platform: "unknown", model: "m", sessionId: "s", tools: [], skills: [] };
+  return { platform: "unknown", model: "m", sessionId: "s", skills: [] };
 }
 
 test("missing CORE.md falls back to the hardcoded constant", async () => {

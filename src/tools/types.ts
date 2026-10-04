@@ -22,6 +22,12 @@ export interface Tool {
    *  EOF (bash today; the others ignore it). The callback fires with stdout/stderr chunks; the
    *  caller is responsible for throttling and appending to the final ToolResult.output. */
   execute(args: Record<string, unknown>, onProgress?: (chunk: ToolProgress) => void): Promise<ToolResult>;
+  /**
+   * What an agent other than the orchestrator is handed instead, same name, when some actions are
+   * the orchestrator's alone (`skills`). `ToolRegistry.getForAgent` swaps it in, and a call runs
+   * from the list its agent was given, so the full tool is never reached by that agent.
+   */
+  readOnly?: Tool;
 }
 
 export interface ToolProgress {

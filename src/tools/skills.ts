@@ -92,72 +92,89 @@ async function readableSkills(
   return names.length > 0 ? `Skills available to you: ${names.join(", ")}.` : "No skill is available to you.";
 }
 
-export function createReadSkillTool(registry: SkillRegistry, config: MyClawConfig, sessionManager?: SessionManager): Tool {
-  return {
-    name: "read_skill",
-    description: "Read the full content of a skill by name. If file_path is provided, reads a specific file within the skill directory (e.g., 'references/format.md'). Call this when a skill matches your task or when the skill references a file you need.",
-    parameters: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "The name of the skill to read" },
-        file_path: { type: "string", description: "Optional relative path within the skill directory (e.g., 'references/format.md', 'examples/minimal.md')" },
-      },
-      required: ["name"],
-    },
-    execute: async (args: Record<string, unknown>) => {
-      const name = String(args["name"] ?? "");
-      const filePath = args["file_path"] ? String(args["file_path"]) : undefined;
-      const off = await skillsOffFor(sessionManager, sessionIdFromArgs(args));
-      if (off.has(name)) {
-        return { success: false, output: `Skill "${name}" is not in this session's scope. ${await readableSkills(registry, config, sessionManager, args)}` };
-      }
-      const skill = registry.get(name, workspaceKeyFromArgs(config, args));
-      if (!skill) {
-        return { success: false, output: `Skill "${name}" not found. ${await readableSkills(registry, config, sessionManager, args)}` };
-      }
-      // Existence is checked first on purpose: "not in scope" for a name that does not exist at all
-      // would send the agent looking for a permission problem instead of a typo.
-      if (!scopeAllows(scopeFromArgs(config, args), name)) {
-        return { success: false, output: `Skill "${name}" is not in this agent's scope. ${await readableSkills(registry, config, sessionManager, args)}` };
-      }
+async function readSkill(
+  registry: SkillRegistry,
+  config: MyClawConfig,
+  sessionManager: SessionManager | undefined,
+  args: Record<string, unknown>,
+): Promise<ToolResult> {
+  const name = String(args["name"] ?? "");
+  const filePath = args["file_path"] ? String(args["file_path"]) : undefined;
+  const off = await skillsOffFor(sessionManager, sessionIdFromArgs(args));
+  if (off.has(name)) {
+    return { success: false, output: `Skill "${name}" is not in this session's scope. ${await readableSkills(registry, config, sessionManager, args)}` };
+  }
+  const skill = registry.get(name, workspaceKeyFromArgs(config, args));
+  if (!skill) {
+    return { success: false, output: `Skill "${name}" not found. ${await readableSkills(registry, config, sessionManager, args)}` };
+  }
+  // Existence is checked first on purpose: "not in scope" for a name that does not exist at all
+  // would send the agent looking for a permission problem instead of a typo.
+  if (!scopeAllows(scopeFromArgs(config, args), name)) {
+    return { success: false, output: `Skill "${name}" is not in this agent's scope. ${await readableSkills(registry, config, sessionManager, args)}` };
+  }
 
-      const skillDir = dirname(skill.path);
+  const skillDir = dirname(skill.path);
 
-      let rawContent: string;
-      if (!filePath) {
-        rawContent = skill.content;
-      } else {
-        const targetPath = resolve(skillDir, filePath);
-        if (!targetPath.startsWith(skillDir + "/") && targetPath !== skillDir) {
-          return { success: false, output: `Blocked: "${filePath}" escapes skill directory.` };
-        }
-        try {
-          // The path check above reads names, and a link inside the skill directory can still point
-          // anywhere (a skill is often a cloned repository). Where the file really is decides.
-          const [realDir, realTarget] = await Promise.all([realpath(skillDir), realpath(targetPath)]);
-          if (!realTarget.startsWith(realDir + "/")) {
-            return { success: false, output: `Blocked: "${filePath}" leads out of the skill directory.` };
-          }
-          rawContent = await readFile(targetPath, "utf-8");
-        } catch (err) {
-          return { success: false, output: formatError(`File "${filePath}" in skill "${name}"`, err) };
-        }
+  let rawContent: string;
+  if (!filePath) {
+    rawContent = skill.content;
+  } else {
+    const targetPath = resolve(skillDir, filePath);
+    if (!targetPath.startsWith(skillDir + "/") && targetPath !== skillDir) {
+      return { success: false, output: `Blocked: "${filePath}" escapes skill directory.` };
+    }
+    try {
+      // The path check above reads names, and a link inside the skill directory can still point
+      // anywhere (a skill is often a cloned repository). Where the file really is decides.
+      const [realDir, realTarget] = await Promise.all([realpath(skillDir), realpath(targetPath)]);
+      if (!realTarget.startsWith(realDir + "/")) {
+        return { success: false, output: `Blocked: "${filePath}" leads out of the skill directory.` };
       }
+      rawContent = await readFile(targetPath, "utf-8");
+    } catch (err) {
+      return { success: false, output: formatError(`File "${filePath}" in skill "${name}"`, err) };
+    }
+  }
 
-      hooks.emit("skill:read", { name });
-      const resolved = rawContent.replace(/\$\{SKILL_DIR\}/g, skillDir);
-      return { success: true, output: normalizeUntrusted(resolved, `skill:${name}`) };
-    },
-  };
+  hooks.emit("skill:read", { name });
+  const resolved = rawContent.replace(/\$\{SKILL_DIR\}/g, skillDir);
+  return { success: true, output: normalizeUntrusted(resolved, `skill:${name}`) };
 }
 
-export function createManageSkillsTool(
+/** Where skills are written: the built-in source (refused), the custom tier, the default workspace's. */
+export interface SkillDirs {
+  builtinDir: string;
+  customDir: string;
+  workspaceSkillsDir: string;
+}
+
+const READ_DESCRIPTION =
+  "Load a skill's full instructions by name: your prompt lists the skills available to you. If file_path is " +
+  "given, reads that file within the skill directory instead (e.g. 'references/format.md'). Call it when a skill " +
+  "matches your task or when a skill points to a file you need.";
+
+const READ_PROPERTIES = {
+  name: { type: "string", description: "The skill's name" },
+  file_path: { type: "string", description: "Optional relative path within the skill directory (e.g. 'references/format.md')" },
+};
+
+/**
+ * One tool for the skills: read one (the default), and for the orchestrator create, update,
+ * delete and reload. They were `read_skill` and `manage_skills` until 2026-10-04.
+ *
+ * Writing stays the orchestrator's alone, as it was with two tools. Every other agent is handed
+ * `readOnly` (`ToolRegistry.getForAgent`): a schema with no action at all, and an `execute` that
+ * refuses one. A tool call runs from the list its agent was given, so a sub-agent naming
+ * `action: "create"` reaches the read-only tool and nothing else.
+ */
+export function createSkillsTool(
   skillRegistry: SkillRegistry,
   config: MyClawConfig,
-  builtinDir: string,
-  customDir: string,
-  workspaceSkillsDir: string,
+  dirs: SkillDirs,
+  sessionManager?: SessionManager,
 ): Tool {
+  const { builtinDir, customDir, workspaceSkillsDir } = dirs;
   async function refreshRegistry(): Promise<void> {
     await reloadSkills(
       {
@@ -186,34 +203,40 @@ export function createManageSkillsTool(
     return workspaceSkillsDir;
   }
 
+  const readOnly: Tool = {
+    name: "skills",
+    description: READ_DESCRIPTION,
+    parameters: { type: "object", properties: READ_PROPERTIES, required: ["name"] },
+    execute: async (args: Record<string, unknown>): Promise<ToolResult> => {
+      const action = String(args["action"] ?? "read").trim();
+      if (action !== "read") return { success: false, output: "Only the orchestrator writes skills: this agent can read them." };
+      return readSkill(skillRegistry, config, sessionManager, args);
+    },
+  };
+
   return {
-    name: "manage_skills",
-    description: "Manage the skill registry. Actions: create, update, delete, reload. After create/update/delete, the registry auto-refreshes. Use reload to force a rescan from disk.",
+    name: "skills",
+    description:
+      `${READ_DESCRIPTION} Other actions write the skill registry: create (name, description, instructions), ` +
+      "update (name, instructions), delete (name), reload (a rescan from disk). The registry refreshes by itself after " +
+      "create, update and delete.",
     parameters: {
       type: "object",
       properties: {
         action: {
           type: "string",
-          enum: ["create", "update", "delete", "reload"],
-          description: "Action to perform: create a new skill, update an existing one, delete a skill, or reload the registry from disk",
+          enum: ["read", "create", "update", "delete", "reload"],
+          description: "read (default) loads a skill; the others write the registry",
         },
-        name: {
-          type: "string",
-          description: "Skill name (lowercase, hyphens, max 64 chars). Required for create/update/delete.",
-        },
-        description: {
-          type: "string",
-          description: "Short description of what this skill does, max 1024 chars. Required for create.",
-        },
-        instructions: {
-          type: "string",
-          description: "Full markdown instructions for the skill. Required for create/update.",
-        },
+        ...READ_PROPERTIES,
+        description: { type: "string", description: "create: what the skill does, one line, max 1024 chars" },
+        instructions: { type: "string", description: "create, update: the full markdown instructions" },
       },
-      required: ["action"],
     },
+    readOnly,
     execute: async (args: Record<string, unknown>): Promise<ToolResult> => {
-      const action = String(args["action"] ?? "").trim();
+      const action = String(args["action"] ?? "read").trim();
+      if (action === "read") return readSkill(skillRegistry, config, sessionManager, args);
 
       if (action === "reload") {
         try {
@@ -310,7 +333,7 @@ export function createManageSkillsTool(
         if (!parsesAsSkill(newContent)) {
           return { success: false, output: `Refused: the result would not parse as a skill (frontmatter of "${name}" is malformed).` };
         }
-        await snapshot(skillFile, { origin: "pre-write", note: `manage_skills update ${name}` });
+        await snapshot(skillFile, { origin: "pre-write", note: `skills update ${name}` });
         await writeFileAtomically(skillFile, newContent);
 
         await refreshRegistry();
@@ -340,7 +363,7 @@ export function createManageSkillsTool(
         return { success: true, output: `Skill "${name}" deleted and registry refreshed.` };
       }
 
-      return { success: false, output: `Unknown action '${action}'. Use: create, update, delete, reload.` };
+      return { success: false, output: `Unknown action '${action}'. Use: read, create, update, delete, reload.` };
     },
   };
 }

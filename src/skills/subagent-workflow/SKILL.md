@@ -21,8 +21,8 @@ Not for a question one or two tool calls answer, or a task that already fits you
 
 | Type | Tools | Use for |
 |---|---|---|
-| `research` | read, search, ls, fetch, web_search, conversation_search, read_skill | Exploration and analysis, nothing written |
-| `general` | Everything except sub-agent management, `manage_skills`, `memory`, `cron`, `workspaces`, `question`, `notify` and the raw browser tools | Execution, coding, changes |
+| `research` | read, search, ls, fetch, web_search, conversation_search, skills (read) | Exploration and analysis, nothing written |
+| `general` | Everything except sub-agent management, skill writes, `memory`, `cron`, `workspaces`, `question`, `notify` and the raw browser tools | Execution, coding, changes |
 
 The browser is reached with `delegate_browser_task`, never `spawn` (see the web-browsing skill).
 

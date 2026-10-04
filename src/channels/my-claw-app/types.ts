@@ -3100,7 +3100,7 @@ export interface MyClawAppSessionInstructionPatch {
   kind: "nested.toggle" | "nested.unload" | "layer.toggle" | "skill.toggle" | "memory.toggle";
   /** For nested.*: the absolute resolved path as returned by the report. */
   path?: string;
-  /** For layer.toggle: the layer id (agent, skills, tools, platform, runtime, suggested). */
+  /** For layer.toggle: the layer id (agent, skills, platform, runtime, suggested). */
   layer?: string;
   /** For skill.toggle: the skill name. */
   skill?: string;

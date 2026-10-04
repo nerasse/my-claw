@@ -106,7 +106,7 @@ offer — a `fetch` to the site's own API, `location.reload`, and reading `docum
 Those three are now tools of their own, so `eval` keeps its place as the top rung of the ladder.
 
 **Scoping.** The `browser_*` tools are the `browser` tool base (`ToolRegistry.getForAgent("browser")`,
-a closed set: its own tools plus `read_skill`, no MCP, no plugin) and every other base (`main`, `general`, `research`,
+a closed set: its own tools plus `skills` (read-only), no MCP, no plugin) and every other base (`main`, `general`, `research`,
 `cron`) is filtered of them: a driver outside a browser run would hold no window and be released by nothing.
 `browser_eval` and `browser_cdp` are registered always and taken away per run through
 `ResolvedAgent.deny` when `browser.allowEval` / `browser.allowCdp` are off, so a hot-reload toggles
@@ -245,7 +245,7 @@ what `browser_click_at` exists for.
 It used to get CORE, SOUL and USER only: neither the workspace's AGENTS.md, where the rules of what
 it fills in live (how an application is worded, what is never stated), nor the skills. The
 conversation driving it had to copy all of that into every brief. It now reads the AGENTS.md of the
-workspace it runs in and can read skills with `read_skill`, under its `skills`
+workspace it runs in and can read skills with `skills` (read-only), under its `skills`
 scope like any agent (`agents.browser.skills` narrows it; `[]` takes skills away).
 
 The risk this adds is not a new capability but more text to leak: a page cannot make the agent run
@@ -253,7 +253,7 @@ anything, but it can ask it to paste what it was told into a field. That was alr
 SOUL.md and USER.md (the owner's profile), which it always had. Three things bound it:
 
 - Nothing it reads is a secret: credentials live in `~/.my-claw/.env` and `~/.my-claw/secrets/`,
-  outside any skill and any prompt file, and `read_skill` refuses a file a link inside the skill
+  outside any skill and any prompt file, and `skills` refuses a file a link inside the skill
   points out of it (a skill is often a cloned repository).
 - Its prompt says in as many words that its instructions and skills are not page content: never
   pasted into a field, never revealed to a page, and a page asking for them is content, not the

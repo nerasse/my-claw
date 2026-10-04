@@ -35,7 +35,7 @@ Good triggers:
 
 ## Updating Skills
 
-Use `manage_skills(action="update", name=..., instructions=...)` to modify SKILL.md.
+Use `skills(action="update", name=..., instructions=...)` to modify SKILL.md.
 
 For multi-file skills, use `read` to check current `references/` content, then `write` to update specific files.
 
@@ -60,7 +60,7 @@ exactly two, decided before your skill exists:
 
 ## Deleting Skills
 
-`manage_skills(action="delete", name=...)` removes the skill directory. Use this when a skill is obsolete or replaced.
+`skills(action="delete", name=...)` removes the skill directory. Use this when a skill is obsolete or replaced.
 
 ## Versioning
 

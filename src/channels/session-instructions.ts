@@ -134,13 +134,11 @@ export async function sessionInstructionsReport(p: SessionInstructionsParams): P
   const skillsOff = p.session?.skillsOff ?? [];
   const skillStates = skillsAll.map((s) => ({ name: s.name, description: s.description, off: skillsOff.includes(s.name) }));
   const promptSkills = skillsOff.length > 0 ? skillsAll.filter((s) => !skillsOff.includes(s.name)) : skillsAll;
-  const tools = p.toolRegistry.getForAgent(definition.base, p.config.tools?.disabled, definition.mcp, definition.allow);
 
   const parts = await composeSystemPrompt({
     platform: p.platform,
     model,
     sessionId: p.sessionId,
-    tools,
     skills: promptSkills,
     ...(definition.prompt ? { agentPrompt: definition.prompt } : {}),
     instructions: definition.instructions,

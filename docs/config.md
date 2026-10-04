@@ -548,7 +548,7 @@ entry means the global default, not whatever the owner picked for his own chats.
   every server on upgrade. Only an explicit `agents.research.mcp` grants it servers.
 - Granting MCP to `research` **ends the "read-only research agent" guarantee**: its built-in tools
   are a read-only allowlist, but an MCP server's tools are arbitrary and may write.
-- The scope binds visibility *and* execution: the prompt catalog and `read_skill` (what it reads, and what its
+- The scope binds visibility *and* execution: the prompt catalog and `skills` (what it reads, and what its
   refusals name) agree, and out-of-scope MCP tools are not exposed. It scopes the skill system, not the filesystem —
   `read` can still open a `SKILL.md` by path.
 - A name matching no installed skill and no declared MCP server is reported to the owner at boot and
@@ -563,7 +563,7 @@ Four commands on every channel, all accepting an optional agent (`orchestrator`/
 is per type). No argument means the orchestrator, and an unknown name lists the accepted values.
 
 - `/skills [agent]` — the skills that agent sees, with its scope, whether it can write skills
-  (`manage_skills` is orchestrator-only), and any configured name matching no installed skill.
+  (writing skills is orchestrator-only), and any configured name matching no installed skill.
 - `/agents` — the three configured types with iterations, model, tool class and both scopes; then
   `cron` (inherits the orchestrator when it has no entry of its own); then the live sub-agents; then the browser
   sub-agent, which is hardcoded, has no skills or MCP, and is invisible to `agents list`.

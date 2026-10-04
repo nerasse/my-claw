@@ -31,7 +31,7 @@ export class SkillRegistry {
 
   /**
    * Unscoped on purpose: this is the skill store, and callers that legitimately need every skill
-   * (the loader, `manage_skills`, the boot scope validation) go through here. Anything that hands
+   * (the loader, the `skills` tool's writes, the boot scope validation) go through here. Anything that hands
    * skills to an agent must use `list(scope)` / `getInScope` instead.
    *
    * `workspace` resolves within one workspace's layers: the workspace's own skill shadows the
@@ -60,7 +60,7 @@ export class SkillRegistry {
    *
    * One entry per name, resolved like `get()`: the run's workspace layer shadows the global
    * entry, which the loader already resolved as custom over built-in. Listing both would put the
-   * same name twice in the prompt with two different descriptions, for a `read_skill` that can
+   * same name twice in the prompt with two different descriptions, for a `skills` read that can
    * only ever return the workspace one.
    */
   list(scope: AgentScope = "all", workspace?: string): SkillInfo[] {

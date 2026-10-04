@@ -29,7 +29,7 @@ Detailed markdown instructions for the agent.
 
 ### Multi-File Skills
 
-Skills can reference additional files in subdirectories. The agent reads them on demand via `read_skill(name, file_path)`.
+Skills can reference additional files in subdirectories. The agent reads them on demand via `skills(name, file_path)`.
 
 ```
 skill-name/
@@ -103,20 +103,20 @@ Built-in skills are **read-only** for the agent. The agent cannot modify or dele
 
 An `fs.watch` (`src/skills/watcher.ts`) watches the custom and workspace skill tiers: dropping in a new
 `SKILL.md`, editing one, or deleting a skill refreshes the registry automatically, effective on the next
-run. The agent can also force a rescan with `manage_skills(action='reload')`. The built-in tier is synced
+run. The agent can also force a rescan with `skills(action='reload')`. The built-in tier is synced
 at boot only. Bun's recursive watch is unreliable on Linux, so the watcher tracks each tier dir plus every
 skill subdir. See `docs/hot-reload-extensions.md`.
 
 A reload rebuilds the registry wholesale, so a skill edited into a broken frontmatter used to just
 vanish. The loader now keeps the last version of each `SKILL.md` that parsed and logs the retention;
 a skill whose *file* is deleted still disappears, since that is a removal rather than a mistake.
-`manage_skills(action='update')` also re-parses its own output before reporting success, so a skill
+`skills(action='update')` also re-parses its own output before reporting success, so a skill
 can no longer delete itself by corrupting the frontmatter it copies over. Custom and workspace
 `SKILL.md` files are snapshotted (`docs/config-backup.md`).
 
 ## Prompt Injection
 
-Only the **skill index** (name + description) is injected into the system prompt on every run. The full skill content is loaded on-demand via the `read_skill` tool. This keeps the context window light while making all skills discoverable.
+Only the **skill index** (name + description) is injected into the system prompt on every run. The full skill content is loaded on-demand via the `skills` tool. This keeps the context window light while making all skills discoverable.
 
 ```
 # Available skills
@@ -125,15 +125,15 @@ Only the **skill index** (name + description) is injected into the system prompt
 - git-workflow: Advanced git operations and branching strategies
 
 Before replying, scan the skills above. If a skill matches your task,
-you MUST call read_skill(name) to load its full instructions.
+you MUST call skills(name) to load its full instructions.
 ```
 
 ## Tools
 
 | Tool | Description |
 |---|---|
-| `read_skill(name, file_path?)` | Load full content of a skill. A wrong or out-of-scope name is answered with the skills the caller may read. If `file_path` is provided, reads a specific file within the skill directory (e.g., `references/format.md`). Replaces `${SKILL_DIR}` with the absolute skill directory path in the returned content. |
-| `manage_skills(action, name?, description?, instructions?)` | Manage skills: `create` (needs name + description + instructions), `update` (needs name + instructions), `delete` (needs name), `reload` (no args). Auto-refreshes registry after create/update/delete. |
+| `skills(name, file_path?)` | Read (the default action): load the full content of a skill. A wrong or out-of-scope name is answered with the skills the caller may read. If `file_path` is provided, reads a specific file within the skill directory (e.g., `references/format.md`). Replaces `${SKILL_DIR}` with the absolute skill directory path in the returned content. |
+| `skills(action, name?, description?, instructions?)` | The orchestrator's writes: `create` (needs name + description + instructions), `update` (needs name + instructions), `delete` (needs name), `reload` (no args). Auto-refreshes registry after create/update/delete. Every other agent is handed `skills` read-only: no `action` in its schema, and one passed anyway is refused. |
 | `/reload-skills` | User command to force rescan all skills from disk |
 
 ## Scripts in Skills
@@ -144,7 +144,7 @@ Skills may contain executable scripts in a `scripts/` directory. Reference them 
 Run the analysis: `bash python3 ${SKILL_DIR}/scripts/analyze.py`
 ```
 
-When `read_skill("my-skill")` is called, the returned content has `${SKILL_DIR}` replaced with the absolute path to the skill directory, allowing the agent to execute scripts directly.
+When `skills("my-skill")` is called, the returned content has `${SKILL_DIR}` replaced with the absolute path to the skill directory, allowing the agent to execute scripts directly.
 
 ## Sub-Agent Sharing
 
@@ -171,7 +171,7 @@ If the number of skills grows large enough to impact the context window, a compa
 
 There is no `list_skills` tool any more (2026-10-04): it returned the prompt catalog again, at the
 price of a tool definition on every request. The one case it covered, a name the agent got wrong,
-is answered by `read_skill`'s refusal, which names what the caller may read.
+is answered by the refusal of a read, which names what the caller may read.
 
 ## Notes
 

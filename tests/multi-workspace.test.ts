@@ -128,7 +128,6 @@ test("the built prompt uses the run's workspace and falls back per file", async 
     platform: "test",
     model: "m",
     sessionId: "s",
-    tools: [],
     skills: [],
     workspaceDir: secondary,
     defaultWorkspaceDir: def,
@@ -219,7 +218,7 @@ test("a workspace skill that masks a built-in says so", async () => {
   assert.equal(registry.listAll().find((s) => s.workspace === "a")!.overrides, "built-in");
 });
 
-test("read_skill follows the run's workspace", async () => {
+test("skills reads follow the run's workspace", async () => {
   const dir = await tmpDir();
   const a = await tmpDir();
   await writeSkill(dir, "shared", "custom copy");
@@ -232,9 +231,9 @@ test("read_skill follows the run's workspace", async () => {
   });
   const registry = new SkillRegistry(all);
 
-  const { createReadSkillTool } = await import("../src/tools/skills.ts");
+  const { createSkillsTool } = await import("../src/tools/skills.ts");
   const config = configWith({ a });
-  const read = createReadSkillTool(registry, config);
+  const read = createSkillsTool(registry, config, { builtinDir: dir, customDir: dir, workspaceSkillsDir: dir }).readOnly!;
 
   const inA = await read.execute({ name: "shared", __workspaceDir: a });
   assert.match(inA.output, /A copy/);

@@ -50,12 +50,16 @@ decides whether a tool stands alone:
   moved onto `delegate_browser_task` as `kept` (list, release, extend) instead of
   `held_browser_windows`.
 - **A tool that repeats the prompt goes.** `list_skills` returned the catalog layer 5 already
-  lists; `read_skill`'s refusal now names what the caller may read, which was the one case it
-  covered.
+  lists; a refused read now names what the caller may read, which was the one case it covered.
+- **The prompt does not repeat the tools.** A layer "Available tools" listed every tool's name and
+  description in the system prompt, while every engine already sends them as tool definitions:
+  each description went out twice, on every request. It is gone.
 - **The hot path and the permission boundaries stay apart.** `spawn` and `send` (rich arguments,
-  called often), the file tools, `web_search`, `fetch`, `question`: one tool each. `read_skill` and
-  `manage_skills` are not merged because the research and browser agents may read skills and never
-  write them, and permissions are by tool name.
+  called often), the file tools, `web_search`, `fetch`, `question`: one tool each.
+- **One tool where only some actions are privileged, with a read-only variant.** `skills` (read,
+  create, update, delete, reload) replaced `read_skill` and `manage_skills`. Writing stays the
+  orchestrator's: every other agent is handed `Tool.readOnly` by `getForAgent`, a schema without
+  `action` whose `execute` refuses one, and a call runs from the list its agent was given.
 
 A tool with an `action` puts every action's parameters in one schema, so it is reserved for rare
 calls with few arguments: a merged schema cannot say which argument each action requires, and

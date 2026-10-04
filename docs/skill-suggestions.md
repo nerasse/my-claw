@@ -1,11 +1,11 @@
 # Skill Suggestions (soft relevance reminder)
 
 A mini-RAG over the skill registry. On top of the always-present skill catalog (Layer 5 of the
-system prompt, which lists every skill and instructs the model to `read_skill` when one fits), a
+system prompt, which lists every skill and instructs the model to call `skills` when one fits), a
 short **soft reminder** is appended at the very end of the system prompt highlighting the skills
 that best match the incoming message.
 
-Goal: cut the `read_skill` discovery latency by pointing at the likely-relevant skill(s), without
+Goal: cut the skill discovery latency by pointing at the likely-relevant skill(s), without
 removing the model's freedom to ignore them. It is a hint, never an order.
 
 ## What gets injected
@@ -18,11 +18,11 @@ Rendered as the last layer, after the runtime line:
 - video: convert and edit video files
 - media: process media assets
 
-These look related to the current request. If one fits, call read_skill(name) to load its full
+These look related to the current request. If one fits, call skills(name) to load its full
 instructions. Treat this as a hint, not an order.
 ```
 
-Layer 5 (the full catalog + the `MUST read_skill` instruction) is unchanged; this only adds a
+Layer 5 (the full catalog + the `MUST call skills` instruction) is unchanged; this only adds a
 focused reminder.
 
 ## Ranking

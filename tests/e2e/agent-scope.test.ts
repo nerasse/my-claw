@@ -8,7 +8,7 @@ import { parseConfig, type MyClawConfig } from "../../src/core/config.ts";
 import { loadAllSkills } from "../../src/skills/loader.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
-import { createReadSkillTool } from "../../src/tools/skills.ts";
+import { createSkillsTool } from "../../src/tools/skills.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { MessageRouter } from "../../src/core/router.ts";
 import { SessionManager } from "../../src/sessions/manager.ts";
@@ -79,7 +79,9 @@ async function realSkills(): Promise<SkillRegistry> {
  */
 function stack(config: MyClawConfig, skills: SkillRegistry, opts: { depth?: number; agentKind?: "general" | "research" } = {}) {
   const tools = new ToolRegistry();
-  tools.register(createReadSkillTool(skills, config));
+  // The real tool, swapped for its read-only variant by the registry for every agent but the
+  // orchestrator; nothing here writes, so its write dirs lead nowhere.
+  tools.register(createSkillsTool(skills, config, { builtinDir: "/nonexistent", customDir: "/nonexistent", workspaceSkillsDir: "/nonexistent" }));
   const bridge = new AgentBridge(config, tools, skills, undefined, undefined, opts.depth ?? 0, undefined, opts.agentKind);
   return { router: new MessageRouter(new SessionManager(), bridge), bridge };
 }
@@ -143,17 +145,17 @@ describe("E2E agent scoping", () => {
     const config = configWith({ orchestrator: { skills: ["*"] }, general: { skills: ["alpha"] } });
     const { router } = stack(config, skills, { depth: 1, agentKind: "general" });
 
-    const listed = await callTool(router, "read_skill", { name: "nope" });
+    const listed = await callTool(router, "skills", { name: "nope" });
     expect(listed.toolOutput).toContain("alpha");
     expect(listed.toolOutput).not.toContain("beta");
     // The prompt catalog and the tool must agree, or the model is told to read something it cannot.
     expect(listed.systemPrompt).toContain("- alpha: alpha does things");
     expect(listed.systemPrompt).not.toContain("beta");
 
-    const allowed = await callTool(router, "read_skill", { name: "alpha" });
+    const allowed = await callTool(router, "skills", { name: "alpha" });
     expect(allowed.toolOutput).toContain("ALPHA BODY");
 
-    const refused = await callTool(router, "read_skill", { name: "beta" });
+    const refused = await callTool(router, "skills", { name: "beta" });
     expect(refused.toolOutput).toContain("not in this agent's scope");
     expect(refused.toolOutput).not.toContain("BETA BODY");
   });
@@ -165,8 +167,8 @@ describe("E2E agent scoping", () => {
     const config = configWith({ orchestrator: { skills: ["*"] }, general: { skills: ["alpha"] } });
     const { router } = stack(config, skills, { depth: 0 });
 
-    expect((await callTool(router, "read_skill", { name: "beta" })).toolOutput).toContain("BETA BODY");
-    expect((await callTool(router, "read_skill", { name: "nope" })).toolOutput).toContain("beta");
+    expect((await callTool(router, "skills", { name: "beta" })).toolOutput).toContain("BETA BODY");
+    expect((await callTool(router, "skills", { name: "nope" })).toolOutput).toContain("beta");
   });
 
   test("editing the scope on disk applies to the next message, with no restart", async () => {
@@ -180,7 +182,7 @@ describe("E2E agent scoping", () => {
     const config = parseConfig(await Bun.file(file).text());
     const { router } = stack(config, skills, { depth: 1, agentKind: "general" });
 
-    const before = await callTool(router, "read_skill", { name: "beta" });
+    const before = await callTool(router, "skills", { name: "beta" });
     expect(before.toolOutput).toContain("not in this agent's scope");
 
     const watcher = startConfigWatcher(config, {}, {
@@ -198,7 +200,7 @@ describe("E2E agent scoping", () => {
     // No re-registration of the tools and no new bridge: both hold the same live config object, so
     // the widened scope has to be visible on the very next call. This is the claim docs/config.md
     // makes about `agents` being a hot section.
-    const after = await callTool(router, "read_skill", { name: "beta" });
+    const after = await callTool(router, "skills", { name: "beta" });
     expect(after.toolOutput).toContain("BETA BODY");
   });
 
@@ -213,7 +215,7 @@ describe("E2E agent scoping", () => {
     await writeFile(file, JSON.stringify(configWith({ general: { skills: ["alpha", "beta"] } }), null, 2));
     const config = parseConfig(await Bun.file(file).text());
     const { router } = stack(config, skills, { depth: 1, agentKind: "general" });
-    expect((await callTool(router, "read_skill", { name: "beta" })).toolOutput).toContain("BETA BODY");
+    expect((await callTool(router, "skills", { name: "beta" })).toolOutput).toContain("BETA BODY");
 
     const watcher = startConfigWatcher(config, {}, {
       path: file,
@@ -225,7 +227,7 @@ describe("E2E agent scoping", () => {
     const reloaded = waitForReload();
     await writeUntilReloaded(file, JSON.stringify(configWith({ general: { skills: ["alpha"] } }), null, 2), reloaded);
 
-    const after = await callTool(router, "read_skill", { name: "beta" });
+    const after = await callTool(router, "skills", { name: "beta" });
     expect(after.toolOutput).toContain("not in this agent's scope");
     expect(after.systemPrompt).not.toContain("beta");
   });
@@ -235,10 +237,10 @@ describe("E2E agent scoping", () => {
     const config = configWith({});
     for (const opts of [{ depth: 0 }, { depth: 1, agentKind: "general" as const }, { depth: 1, agentKind: "research" as const }]) {
       const { router } = stack(config, skills, opts);
-      const listed = await callTool(router, "read_skill", { name: "nope" });
+      const listed = await callTool(router, "skills", { name: "nope" });
       expect(listed.toolOutput).toContain("alpha");
       expect(listed.toolOutput).toContain("beta");
-      expect((await callTool(router, "read_skill", { name: "beta" })).toolOutput).toContain("BETA BODY");
+      expect((await callTool(router, "skills", { name: "beta" })).toolOutput).toContain("BETA BODY");
     }
   });
 });

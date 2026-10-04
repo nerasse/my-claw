@@ -238,15 +238,14 @@ test("scope: a research sub-agent gets no MCP tool without an explicit grant", a
   assert.ok(!granted.toolNames.includes("mcp__srv_a__ping"));
 });
 
-test("scope: the home loop keeps the prompt tool layer and the API payload in step", async () => {
-  // Two independent renderings of the same array. If only one were filtered the model would be told
-  // about a tool it is not allowed to call, or the reverse.
+test("scope: the API payload carries the in-scope MCP tools, and the prompt names no tool", async () => {
+  // The payload is the one rendering of the tool array left: the prompt layer that listed it a
+  // second time is gone (docs/tools.md), so it can no longer disagree with it.
   const { skills, mcp } = fixtures();
   const run = await runHome(baseConfig({ orchestrator: { mcp: ["srv_a"] } }), skills, { dynamic: mcp });
-  const toolsLayer = run.systemPrompt.slice(run.systemPrompt.indexOf("# Available tools"));
-  assert.match(toolsLayer, /- mcp__srv_a__ping:/);
-  assert.doesNotMatch(toolsLayer, /mcp__srv_b__ping/);
   assert.deepEqual(run.toolNames.filter((n) => n.startsWith("mcp__")), ["mcp__srv_a__ping"]);
+  assert.doesNotMatch(run.systemPrompt, /# Available tools/);
+  assert.doesNotMatch(run.systemPrompt, /mcp__srv_a__ping/);
 });
 
 // --- The offered set is the executable set ---

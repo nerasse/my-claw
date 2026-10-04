@@ -60,7 +60,7 @@ The body after the frontmatter is the agent's prompt.
 
 `reviewer.md` defines the agent `reviewer`. There is **no `name` field in the frontmatter.**
 
-Skills key the registry on the frontmatter `name` (`src/skills/loader.ts:125`) while `manage_skills`
+Skills key the registry on the frontmatter `name` (`src/skills/loader.ts:125`) while the `skills` writes
 and the app's `/skills` endpoint address them by directory name, and nothing reconciles the two: a
 skill in `foo/` declaring `name: bar` is addressable one way for reading and another way for
 writing. Deriving the name from the path removes the divergence by construction.

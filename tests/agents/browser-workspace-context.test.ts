@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { resolveAgent } from "../../src/agents/resolve.ts";
-import { createReadSkillTool } from "../../src/tools/skills.ts";
+import { createSkillsTool } from "../../src/tools/skills.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { loadAllSkills } from "../../src/skills/loader.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
@@ -24,12 +24,16 @@ const base = { whitelist: [], blacklist: [], channels: {}, llm: { models: [] }, 
 
 test("the browser's tools: its own, plus reading skills, and nothing that writes or reaches out", () => {
   const registry = new ToolRegistry();
-  for (const name of ["browser_navigate", "browser_done", "read_skill", "bash", "write", "fetch", "memory", "manage_skills"]) {
+  for (const name of ["browser_navigate", "browser_done", "bash", "write", "fetch", "memory"]) {
     registry.register(stub(name));
   }
+  const reading = stub("skills");
+  registry.register({ ...stub("skills"), readOnly: reading });
   registry.setDynamicProvider(() => [stub("mcp__gmail__search")]);
-  const names = registry.getForAgent("browser").map((t) => t.name).sort();
-  expect(names).toEqual(["browser_done", "browser_navigate", "read_skill"]);
+  const tools = registry.getForAgent("browser");
+  expect(tools.map((t) => t.name).sort()).toEqual(["browser_done", "browser_navigate", "skills"]);
+  // Reading them, not writing them: the variant every agent but the orchestrator is handed.
+  expect(tools.find((t) => t.name === "skills")).toBe(reading);
 });
 
 test("its skill scope follows the ordinary chain, so the config can narrow it or take it away", () => {
@@ -53,7 +57,7 @@ test("read_skill refuses a file a link inside the skill points out of it", async
   await writeFile(join(skills, "career", "real.md"), "inside");
 
   const registry = new SkillRegistry(await loadAllSkills({ builtInDir: skills, customDir: skills }));
-  const tool = createReadSkillTool(registry, base);
+  const tool = createSkillsTool(registry, base, { builtinDir: skills, customDir: skills, workspaceSkillsDir: skills }).readOnly!;
   const escaped = await tool.execute({ name: "career", file_path: "notes.md" });
   expect(escaped.success).toBe(false);
   expect(escaped.output).toContain("leads out of the skill directory");

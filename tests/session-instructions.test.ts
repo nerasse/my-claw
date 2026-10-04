@@ -170,14 +170,14 @@ test("a thread that has never run still reports what it would load", async () =>
 
 test("the report reflects layers, skills and memory recall the session turned off", async () => {
   const report = await sessionInstructionsReport(
-    params(sessionFor({ promptLayersOff: ["tools", "suggested"], skillsOff: ["voice"], memoryRecallOff: true })),
+    params(sessionFor({ promptLayersOff: ["runtime", "suggested"], skillsOff: ["voice"], memoryRecallOff: true })),
   );
-  assert.deepEqual(report.layersOff, ["tools", "suggested"]);
+  assert.deepEqual(report.layersOff, ["runtime", "suggested"]);
   assert.deepEqual(report.skillsOff, ["voice"]);
   assert.equal(report.memoryRecallOff, true);
-  // The off layers are gone from the composed prompt: tools and suggested are not layers.
+  // The off layers are gone from the composed prompt: runtime and suggested are not layers.
   const ids = report.layers.map((l) => l.id);
-  assert.equal(ids.includes("tools"), false);
+  assert.equal(ids.includes("runtime"), false);
   assert.equal(ids.includes("suggested"), false);
 });
 

@@ -147,7 +147,7 @@ Five points, all of which must use the same resolvers:
 | --- | --- | --- | --- |
 | 1 | Prompt layer 5 (`# Available skills`) | `bridge.ts:253`, `backend.ts:350` | catalog filtered to the scope |
 | 2 | Prompt layer 9 (suggested skills) | same call sites | `selectRelevantSkills` receives the filtered list, never suggests out-of-scope |
-| 3 | `read_skill` tool | `src/tools/skills.ts` | refuses an out-of-scope name with an explicit message, and names only the caller's scope |
+| 3 | `skills` tool (read) | `src/tools/skills.ts` | refuses an out-of-scope name with an explicit message, and names only the caller's scope |
 | 4 | MCP tools | `src/tools/registry.ts:39` | `dynamic` filtered by the `mcp__<server>__` prefix |
 
 ### How a tool learns who called it
@@ -206,7 +206,7 @@ Skills for orchestrator (5 of 5)
 ...
 
 Scope: * (all)          <- or: forgejo, nextcloud
-Write access: yes       <- manage_skills is main-only
+Write access: yes       <- skill writes are main-only
 ```
 
 When the scope is a list, out-of-scope skills are **not** printed; the count line carries the
@@ -402,7 +402,7 @@ despite being advertised in `MATRIX_COMMANDS:8`, matched by `META_COMMAND_PATTER
   the owner actually wrote, not the reserved roles, so a typo under a file-defined agent is caught;
   a config predating file agents still validates clean.
 - Prompt: layer 5 and layer 9 restricted to the scope; an out-of-scope skill never appears.
-- `read_skill` scoped by `__agentType`: refuses out-of-scope with a clear message, naming the caller's scope only.
+- `skills` reads scoped by `__agentType`: refuses out-of-scope with a clear message, naming the caller's scope only.
 - `getForAgent`: MCP filtered per agent; `research` with an explicit list gets exactly it; built-in
   tools unaffected by the MCP scope; an agent name the chain does not know falls back to the
   sub-agent set rather than the orchestrator's, so a typo cannot hand out `spawn` or `memory`.

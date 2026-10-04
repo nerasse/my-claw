@@ -15,21 +15,21 @@ export function mcpServerOf(toolName: string): string | undefined {
   return separator > 0 ? rest.slice(0, separator) : undefined;
 }
 
-// read_skill is read-only and the system prompt tells every agent to call it to load a skill;
-// research agents need it or they hit unknown-tool errors.
-export const READ_ONLY_TOOLS = ["read", "search", "ls", "fetch", "web_search", "conversation_search", "read_skill"];
+// `skills` reaches a research agent as its read-only variant, and the system prompt tells every
+// agent to call it to load a skill: without it a research agent hits unknown-tool errors.
+export const READ_ONLY_TOOLS = ["read", "search", "ls", "fetch", "web_search", "conversation_search", "skills"];
 // `notify` reaches the owner's phone, which is the orchestrator's and the cron agent's business: a
 // sub-agent is a delegated worker whose results are reported by whoever spawned it, and a worker
 // that can ring the phone is a worker that can ring it fifty times.
-const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "agents", "manage_skills", "memory", "cron", "workspaces", "question", "notify"];
+const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "agents", "memory", "cron", "workspaces", "question", "notify"];
 
 /**
  * What the cron role is never given, however a job is configured. A job has no one to ask
  * (`question`, `workspaces`), `memory` would rewrite what the owner is known for with nobody there
- * to see it, and one that could schedule jobs or edit skills would be a machine nobody can audit.
- * docs/cron.md.
+ * to see it, and one that could schedule jobs or edit skills would be a machine nobody can audit
+ * (it gets `skills` read-only, like every agent but the orchestrator). docs/cron.md.
  */
-const CRON_ALWAYS_EXCLUDED = ["cron", "manage_skills", "memory", "workspaces", "question"];
+const CRON_ALWAYS_EXCLUDED = ["cron", "memory", "workspaces", "question"];
 
 /**
  * The two families a cron job carries a switch for. Granted unless the job turned them off: the
@@ -81,12 +81,13 @@ export function isBrowserTool(name: string): boolean {
 }
 
 /**
- * The only non-browser tool the browser agent gets: reading the workspace's skills, which carry the
+ * The only non-browser tool the browser agent gets: reading the workspace's skills (`skills`, its
+ * read-only variant), which carry the
  * rules of what it fills in (an application's wording, what never to state). Read-only, scoped by
  * the agent's `skills` like everyone's, and a skill holds no secret (those live in ~/.my-claw/.env
  * and secrets/). Nothing that writes, runs or reaches another machine: docs/browser.md.
  */
-export const BROWSER_SKILL_TOOLS = ["read_skill"];
+export const BROWSER_SKILL_TOOLS = ["skills"];
 
 /** The tool names a file agent of the given base may narrow from. Exported so the app channel can
  *  offer exactly the names `getForAgent` will intersect the file's `tools:` against. */
@@ -177,9 +178,11 @@ export class ToolRegistry {
       // registry, and it is named explicitly above: a name this chain does not know must land on a
       // sub-agent set, never on the full one. Before file-defined agents the union was closed and
       // the fallthrough was `main`, so a typo in an agent name would have handed out `spawn`,
-      // `memory` and `manage_skills`. See docs/file-agents.md.
+      // `memory` and skill writes. See docs/file-agents.md.
       set = [...this.tools.values(), ...dynamic].filter((t) => !SUBAGENT_EXCLUDED_TOOLS.includes(t.name) && !isBrowserTool(t.name));
     }
+    // A tool some of whose actions are the orchestrator's alone reaches everyone else read-only.
+    if (agentType !== "main") set = set.map((t) => t.readOnly ?? t);
     // An agent file's `tools:` intersects the baseline, it never adds to it. A workspace is often a
     // cloned repository, so a file that could grant tools would turn `git clone` into a privilege
     // escalation; naming a tool outside the baseline drops it rather than widening the set.

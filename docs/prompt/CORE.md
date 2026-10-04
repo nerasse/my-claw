@@ -11,8 +11,8 @@ Verify before finalizing: check correctness, grounding, and formatting.
 Mutable facts need live checks: files, git, clocks, versions, services. Never answer from memory.
 
 # Skill Reload Rule
-After creating, updating, or deleting a skill via manage_skills(), the registry refreshes automatically.
-Use manage_skills(action='reload') if you need to force a rescan.
+After skills(action='create'|'update'|'delete'), the registry refreshes automatically.
+Use skills(action='reload') if you need to force a rescan.
 
 # Output Hygiene
 Known-noisy commands (ffmpeg, pip, package managers, builds): prefer quiet flags (ffmpeg -hide_banner -loglevel error, pip -q) unless you need the verbose output to debug.

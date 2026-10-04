@@ -140,9 +140,10 @@ export async function handleSkillsCommand(p: IntrospectParams): Promise<string> 
   }
 
   lines.push("", `Périmètre : ${scopeLabel(scope)}`);
-  // manage_skills is main-only, so read access and write access differ per agent.
-  const canWrite = toolsOf(p, agent.toolType).some((t) => t.name === "manage_skills");
-  lines.push(`Écriture (manage_skills) : ${canWrite ? "oui" : "non"}`);
+  // Writing skills is the orchestrator's alone: every other agent is handed `skills` read-only,
+  // the variant that carries no `readOnly` of its own.
+  const canWrite = toolsOf(p, agent.toolType).some((t) => t.name === "skills" && t.readOnly !== undefined);
+  lines.push(`Écriture (skills create/update/delete) : ${canWrite ? "oui" : "non"}`);
 
   const missing = missingSkillNames(p, scope);
   if (missing.length > 0) lines.push(`Configuré mais introuvable : ${missing.join(", ")}`);
@@ -235,7 +236,6 @@ export async function handleMcpCommand(p: IntrospectParams): Promise<string> {
 /** Markers of the layers a dump can contain, checked against the composed text rather than recomputed. */
 const LAYER_MARKERS: Array<[string, string]> = [
   ["# Available skills", "catalogue de skills"],
-  ["# Available tools", "liste d'outils"],
   ["Runtime: date=", "ligne runtime"],
   ["# Mid-run steering", "note de pilotage SDK"],
 ];
@@ -259,7 +259,6 @@ export async function handleInstructionsCommand(p: IntrospectParams): Promise<Ou
     platform,
     model,
     sessionId: "instructions",
-    tools,
     skills,
     // Without these the dump would show the workspace stack for an agent whose file replaces part
     // of it, which is exactly the question `/instructions <agent>` is asked to answer.

@@ -562,8 +562,8 @@ export class AgentBridge implements AgentBackend {
         await this.maybeAutoCompact(session, llmConfig, agentToolType, entries, signal);
       }
 
-      // Scoped, not the full store: layer 5 tells the agent it MUST read_skill anything listed, so a
-      // catalog wider than the scope would advertise skills read_skill then refuses.
+      // Scoped, not the full store: layer 5 tells the agent it MUST load (`skills`) anything listed, so
+      // a catalog wider than the scope would advertise skills the tool then refuses.
       const allSkills = this.skillRegistry.list(agent.skills, session.workspace);
       const skillsOff = session.skillsOff ?? [];
       const skills = skillsOff.length > 0 ? allSkills.filter((s) => !skillsOff.includes(s.name)) : allSkills;
@@ -572,7 +572,6 @@ export class AgentBridge implements AgentBackend {
         platform: message.platform,
         model: llmConfig.model,
         sessionId: session.id,
-        tools,
         skills,
         workspaceDir: runWorkspace.workspaceDir,
         defaultWorkspaceDir: runWorkspace.defaultWorkspaceDir,

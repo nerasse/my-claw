@@ -130,7 +130,7 @@ hooks.tap("transform:system:prompt", ({ prompt, sessionId }) => {
 ### Skill lifecycle
 - `skills:loaded` -- initial load on boot
 - `skills:reloaded` -- /reload command
-- `skill:read/created/updated/deleted` -- manage_skills tool
+- `skill:read/created/updated/deleted` -- `skills` tool
 
 ### Subagent lifecycle
 - `subagent:spawn` -- new subagent created

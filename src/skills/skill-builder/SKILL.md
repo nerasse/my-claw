@@ -58,7 +58,7 @@ Details: read `references/best-practices.md` (Secrets and Credentials).
 
 ## Creating a Skill
 
-Call `manage_skills(action="create", name=..., description=..., instructions=...)` to write SKILL.md to `workspace/skills/`.
+Call `skills(action="create", name=..., description=..., instructions=...)` to write SKILL.md to `workspace/skills/`.
 
 For multi-file skills, use `write` to create `references/` and `examples/` files after creating SKILL.md.
 

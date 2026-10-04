@@ -132,7 +132,7 @@ Consequence to accept: after a fresh install there is no fallback for the first 
 boot. There is no earlier moment at which a config has proven anything.
 
 **Snapshot before an in-process overwrite.** `ensureAuthProvider` (`index.ts:157`),
-`manage_skills` create/update (`tools/skills.ts:172,220`), and the `write` tool
+`skills` create/update (`tools/skills.ts`), and the `write` tool
 (`tools/write.ts:28`) when its resolved target is a registered artifact. `tool:file:write`
 (`hooks/types.ts:155`) already exists as the hook point for the last one. These are `confirmed:
 false` by construction.
@@ -257,7 +257,7 @@ Non-atomic writes to files that a watcher then reads, which is how a truncated f
 `SKILL.md` (`tools/skills.ts:172,220`), `manifest.json` (`skills/sync.ts:83`),
 `pending-actions.json` (`matrix/adapter.ts:1112`), `pending-approvals.json`
 (`matrix/session-handlers.ts:221`), and the `write` tool (`tools/write.ts:28`). All move to
-`writeFileAtomically`. `manage_skills update` additionally re-parses its own output before
+`writeFileAtomically`. `skills` update additionally re-parses its own output before
 reporting success, so a skill can no longer delete itself by corrupting its frontmatter.
 
 ## Commands and hooks

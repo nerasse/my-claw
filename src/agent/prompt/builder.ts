@@ -1,4 +1,3 @@
-import type { Tool } from "../../tools/types.ts";
 import type { SkillInfo } from "../../skills/types.ts";
 import { resolveCorePrompt, resolvePromptFile, type PromptFileResolution, type PromptResolveOptions } from "./loader.ts";
 import { PROMPT_LAYER_OF_FILE, WORKSPACE_PROMPT_FILES, type PromptFile, type PromptLayerName } from "./files.ts";
@@ -10,7 +9,6 @@ export interface PromptContext {
   platform: string;
   model: string;
   sessionId: string;
-  tools: Tool[];
   skills: SkillInfo[];
   /** Secondary workspace of the run; prompt files missing there fall back per the policy below. */
   workspaceDir?: string;
@@ -32,7 +30,7 @@ export interface PromptContext {
    */
   instructions?: readonly PromptLayerName[];
   /**
-   * Derived layers this session turned off ("agent", "skills", "tools", "platform", "runtime",
+   * Derived layers this session turned off ("agent", "skills", "platform", "runtime",
    * "suggested"). The four workspace files are gated by `instructions`/`wants` instead. An off
    * layer is simply skipped during composition, so the run and the instructions page can never
    * drift: both go through this one function.
@@ -43,7 +41,7 @@ export interface PromptContext {
 /** A layer of the composed prompt, kept apart so a reader can be shown what each one contributed. */
 export interface PromptPart {
   /** Stable across builds: the four files use their layer name, the derived ones their own. */
-  id: PromptLayerName | "agent" | "skills" | "tools" | "platform" | "runtime" | "suggested";
+  id: PromptLayerName | "agent" | "skills" | "platform" | "runtime" | "suggested";
   label: string;
   text: string;
   /** The prompt file this layer was read from, absent for a derived layer. */
@@ -112,18 +110,14 @@ export async function composeSystemPrompt(ctx: PromptContext): Promise<PromptPar
       text:
         `# Available skills\n\n${skillList}\n\n` +
         `Before replying, scan the skills above. If a skill matches your task, ` +
-        `you MUST call read_skill(name) to load its full instructions. ` +
+        `you MUST call skills(name) to load its full instructions. ` +
         `Only proceed without loading a skill if genuinely none are relevant.`,
     });
   }
 
-  // Layer 6: Available tools
-  if (ctx.tools.length > 0 && !layerOff("tools")) {
-    const toolList = ctx.tools
-      .map((t) => `- ${t.name}: ${t.description}`)
-      .join("\n");
-    parts.push({ id: "tools", label: "Available tools", text: `# Available tools\n\n${toolList}` });
-  }
+  // No tool layer: every tool's name and description already go out with the request, in the
+  // tool definitions every engine sends. Listing them here as well sent each description twice,
+  // on every request (removed 2026-10-04, docs/tools.md).
 
   // Layer 7: Platform hints
   const hint = getPlatformHint(ctx.platform);
@@ -142,7 +136,7 @@ export async function composeSystemPrompt(ctx: PromptContext): Promise<PromptPar
   }
 
   // Layer 9: Soft skill reminder. Placed last (after the already-dynamic runtime line) so it
-  // never busts the cacheable prefix. Complements, not overrides, the "MUST read_skill" catalog.
+  // never busts the cacheable prefix. Complements, not overrides, the "MUST call skills" catalog.
   if (ctx.suggestedSkills && ctx.suggestedSkills.length > 0 && !layerOff("suggested")) {
     const hints = ctx.suggestedSkills
       .map((s) => `- ${s.name}: ${s.description}`)
@@ -152,7 +146,7 @@ export async function composeSystemPrompt(ctx: PromptContext): Promise<PromptPar
       label: "Suggested skills",
       text:
         `# Skills possibly relevant to this request\n\n${hints}\n\n` +
-        `These look related to the current request. If one fits, call read_skill(name) to load ` +
+        `These look related to the current request. If one fits, call skills(name) to load ` +
         `its full instructions. Treat this as a hint, not an order.`,
     });
   }

@@ -1400,14 +1400,14 @@ describe("MyClawAppSessionStoreImpl setInstructionPatch", () => {
   });
 
   test("layer.toggle, skill.toggle and memory.toggle flip and persist", async () => {
-    await store.setInstructionPatch(DEVICE, THREAD, { kind: "layer.toggle", layer: "tools" });
+    await store.setInstructionPatch(DEVICE, THREAD, { kind: "layer.toggle", layer: "platform" });
     await store.setInstructionPatch(DEVICE, THREAD, { kind: "skill.toggle", skill: "voice" });
     await store.setInstructionPatch(DEVICE, THREAD, { kind: "memory.toggle" });
     const s = await manager.peek(sessionId);
-    assert.deepEqual(s?.promptLayersOff, ["tools"]);
+    assert.deepEqual(s?.promptLayersOff, ["platform"]);
     assert.deepEqual(s?.skillsOff, ["voice"]);
     assert.equal(s?.memoryRecallOff, true);
-    assert.deepEqual((await loadSession(sessionId))?.promptLayersOff, ["tools"]);
+    assert.deepEqual((await loadSession(sessionId))?.promptLayersOff, ["platform"]);
   });
 
   test("refuses an unknown conversation", async () => {

@@ -36,7 +36,7 @@ model. Then the frame goes out for the devices that are online.
 ### Tool restriction (`agentType: "cron"`)
 
 Cron jobs get a filtered toolset. Never granted, whatever a job is configured with: `cron` (no
-recursive scheduling), `manage_skills` (no skill mutations), `memory` (would corrupt user
+recursive scheduling), skill writes (no skill mutations: a job is handed `skills` read-only), `memory` (would corrupt user
 representations without a user present), `workspaces` and `question` (there is nobody to ask). The
 raw `browser_*` tools stay out too: the browser agent is reached through `delegate_browser_task`.
 

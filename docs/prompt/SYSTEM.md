@@ -10,7 +10,7 @@ It is NOT injected into the AI prompt — it is for your reference only.
 - Safety first: no independent goals, no self-preservation
 - Verify before finalizing: check correctness and grounding
 - Mutable facts need live checks (files, git, clocks, versions)
-- After manage_skills(create/update/delete), registry auto-refreshes
+- After skills(action=create/update/delete), registry auto-refreshes
 - Only use the memory tool when the user explicitly asks
 
 ## How It Works
@@ -19,7 +19,7 @@ The AI receives a minimal hardcoded prompt (~25 lines) with safety and core rule
 Everything else comes from:
 
 1. **Tool descriptions** — Each tool explains when and how to use it
-2. **Skills** — Loaded on-demand via `read_skill(name)` when relevant
+2. **Skills** — Loaded on-demand via `skills(name)` when relevant
 3. **Workspace files** — Your custom rules and context
 
 ## Customization

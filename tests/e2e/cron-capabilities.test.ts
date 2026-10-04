@@ -41,12 +41,18 @@ function cronRegistry(): ToolRegistry {
     "memory",
     "conversation_search",
     "workspaces",
-    "manage_skills",
     "browser_click",
   ]) {
     reg.register({ name, description: name, parameters: {}, async execute() { return { success: true, output: "ok" }; } });
   }
+  // `skills` writes for the orchestrator alone: anyone else, a job included, is handed the variant.
+  const skill = (properties: Record<string, unknown>) => ({ name: "skills", description: "skills", parameters: { type: "object", properties }, async execute() { return { success: true, output: "ok" }; } });
+  reg.register({ ...skill({ action: {}, name: {} }), readOnly: skill({ name: {} }) });
   return reg;
+}
+
+function skillsSchemaOf(body: { tools?: Array<{ function?: { name?: string; parameters?: { properties?: Record<string, unknown> } } }> }): string[] {
+  return Object.keys((body.tools ?? []).find((t) => t.function?.name === "skills")?.function?.parameters?.properties ?? {});
 }
 
 function cronMessage(): UnifiedMessage {
@@ -104,7 +110,8 @@ describe("E2E cron capabilities", () => {
       expect(names).not.toContain("memory");
       expect(names).not.toContain("conversation_search");
       expect(names).not.toContain("workspaces");
-      expect(names).not.toContain("manage_skills");
+      // Skills are read, never written, by a job: the variant without an action.
+      expect(skillsSchemaOf(bodies[0]!)).toEqual(["name"]);
       // The raw browser tools stay out even when the browser is granted: one driver per Chromium.
       expect(names).not.toContain("browser_click");
     } finally {

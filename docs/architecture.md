@@ -9,7 +9,7 @@
 | Sessions (memory + disk) | Complete |
 | Agent bridge | Complete — tool call loop, configurable iteration budgets (90/50), grace call summary, typed session messages |
 | LLM provider | Complete — sync + streaming |
-| Tools (8 base + voice, browser, skill, subagent, search, cron) | Complete: bash, read, write, apply_patch, fetch, search, ls, memory + audio, delegate_browser_task, spawn, send, agents, read_skill, manage_skills, web_search, cron |
+| Tools (8 base + voice, browser, skill, subagent, search, cron) | Complete: bash, read, write, apply_patch, fetch, search, ls, memory + audio, delegate_browser_task, spawn, send, agents, skills, web_search, cron |
 | System prompt builder | Complete (8-layer: hardcoded core + 3 workspace files + 4 dynamic) |
 | Nested AGENTS.md | Complete — lazy per-tool discovery: the AGENTS.md chain from the git root down to a touched subtree is appended to the tool result (file tools via `path`, bash via `workdir`), scanned + byte-capped + deduped per run — see `docs/nested-agents.md` |
 | Context pruning + auto-compaction | Complete — prompt-side stubbing of tool results older than 5 assistant turns (session file untouched), auto LLM compaction on a dynamic threshold checked at run start, mid-run and on provider overflow, with a 20k verbatim tail and a speculative pre-threshold summary — see `docs/context-pruning.md` and `docs/compaction.md` |
@@ -175,11 +175,11 @@ Hooks are an in-process event bus (`src/hooks/`), not persisted to disk.
 
 - Hybrid 3-tier: **built-in** (repo, versioned, auto-sync), **custom** (user-managed), **workspace** (agent-generated)
 - Format: `SKILL.md` with YAML frontmatter (agentskills.io standard)
-- Progressive disclosure: only index (name + description) in system prompt; full content loaded on-demand via `read_skill`
+- Progressive disclosure: only index (name + description) in system prompt; full content loaded on-demand via `skills`
 - Multi-file skills: `references/`, `examples/`, `scripts/` subdirectories supported
-- Script execution: `${SKILL_DIR}` placeholder substituted with absolute skill directory path in `read_skill` output
-- 2 tools: `read_skill` (read), `manage_skills` (write); the catalog is the prompt's layer 5
-  - `manage_skills` actions: `create`, `update`, `delete`, `reload`
+- Script execution: `${SKILL_DIR}` placeholder substituted with absolute skill directory path in what `skills` reads
+- 1 tool: `skills`; read is the default action, the catalog is the prompt's layer 5
+  - the orchestrator's writes: `create`, `update`, `delete`, `reload`; every other agent gets it read-only
   - Auto-reload: registry refreshes automatically after create/update/delete
   - User command: `/reload-skills` forces rescan from disk
 - Shared globally: main agent and all sub-agents see the same skills regardless of `workspaceDir`
@@ -208,10 +208,9 @@ Hooks are an in-process event bus (`src/hooks/`), not persisted to disk.
 | 1 | Identity | SOUL.md (workspace) | Personality, tone, style |
 | 2 | Directives | AGENTS.md (workspace) | Workspace rules, red lines |
 | 3 | User context | USER.md (workspace) | User profile |
-| 4 | Skills | Dynamic | Available skills index + `read_skill()` injonction |
-| 5 | Tools | Dynamic | Available tools with rich descriptions |
-| 6 | Platform hints | Dynamic | App rendering + media conventions |
-| 7 | Runtime | Dynamic | Date, model, channel, session ID |
+| 4 | Skills | Dynamic | Available skills index + `skills(name)` injonction |
+| 5 | Platform hints | Dynamic | App rendering + media conventions |
+| 6 | Runtime | Dynamic | Date, model, channel, session ID |
 
 Long-term memory is no longer a prompt layer. Relevant entries are recalled per turn and injected into the user message (see `docs/memory.md`).
 

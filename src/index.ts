@@ -114,7 +114,7 @@ import { createConversationSearchTool } from "./tools/conversation-search.ts";
 import { createSpawnTool, spawnModelIds } from "./tools/spawn.ts";
 import { createSendTool } from "./tools/send.ts";
 import { createAgentsTool } from "./tools/agents.ts";
-import { createReadSkillTool, createManageSkillsTool } from "./tools/skills.ts";
+import { createSkillsTool } from "./tools/skills.ts";
 import { createAudioTool } from "./tools/audio.ts";
 import { createWebSearchTool } from "./tools/web-search.ts";
 import { BrowserSession, createDelegateBrowserTool, registerBrowserTools } from "./tools/browser/index.ts";
@@ -3033,8 +3033,7 @@ function registerSkillTools(
 ): void {
   // config is the live object mutated in place by the hot-reload appliers, so a scope edit takes
   // effect on the next tool call without re-registering anything.
-  registry.register(createReadSkillTool(skillRegistry, config, sessionManager));
-  registry.register(createManageSkillsTool(skillRegistry, config, builtinDir, customDir, workspaceSkillsDir));
+  registry.register(createSkillsTool(skillRegistry, config, { builtinDir, customDir, workspaceSkillsDir }, sessionManager));
 }
 
 // CLI subcommands for the Codex (ChatGPT subscription) backend. Device-code login is the only

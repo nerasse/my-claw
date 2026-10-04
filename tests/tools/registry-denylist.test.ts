@@ -45,7 +45,7 @@ test("denylist filters tools out of the main set", () => {
 });
 
 test("denylist stacks on top of the per-agent exclusion (research is read-only)", () => {
-  const r = registry(["read", "search", "ls", "fetch", "web_search", "read_skill", "write", "bash"]);
+  const r = registry(["read", "search", "ls", "fetch", "web_search", "skills", "write", "bash"]);
   const research = r.getForAgent("research", ["fetch"]).map((t) => t.name);
   assert.ok(research.includes("read"));
   assert.ok(!research.includes("fetch"), "denylist removes fetch even from the read-only set");
@@ -60,13 +60,30 @@ test("an unknown disabled name is a harmless no-op", () => {
 test("an agent name the chain does not know falls back to the sub-agent set, not the full one", () => {
   // The cast is the point: file-defined agents will hand this method names that no union covers,
   // and a typo must not be the difference between a sandboxed agent and a privileged one.
-  const r = registry(["read", "write", "bash", "spawn", "memory", "manage_skills", "question"]);
-  const names = r.getForAgent("reviewer" as AgentToolType).map((t) => t.name);
+  const r = registry(["read", "write", "bash", "spawn", "memory", "question"]);
+  const reading = stub("skills");
+  r.register({ ...stub("skills"), readOnly: reading });
+  const tools = r.getForAgent("reviewer" as AgentToolType);
+  const names = tools.map((t) => t.name);
   assert.ok(names.includes("read"));
   assert.ok(names.includes("bash"), "an unknown agent still gets the general baseline");
-  for (const escalation of ["spawn", "memory", "manage_skills", "question"]) {
+  for (const escalation of ["spawn", "memory", "question"]) {
     assert.ok(!names.includes(escalation), `an unknown agent must not receive ${escalation}`);
   }
+  assert.equal(tools.find((t) => t.name === "skills"), reading, "nor the skill writes");
+});
+
+test("skills: the orchestrator gets the tool that writes, every other agent the one that reads", () => {
+  const full = stub("skills");
+  const reading = stub("skills");
+  const r = registry(["read"]);
+  r.register({ ...full, readOnly: reading });
+  assert.ok(r.getForAgent("main").find((t) => t.name === "skills")?.readOnly, "the orchestrator's carries the writes");
+  for (const agent of ["general", "research", "cron", "browser"] as const) {
+    assert.equal(r.getForAgent(agent).find((t) => t.name === "skills"), reading, `${agent} reads only`);
+  }
+  // An agent file narrowing to `skills` still gets the read-only one: the allowlist picks names.
+  assert.equal(r.getForAgent("general", [], "all", ["skills"])[0], reading);
 });
 
 test("agents (list, kill, reset) is the orchestrator's and a job's, never a sub-agent's", () => {
@@ -123,7 +140,7 @@ test("adding a tools denylist at runtime is a hot change", () => {
 
 // ── dynamic provider (external MCP tools) ────────────────────────────────────
 
-const readOnlySet = ["read", "search", "ls", "fetch", "web_search", "read_skill", "bash"];
+const readOnlySet = ["read", "search", "ls", "fetch", "web_search", "skills", "bash"];
 
 test("dynamic provider tools are added for every agent class the scope allows", () => {
   const r = registry(readOnlySet);

@@ -449,7 +449,7 @@ export interface SessionData {
   promptLayersOff?: string[];
   /**
    * Skills this session filtered out, by skill name: they do not appear in the prompt catalog,
-   * and read_skill refuses them in this session (they stay visible to other sessions and to the
+   * and `skills` refuses to read them in this session (they stay visible to other sessions and to the
    * global run).
    * Persisted on the session.
    */

@@ -8,13 +8,21 @@ import { SkillRegistry } from "../src/skills/registry.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import { VoiceManager, SttPipeline } from "../src/voice/index.ts";
 import { syncBuiltIn } from "../src/skills/sync.ts";
-import {
-  createReadSkillTool,
-  createManageSkillsTool,
-} from "../src/tools/skills.ts";
+import { createSkillsTool } from "../src/tools/skills.ts";
+import type { SessionManager } from "../src/sessions/manager.ts";
+import type { Tool } from "../src/tools/types.ts";
 
 // No agents section: every agent stays unrestricted, which is what these tests assert.
 const noScope = { whitelist: [], blacklist: [], channels: {}, llm: { provider: "t", baseUrl: "u", model: "m" }, agents: {} } as MyClawConfig;
+
+const NOWHERE = { builtinDir: "/nonexistent/builtin", customDir: "/nonexistent/custom", workspaceSkillsDir: "/nonexistent/ws" };
+
+/** `skills` as every agent but the orchestrator is handed it: reading only. */
+function readTool(registry: SkillRegistry, config: MyClawConfig, sessionManager?: SessionManager): Tool {
+  const full = createSkillsTool(registry, config, NOWHERE, sessionManager);
+  assert.ok(full.readOnly, "the full tool carries its read-only variant");
+  return full.readOnly;
+}
 
 async function setupDir(): Promise<string> {
   const dir = join("/tmp", `skills-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
@@ -278,7 +286,7 @@ test("read_skill names what is there when the name is wrong: no listing tool is 
   await writeSkill(dir, "s4", "---\nname: s4\ndescription: Fourth\n---\n\nFour.");
 
   const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
-  const tool = createReadSkillTool(new SkillRegistry(skills), noScope);
+  const tool = readTool(new SkillRegistry(skills), noScope);
 
   const result = await tool.execute({ name: "s9" });
   assert.equal(result.success, false);
@@ -294,7 +302,7 @@ test("read_skill tool", async () => {
 
   const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const registry = new SkillRegistry(skills);
-  const tool = createReadSkillTool(registry, noScope);
+  const tool = readTool(registry, noScope);
 
   const result = await tool.execute({ name: "s2" });
   assert.equal(result.success, true);
@@ -304,6 +312,50 @@ test("read_skill tool", async () => {
   assert.equal(missing.success, false);
 
   await rm(dir, { recursive: true, force: true });
+});
+
+test("skills reads by default: a call with only a name loads the skill", async () => {
+  const dir = await setupDir();
+  await writeSkill(dir, "s5", "---\nname: s5\ndescription: Fifth\n---\n\nFive body.");
+  const registry = new SkillRegistry(await loadAllSkills({ builtInDir: dir, customDir: dir }));
+  const tool = createSkillsTool(registry, noScope, NOWHERE);
+
+  assert.match((await tool.execute({ name: "s5" })).output, /Five body/);
+  assert.match((await tool.execute({ action: "read", name: "s5" })).output, /Five body/);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("the read-only skills offers no action, and refuses one: nothing is written", async () => {
+  // Writing was the orchestrator's alone with two tools (`manage_skills` was withheld from every
+  // other agent); one tool keeps that by handing everyone else this variant.
+  const ws = await setupDir();
+  const custom = await setupDir();
+  const builtin = await setupDir();
+  const registry = new SkillRegistry(await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws }));
+  const full = createSkillsTool(registry, noScope, { builtinDir: builtin, customDir: custom, workspaceSkillsDir: ws });
+  const reader = full.readOnly!;
+
+  const schema = reader.parameters as { properties: Record<string, unknown>; required: string[] };
+  assert.deepEqual(Object.keys(schema.properties).sort(), ["file_path", "name"]);
+  assert.deepEqual(schema.required, ["name"]);
+  assert.doesNotMatch(reader.description, /create|delete/);
+  assert.equal(reader.readOnly, undefined, "the variant is the end of the line");
+
+  for (const action of ["create", "update", "delete", "reload"]) {
+    const refused = await reader.execute({ action, name: "sneaky", description: "d", instructions: "i" });
+    assert.equal(refused.success, false, action);
+    assert.match(refused.output, /Only the orchestrator writes skills/);
+  }
+  await assert.rejects(access(join(ws, "sneaky", "SKILL.md")));
+  assert.equal(registry.exists("sneaky"), false);
+
+  // The orchestrator's own tool names every action.
+  const actions = (full.parameters as { properties: { action: { enum: string[] } } }).properties.action.enum;
+  assert.deepEqual(actions, ["read", "create", "update", "delete", "reload"]);
+
+  await rm(ws, { recursive: true, force: true });
+  await rm(custom, { recursive: true, force: true });
+  await rm(builtin, { recursive: true, force: true });
 });
 
 test("a session-filtered skill is refused, and left out of what the refusal names", async () => {
@@ -316,9 +368,9 @@ test("a session-filtered skill is refused, and left out of what the refusal name
   // A SessionManager whose session carries skillsOff: the reply is "filtered" the same way.
   // Tools get the session id via __sessionId; build the same observable here with a fake manager.
   const fakeSession = { peek: async () => ({ skillsOff: ["s3"] }) };
-  const readTool = createReadSkillTool(registry, noScope, fakeSession as never);
+  const reader = readTool(registry, noScope, fakeSession as never);
 
-  const read = await readTool.execute({ name: "s3", __sessionId: "sess-1" });
+  const read = await reader.execute({ name: "s3", __sessionId: "sess-1" });
   assert.equal(read.success, false);
   assert.ok(read.output.includes("not in this session's scope"));
   assert.match(read.output, /No skill is available to you/);
@@ -326,13 +378,13 @@ test("a session-filtered skill is refused, and left out of what the refusal name
   await rm(dir, { recursive: true, force: true });
 });
 
-test("manage_skills create action", async () => {
+test("skills create action", async () => {
   const ws = await setupDir();
   const custom = await setupDir();
   const builtin = await setupDir();
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createManageSkillsTool(registry, noScope, builtin, custom, ws);
+  const tool = createSkillsTool(registry, noScope, { builtinDir: builtin, customDir: custom, workspaceSkillsDir: ws });
 
   const result = await tool.execute({
     action: "create",
@@ -353,7 +405,7 @@ test("manage_skills create action", async () => {
   await rm(builtin, { recursive: true, force: true });
 });
 
-test("manage_skills update action modifies workspace skill", async () => {
+test("skills update action modifies workspace skill", async () => {
   const ws = await setupDir();
   const custom = await setupDir();
   const builtin = await setupDir();
@@ -362,7 +414,7 @@ test("manage_skills update action modifies workspace skill", async () => {
 
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createManageSkillsTool(registry, noScope, builtin, custom, ws);
+  const tool = createSkillsTool(registry, noScope, { builtinDir: builtin, customDir: custom, workspaceSkillsDir: ws });
 
   const result = await tool.execute({ action: "update", name: "updatable", instructions: "New content." });
   assert.equal(result.success, true);
@@ -376,7 +428,7 @@ test("manage_skills update action modifies workspace skill", async () => {
   await rm(builtin, { recursive: true, force: true });
 });
 
-test("manage_skills update rejects built-in", async () => {
+test("skills update rejects built-in", async () => {
   const builtin = await setupDir();
   const custom = await setupDir();
   const ws = await setupDir();
@@ -385,7 +437,7 @@ test("manage_skills update rejects built-in", async () => {
 
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createManageSkillsTool(registry, noScope, builtin, custom, ws);
+  const tool = createSkillsTool(registry, noScope, { builtinDir: builtin, customDir: custom, workspaceSkillsDir: ws });
 
   const result = await tool.execute({ action: "update", name: "protected", instructions: "Hack." });
   assert.equal(result.success, false);
@@ -396,7 +448,7 @@ test("manage_skills update rejects built-in", async () => {
   await rm(ws, { recursive: true, force: true });
 });
 
-test("manage_skills delete removes workspace skill", async () => {
+test("skills delete removes workspace skill", async () => {
   const ws = await setupDir();
   const custom = await setupDir();
   const builtin = await setupDir();
@@ -405,7 +457,7 @@ test("manage_skills delete removes workspace skill", async () => {
 
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createManageSkillsTool(registry, noScope, builtin, custom, ws);
+  const tool = createSkillsTool(registry, noScope, { builtinDir: builtin, customDir: custom, workspaceSkillsDir: ws });
 
   const result = await tool.execute({ action: "delete", name: "deletable" });
   assert.equal(result.success, true);
@@ -417,7 +469,7 @@ test("manage_skills delete removes workspace skill", async () => {
   await rm(builtin, { recursive: true, force: true });
 });
 
-test("manage_skills delete rejects built-in", async () => {
+test("skills delete rejects built-in", async () => {
   const builtin = await setupDir();
   const custom = await setupDir();
   const ws = await setupDir();
@@ -426,7 +478,7 @@ test("manage_skills delete rejects built-in", async () => {
 
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createManageSkillsTool(registry, noScope, builtin, custom, ws);
+  const tool = createSkillsTool(registry, noScope, { builtinDir: builtin, customDir: custom, workspaceSkillsDir: ws });
 
   const result = await tool.execute({ action: "delete", name: "protected2" });
   assert.equal(result.success, false);
@@ -449,14 +501,13 @@ test("skill index appears in system prompt via buildSystemPrompt", async () => {
     platform: "telegram",
     model: "test-model",
     sessionId: "test-session",
-    tools: [],
     skills: registry.list(),
   });
 
   assert.ok(prompt.includes("Available skills"));
   assert.ok(prompt.includes("prompt-skill"));
   assert.ok(prompt.includes("A prompt test skill"));
-  assert.ok(prompt.includes("read_skill"));
+  assert.ok(prompt.includes("skills(name)"));
 
   await rm(dir, { recursive: true, force: true });
 });
@@ -467,12 +518,11 @@ test("empty skills list omits skills section from system prompt", async () => {
     platform: "telegram",
     model: "test-model",
     sessionId: "test-session",
-    tools: [],
     skills: [],
   });
 
   assert.ok(!prompt.includes("Available skills"));
-  assert.ok(!prompt.includes("read_skill"));
+  assert.ok(!prompt.includes("skills(name)"));
 });
 
 test("sub-agent receives same skills as main agent", async () => {
@@ -510,7 +560,7 @@ test("read_skill returns full content for loaded skill", async () => {
 
   const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const registry = new SkillRegistry(skills);
-  const tool = createReadSkillTool(registry, noScope);
+  const tool = readTool(registry, noScope);
 
   const result = await tool.execute({ name: "deep" });
   assert.equal(result.success, true);
@@ -529,7 +579,7 @@ test("read_skill with file_path reads referenced file", async () => {
 
   const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const registry = new SkillRegistry(skills);
-  const tool = createReadSkillTool(registry, noScope);
+  const tool = readTool(registry, noScope);
 
   const result = await tool.execute({ name: "multi", file_path: "references/detail.md" });
   assert.equal(result.success, true);
@@ -544,7 +594,7 @@ test("read_skill with bad file_path returns error", async () => {
 
   const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const registry = new SkillRegistry(skills);
-  const tool = createReadSkillTool(registry, noScope);
+  const tool = readTool(registry, noScope);
 
   const result = await tool.execute({ name: "single", file_path: "nope.md" });
   assert.equal(result.success, false);
@@ -559,7 +609,7 @@ test("read_skill substitutes ${SKILL_DIR} with absolute path", async () => {
 
   const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const registry = new SkillRegistry(skills);
-  const tool = createReadSkillTool(registry, noScope);
+  const tool = readTool(registry, noScope);
 
   const result = await tool.execute({ name: "scripted" });
   assert.equal(result.success, true);
@@ -577,7 +627,7 @@ test("read_skill substitutes ${SKILL_DIR} in referenced files too", async () => 
 
   const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
   const registry = new SkillRegistry(skills);
-  const tool = createReadSkillTool(registry, noScope);
+  const tool = readTool(registry, noScope);
 
   const result = await tool.execute({ name: "multi-ref", file_path: "references/detail.md" });
   assert.equal(result.success, true);
@@ -636,14 +686,14 @@ test("full multi-file skill e2e flow: index -> skill -> references -> script", a
   assert.equal(registry.exists("docker-deploy"), true);
 
   // 2. Agent loads SKILL.md
-  const readTool = createReadSkillTool(registry, noScope);
-  const skillResult = await readTool.execute({ name: "docker-deploy" });
+  const reader = readTool(registry, noScope);
+  const skillResult = await reader.execute({ name: "docker-deploy" });
   assert.equal(skillResult.success, true);
   assert.ok(skillResult.output.includes("scripts/build.sh"), "Should reference build script");
   assert.ok(!skillResult.output.includes("${SKILL_DIR}"), "${SKILL_DIR} should be substituted");
 
   // 3. Agent reads reference file
-  const refResult = await readTool.execute({ name: "docker-deploy", file_path: "references/registry-auth.md" });
+  const refResult = await reader.execute({ name: "docker-deploy", file_path: "references/registry-auth.md" });
   assert.equal(refResult.success, true);
   assert.ok(refResult.output.includes("Login with token"));
 
@@ -659,13 +709,13 @@ test("full multi-file skill e2e flow: index -> skill -> references -> script", a
   await rm(dir, { recursive: true, force: true });
 });
 
-test("manage_skills create validates name format", async () => {
+test("skills create validates name format", async () => {
   const ws = await setupDir();
   const custom = await setupDir();
   const builtin = await setupDir();
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createManageSkillsTool(registry, noScope, builtin, custom, ws);
+  const tool = createSkillsTool(registry, noScope, { builtinDir: builtin, customDir: custom, workspaceSkillsDir: ws });
 
   // Empty name
   const empty = await tool.execute({ action: "create", name: "", description: "d", instructions: "i" });
@@ -696,13 +746,13 @@ test("manage_skills create validates name format", async () => {
   await rm(builtin, { recursive: true, force: true });
 });
 
-test("manage_skills create validates description and instructions", async () => {
+test("skills create validates description and instructions", async () => {
   const ws = await setupDir();
   const custom = await setupDir();
   const builtin = await setupDir();
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createManageSkillsTool(registry, noScope, builtin, custom, ws);
+  const tool = createSkillsTool(registry, noScope, { builtinDir: builtin, customDir: custom, workspaceSkillsDir: ws });
 
   // Empty description
   const noDesc = await tool.execute({ action: "create", name: "test", description: "", instructions: "i" });
@@ -724,13 +774,13 @@ test("manage_skills create validates description and instructions", async () => 
   await rm(builtin, { recursive: true, force: true });
 });
 
-test("manage_skills create writes to correct workspace path", async () => {
+test("skills create writes to correct workspace path", async () => {
   const ws = await setupDir();
   const custom = await setupDir();
   const builtin = await setupDir();
   const skills = await loadAllSkills({ builtInDir: builtin, customDir: custom, workspaceDir: ws });
   const registry = new SkillRegistry(skills);
-  const tool = createManageSkillsTool(registry, noScope, builtin, custom, ws);
+  const tool = createSkillsTool(registry, noScope, { builtinDir: builtin, customDir: custom, workspaceSkillsDir: ws });
 
   const result = await tool.execute({
     action: "create",
@@ -809,7 +859,7 @@ test("scope: registry.list filters, get stays unscoped", async () => {
 test("scope: a refusal names only the calling agent's skills", async () => {
   const { registry, dir } = await twoSkillRegistry();
   const config = scoped({ general: { skills: ["allowed"] } });
-  const tool = createReadSkillTool(registry, config);
+  const tool = readTool(registry, config);
 
   const asGeneral = await tool.execute({ name: "nope", __agentType: "general" });
   assert.match(asGeneral.output, /available to you: allowed\./);
@@ -826,7 +876,7 @@ test("scope: a refusal names only the calling agent's skills", async () => {
 
 test("scope: read_skill refuses an out-of-scope skill and says why", async () => {
   const { registry, dir } = await twoSkillRegistry();
-  const tool = createReadSkillTool(registry, scoped({ general: { skills: ["allowed"] } }));
+  const tool = readTool(registry, scoped({ general: { skills: ["allowed"] } }));
 
   const ok = await tool.execute({ name: "allowed", __agentType: "general" });
   assert.equal(ok.success, true);
@@ -849,7 +899,7 @@ test("scope: read_skill refuses an out-of-scope skill and says why", async () =>
 test("scope: an empty list leaves an agent with no skills at all", async () => {
   const { registry, dir } = await twoSkillRegistry();
   const config = scoped({ orchestrator: { skills: ["*"] }, research: { skills: [] } });
-  const read = createReadSkillTool(registry, config);
+  const read = readTool(registry, config);
 
   const refused = await read.execute({ name: "allowed", __agentType: "research" });
   assert.equal(refused.success, false);

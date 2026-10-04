@@ -141,7 +141,7 @@ Not scheduled; captured for the same reason.
 ## Where
 
 - Phase 1: `src/skills/reload.ts` (shared `reloadSkills`), `src/skills/watcher.ts`
-  (hybrid tier + subdir watch), wired in `src/index.ts`; `manage_skills` reuses
+  (hybrid tier + subdir watch), wired in `src/index.ts`; the `skills` tool's writes reuse
   `reloadSkills`.
 - Phase 2: `src/core/config.ts` (`ToolsConfig` type), `src/tools/registry.ts`
   (`getForAgent` denylist filter), `src/core/config-watcher.ts` (`tools` HOT

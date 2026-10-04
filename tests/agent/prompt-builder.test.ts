@@ -4,7 +4,6 @@ import { mkdtemp, writeFile, rm, utimes } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { buildSystemPrompt, type PromptContext } from "../../src/agent/prompt/builder.ts";
-import type { Tool } from "../../src/tools/types.ts";
 import type { SkillInfo } from "../../src/skills/types.ts";
 
 function makeCtx(overrides: Partial<PromptContext> = {}): PromptContext {
@@ -12,18 +11,8 @@ function makeCtx(overrides: Partial<PromptContext> = {}): PromptContext {
     platform: "unknown",
     model: "test-model-1",
     sessionId: "sess-1",
-    tools: [],
     skills: [],
     ...overrides,
-  };
-}
-
-function makeTool(name: string): Tool {
-  return {
-    name,
-    description: `${name} description`,
-    parameters: {},
-    execute: async () => ({ success: true, output: "" }),
   };
 }
 
@@ -43,23 +32,20 @@ test("empty context returns core directives and runtime with model name", async 
   assert.match(result, /test-model-1/);
 });
 
-test("tools appear in output", async () => {
-  const result = await buildSystemPrompt(
-    makeCtx({ tools: [makeTool("search"), makeTool("fetch")] }),
-  );
-  assert.match(result, /# Available tools/);
-  assert.match(result, /search/);
-  assert.match(result, /fetch/);
+test("the tools are not listed in the prompt: their definitions already go out with the request", async () => {
+  // The layer sent every tool description a second time, on every request (removed 2026-10-04).
+  const result = await buildSystemPrompt(makeCtx({ skills: [makeSkill("deploy")] }));
+  assert.doesNotMatch(result, /# Available tools/);
 });
 
-test("skills appear in output with read_skill instruction", async () => {
+test("skills appear in output with the instruction to load them", async () => {
   const result = await buildSystemPrompt(
     makeCtx({ skills: [makeSkill("deploy"), makeSkill("lint")] }),
   );
   assert.match(result, /# Available skills/);
   assert.match(result, /deploy/);
   assert.match(result, /lint/);
-  assert.match(result, /read_skill/);
+  assert.match(result, /call skills\(name\)/);
 });
 
 test("platform my-claw-app includes the app hint", async () => {
@@ -131,24 +117,16 @@ test("workspace file content is normalised", async () => {
   }
 });
 
-test("layers are ordered: core before skills before tools before runtime", async () => {
-  const result = await buildSystemPrompt(
-    makeCtx({
-      tools: [makeTool("hammer")],
-      skills: [makeSkill("carpentry")],
-    }),
-  );
+test("layers are ordered: core before skills before runtime", async () => {
+  const result = await buildSystemPrompt(makeCtx({ skills: [makeSkill("carpentry")] }));
   const coreIdx = result.indexOf("Core Directives");
   const skillsIdx = result.indexOf("# Available skills");
-  const toolsIdx = result.indexOf("# Available tools");
   const runtimeIdx = result.indexOf("Runtime:");
   assert.ok(coreIdx >= 0, "core present");
   assert.ok(skillsIdx >= 0, "skills present");
-  assert.ok(toolsIdx >= 0, "tools present");
   assert.ok(runtimeIdx >= 0, "runtime present");
   assert.ok(coreIdx < skillsIdx, "core before skills");
-  assert.ok(skillsIdx < toolsIdx, "skills before tools");
-  assert.ok(toolsIdx < runtimeIdx, "tools before runtime");
+  assert.ok(skillsIdx < runtimeIdx, "skills before runtime");
 });
 
 test("suggested skills render a soft reminder after the runtime line", async () => {

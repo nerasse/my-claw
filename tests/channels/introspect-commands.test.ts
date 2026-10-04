@@ -67,9 +67,12 @@ const INSTANCES: SubAgentInfo[] = [
 
 function params(agents: MyClawConfig["agents"], args = "", overrides: Partial<IntrospectParams> = {}): IntrospectParams {
   const tools = new ToolRegistry();
-  for (const n of ["read", "search", "ls", "fetch", "web_search", "read_skill", "manage_skills", "bash", "memory", "cron", "spawn"]) {
+  for (const n of ["read", "search", "ls", "fetch", "web_search", "bash", "memory", "cron", "spawn"]) {
     tools.register(tool(n));
   }
+  // Writing skills is told apart the way the registry tells it: the full tool carries a read-only
+  // variant, and every agent but the orchestrator is handed that variant.
+  tools.register({ ...tool("skills"), readOnly: tool("skills") });
   tools.setDynamicProvider(() => [tool("mcp__mailcow__list"), tool("mcp__weather__now")]);
   return {
     args,
@@ -109,8 +112,8 @@ describe("/skills", () => {
   });
 
   test("reports write access, which only the orchestrator has", async () => {
-    expect(await handleSkillsCommand(params({}))).toContain("Écriture (manage_skills) : oui");
-    expect(await handleSkillsCommand(params({}, "general"))).toContain("Écriture (manage_skills) : non");
+    expect(await handleSkillsCommand(params({}))).toContain("Écriture (skills create/update/delete) : oui");
+    expect(await handleSkillsCommand(params({}, "general"))).toContain("Écriture (skills create/update/delete) : non");
   });
 
   test("an empty scope says so instead of printing an empty list", async () => {
@@ -281,7 +284,8 @@ describe("/instructions", () => {
     expect(filename).toBe("prompt-main.md");
     expect(text).toContain(`${body.length} octets`);
     expect(body).toContain("# Available skills");
-    expect(body).toContain("# Available tools");
+    // The tools go out as their definitions, not as a prompt layer (docs/tools.md).
+    expect(body).not.toContain("# Available tools");
   });
 
   test("the dump is scoped like the agent it describes", async () => {
@@ -291,10 +295,15 @@ describe("/instructions", () => {
     expect(text).toContain("périmètre beta");
   });
 
-  test("out-of-scope MCP tools are absent from the tool layer", async () => {
-    const { body } = await dump(params({ orchestrator: { mcp: ["mailcow"] } }));
-    expect(body).toContain("- mcp__mailcow__list:");
-    expect(body).not.toContain("mcp__weather__now");
+  test("out-of-scope MCP tools are not counted, and the prompt lists no tool at all", async () => {
+    // The tools reach the model as their definitions; the prompt layer that listed them again is
+    // gone (docs/tools.md). What the dump still owes is the count of what this agent is offered.
+    const count = (text: string): number => Number(/outils : (\d+)/.exec(text)?.[1]);
+    const none = await dump(params({ orchestrator: { mcp: [] } }));
+    const one = await dump(params({ orchestrator: { mcp: ["mailcow"] } }));
+    expect(count(one.text)).toBe(count(none.text) + 1);
+    expect(one.body).not.toContain("mcp__mailcow__list");
+    expect(one.body).not.toContain("mcp__weather__now");
   });
 
   test("cron is dumped without a platform hint, and says so", async () => {

@@ -55,7 +55,7 @@ async function realAgents(): Promise<AgentRegistry> {
 
 function toolRegistry(): ToolRegistry {
   const tools = new ToolRegistry();
-  for (const n of ["read", "search", "ls", "fetch", "web_search", "read_skill", "manage_skills", "bash"]) {
+  for (const n of ["read", "search", "ls", "fetch", "web_search", "skills", "bash"]) {
     tools.register({ name: n, description: n, parameters: { type: "object", properties: {} }, execute: async () => ({ success: true, output: "" }) });
   }
   return tools;
@@ -146,7 +146,7 @@ describe("E2E introspection commands", () => {
     // The app inlines the dump: a frame carries the whole text, so there is no attachment to
     // send and no file to clean up afterwards.
     const body = text(res);
-    expect(body).toContain("# Available tools");
+    expect(body).toContain("# Available skills");
     expect(body).not.toContain("[object Object]");
     expect((res as OutgoingMessage).attachments ?? []).toHaveLength(0);
   });
