@@ -238,6 +238,8 @@ test("the next pass carries the owner's kept words: they lead the transcript and
     second.restore();
   }
   assert.equal(boundaryOf()!.retained!.at(-1), "Question 305");
+  // His older words are still there while the budget holds them: they leave only for newer ones.
+  assert.ok(boundaryOf()!.retained!.includes("Question 8"), "the previous boundary's kept words stay candidates");
 });
 
 test("a summary committed later keeps the turns that landed after it was planned", async () => {
