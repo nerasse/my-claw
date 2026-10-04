@@ -103,6 +103,11 @@ Traps:
 - Prod is never touched by hand. `my-claw-auto-update.timer` (15 min) skips while a run is in flight — an agent releasing from a my-claw session *is* that run, so the first tick skips. The user runs the update.
 - The install belongs to the service user: `/opt/my-claw/current` → `releases/<v>`, systemd **user** units, no sudo anywhere (`docs/install-layout.md`). `myclaw update` runs as that user; `sudo myclaw` drops to it.
 
+**Never `pkill bun`, `pkill -x bun` or `pkill -f server.mjs`.** Prod is a `bun` process of the same
+user (and the browser sidecar matches `server.mjs`): on 2026-10-04 a `pkill -x bun -u neras --older
+600` meant for a stray test killed the server mid-run, with a sub-agent working under it. Stop the
+processes you started by their PID.
+
 Quick log check:
 ```sh
 tail -30 /var/log/my-claw/my-claw.log                                     # boot errors (unit stdout/stderr)

@@ -53,14 +53,21 @@ après la fin laissait des cartes vivantes orphelines. Un run porte maintenant u
 et en historique ; un marqueur d'avant la 0.6.3 (sans `runId`) nomme le run d'après sa propre
 entrée. Le `runId` des phases et des outils, lui, reste ce qu'il a toujours été : l'id d'un tour
 d'API (`RunRecorder.turnId`), qui regroupe les phases d'un appel en un message assistant dans le
-prompt. Un run sans `run_end` à la fin du log reste `running` ; le serveur passe
-le booléen `activeRun` (déjà en place) et le client tranche : `activeRun=false` ⇒ le
-run est mort (crash) et se replie en `done`.
+prompt. Un run sans `run_end` à la fin du log n'est `running` que si le registre des runs
+le tient (`runFold(path, live)`, la même autorité que `activeRun`). Sinon le serveur est
+tombé sous lui (crash, kill, redémarrage) et il est `interrupted` : fermé à sa dernière
+entrée, avec Continue s'il est le dernier run. Il se repliait en `done`, ici et dans l'app,
+ce qui cachait le Continue du seul run qui en avait besoin (2026-10-04, un `pkill` du
+serveur en plein run). Un delta qui ne porte aucune entrée du run (le serveur n'a plus rien
+écrit) ne peut pas le dire : la réponse de `session.sync` porte `lastRun`, la lecture du
+dernier run par le serveur, et l'app scelle avec elle ce qu'elle tenait encore pour vivant.
+Les cartes de sous-agent suivent la même règle : un état `running` dont l'enfant ne tourne
+plus se lit `interrupted` (`spawnView`). Ce statut n'est jamais écrit : c'est une lecture.
 
 Un run sans `run_end` qui n'est **pas** le dernier est mort lui aussi : un seul run à la
 fois sur une branche, donc le `run_start` suivant prouve que le précédent ne s'est jamais
 fermé ici (crash, ou branche coupée par une feuille de log périmée, cf. `session-log.md`
-« une seule instance par session »). `runFold` le ferme en `done` à sa dernière entrée,
+« une seule instance par session »). `runFold` le ferme en `interrupted` à sa dernière entrée,
 et le tour `user` qui déclenche le run suivant n'en fait pas partie. Laissé ouvert, l'app
 ne scelle que le run de queue : celui-là restait `running` à jamais, à plat, et la
 question suivante se lisait comme un pilotage plié dans le vieux travail (observé le
@@ -188,8 +195,8 @@ La déduction est une heuristique structurelle, la plus proche possible de la v�
 - un `user` dont le parent est une **phase** clôt le run (un run ne finit que sur une
   phase) et en ouvre un nouveau ;
 - une `failure` clôt son run en `error` ;
-- un run final non fermé (crash) est marqué `done` : un groupe « running » éternel
-  serait pire qu'une fin approximative ;
+- un run final non fermé que rien ne fait plus tourner (crash) est marqué `interrupted` :
+  un groupe « running » éternel serait pire, et `done` mentirait en cachant Continue ;
 - les branches mortes ne sont pas touchées : deviner une frontière sur un run tronqué
   par un rewind risquerait d'ordonner des marqueurs faux, et l'affichage plat qu'elles
   gardent ne casse rien.

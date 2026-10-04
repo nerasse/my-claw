@@ -923,6 +923,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   /** Whether a session has a run in flight; injected because the adapter never reaches into core. */
   onRunActive(check: (sessionId: string) => boolean): void {
     this.runActive = check;
+    this.store.onRunActive(check);
   }
 
   /**
@@ -2972,6 +2973,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
           ? { hasMore: page.hasMore, nextBefore: page.nextBefore }
           : {}),
         ...(this.runActive ? { activeRun: this.runActive(this.store.resolveSessionId(ws.data.owner, threadId)) } : {}),
+        ...(page.lastRun ? { lastRun: page.lastRun } : {}),
       };
       this.sendFrame(ws, result);
       // The delta ends where the store ends, which is the last settled call: everything the turn

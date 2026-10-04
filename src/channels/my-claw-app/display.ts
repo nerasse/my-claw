@@ -199,16 +199,17 @@ function tsOf(entry: Entry): string {
  * client can group any window of a page or delta without holding the markers themselves, which
  * stay inside the log where the wire never needs them.
  *
- * A trailing run with no `run_end` stays `running`: the caller decides its terminality from the
- * run registry (`activeRun`), because a crash can leave exactly this shape in a file.
+ * A run with no `run_end` is `running` only while it is the trailing one and `live` says the
+ * session has a run in flight. Otherwise the server went down under it (a crash, a kill, a
+ * restart), and it is `interrupted`: closed at its last own entry, and offered to Continue when it
+ * is the last run. It used to close as `done`, here and in the app, which hid the Continue of the
+ * one run that needed it most (2026-10-04, a `pkill` of the server mid-run).
  *
- * A run with no `run_end` that is *not* trailing is dead: only one run is ever in flight on a
- * branch, so the next `run_start` proves the previous one never closed here. A crash leaves that
- * shape, and so did the branch a stale log leaf split (docs/session-log.md, one instance per
- * session). It closes as `done` at its last own entry, the same verdict the app gives a trailing
- * dead run, and the turn that triggers the next run stays out of it: left open, the run rendered
- * as running forever (the app settles only the trailing run) and the new question read as a steer
- * folded into the old work.
+ * A run with no `run_end` that is *not* trailing is dead whatever `live` says: only one run is ever
+ * in flight on a branch, so the next `run_start` proves the previous one never closed here. The
+ * branch a stale log leaf split left that shape too (docs/session-log.md). The turn that triggers
+ * the next run stays out of it: left open, the run rendered as running forever and the new
+ * question read as a steer folded into the old work.
  *
  * A run that ended having written nothing -- stopped right after the message was sent, or failed
  * on its first call -- has no entry to carry it, so it would reach the app as nothing at all, and
@@ -216,15 +217,19 @@ function tsOf(entry: Entry): string {
  * the message that triggered it. So does an end with no start: a Stop before the run wrote its own
  * marker (during the snapshot, the transcription, a compaction ahead of it) leaves exactly that.
  */
-export function runFold(path: readonly Entry[]): Map<string, MyClawAppRunMeta> {
+export function runFold(path: readonly Entry[], live: boolean): Map<string, MyClawAppRunMeta> {
   const out = new Map<string, MyClawAppRunMeta>();
   let current: MyClawAppRunMeta | null = null;
   let currentAt = -1;
+  let lastOwnAt = -1;
   let lastTs = "";
   const closeDead = () => {
     if (!current) return;
-    current.status = "done";
+    current.status = "interrupted";
     current.endTs = lastTs;
+    // Written nothing before it died: like an empty run that ended, its message carries it.
+    const trigger = path[currentAt - 1];
+    if (lastOwnAt === currentAt && trigger?.type === "user") out.set(trigger.id, current);
     current = null;
   };
   for (let i = 0; i < path.length; i++) {
@@ -233,6 +238,7 @@ export function runFold(path: readonly Entry[]): Map<string, MyClawAppRunMeta> {
       closeDead();
       current = { id: entry.runId ?? entry.id, status: "running", startTs: tsOf(entry) };
       currentAt = i;
+      lastOwnAt = i;
       out.set(entry.id, current);
       lastTs = tsOf(entry);
       continue;
@@ -251,10 +257,20 @@ export function runFold(path: readonly Entry[]): Map<string, MyClawAppRunMeta> {
     if (entry.type === "user" && path[i + 1]?.type === "run_start") closeDead();
     if (current) {
       out.set(entry.id, current);
+      lastOwnAt = i;
       lastTs = tsOf(entry);
     }
   }
+  if (!live) closeDead();
   return out;
+}
+
+/** The branch's last run as `runFold` reads it: what a delta that carries none of its entries cannot say. */
+export function lastRunOf(path: readonly Entry[], runs: ReadonlyMap<string, MyClawAppRunMeta>): MyClawAppRunMeta | undefined {
+  for (let i = path.length - 1; i >= 0; i--) {
+    if (path[i]!.type === "run_start") return runs.get(path[i]!.id);
+  }
+  return undefined;
 }
 
 /**

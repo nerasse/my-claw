@@ -484,10 +484,45 @@ describe("MyClawAppSessionStoreImpl.history", () => {
         args: { command: "ls" }, output: "ok", truncated: false, ok: true, runId: start.id,
       });
     }
-    // No run_end: this is the turn in flight.
+    // No run_end, and the registry holds the run: this is the turn in flight.
+    store.onRunActive((id) => id === liveThread);
     const page = await store.history(DEVICE, "thread-fold-live", undefined, 0, undefined, true);
     assert.equal(page.entries.filter((e) => e.role === "tool").length, 12);
     assert.equal(page.entries.some((e) => e.role === "run"), false);
+  });
+
+  // 2026-10-04: a `pkill` took the server down mid-run. The thread kept a run with no end and a
+  // sub-agent card in `running`: the app settled the run as done (no Continue) and the card spun.
+  test("a run the server went down under reads as interrupted, its sub-agent card too", async () => {
+    const lostThread = store.resolveSessionId(DEVICE, "thread-lost");
+    sessionId = lostThread;
+    logSetup = await saveSessionWithLog(lostThread, session(lostThread, [
+      { role: "user", content: "tour precedent", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    logSetup.log.append({ type: "user", prompt: true, text: "lance le volet" });
+    logSetup.log.append({ type: "run_start", prompt: false, runId: "r-lost" });
+    appendSpawnState(logSetup.log, {
+      subagentId: "subagent/lua", status: "running", toolCallId: "call-1",
+      displayName: "lua", agentType: "general", mode: "run", action: "spawn",
+    });
+
+    const page = await store.history(DEVICE, "thread-lost");
+    const card = page.entries.find((e) => e.role === "tool") as { spawn?: { status: string }; run?: { id: string; status: string } };
+    assert.equal(card.spawn?.status, "interrupted");
+    assert.equal(card.run?.status, "interrupted");
+    const head = (await store.sync(DEVICE, "thread-lost")).head;
+    const synced = await store.sync(DEVICE, "thread-lost", head);
+    assert.deepEqual(synced.entries, []);
+    assert.equal(synced.lastRun?.id, "r-lost");
+    assert.equal(synced.lastRun?.status, "interrupted");
+
+    // The same log, with the run and its child alive: nothing is interrupted.
+    store.onRunActive((id) => id === lostThread || id === "subagent/lua");
+    const live = await store.history(DEVICE, "thread-lost");
+    const liveCard = live.entries.find((e) => e.role === "tool") as { spawn?: { status: string }; run?: { status: string } };
+    assert.equal(liveCard.spawn?.status, "running");
+    assert.equal(liveCard.run?.status, "running");
+    assert.equal((await store.sync(DEVICE, "thread-lost", head)).lastRun?.status, "running");
   });
 
   test("the window a thread opens on starts at a question, not inside the work of a run", async () => {

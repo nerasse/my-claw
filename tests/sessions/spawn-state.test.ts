@@ -363,10 +363,27 @@ describe("spawnView: the fold, and which cards the log already holds", () => {
       opened("call-2", "subagent/auditor"),
     ]);
 
-    const view = spawnView(entries);
+    const view = spawnView(entries, () => true);
     expect(view.carded.has("call-1")).toBe(true);
     expect(view.carded.has("call-2")).toBe(false);
     expect(view.states.get("call-2")?.status).toBe("running");
+  });
+
+  // 2026-10-04: the server was killed while a child worked. Its card read `running` from the log
+  // for good, and the parent's thread showed it spinning while nothing ran it.
+  test("a running card whose child nothing runs any more reads as interrupted, and only that one", () => {
+    const entries = chain([
+      opened("call-1", "subagent/auditor"),
+      opened("call-2", "subagent/writer"),
+      opened("call-3", "subagent/done"),
+      settled("call-3", "subagent/done", { status: "complete", resultLength: 3 }),
+    ]);
+    const view = spawnView(entries, (id) => id === "subagent/writer");
+    expect(view.states.get("call-1")?.status).toBe("interrupted");
+    expect(view.states.get("call-2")?.status).toBe("running");
+    expect(view.states.get("call-3")?.status).toBe("complete");
+    // A reading, never a write: the fold itself still says what the log says.
+    expect(spawnStates(entries).get("call-1")?.status).toBe("running");
   });
 
   test("the task survives the terminal state, which never knew it", () => {

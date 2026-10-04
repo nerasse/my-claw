@@ -1190,7 +1190,8 @@ export type MyClawAppClientFrame =
   | MyClawAppTagsDelete
   | MyClawAppPing;
 
-export type MyClawAppSpawnStatus = "running" | "complete" | "error" | "aborted";
+/** `interrupted` is never written: a `running` state whose child nothing runs any more -- `spawnView`. */
+export type MyClawAppSpawnStatus = "running" | "complete" | "error" | "aborted" | "interrupted";
 
 /** Which tool opened the card. `spawn` and `send` share one lifecycle and differ only in label. */
 export type MyClawAppSpawnAction = "spawn" | "send";
@@ -1309,7 +1310,7 @@ export interface MyClawAppToolCall extends MyClawAppToolCallEntry {
  *
  * Computed server-side by folding the branch between `run_start` and `run_end` markers, so a
  * client groups a finished run's work under one collapsed header without ever seeing the markers.
- * `running` means the run is still in flight (or its end was lost to a crash).
+ * `running` means the run is still in flight: the server asks its run registry, never the log alone.
  */
 export interface MyClawAppRunMeta {
   /**
@@ -1317,7 +1318,8 @@ export interface MyClawAppRunMeta {
    * A run recorded before 0.6.3 is named after its `run_start` entry instead.
    */
   id: string;
-  status: "running" | "done" | "aborted" | "error";
+  /** `interrupted`: no end was ever written and nothing runs it any more (a crash, a kill, a restart). */
+  status: "running" | "done" | "aborted" | "error" | "interrupted";
   startTs: string;
   endTs?: string;
 }
@@ -1865,6 +1867,12 @@ export interface MyClawAppSessionSyncResult {
   head: string | null;
   /** Whether a run is in flight for this conversation. */
   activeRun?: boolean;
+  /**
+   * The branch's last run, as the server reads it now. A delta often carries none of its entries
+   * (a run killed with the server wrote nothing more), and a client that watched it live still
+   * holds it as running: this is the verdict that settles it, `interrupted` included.
+   */
+  lastRun?: MyClawAppRunMeta;
   /**
    * The compaction running on this thread, when one is.
    *

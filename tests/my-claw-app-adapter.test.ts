@@ -174,6 +174,10 @@ function approvalRequest(): ToolApprovalRequest {
 }
 
 class FakeSessionStore {
+  runActive?: (sessionId: string) => boolean;
+  onRunActive(check: (sessionId: string) => boolean): void {
+    this.runActive = check;
+  }
   summaries: Array<{ threadId: string; title: string; messageCount: number; createdAt: string; lastActiveAt: string; lastMessageAt: string; archived?: boolean; folderId?: string }> = [];
   historyMap = new Map<string, Array<{ id: string; role: "user" | "assistant"; text: string; ts: string }>>();
   archived: string[] = [];
@@ -254,8 +258,10 @@ class FakeSessionStore {
     this.syncCalls.push({ since, leaf, limit });
     const all = this.historyMap.get(threadId) ?? [];
     const head = all.length > 0 ? all[all.length - 1]!.id : null;
-    return { entries: all, leaf: head, head };
+    return { entries: all, leaf: head, head, ...(this.lastRun ? { lastRun: this.lastRun } : {}) };
   }
+
+  lastRun?: { id: string; status: "running" | "done" | "aborted" | "error" | "interrupted"; startTs: string; endTs?: string };
 
   journal: Array<{ threadId: string; input: string; output: string; details?: string; sourceId?: string }> = [];
 
@@ -2136,6 +2142,21 @@ describe("MyClawAppAdapter", () => {
     frame = (await nextFrame(client)) as { type: string; activeRun?: boolean };
     assert.equal(frame.type, "chat.history");
     assert.equal(frame.activeRun, true);
+    // And the store reads its pages with the same authority: a run with no end and a card in
+    // `running` are live only if this says so.
+    assert.equal(store.runActive?.(store.resolveSessionId(DEVICE_ID, "a")), true);
+    assert.equal(store.runActive?.("subagent/elsewhere"), false);
+  });
+
+  test("session.sync hands on the store's reading of the last run", async () => {
+    // A run the server went down under: the delta has nothing in it, and this is what tells a
+    // window that watched it live that it is over, and that it can be continued.
+    store.historyMap.set("a", [{ id: "h1", role: "user", text: "bonjour", ts: "t1" }]);
+    store.lastRun = { id: "r1", status: "interrupted", startTs: "t1", endTs: "t2" };
+    client.ws.send(JSON.stringify({ type: "session.sync", threadId: "a", since: "h1" }));
+    const frame = (await nextFrame(client)) as { type: string; lastRun?: { id: string; status: string } };
+    assert.equal(frame.type, "session.sync.result");
+    assert.deepEqual(frame.lastRun, store.lastRun);
   });
 
   test("session.history with an unsafe threadId returns an error frame", async () => {

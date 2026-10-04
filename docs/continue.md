@@ -70,6 +70,22 @@ Two things kept the button away from them (2026-10-02):
 The Continue of such a message is the "after a question" shape: no turn is written, the prompt ends
 on the message, the model answers it once.
 
+## A server that went down under the run
+
+A crash, a kill or a restart writes no end: the run has a `run_start` and nothing closes it, and
+its sub-agent cards stay on their last state, `running`. The server reads both against its run
+registry, never the log alone (`runFold(path, live)`, `spawnView(entries, live)`): with nothing in
+flight the run is `interrupted` and so is every card whose child no longer runs. The app shows
+`run · … · Interrupted`, the card `interrupted`, and the Continue button. A `session.sync` delta
+carries `lastRun`, the server's reading of the branch's last run, since the delta of a run killed
+with the server has nothing else in it.
+
+It used to read `done`: the app settled a trailing run with no end as finished, from the page served
+with no run active and from the session list dropping the thread, and the one run that needed
+Continue had none, in the thread nor in its sub-agent's own chat. The owner had to open the
+sub-agent and type "continue" (2026-10-04, a `pkill -x bun` from another session took the
+server down mid-run).
+
 ## Sub-agents
 
 `send(id)` with no message (or a blank one) resumes: no turn is added, and the child's own run is a

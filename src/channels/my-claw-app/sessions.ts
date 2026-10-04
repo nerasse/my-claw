@@ -8,7 +8,7 @@ import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
 import { listingFactsOf, readMeta, type ListingFacts } from "../../sessions/meta.ts";
 import { pathOf, UnknownCursorError, type Provisioned, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
-import { pageOf, pageBefore, displayOf, mediaRefsOf, runFold, runFoldPlan, withSpawnCards, windowNeedsFiles, type DisplayResolvers, type MediaRef } from "./display.ts";
+import { pageOf, pageBefore, displayOf, lastRunOf, mediaRefsOf, runFold, runFoldPlan, withSpawnCards, windowNeedsFiles, type DisplayResolvers, type MediaRef } from "./display.ts";
 import { spawnStates, spawnView } from "../../sessions/spawn-state.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/tools/display.ts";
@@ -18,7 +18,7 @@ import { FolderStore, type Folder } from "./folders.ts";
 import { parseStoredName, type SessionFile, type SessionFileStore } from "./files.ts";
 import { TOOL_OUTPUT_LIMIT } from "./stream.ts";
 import { toolCardId } from "./types.ts";
-import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppHistoryPage, MyClawAppSessionSummary, MyClawAppSessionInstructionPatch } from "./types.ts";
+import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppHistoryPage, MyClawAppRunMeta, MyClawAppSessionSummary, MyClawAppSessionInstructionPatch } from "./types.ts";
 
 const THREAD_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 
@@ -33,6 +33,8 @@ export interface MyClawAppSyncPage {
   hasMore?: boolean;
   /** Count of entries before that window; the client's next `history` cursor. */
   nextBefore?: number;
+  /** The branch's last run, as `runFold` reads it now. */
+  lastRun?: MyClawAppRunMeta;
 }
 
 /** The return value of `runItems`: the work a folded row stood for -- docs/run-hydration.md. */
@@ -44,6 +46,11 @@ export interface MyClawAppRunItemsPage {
 
 export interface MyClawAppSessionStore {
   resolveSessionId(owner: string, threadId: string): string;
+  /**
+   * Who says whether a session has a run in flight. The log cannot: a server that went down under
+   * a run never wrote its end, so a run and the sub-agents it started read `running` for good.
+   */
+  onRunActive(check: (sessionId: string) => boolean): void;
   /**
    * The session a sub-agent session bills its runs to: whoever drove the last run, else its
    * creator. Undefined for a conversation of its own, or a session that no longer exists.
@@ -348,6 +355,13 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     return undefined;
   }
 
+  /** Nothing runs until the entry point says otherwise: a store alone has no runs. */
+  private runActive: (sessionId: string) => boolean = () => false;
+
+  onRunActive(check: (sessionId: string) => boolean): void {
+    this.runActive = check;
+  }
+
   constructor(
     private sessionManager: SessionManager,
     private files: SessionFileStore,
@@ -549,12 +563,12 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // and a card whose state entry fell outside the window would replay as a spinner for good.
     // The run fold comes from the same whole-branch walk, so a page that starts mid-run still
     // tags its entries with the run they belong to (docs/run-grouping.md).
-    const runs = runFold(path);
+    const runs = runFold(path, this.runActive(sessionId));
     // A finished run travels as its header when the client asked for that -- docs/run-hydration.md.
     // The plan reads the page alone: what folds is the work between two messages, and a message
     // is a message wherever the page boundary fell.
     const plan = fold ? runFoldPlan(window, runs) : undefined;
-    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnView(log.entries()), files, runs, plan);
+    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnView(log.entries(), this.runActive), files, runs, plan);
     return { entries, hasMore, nextBefore, ...(draft ? { draft } : {}) };
   }
 
@@ -644,13 +658,14 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // still carry their run: the client folds them under the right header even when the
     // `run_start` marker itself predates the cursor.
     const path = pathOf(allEntries, serverLeaf);
-    const runs = runFold(path);
+    const runs = runFold(path, this.runActive(sessionId));
     // Only the window that replaces the client's thread folds. A delta is work the client is
     // watching arrive, item by item, and its runs are usually the ones still running -- which
     // never fold anyway. Folding a delta would also have to reason about what the client already
     // holds, since the run it continues is half on screen.
     const plan = fold && freshWindow ? runFoldPlan(foldWindow, runs) : undefined;
-    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnView(allEntries), files, runs, plan);
+    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnView(allEntries, this.runActive), files, runs, plan);
+    const lastRun = lastRunOf(path, runs);
 
     const branchLength = path.length;
     return {
@@ -666,6 +681,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       ...(freshWindow && !truncated
         ? { hasMore: windowLength < branchLength, nextBefore: branchLength - windowLength }
         : {}),
+      ...(lastRun ? { lastRun } : {}),
     };
   }
 
@@ -704,8 +720,8 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const { resolvers, files } = await this.resolversFor(owner, threadId, window);
     // Folded over the whole branch for the same reasons a page is: a child spawned inside this run
     // may have settled long after it, and the run meta must be the one the header already shows.
-    const runs = runFold(path);
-    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnView(log.entries()), files, runs);
+    const runs = runFold(path, this.runActive(sessionId));
+    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnView(log.entries(), this.runActive), files, runs);
     return { entries, found: true };
   }
 

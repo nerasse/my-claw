@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { displayOf, mediaRefsOf, pageOf, pageBefore, runFold, runFoldPlan, windowNeedsFiles, withSpawnCards, type DisplayResolvers } from "../../../src/channels/my-claw-app/display.ts";
+import { displayOf, lastRunOf, mediaRefsOf, pageOf, pageBefore, runFold, runFoldPlan, windowNeedsFiles, withSpawnCards, type DisplayResolvers } from "../../../src/channels/my-claw-app/display.ts";
 import { spawnView } from "../../../src/sessions/spawn-state.ts";
 import type { Entry, Provisioned } from "../../../src/sessions/log.ts";
 import type { SessionFile } from "../../../src/channels/my-claw-app/files.ts";
@@ -481,7 +481,7 @@ describe("displayOf: what is shown and never sent", () => {
       { type: "compaction_stopped", prompt: false, kept: 6 },
       runEnd(),
     ]);
-    const runs = runFold(path);
+    const runs = runFold(path, true);
     const plan = runFoldPlan(path, runs);
     const trace = path[path.length - 2]!;
     expect(plan.folded.has(trace.id)).toBe(false);
@@ -540,7 +540,7 @@ describe("runFold: the branch read as runs", () => {
 
   test("work between the markers belongs to the run they delimit", () => {
     const entries = chain([user("q"), runStart(), phase("thinking", { reasoning: "hmm" }), tool("c1"), runEnd(), phase("next")]);
-    const runs = runFold(entries);
+    const runs = runFold(entries, true);
     expect(runs.get(entries[2]!.id)).toMatchObject({ status: "done" });
     expect(runs.get(entries[3]!.id)?.id).toBe(entries[1]!.id);
     // Past the run_end there is no run anymore.
@@ -551,19 +551,19 @@ describe("runFold: the branch read as runs", () => {
     // `chat.run.start` carries the run context's correlation id; the marker stores the same one,
     // so a live item and its persisted entry agree on the run without the app renaming anything.
     const entries = chain([user("q"), runStart({ runId: "c0ffee42" }), tool("c1"), runEnd()]);
-    const runs = runFold(entries);
+    const runs = runFold(entries, true);
     expect(runs.get(entries[2]!.id)?.id).toBe("c0ffee42");
     expect(runs.get(entries[1]!.id)?.id).toBe("c0ffee42");
   });
 
   test("a marker written before runs carried their id names the run after its own entry", () => {
     const entries = chain([user("q"), runStart(), tool("c1"), runEnd()]);
-    expect(runFold(entries).get(entries[2]!.id)?.id).toBe(entries[1]!.id);
+    expect(runFold(entries, true).get(entries[2]!.id)?.id).toBe(entries[1]!.id);
   });
 
   test("two runs are distinct groups", () => {
     const entries = chain([user("q1"), runStart(), tool("c1"), runEnd(), user("q2"), runStart(), tool("c2"), runEnd()]);
-    const runs = runFold(entries);
+    const runs = runFold(entries, true);
     const first = runs.get(entries[2]!.id)!;
     const second = runs.get(entries[6]!.id)!;
     expect(first.id).not.toBe(second.id);
@@ -574,26 +574,26 @@ describe("runFold: the branch read as runs", () => {
   // and the Continue that picks the message back up.
   test("a run that wrote nothing signs the message that triggered it", () => {
     const entries = chain([user("q"), runStart({ runId: "r1" }), runEnd("aborted")]);
-    expect(runFold(entries).get(entries[0]!.id)).toMatchObject({ id: "r1", status: "aborted" });
+    expect(runFold(entries, true).get(entries[0]!.id)).toMatchObject({ id: "r1", status: "aborted" });
   });
 
   test("so does an end with no start: a Stop before the run wrote its own marker", () => {
     const entries = chain([user("q1"), runStart(), phase("a1"), runEnd(), user("q2"), runEnd("aborted")]);
-    const runs = runFold(entries);
+    const runs = runFold(entries, true);
     expect(runs.get(entries[4]!.id)).toMatchObject({ status: "aborted" });
     expect(runs.get(entries[0]!.id)).toBeUndefined();
   });
 
   test("a run that wrote something leaves its message alone", () => {
     const entries = chain([user("q"), runStart(), phase("half"), runEnd("aborted")]);
-    expect(runFold(entries).get(entries[0]!.id)).toBeUndefined();
+    expect(runFold(entries, true).get(entries[0]!.id)).toBeUndefined();
   });
 
   test("the reason of the end marker is the run's status", () => {
     const entries = chain([user("q"), runStart(), tool("c1"), runEnd("error")]);
-    expect(runFold(entries).get(entries[2]!.id)?.status).toBe("error");
+    expect(runFold(entries, true).get(entries[2]!.id)?.status).toBe("error");
     const aborted = chain([user("q"), runStart(), phase("half"), runEnd("aborted")]);
-    expect(runFold(aborted).get(aborted[2]!.id)?.status).toBe("aborted");
+    expect(runFold(aborted, true).get(aborted[2]!.id)?.status).toBe("aborted");
   });
 
   test("a run whose end is missing closes when the next run starts, and does not swallow the turn that started it", () => {
@@ -601,9 +601,10 @@ describe("runFold: the branch read as runs", () => {
     // then the owner asks again. Left open, run 1 rendered as running forever (the app settles
     // only the trailing run) and the new question read as a steer folded into it.
     const entries = chain([user("q1"), runStart(), tool("c1"), phase("half"), user("q2"), runStart(), tool("c2"), runEnd()]);
-    const runs = runFold(entries);
+    const runs = runFold(entries, true);
     const first = runs.get(entries[2]!.id)!;
-    expect(first.status).toBe("done");
+    // Interrupted, not done: nothing ever finished it.
+    expect(first.status).toBe("interrupted");
     // Closed at its last own entry, not at the next run's start.
     expect(first.endTs).toBe(new Date(entries[3]!.ts).toISOString());
     expect(runs.get(entries[4]!.id)).toBeUndefined();
@@ -612,31 +613,52 @@ describe("runFold: the branch read as runs", () => {
 
   test("two starts in a row (no trigger turn between them) still close the first", () => {
     const entries = chain([user("q"), runStart(), tool("c1"), runStart(), tool("c2"), runEnd()]);
-    const runs = runFold(entries);
-    expect(runs.get(entries[2]!.id)).toMatchObject({ status: "done", endTs: new Date(entries[2]!.ts).toISOString() });
+    const runs = runFold(entries, true);
+    expect(runs.get(entries[2]!.id)).toMatchObject({ status: "interrupted", endTs: new Date(entries[2]!.ts).toISOString() });
     expect(runs.get(entries[4]!.id)?.id).toBe(entries[3]!.id);
   });
 
   test("a user turn inside the run (injection) belongs to it", () => {
     const entries = chain([user("q"), runStart(), tool("c1"), user("steer"), phase("answer"), runEnd()]);
-    const runs = runFold(entries);
+    const runs = runFold(entries, true);
     expect(runs.get(entries[3]!.id)?.id).toBe(entries[1]!.id);
     expect(runs.get(entries[4]!.id)?.id).toBe(entries[1]!.id);
   });
 
-  test("a trailing run with no end stays running", () => {
+  test("a trailing run with no end is running while the session has a run in flight", () => {
     const entries = chain([user("q"), runStart(), tool("c1"), phase("still working")]);
-    expect(runFold(entries).get(entries[3]!.id)?.status).toBe("running");
+    expect(runFold(entries, true).get(entries[3]!.id)?.status).toBe("running");
+  });
+
+  // 2026-10-04: the server was killed mid-run. The run was read as running, the app settled it as
+  // done, and the Continue it needed never showed -- in the thread nor in its sub-agent's.
+  test("with nothing in flight it is interrupted, closed at its last own entry", () => {
+    const entries = chain([user("q"), runStart({ runId: "r1" }), tool("c1"), phase("still working")]);
+    const runs = runFold(entries, false);
+    expect(runs.get(entries[3]!.id)).toMatchObject({ id: "r1", status: "interrupted", endTs: new Date(entries[3]!.ts).toISOString() });
+    expect(lastRunOf(entries, runs)).toMatchObject({ id: "r1", status: "interrupted" });
+  });
+
+  test("one that died having written nothing signs its message, so the message can be continued", () => {
+    const entries = chain([user("q"), runStart({ runId: "r1" })]);
+    expect(runFold(entries, false).get(entries[0]!.id)).toMatchObject({ id: "r1", status: "interrupted" });
+    expect(runFold(entries, true).get(entries[0]!.id)).toBeUndefined();
+  });
+
+  test("an ended run is what its end says, in flight or not", () => {
+    const entries = chain([user("q"), runStart(), phase("a"), runEnd()]);
+    expect(runFold(entries, false).get(entries[2]!.id)?.status).toBe("done");
+    expect(lastRunOf(entries, runFold(entries, false))?.status).toBe("done");
   });
 
   test("a run_end without an open run is ignored", () => {
     const entries = chain([user("q"), runEnd(), phase("orphan")]);
-    expect(runFold(entries).get(entries[2]!.id)).toBeUndefined();
+    expect(runFold(entries, true).get(entries[2]!.id)).toBeUndefined();
   });
 
   test("the markers themselves carry their own meta, keyed by their id", () => {
     const entries = chain([user("q"), runStart(), tool("c1"), runEnd()]);
-    const meta = runFold(entries).get(entries[1]!.id)!;
+    const meta = runFold(entries, true).get(entries[1]!.id)!;
     expect(meta.status).toBe("done");
     expect(meta.startTs).toBe(new Date(entries[1]!.ts).toISOString());
   });
@@ -651,7 +673,7 @@ describe("displayOf with run meta", () => {
 
   test("each kept bubble carries its run", () => {
     const entries = chain([user("q"), runStart(), tool("c1"), runEnd(), phase("answer")]);
-    const runs = runFold(entries);
+    const runs = runFold(entries, true);
     const shown = show(entries, 1000, [], runs);
     expect(shown[1]!.run).toMatchObject({ status: "done" });
     expect(shown[1]!.run?.id).toBe(entries[1]!.id);
@@ -661,7 +683,7 @@ describe("displayOf with run meta", () => {
 
   test("an injection user bubble inside a run keeps its run too", () => {
     const entries = chain([user("q"), runStart(), tool("c1"), user("steer"), phase("answer"), runEnd()]);
-    const runs = runFold(entries);
+    const runs = runFold(entries, true);
     const shown = show(entries, 1000, [], runs);
     expect(shown[2]!.run?.id).toBe(entries[1]!.id);
   });
@@ -678,7 +700,7 @@ describe("runFoldPlan: a finished run travels as its header", () => {
     ]);
 
   const foldedShow = (path: Entry[], window: Entry[] = path, minItems?: number) => {
-    const runs = runFold(path);
+    const runs = runFold(path, true);
     return displayOf(window, resolvers, 1000, undefined, [], runs, runFoldPlan(window, runs, minItems));
   };
 
@@ -716,7 +738,7 @@ describe("runFoldPlan: a finished run travels as its header", () => {
       ...Array.from({ length: 9 }, (_, i) => [phase(""), tool(`c${i}`)]).flat(),
       runEnd(),
     ]);
-    const runs = runFold(path);
+    const runs = runFold(path, true);
     const rendered = displayOf(path, resolvers, 1000, undefined, [], runs).filter((e) => e.run).length;
     const summary = foldedShow(path)[1]!;
     expect(summary.role === "run" ? summary.itemCount : -1).toBe(rendered);
@@ -726,7 +748,7 @@ describe("runFoldPlan: a finished run travels as its header", () => {
   test("nothing folds unless asked", () => {
     // The same page without a plan: this is what an app that did not ask still receives.
     const path = withRun(10);
-    const runs = runFold(path);
+    const runs = runFold(path, true);
     expect(displayOf(path, resolvers, 1000, undefined, [], runs).map((e) => e.role)).toEqual([
       "user", ...Array.from({ length: 10 }, () => "tool" as const),
     ]);
@@ -950,7 +972,7 @@ describe("runFoldPlan: a finished run travels as its header", () => {
       ...Array.from({ length: 20 }, (_, i) => tool(`c${i}`, { output: "x".repeat(4000) })),
       runEnd(),
     ]);
-    const runs = runFold(path);
+    const runs = runFold(path, true);
     const whole = JSON.stringify(displayOf(path, resolvers, 4000, undefined, [], runs)).length;
     const folded = JSON.stringify(foldedShow(path)).length;
     expect(folded * 20).toBeLessThan(whole);
@@ -976,7 +998,7 @@ describe("pageBefore: a folded run as the cursor", () => {
 
   test("the cursor of a summary is the id the fold actually emitted", () => {
     const path = chain([user("q"), runStart(), ...Array.from({ length: 9 }, (_, i) => tool(`c${i}`)), runEnd()]);
-    const runs = runFold(path);
+    const runs = runFold(path, true);
     const summary = displayOf(path, resolvers, 1000, undefined, [], runs, runFoldPlan(path, runs))[1]!;
     // Held id in, entries out: the round trip the app makes on scroll. Never an empty page.
     const { window } = pageBefore(path, summary.id, 10, 0);
@@ -1062,7 +1084,7 @@ describe("displayOf: a card the log does not hold yet", () => {
       },
     ]);
 
-    const drawn = displayOf(entries, resolvers, 1000, spawnView(entries));
+    const drawn = displayOf(entries, resolvers, 1000, spawnView(entries, () => true));
     expect(drawn.map((e) => e.role)).toEqual(["user", "tool"]);
     expect(drawn[1]).toMatchObject({
       id: "t-c1",
@@ -1080,7 +1102,7 @@ describe("displayOf: a card the log does not hold yet", () => {
       { type: "spawn_state", prompt: false, callId: "c1", subagentId: "subagent/x", status: "complete", resultLength: 42 },
     ]);
 
-    const cards = displayOf(entries, resolvers, 1000, spawnView(entries)).filter((e) => e.role === "tool");
+    const cards = displayOf(entries, resolvers, 1000, spawnView(entries, () => true)).filter((e) => e.role === "tool");
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({ spawn: { status: "complete", resultLength: 42 } });
   });
@@ -1093,7 +1115,7 @@ describe("displayOf: a card the log does not hold yet", () => {
       tool("c1", { name: "spawn", args: { type: "research", mode: "run", task: "t" }, output: "l'answer", ok: true }),
     ]);
 
-    const cards = displayOf(entries, resolvers, 1000, spawnView(entries)).filter((e) => e.role === "tool");
+    const cards = displayOf(entries, resolvers, 1000, spawnView(entries, () => true)).filter((e) => e.role === "tool");
     expect(cards).toHaveLength(1);
     expect(cards[0]).toMatchObject({ output: "l'answer", ok: true });
   });

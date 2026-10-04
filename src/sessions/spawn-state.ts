@@ -109,15 +109,31 @@ export function cardOf(entries: readonly Entry[], subagentId: string): string | 
  * batch settles -- has to draw itself, and this is what tells the two apart.
  */
 export interface SpawnView {
-  states: ReadonlyMap<string, SessionSubAgentState>;
+  states: ReadonlyMap<string, SpawnCardState>;
   /** Call ids with a tool entry anywhere in the log: those cards need no stand-in. */
   carded: ReadonlySet<string>;
 }
 
-export function spawnView(entries: readonly Entry[]): SpawnView {
+/**
+ * A card as a reader shows it. `interrupted` is never written: it is what a `running` state reads
+ * as once nothing drives the child any more.
+ */
+export type SpawnCardState = Omit<SessionSubAgentState, "status"> & { status: SessionSubAgentStatus | "interrupted" };
+
+/**
+ * `live` answers whether a session has a run in flight. A `running` state only says the child had
+ * started when the log was last written: a server that went down under it (a crash, a kill, a
+ * restart) never writes the end, and the card spun for good in the parent's thread while the
+ * child sat idle (2026-10-04). Whether it still runs is the process's to say, so it is asked here.
+ */
+export function spawnView(entries: readonly Entry[], live: (sessionId: string) => boolean): SpawnView {
   const carded = new Set<string>();
   for (const entry of entries) if (entry.type === "tool") carded.add(entry.callId);
-  return { states: spawnStates(entries), carded };
+  const states = new Map<string, SpawnCardState>();
+  for (const [callId, state] of spawnStates(entries)) {
+    states.set(callId, state.status === "running" && !live(state.subagentId) ? { ...state, status: "interrupted" } : state);
+  }
+  return { states, carded };
 }
 
 /**
