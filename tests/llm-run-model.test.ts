@@ -18,8 +18,7 @@ function world(over: Partial<AvailabilityWorld> = {}): AvailabilityWorld {
     answered: () => false,
     listedBy: () => new Set(),
     hasEnv: () => true,
-    claudeAuth: true,
-    codexAuth: true,
+    signedIn: () => true,
     ...over,
   };
 }
@@ -184,11 +183,11 @@ describe("availability", () => {
       provider: "litellm",
       env: "LITELLM_API_KEY",
     });
-    expect(availabilityOf(config().llm, "claude-sonnet-5", world({ claudeAuth: false }))).toEqual({
+    expect(availabilityOf(config().llm, "claude-sonnet-5", world({ signedIn: (p) => p !== "anthropic" }))).toEqual({
       state: "no-auth",
       provider: "anthropic",
     });
-    expect(availabilityOf(config().llm, "gpt-5.6-sol", world({ codexAuth: false }))).toEqual({
+    expect(availabilityOf(config().llm, "gpt-5.6-sol", world({ signedIn: (p) => p !== "chatgpt" }))).toEqual({
       state: "no-auth",
       provider: "chatgpt",
     });
@@ -211,17 +210,17 @@ describe("availability", () => {
         ],
       },
     });
-    const noKey = world({ claudeAuth: true, hasEnv: () => false });
+    const noKey = world({ signedIn: () => true, hasEnv: () => false });
     expect(availabilityOf(mixed.llm, "glm-5", noKey)).toEqual({ state: "no-key", provider: "zai", env: "ZAI_API_KEY" });
     expect(availabilityOf(mixed.llm, "claude-sonnet-5", noKey)).toEqual({ state: "ready" });
 
-    const noSub = world({ claudeAuth: false, hasEnv: () => true });
+    const noSub = world({ signedIn: (p) => p !== "abo", hasEnv: () => true });
     expect(availabilityOf(mixed.llm, "glm-5", noSub)).toEqual({ state: "ready" });
     expect(availabilityOf(mixed.llm, "claude-sonnet-5", noSub)).toEqual({ state: "no-auth", provider: "abo" });
   });
 
   test("a picker only offers what can run", () => {
-    const w = world({ claudeAuth: false, hasEnv: () => false });
+    const w = world({ signedIn: (p) => p !== "anthropic", hasEnv: () => false });
     expect(runnableModels(config().llm, w).map((m) => m.id)).toEqual(["gpt-5.6-sol"]);
   });
 });
@@ -252,7 +251,7 @@ describe("a dead pin falls back", () => {
   test("an unavailable global default fails loudly: there is nothing below it", () => {
     // Substituting anything here would be inventing a model the owner never named.
     try {
-      resolveRunModel(config(), { agent: "main" }, world({ claudeAuth: false }));
+      resolveRunModel(config(), { agent: "main" }, world({ signedIn: (p) => p !== "anthropic" }));
       throw new Error("expected a throw");
     } catch (err) {
       expect(err).toBeInstanceOf(NoRunnableModelError);
@@ -354,28 +353,26 @@ describe("no surface keeps its own chain", () => {
 });
 
 describe("availability stays hot", () => {
-  test("the claude env token counts the moment it appears, with no sample in between", async () => {
-    // A token rotated in `.env` alone reaches process.env through the watcher, which then returns
-    // early because no config section changed: nothing announces it. Sampling would miss it for
-    // six hours, and the picker would call a model unauthenticated while runs used it fine.
-    const { claudeTokenInEnv } = await import("../src/llm/claude-auth.ts");
-    const original = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
-    delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
-    try {
-      expect(claudeTokenInEnv()).toBe(false);
-      const sampled = { claude: false };
-      const live = (): AvailabilityWorld => ({ ...world(), claudeAuth: sampled.claude || claudeTokenInEnv() });
-      expect(availabilityOf(config().llm, "claude-sonnet-5", live())).toEqual({
-        state: "no-auth",
-        provider: "anthropic",
-      });
-      process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "sk-ant-oat-rotated";
-      // No re-sample, no reload, no restart.
-      expect(availabilityOf(config().llm, "claude-sonnet-5", live())).toEqual({ state: "ready" });
-    } finally {
-      if (original === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
-      else process.env["CLAUDE_CODE_OAUTH_TOKEN"] = original;
-    }
+  // Rewritten 2026-10-04: the env token was read live here. It is adopted into the account's file
+  // when .env changes (accounts-store.ts), and the sign-in is judged per provider.
+  test("each plan is judged by its own sign-in: a second account signed out hides only its models", () => {
+    const two = config({
+      llm: {
+        defaultProvider: "chatgpt",
+        defaultModel: "gpt-5.6-sol",
+        providers: {
+          chatgpt: { type: "codex" as const },
+          "chatgpt-work": { type: "codex" as const },
+        },
+        models: [
+          { id: "gpt-5.6-sol", label: "Sol", provider: "chatgpt" },
+          { id: "chatgpt-work/gpt-5.6-sol", label: "Sol (work)", apiId: "gpt-5.6-sol", provider: "chatgpt-work" },
+        ],
+      },
+    });
+    const w = world({ signedIn: (p) => p === "chatgpt" });
+    expect(availabilityOf(two.llm, "gpt-5.6-sol", w)).toEqual({ state: "ready" });
+    expect(availabilityOf(two.llm, "chatgpt-work/gpt-5.6-sol", w)).toEqual({ state: "no-auth", provider: "chatgpt-work" });
   });
 
   test("a key added to a provider makes its models runnable with no restart", () => {

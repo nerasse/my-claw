@@ -528,6 +528,29 @@ export async function setToolDisabled(name: string, disabled: boolean): Promise<
   return { ok: true, previous: {} };
 }
 
+/**
+ * Asks before each run of a tool, or stops asking: one name in the top-level `blacklist`. Asking
+ * also turns the app's approvals on: with them off, a listed tool is refused, not asked, and the
+ * switch the owner just flipped would read as "never run it" (docs/tool-approvals.md).
+ */
+export async function setToolConfirm(name: string, confirm: boolean): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const list = Array.isArray(read.data["blacklist"]) ? (read.data["blacklist"] as unknown[]) : [];
+  read.data["blacklist"] = confirm ? (list.includes(name) ? list : [...list, name]) : list.filter((n) => n !== name);
+  if (confirm) {
+    const channels = objectAt(read.data, "channels");
+    const app = objectAt(channels, "my-claw-app");
+    app["approvals"] = true;
+  }
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant confirmation tool ${name}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { tool: name, confirm });
+  return { ok: true, previous: {} };
+}
+
 export interface McpAddSpec {
   transport: "stdio" | "sse" | "http";
   command?: string;

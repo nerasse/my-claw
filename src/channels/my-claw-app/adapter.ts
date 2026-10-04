@@ -232,6 +232,7 @@ import {
   handleTagsUpsert,
   handleToolsList,
   handleToolsToggle,
+  handleToolsConfirm,
   handleUpdateRun,
   handleUiPrefs,
   handleVoiceMode,
@@ -1638,6 +1639,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "accounts.code":
       case "accounts.token":
       case "accounts.logout":
+      case "accounts.add":
+      case "accounts.rename":
         this.detach(handleAccounts(this.settingsDeps(), ws, frame), "handleAccounts");
         break;
       case "uiPrefs.get":
@@ -1787,6 +1790,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "tools.toggle":
         this.detach(handleToolsToggle(this.settingsDeps(), ws, frame), "handleToolsToggle");
+        break;
+      case "tools.confirm":
+        this.detach(handleToolsConfirm(this.settingsDeps(), ws, frame), "handleToolsConfirm");
         break;
       case "mcp.add":
         this.detach(handleMcpAdd(this.settingsDeps(), ws, frame), "handleMcpAdd");

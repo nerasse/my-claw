@@ -16,11 +16,13 @@ import {
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
 const ENV = "CLAUDE_CODE_OAUTH_TOKEN";
+const P = "anthropic";
 const savedEnv = process.env[ENV];
 afterEach(async () => {
   if (savedEnv === undefined) delete process.env[ENV];
   else process.env[ENV] = savedEnv;
-  await clearClaudeToken();
+  await clearClaudeToken(P);
+  await clearClaudeToken("claude-work");
   resetClaudeAuthState();
 });
 
@@ -29,7 +31,7 @@ afterEach(async () => {
  * it reacts to is what the test moves.
  */
 async function setStoredExpiryInThePast(): Promise<void> {
-  const path = join(MY_CLAW_DIR, "claude", "auth.json");
+  const path = join(MY_CLAW_DIR, "accounts", "anthropic.json");
   const file = JSON.parse(await readFile(path, "utf-8")) as { oauth?: { expires: number } };
   if (!file.oauth) throw new Error("no stored credential to age");
   file.oauth.expires = Date.now() - 1;
@@ -37,43 +39,46 @@ async function setStoredExpiryInThePast(): Promise<void> {
 }
 
 test("setClaudeToken then loadClaudeToken round-trips the token", async () => {
-  await setClaudeToken("sk-ant-oat01-abcdefghij-XYZ");
-  assert.equal(await loadClaudeToken(), "sk-ant-oat01-abcdefghij-XYZ");
+  await setClaudeToken(P, "sk-ant-oat01-abcdefghij-XYZ");
+  assert.equal(await loadClaudeToken(P), "sk-ant-oat01-abcdefghij-XYZ");
 });
 
 test("setClaudeToken rejects an empty token", async () => {
-  await assert.rejects(setClaudeToken("   "), /empty token/);
+  await assert.rejects(setClaudeToken(P, "   "), /empty token/);
 });
 
 test("status reports the my-claw file source and masks the token", async () => {
-  await setClaudeToken("sk-ant-oat01-abcdefghij-XYZ");
-  const st = await claudeTokenStatus();
+  await setClaudeToken(P, "sk-ant-oat01-abcdefghij-XYZ");
+  const st = await claudeTokenStatus(P);
   assert.equal(st.present, true);
   assert.equal(st.source, "my-claw");
   assert.ok(st.masked && st.masked.startsWith("sk-ant-oat"));
   assert.ok(!st.masked!.includes("abcdefghij-XYZ"));
 });
 
-test("loadClaudeToken falls back to the env token when no file is stored", async () => {
-  await clearClaudeToken();
+// Rewritten 2026-10-04: the env token used to be read as a fallback. The owner asked for one source
+// per account: .env is adopted once into the provider's file (accounts-store.ts) and no longer read.
+test("the env token is not read: a sign-in is the account's own file", async () => {
+  await clearClaudeToken(P);
   process.env[ENV] = "sk-ant-env-token";
-  assert.equal(await loadClaudeToken(), "sk-ant-env-token");
-  const st = await claudeTokenStatus();
-  assert.equal(st.source, "env");
+  assert.equal(await loadClaudeToken(P), null);
+  assert.equal((await claudeTokenStatus(P)).present, false);
 });
 
-test("the my-claw file token wins over the env token", async () => {
-  process.env[ENV] = "sk-ant-env-token";
-  await setClaudeToken("sk-ant-file-token");
-  assert.equal(await loadClaudeToken(), "sk-ant-file-token");
+test("two Claude providers hold two sign-ins", async () => {
+  await setClaudeToken(P, "sk-ant-oat01-first-aaaaaaaaaa");
+  await setClaudeToken("claude-work", "sk-ant-oat01-second-bbbbbbbbb");
+  assert.equal(await loadClaudeToken(P), "sk-ant-oat01-first-aaaaaaaaaa");
+  assert.equal(await loadClaudeToken("claude-work"), "sk-ant-oat01-second-bbbbbbbbb");
+  await clearClaudeToken("claude-work");
+  assert.equal(await loadClaudeToken(P), "sk-ant-oat01-first-aaaaaaaaaa");
 });
 
 test("clearClaudeToken removes the stored token", async () => {
-  await setClaudeToken("sk-ant-file-token");
-  await clearClaudeToken();
-  delete process.env[ENV];
-  assert.equal(await loadClaudeToken(), null);
-  assert.equal((await claudeTokenStatus()).present, false);
+  await setClaudeToken(P, "sk-ant-file-token");
+  await clearClaudeToken(P);
+  assert.equal(await loadClaudeToken(P), null);
+  assert.equal((await claudeTokenStatus(P)).present, false);
 });
 
 // ============================================================================
@@ -101,7 +106,7 @@ function ok(json: Record<string, unknown>): Response {
 }
 
 test("the authorize url carries PKCE S256 and the scopes the CLI itself asks for", () => {
-  const { url } = claudeLoginStart();
+  const { url } = claudeLoginStart(P);
   const parsed = new URL(url);
   assert.equal(parsed.origin + parsed.pathname, "https://platform.claude.com/oauth/authorize");
   // `code=true` is what makes the callback page show the code instead of posting it back, which is
@@ -119,21 +124,21 @@ test("the authorize url carries PKCE S256 and the scopes the CLI itself asks for
   const challenge = parsed.searchParams.get("code_challenge") ?? "";
   // base64url, so a padded or a standard-alphabet challenge would be a bug the server would reject.
   assert.match(challenge, /^[A-Za-z0-9_-]{43}$/);
-  assert.ok(claudeLoginPending());
+  assert.ok(claudeLoginPending(P));
 });
 
 test("two logins never reuse a verifier or a state", () => {
-  const first = new URL(claudeLoginStart().url);
-  const second = new URL(claudeLoginStart().url);
+  const first = new URL(claudeLoginStart(P).url);
+  const second = new URL(claudeLoginStart(P).url);
   assert.notEqual(first.searchParams.get("code_challenge"), second.searchParams.get("code_challenge"));
   assert.notEqual(first.searchParams.get("state"), second.searchParams.get("state"));
 });
 
 test("the code exchange sends the verifier and stores what came back", async () => {
-  const url = new URL(claudeLoginStart().url);
+  const url = new URL(claudeLoginStart(P).url);
   const ep = tokenEndpoint(() => ok({ access_token: "sk-ant-oat-new", refresh_token: "rt-1", expires_in: 28_800 }));
   try {
-    const res = await claudeLoginComplete("code-from-the-page");
+    const res = await claudeLoginComplete(P, "code-from-the-page");
     assert.ok(res.expiresInMin > 470 && res.expiresInMin <= 480);
   } finally {
     ep.restore();
@@ -148,20 +153,20 @@ test("the code exchange sends the verifier and stores what came back", async () 
   // Same client the transport claims to be, so the account sees one consistent client.
   assert.match(ep.calls[0]!.headers["user-agent"] ?? "", /^claude-cli\//);
 
-  assert.equal(await loadClaudeToken(), "sk-ant-oat-new");
-  const st = await claudeTokenStatus();
+  assert.equal(await loadClaudeToken(P), "sk-ant-oat-new");
+  const st = await claudeTokenStatus(P);
   assert.equal(st.source, "oauth");
   assert.equal(st.hasFallbackToken, false);
-  assert.ok(!claudeLoginPending());
+  assert.ok(!claudeLoginPending(P));
 });
 
 test("the code is accepted in the three shapes the page hands out", async () => {
   for (const shape of ["plain-code", "pasted-code#STATE", "https://platform.claude.com/oauth/code/callback?code=url-code&state=STATE"]) {
-    const url = new URL(claudeLoginStart().url);
+    const url = new URL(claudeLoginStart(P).url);
     const state = url.searchParams.get("state")!;
     const ep = tokenEndpoint(() => ok({ access_token: "a", refresh_token: "r", expires_in: 100 }));
     try {
-      await claudeLoginComplete(shape.replace(/STATE/g, state));
+      await claudeLoginComplete(P, shape.replace(/STATE/g, state));
     } finally {
       ep.restore();
     }
@@ -170,26 +175,33 @@ test("the code is accepted in the three shapes the page hands out", async () => 
 });
 
 test("a code from another attempt is refused before it reaches the network", async () => {
-  claudeLoginStart();
+  claudeLoginStart(P);
   const ep = tokenEndpoint(() => ok({}));
   try {
-    await assert.rejects(claudeLoginComplete("code#not-our-state"), /another login attempt/);
+    await assert.rejects(claudeLoginComplete(P, "code#not-our-state"), /another login attempt/);
   } finally {
     ep.restore();
   }
   assert.equal(ep.calls.length, 0);
 });
 
+test("a code pasted on another account's page is refused: the login belongs to the one it was started for", async () => {
+  claudeLoginStart(P);
+  await assert.rejects(claudeLoginComplete("claude-work", "some-code"), /No login in progress/);
+  assert.equal(claudeLoginPending(P), true);
+  assert.equal(claudeLoginPending("claude-work"), false);
+});
+
 test("a code with no login in progress is refused", async () => {
   resetClaudeAuthState();
-  await assert.rejects(claudeLoginComplete("whatever"), /No login in progress/);
+  await assert.rejects(claudeLoginComplete(P, "whatever"), /No login in progress/);
 });
 
 test("an access token inside the skew is refreshed, and a rotation that omits the refresh token keeps it", async () => {
-  claudeLoginStart();
+  claudeLoginStart(P);
   let ep = tokenEndpoint(() => ok({ access_token: "first", refresh_token: "rt-1", expires_in: 60 }));
   try {
-    await claudeLoginComplete("code");
+    await claudeLoginComplete(P, "code");
   } finally {
     ep.restore();
   }
@@ -197,7 +209,7 @@ test("an access token inside the skew is refreshed, and a rotation that omits th
   // token that expires mid-request.
   ep = tokenEndpoint(() => ok({ access_token: "second", expires_in: 28_800 }));
   try {
-    assert.equal(await loadClaudeToken(), "second");
+    assert.equal(await loadClaudeToken(P), "second");
     assert.equal(ep.calls[0]!.body["grant_type"], "refresh_token");
     assert.equal(ep.calls[0]!.body["refresh_token"], "rt-1");
   } finally {
@@ -206,7 +218,7 @@ test("an access token inside the skew is refreshed, and a rotation that omits th
   // The refreshed credential was persisted, so a second read costs no network call at all.
   ep = tokenEndpoint(() => ok({ access_token: "third", expires_in: 28_800 }));
   try {
-    assert.equal(await loadClaudeToken(), "second");
+    assert.equal(await loadClaudeToken(P), "second");
     assert.equal(ep.calls.length, 0);
   } finally {
     ep.restore();
@@ -215,7 +227,7 @@ test("an access token inside the skew is refreshed, and a rotation that omits th
   await setStoredExpiryInThePast();
   ep = tokenEndpoint(() => ok({ access_token: "fourth", expires_in: 28_800 }));
   try {
-    assert.equal(await loadClaudeToken(), "fourth");
+    assert.equal(await loadClaudeToken(P), "fourth");
     assert.equal(ep.calls[0]!.body["refresh_token"], "rt-1");
   } finally {
     ep.restore();
@@ -223,16 +235,16 @@ test("an access token inside the skew is refreshed, and a rotation that omits th
 });
 
 test("concurrent reads collapse into one refresh", async () => {
-  claudeLoginStart();
+  claudeLoginStart(P);
   let ep = tokenEndpoint(() => ok({ access_token: "first", refresh_token: "rt-1", expires_in: 60 }));
   try {
-    await claudeLoginComplete("code");
+    await claudeLoginComplete(P, "code");
   } finally {
     ep.restore();
   }
   ep = tokenEndpoint(() => ok({ access_token: "shared", expires_in: 28_800 }));
   try {
-    const all = await Promise.all([loadClaudeToken(), loadClaudeToken(), loadClaudeToken()]);
+    const all = await Promise.all([loadClaudeToken(P), loadClaudeToken(P), loadClaudeToken(P)]);
     assert.deepEqual(all, ["shared", "shared", "shared"]);
     // A rotated refresh token used twice is how an account gets locked out.
     assert.equal(ep.calls.length, 1);
@@ -242,35 +254,35 @@ test("concurrent reads collapse into one refresh", async () => {
 });
 
 test("a failed refresh degrades to the long-lived token instead of stopping the run", async () => {
-  await setClaudeToken("sk-ant-oat-long-lived");
-  claudeLoginStart();
+  await setClaudeToken(P, "sk-ant-oat-long-lived");
+  claudeLoginStart(P);
   let ep = tokenEndpoint(() => ok({ access_token: "first", refresh_token: "rt-1", expires_in: 60 }));
   try {
-    await claudeLoginComplete("code");
+    await claudeLoginComplete(P, "code");
   } finally {
     ep.restore();
   }
-  const st = await claudeTokenStatus();
+  const st = await claudeTokenStatus(P);
   assert.equal(st.source, "oauth");
   assert.equal(st.hasFallbackToken, true);
 
   ep = tokenEndpoint(() => new Response("upstream is down", { status: 503 }));
   try {
-    assert.equal(await loadClaudeToken(), "sk-ant-oat-long-lived");
+    assert.equal(await loadClaudeToken(P), "sk-ant-oat-long-lived");
   } finally {
     ep.restore();
   }
 });
 
 test("pasting a long-lived token clears the OAuth credential, so the paste is what takes effect", async () => {
-  claudeLoginStart();
+  claudeLoginStart(P);
   const ep = tokenEndpoint(() => ok({ access_token: "oauth-access", refresh_token: "rt", expires_in: 28_800 }));
   try {
-    await claudeLoginComplete("code");
+    await claudeLoginComplete(P, "code");
   } finally {
     ep.restore();
   }
-  await setClaudeToken("sk-ant-oat-pasted");
-  assert.equal(await loadClaudeToken(), "sk-ant-oat-pasted");
-  assert.equal((await claudeTokenStatus()).source, "my-claw");
+  await setClaudeToken(P, "sk-ant-oat-pasted");
+  assert.equal(await loadClaudeToken(P), "sk-ant-oat-pasted");
+  assert.equal((await claudeTokenStatus(P)).source, "my-claw");
 });

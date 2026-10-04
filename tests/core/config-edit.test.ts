@@ -11,6 +11,7 @@ import {
   setAgentWorkspace,
   setAgentMaxIterations,
   setToolDisabled,
+  setToolConfirm,
   addMcpServer,
   removeMcpServer,
   setMcpEnabled,
@@ -330,6 +331,22 @@ describe("setToolDisabled", () => {
     await writeConfigFile({ ...FILE, tools: { disabled: ["bash"] } });
     await setToolDisabled("cron", true);
     expect((await readConfigFile()).tools.disabled).toEqual(["bash", "cron"]);
+  });
+});
+
+describe("setToolConfirm", () => {
+  test("asking before a tool lists it and turns the app's approvals on, or it would be refused", async () => {
+    await writeConfigFile();
+    expect((await setToolConfirm("bash", true)).ok).toBe(true);
+    const file = await readConfigFile();
+    expect(file.blacklist).toEqual(["bash"]);
+    expect(file.channels["my-claw-app"].approvals).toBe(true);
+  });
+
+  test("not asking any more removes only that name", async () => {
+    await writeConfigFile({ ...FILE, blacklist: ["bash", "write"] });
+    await setToolConfirm("bash", false);
+    expect((await readConfigFile()).blacklist).toEqual(["write"]);
   });
 });
 

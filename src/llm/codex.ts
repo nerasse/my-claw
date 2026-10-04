@@ -448,7 +448,9 @@ async function runCodex(
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     if (signal?.aborted) throw new AbortedError();
-    const { accessToken, accountId } = await getCodexAccessToken(signal);
+    // Each ChatGPT provider is its own account: the run signs with the one it was routed to.
+    if (!config.provider) throw new Error("A ChatGPT model reached the transport without its provider");
+    const { accessToken, accountId } = await getCodexAccessToken(config.provider, signal);
     const controller = new AbortController();
     let timedOut = false;
     const arm = (): ReturnType<typeof setTimeout> | undefined =>

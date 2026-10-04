@@ -515,13 +515,16 @@ export interface MyClawAppServicesFree {
  * `code` and `token` carry secrets: they are written to the token store and never sent back.
  */
 export type MyClawAppAccountKind = "codex" | "claude";
+/** `provider` is the provider key: each plan is a provider holding its own sign-in. */
 export type MyClawAppAccountsFrame =
   | { type: "accounts.get" }
-  | { type: "accounts.login"; provider: MyClawAppAccountKind }
-  | { type: "accounts.cancel"; provider: MyClawAppAccountKind }
-  | { type: "accounts.code"; code: string }
-  | { type: "accounts.token"; token: string }
-  | { type: "accounts.logout"; provider: MyClawAppAccountKind };
+  | { type: "accounts.login"; provider: string }
+  | { type: "accounts.cancel"; provider: string }
+  | { type: "accounts.code"; provider: string; code: string }
+  | { type: "accounts.token"; provider: string; token: string }
+  | { type: "accounts.logout"; provider: string }
+  | { type: "accounts.add"; kind: MyClawAppAccountKind; name: string }
+  | { type: "accounts.rename"; provider: string; name: string };
 
 /** Picks a service's source. Keys go through `providers.env.set`, never here. */
 export interface MyClawAppServicesSet {
@@ -829,6 +832,16 @@ export interface MyClawAppToolsToggle {
   disabled: boolean;
 }
 
+/**
+ * Asks before running a tool, or stops asking: one name in the top-level `blacklist`. Asking turns
+ * the app's approvals on, or the tool would be refused instead of asked (docs/tool-approvals.md).
+ */
+export interface MyClawAppToolsConfirm {
+  type: "tools.confirm";
+  name: string;
+  confirm: boolean;
+}
+
 /** Declares a new MCP server. Credentials (env/headers) are deliberately absent from the spec. */
 export interface MyClawAppMcpAdd {
   type: "mcp.add";
@@ -1122,6 +1135,7 @@ export type MyClawAppClientFrame =
   | MyClawAppAgentFileCreate
   | MyClawAppAgentFileDelete
   | MyClawAppToolsToggle
+  | MyClawAppToolsConfirm
   | MyClawAppMcpAdd
   | MyClawAppMcpRemove
   | MyClawAppMcpEnable
@@ -2007,18 +2021,25 @@ export interface MyClawAppServicesResult {
 }
 
 export interface MyClawAppAccountView {
+  provider: string;
+  kind: MyClawAppAccountKind;
+  name: string;
   connected: boolean;
   email?: string;
   plan?: string;
-  source?: "oauth" | "token" | "env";
+  source?: "oauth" | "token";
   /** A sign-in in flight: the page to open, and for ChatGPT the code to enter there. */
   login?: { url: string; code?: string; expiresAt: number };
 }
 
 export interface MyClawAppAccountsResult {
   type: "accounts.result";
-  codex: MyClawAppAccountView;
-  claude: MyClawAppAccountView;
+  accounts: MyClawAppAccountView[];
+  /** The first account of each kind, for an app older than 0.6.129 (subscription-accounts.ts). */
+  codex: Omit<MyClawAppAccountView, "provider" | "kind" | "name">;
+  claude: Omit<MyClawAppAccountView, "provider" | "kind" | "name">;
+  /** The provider an `accounts.add` just declared: the page that asked opens it. */
+  added?: string;
   /** A ChatGPT sign-in that failed after its code was shown (denied, expired). */
   error?: string;
 }
@@ -2290,6 +2311,8 @@ export interface MyClawAppToolEntry {
   server?: string;
   /** Whether the global tools.disabled denylist switches it off. */
   disabled: boolean;
+  /** Whether the agent asks the owner before each run of it (the top-level `blacklist`). */
+  confirm: boolean;
 }
 
 export interface MyClawAppToolsListResult {
@@ -2467,6 +2490,8 @@ export interface MyClawAppProviderInfo {
   /** Models currently known to belong to this provider. */
   models: number;
   keyEnv?: string;
+  /** A ChatGPT or Claude plan: its credential is its sign-in, and `keyPresent` says it is signed in. */
+  account?: MyClawAppAccountKind;
   keyPresent: boolean;
 }
 

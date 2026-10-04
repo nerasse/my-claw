@@ -7,9 +7,9 @@ import type { ChatMessage, ProviderMeta } from "../../src/llm/provider.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
 function writeAuth(): void {
-  mkdirSync(join(MY_CLAW_DIR, "codex"), { recursive: true });
+  mkdirSync(join(MY_CLAW_DIR, "accounts"), { recursive: true });
   writeFileSync(
-    join(MY_CLAW_DIR, "codex", "auth.json"),
+    join(MY_CLAW_DIR, "accounts", "chatgpt.json"),
     JSON.stringify({ access: "access-tok", refresh: "refresh-tok", expires: Date.now() + 3_600_000, accountId: "acct-123" }),
   );
 }
@@ -31,11 +31,12 @@ let mock: { restore(): void } | undefined;
 afterEach(() => {
   mock?.restore();
   mock = undefined;
-  rmSync(join(MY_CLAW_DIR, "codex"), { recursive: true, force: true });
+  rmSync(join(MY_CLAW_DIR, "accounts"), { recursive: true, force: true });
 });
 
 const config: ResolvedLlmConfig = {
   backend: "codex",
+  provider: "chatgpt",
   baseUrl: "https://chatgpt.com/backend-api",
   model: "gpt-5-codex",
   effort: "high",

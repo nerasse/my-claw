@@ -35,6 +35,7 @@ import {
   tagNameOf,
   type AgentToolType,
   type EffortLevel,
+  type LlmProviderConfig,
   type MyClawConfig,
   refreshEnvFile,
 } from "./core/config.ts";
@@ -52,7 +53,7 @@ import {
   HEALTH_GATE_MS,
 } from "./core/config-store.ts";
 import { isHealthy, decideAfterHealthGate, MAX_STRIKES } from "./core/config-health.ts";
-import { writeJsonFileAtomically, writeFileAtomically } from "./utils/atomic-write.ts";
+import { writeFileAtomically } from "./utils/atomic-write.ts";
 import { briefError } from "./utils/errors.ts";
 import { MyClawAppAdapter } from "./channels/my-claw-app/adapter.ts";
 import type { MyClawAppStreamer } from "./channels/my-claw-app/stream.ts";
@@ -153,7 +154,15 @@ import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments, mediaT
 import { llmCompleteStream } from "./llm/transport.ts";
 import { occupiedContextTokens } from "./llm/context-window.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
-import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus, claudeTokenInEnv } from "./llm/claude-auth.ts";
+import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus } from "./llm/claude-auth.ts";
+import {
+  accountKindOf,
+  adoptLegacyAccounts,
+  moveAccount,
+  removeAccount,
+  subscriptionProviders,
+  type AccountKind,
+} from "./llm/accounts-store.ts";
 import { resolveLlmConfig, resolveAgentLlmConfig, findModel, isOpenRouterBaseUrl } from "./llm/resolver.ts";
 import type { ChatMessage } from "./llm/provider.ts";
 import { tagRouteOf } from "./core/config.ts";
@@ -190,6 +199,7 @@ import {
   setAgentMaxIterations,
   setAgentContextCap,
   setToolDisabled,
+  setToolConfirm,
   addMcpServer,
   removeMcpServer,
   setMcpEnabled,
@@ -411,13 +421,18 @@ async function main() {
   // reads it: a picker built while the world was still the permissive default would keep offering
   // unavailable models until something else happened to re-project it -- and with discovery off,
   // nothing would.
-  const subscriptionAuth = { claude: false, codex: false };
+  let signedIn = new Set<string>();
   const sampleSubscriptionAuth = async (): Promise<void> => {
-    const claude = (await claudeTokenStatus().catch(() => ({ present: false }))).present;
-    const codex = await codexIsLoggedIn().catch(() => false);
-    if (claude === subscriptionAuth.claude && codex === subscriptionAuth.codex) return;
-    subscriptionAuth.claude = claude;
-    subscriptionAuth.codex = codex;
+    const next = new Set<string>();
+    for (const account of subscriptionProviders(config.llm.providers)) {
+      const present =
+        account.kind === "codex"
+          ? await codexIsLoggedIn(account.key).catch(() => false)
+          : (await claudeTokenStatus(account.key).catch(() => ({ present: false }))).present;
+      if (present) next.add(account.key);
+    }
+    if (next.size === signedIn.size && [...next].every((key) => signedIn.has(key))) return;
+    signedIn = next;
     // The sample decides which models the picker may offer, and it lands asynchronously -- after
     // the projection that a refresh triggers. Re-project, or a token that expired between two
     // refreshes leaves its models on the menu for six hours.
@@ -427,18 +442,28 @@ async function main() {
     answered: (provider) => modelCatalog.answered(provider),
     listedBy: (provider) => modelCatalog.listedBy(provider),
     hasEnv: (name) => Boolean(process.env[name]),
-    // The env half is read live, so a token rotated in `.env` alone -- which the watcher applies
-    // to process.env without announcing a section change -- is honoured immediately. The stored
-    // half comes from the sample, and every writer of that file goes through onAuthChanged.
-    claudeAuth: subscriptionAuth.claude || claudeTokenInEnv(),
-    codexAuth: subscriptionAuth.codex,
+    // From the sample: every writer of a sign-in goes through onAuthChanged, which re-samples.
+    signedIn: (provider) => signedIn.has(provider),
   }));
+  // The sign-ins of before (one per server, and the Claude token of .env) go to their providers
+  // before anything reads them; a token pasted into .env later, or a plan declared later, adopts then.
+  await adoptLegacyAccounts(config.llm.providers).catch((err) => {
+    void log("warn", "legacy sign-ins could not be adopted", { error: String(err) });
+  });
   await sampleSubscriptionAuth();
+  hooks.on("env:refreshed", () => {
+    void adoptLegacyAccounts(config.llm.providers).then(sampleSubscriptionAuth, (err) => {
+      void log("warn", "legacy sign-ins could not be adopted", { error: String(err) });
+    });
+  });
   hooks.on("models:discovered", () => void sampleSubscriptionAuth());
-  // A config.json edit can add a provider or a key env name, both of which change what is
-  // runnable. (A bare `.env` rotation does not reach here -- the watcher returns early when no
-  // section changed -- which is why the claude env token is read live in the world above.)
-  hooks.on("config:reloaded", () => void sampleSubscriptionAuth());
+  // A config.json edit can add a provider or a key env name, both of which change what is runnable.
+  // A plan declared now adopts a sign-in left for it (the Claude token of .env on a fresh install).
+  hooks.on("config:reloaded", () => {
+    void adoptLegacyAccounts(config.llm.providers).then(sampleSubscriptionAuth, (err) => {
+      void log("warn", "legacy sign-ins could not be adopted", { error: String(err) });
+    });
+  });
 
   modelCatalog.onUpdate(applyModelCatalog);
   // Load the OpenRouter catalogue before the first projection. It fails closed to an empty cache,
@@ -459,45 +484,40 @@ async function main() {
   pricingTimer.unref?.();
 
 
-  // `/codex login` and `/claude set-token` only store a token; without a matching provider,
-  // discovery is a no-op and the subscription's models never reach /model. After an auth change
-  // we ensure the provider exists (added to config, persisted for restarts) and re-run discovery
-  // now that a token is available. Provider spec per auth kind:
-  const AUTH_PROVIDER: Record<"codex" | "claude", { type: "codex" | "anthropic"; key: string; group: string }> = {
-    codex: { type: "codex", key: "chatgpt", group: "ChatGPT (abo)" },
-    claude: { type: "anthropic", key: "claude", group: "Claude (abo)" },
+  // `/codex` and `/claude` act on the first account of their kind (docs/subscription-accounts.md);
+  // with none declared yet, a login declares one (added to config, persisted for restarts), or the
+  // token would land on no provider and its models would never reach /model.
+  const AUTH_PROVIDER: Record<AccountKind, { type: "codex" | "anthropic"; key: string; group: string }> = {
+    codex: { type: "codex", key: "chatgpt", group: "ChatGPT" },
+    claude: { type: "anthropic", key: "claude", group: "Claude" },
   };
-  const hasProviderType = (providers: Record<string, { type?: string }> | undefined, type: string): boolean =>
-    Object.values(providers ?? {}).some((p) => p.type === type);
+  const firstAccountOf = (providers: Record<string, LlmProviderConfig> | undefined, kind: AccountKind): string | undefined =>
+    subscriptionProviders(providers).find((a) => a.kind === kind)?.key;
   // A free key so we never clobber an existing provider that happens to share the preferred name.
   const freeKey = (providers: Record<string, unknown>, preferred: string): string => {
     if (!(preferred in providers)) return preferred;
     for (let i = 2; ; i++) if (!(`${preferred}${i}` in providers)) return `${preferred}${i}`;
   };
-  const ensureAuthProvider = async (kind: "codex" | "claude"): Promise<void> => {
-    const spec = AUTH_PROVIDER[kind];
+  /** Declares one account, in the live config and on disk. Never the in-memory config to disk. */
+  const declareAccount = async (key: string, kind: AccountKind, group: string): Promise<void> => {
+    const spec = { type: AUTH_PROVIDER[kind].type, discover: true, group };
     const live = (config.llm.providers ??= {});
-    if (hasProviderType(live, spec.type)) return;
-    // Update the live config first so the immediate refresh below can see the provider.
-    live[freeKey(live, spec.key)] = { type: spec.type, discover: true, group: spec.group };
-    // Persist into the raw on-disk config. Never serialize the in-memory config (it holds
-    // runtime-merged models) nor readConfigFromDisk() (it overlays env secrets we must not
-    // write back); read and edit the raw file instead.
-    try {
-      const disk = JSON.parse(await readFile(CONFIG_PATH, "utf-8")) as MyClawConfig;
-      disk.llm ??= {};
-      disk.llm.providers ??= {};
-      if (!hasProviderType(disk.llm.providers, spec.type)) {
-        disk.llm.providers[freeKey(disk.llm.providers, spec.key)] = { type: spec.type, discover: true, group: spec.group };
-        await snapshotConfigFile(CONFIG_PATH, { origin: "pre-write", note: `ajout du provider ${kind}` });
-        await writeJsonFileAtomically(CONFIG_PATH, disk, true);
-      }
-    } catch (err) {
-      void log("warn", "could not persist provider to config.json", { kind, error: String(err) });
-    }
+    // Live first, so the refresh right after can see the provider before the watcher lands.
+    live[key] = spec;
+    const written = await upsertProvider(key, spec);
+    if (!written.ok) throw new Error(written.error);
+    await reloadConfigNow().catch((err) => {
+      void log("warn", "config reload after an account was declared failed", { key, error: String(err) });
+    });
   };
-  const onAuthChanged = async (kind: "codex" | "claude"): Promise<void> => {
-    await ensureAuthProvider(kind);
+  const accountFor = async (kind: AccountKind): Promise<string> => {
+    const existing = firstAccountOf(config.llm.providers, kind);
+    if (existing) return existing;
+    const key = freeKey(config.llm.providers ?? {}, AUTH_PROVIDER[kind].key);
+    await declareAccount(key, kind, AUTH_PROVIDER[kind].group);
+    return key;
+  };
+  const onAuthChanged = async (_provider: string): Promise<void> => {
     // Before the refresh: a login that adds models must not have them judged unrunnable by a
     // stale auth sample, and a logout must stop offering them immediately.
     await sampleSubscriptionAuth();
@@ -932,6 +952,13 @@ async function main() {
     // and provider bootstrap as `/codex` and `/claude`.
     myClawApp.onAccountsController(
       createAccounts({
+        providers: () => config.llm.providers,
+        addProvider: declareAccount,
+        renameProvider: async (key, name) => {
+          const written = await upsertProvider(key, { group: name });
+          if (!written.ok) throw new Error(written.error);
+          await reloadConfigNow();
+        },
         onAuthChanged,
         onSettled: (state, error) => myClawApp.pushAccounts(state, error),
       }),
@@ -1354,12 +1381,13 @@ async function main() {
             discover: provider.discover === true,
             models: providerCountOf(key),
             ...(provider.apiKeyEnv ? { keyEnv: provider.apiKeyEnv } : {}),
-            // A subscription provider has no env key at all, and reporting "no key" for it said
-            // the opposite of the truth on a box that was perfectly authenticated. Its credential
-            // is the stored token, so that is what the flag has to answer for.
+            // A plan: the app draws its sign-in instead of a key (docs/subscription-accounts.md).
+            ...(accountKindOf(provider) ? { account: accountKindOf(provider)! } : {}),
+            // A plan has no env key at all, and reporting "no key" for it said the opposite of the
+            // truth on a box that was perfectly authenticated. Its credential is its own sign-in.
             keyPresent:
-              provider.type === "codex"
-                ? subscriptionAuth.codex
+              accountKindOf(provider)
+                ? signedIn.has(key)
                 : provider.apiKeyEnv
                   ? Boolean(process.env[provider.apiKeyEnv])
                   : false,
@@ -1659,11 +1687,14 @@ async function main() {
       remove: async (key, withModels) => {
         const result = await removeProvider(key, { withModels: withModels === true });
         if (!result.ok) throw new Error(result.error);
+        // A plan removed takes its sign-in with it: the next provider of that name starts signed out.
+        await removeAccount(key);
         return writeProvidersConfig(`retrait provider ${key}`);
       },
       rename: async (from, to) => {
         const result = await renameProvider(from, to);
         if (!result.ok) throw new Error(result.error);
+        await moveAccount(from, to);
         return writeProvidersConfig(`renommage provider ${from}`);
       },
       envSet: async (name, value) => {
@@ -1794,20 +1825,15 @@ async function main() {
     // `disabled` is read live from config, so a hot-reloaded denylist edit shows up next visit.
     const toolsCatalog = (): { tools: MyClawAppToolEntry[]; missing: string[] } => {
       const disabled = new Set(config.tools?.disabled ?? []);
-      const tools: Array<{
-        name: string;
-        description: string;
-        source: "built-in" | "plugin" | "mcp";
-        server?: string;
-        disabled: boolean;
-      }> = [];
+      const asks = new Set(config.blacklist ?? []);
+      const tools: MyClawAppToolEntry[] = [];
       for (const name of toolRegistry.staticNames()) {
         const tool = toolRegistry.get(name);
         if (!tool) continue;
-        tools.push({ name, description: tool.description, source: "built-in", disabled: disabled.has(name) });
+        tools.push({ name, description: tool.description, source: "built-in", disabled: disabled.has(name), confirm: asks.has(name) });
       }
       for (const tool of pluginLoader?.getTools() ?? []) {
-        tools.push({ name: tool.name, description: tool.description, source: "plugin", disabled: disabled.has(tool.name) });
+        tools.push({ name: tool.name, description: tool.description, source: "plugin", disabled: disabled.has(tool.name), confirm: asks.has(tool.name) });
       }
       for (const tool of mcpManager.getTools()) {
         const server = mcpServerOf(tool.name);
@@ -1817,6 +1843,7 @@ async function main() {
           source: "mcp",
           ...(server ? { server } : {}),
           disabled: disabled.has(tool.name),
+          confirm: asks.has(tool.name),
         });
       }
       const known = new Set(tools.map((t) => t.name));
@@ -1839,6 +1866,11 @@ async function main() {
         const result = await setToolDisabled(name, disabled);
         if (!result.ok) throw new Error(result.error);
         return writeToolsCatalog(`toggle tool ${name}`);
+      },
+      confirm: async (name, confirm) => {
+        const result = await setToolConfirm(name, confirm);
+        if (!result.ok) throw new Error(result.error);
+        return writeToolsCatalog(`confirm tool ${name}`);
       },
     });
 
@@ -2232,6 +2264,7 @@ async function main() {
       browserWindows: browserSession.windows,
       postMessage: (owner, text, threadId) => myClawApp.send(owner, { text, threadId }),
       onAuthChanged,
+      accountFor,
       reloadConfigNow,
       toolRegistry,
       mcpStatus: () => mcpManager.status(),
@@ -3048,17 +3081,30 @@ function registerSkillTools(
 // CLI subcommands for the Codex (ChatGPT subscription) backend. Device-code login is the only
 // flow: it needs no local browser, so it works over SSH on the headless VPS. See
 // docs/codex-backend.md.
-async function runCodexCli(args: string[]): Promise<number> {
+/**
+ * The account a CLI subcommand acts on: `--provider <key>`, else the first one of its kind in the
+ * config on disk, else the key `/codex` and `/claude` would declare (docs/subscription-accounts.md).
+ */
+async function cliAccount(kind: AccountKind, args: string[]): Promise<{ account: string; rest: string[] }> {
+  const at = args.indexOf("--provider");
+  if (at >= 0 && args[at + 1]) return { account: args[at + 1]!, rest: args.filter((_, i) => i !== at && i !== at + 1) };
+  const raw = JSON.parse(await readFile(CONFIG_PATH, "utf-8").catch(() => "{}")) as Partial<MyClawConfig>;
+  const first = subscriptionProviders(raw.llm?.providers).find((a) => a.kind === kind)?.key;
+  return { account: first ?? (kind === "codex" ? "chatgpt" : "claude"), rest: args };
+}
+
+async function runCodexCli(argv: string[]): Promise<number> {
+  const { account, rest: args } = await cliAccount("codex", argv);
   const cmd = args[0];
   if (cmd === "login") {
     try {
-      const cred = await codexLoginDeviceCode((prompt) => {
+      const cred = await codexLoginDeviceCode(account, (prompt) => {
         console.log("\nTo authorize my-claw with your ChatGPT account:");
         console.log(`  1. Open: ${prompt.verificationUri}`);
         console.log(`  2. Enter code: ${prompt.userCode}`);
         console.log(`\nWaiting for approval (expires in ${Math.round(prompt.expiresInSeconds / 60)} min)...`);
       });
-      console.log(`\nLogged in. ChatGPT account id: ${cred.accountId}`);
+      console.log(`\nLogged in as provider "${account}". ChatGPT account id: ${cred.accountId}`);
       return 0;
     } catch (err) {
       console.error(`Login failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -3066,9 +3112,9 @@ async function runCodexCli(args: string[]): Promise<number> {
     }
   }
   if (cmd === "status") {
-    const cred = await loadCodexCredential();
+    const cred = await loadCodexCredential(account);
     if (!cred) {
-      console.log("Not logged in to Codex. Run: my-claw codex login");
+      console.log(`Provider "${account}" is not logged in. Run: my-claw codex login`);
       return 1;
     }
     const mins = Math.round((cred.expires - Date.now()) / 60000);
@@ -3077,21 +3123,22 @@ async function runCodexCli(args: string[]): Promise<number> {
     return 0;
   }
   if (cmd === "logout") {
-    await codexLogout();
-    console.log("Logged out of Codex.");
+    await codexLogout(account);
+    console.log(`Logged out of ChatGPT (provider "${account}").`);
     return 0;
   }
-  console.log("Usage: my-claw codex <login|status|logout>");
+  console.log("Usage: my-claw codex <login|status|logout> [--provider <key>]");
   return cmd ? 1 : 0;
 }
 
 // CLI subcommands for the Claude (subscription) backend. `login` wraps the official
 // `claude setup-token` (browser/TTY); `set-token` stores a token generated anywhere. Tokens live
-// in ~/.my-claw/claude/auth.json and are injected per run by the SDK backend.
-async function runClaudeCli(args: string[]): Promise<number> {
+// in ~/.my-claw/accounts/<provider>.json and are injected per run by the Anthropic transport.
+async function runClaudeCli(argv: string[]): Promise<number> {
+  const { account, rest: args } = await cliAccount("claude", argv);
   const cmd = args[0];
   if (cmd === "login") {
-    const r = await runClaudeSetupToken();
+    const r = await runClaudeSetupToken(account);
     console.log(`\n${r.message}`);
     return r.ok ? 0 : 1;
   }
@@ -3102,8 +3149,8 @@ async function runClaudeCli(args: string[]): Promise<number> {
       return 1;
     }
     try {
-      await setClaudeToken(token);
-      console.log("Claude token stored in ~/.my-claw/claude/auth.json.");
+      await setClaudeToken(account, token);
+      console.log(`Claude token stored for provider "${account}".`);
       return 0;
     } catch (err) {
       console.error(`Failed to store token: ${err instanceof Error ? err.message : String(err)}`);
@@ -3111,7 +3158,7 @@ async function runClaudeCli(args: string[]): Promise<number> {
     }
   }
   if (cmd === "status") {
-    const st = await claudeTokenStatus();
+    const st = await claudeTokenStatus(account);
     if (!st.present) {
       console.log("Not logged in to Claude. Run: my-claw claude login");
       return 1;
@@ -3121,14 +3168,14 @@ async function runClaudeCli(args: string[]): Promise<number> {
     return 0;
   }
   if (cmd === "logout") {
-    await clearClaudeToken();
-    console.log("Cleared the my-claw Claude token.");
+    await clearClaudeToken(account);
+    console.log(`Signed out of Claude (provider "${account}").`);
     return 0;
   }
   // The chat has `/claude login` (PKCE with a pasted code) because it has no browser. Here the
   // browser is one command away, so `login` stays the vendor's own tool and mints the long-lived
   // token that backs the OAuth credential when a refresh fails.
-  console.log("Usage: my-claw claude <login|set-token <token>|status|logout>");
+  console.log("Usage: my-claw claude <login|set-token <token>|status|logout> [--provider <key>]");
   return cmd ? 1 : 0;
 }
 

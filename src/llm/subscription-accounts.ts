@@ -1,14 +1,15 @@
+import type { LlmProviderConfig } from "../core/config.ts";
 import { codexLoginDeviceCode, codexLogout, loadCodexCredential, type DeviceCodePrompt } from "./codex-auth.ts";
 import { claudeLoginComplete, claudeLoginStart, claudeTokenStatus, clearClaudeToken, setClaudeToken } from "./claude-auth.ts";
+import { subscriptionProviders, type AccountKind } from "./accounts-store.ts";
 
-// The ChatGPT and Claude subscriptions, signed in from the app's Accounts page rather than with
-// `/codex` and `/claude` (docs/subscription-accounts.md). Same token stores, same provider
-// bootstrap (`onAuthChanged`); what this adds is the state a page needs: a sign-in in flight,
-// with what to show for it, survives the page being closed and reopened.
+// The ChatGPT and Claude plans, signed in from the app (docs/subscription-accounts.md). A plan is a
+// provider like any other: each one holds its own sign-in, so the owner can have several of a kind
+// and name them. What this adds over the token stores is the state a page needs: a sign-in in
+// flight, with what to show for it, survives the page being closed and reopened.
 
-export type AccountKind = "codex" | "claude";
+export type { AccountKind };
 
-/** A sign-in in flight: the page to open and, for ChatGPT, the code to enter there. */
 export interface AccountLogin {
   url: string;
   code?: string;
@@ -16,23 +17,44 @@ export interface AccountLogin {
 }
 
 export interface AccountView {
+  /** The provider key: what the models are addressed by, and the name of the sign-in's file. */
+  provider: string;
+  kind: AccountKind;
+  /** The owner's name for it (the provider's `group`), the key when none was given. */
+  name: string;
   connected: boolean;
   email?: string;
   plan?: string;
-  /** Claude only: a sign-in that renews itself, a long-lived token, or one from the server's env. */
-  source?: "oauth" | "token" | "env";
+  source?: "oauth" | "token";
   login?: AccountLogin;
 }
 
+/**
+ * `codex` and `claude` are the first account of each kind, in the shape an app older than 0.6.129
+ * reads: without them that page throws on the missing field, between the server's update and the
+ * APK's. The current app reads `accounts`.
+ */
 export interface AccountsState {
-  codex: AccountView;
-  claude: AccountView;
+  accounts: AccountView[];
+  codex: LegacyView;
+  claude: LegacyView;
+}
+
+interface LegacyView {
+  connected: boolean;
+  email?: string;
+  plan?: string;
+  source?: "oauth" | "token";
+  login?: AccountLogin;
 }
 
 export interface AccountsDeps {
-  /** Adds the provider if missing, re-samples the auth and re-runs discovery (index.ts). */
-  onAuthChanged: (kind: AccountKind) => Promise<void>;
-  /** A ChatGPT sign-in ends minutes after it started: its outcome is pushed, not answered. */
+  /** The live providers: an account is a provider the config declares. */
+  providers: () => Record<string, LlmProviderConfig> | undefined;
+  /** Declares a new provider of that kind under that key and name, and reloads the config. */
+  addProvider: (key: string, kind: AccountKind, name: string) => Promise<void>;
+  renameProvider: (key: string, name: string) => Promise<void>;
+  onAuthChanged: (provider: string) => Promise<void>;
   onSettled: (state: AccountsState, error?: string) => void;
 }
 
@@ -40,6 +62,7 @@ const CLAUDE_LOGIN_TTL_MS = 10 * 60 * 1000;
 // What OpenAI writes in the access token: the plan and the address of the account it belongs to.
 const AUTH_CLAIM = "https://api.openai.com/auth";
 const PROFILE_CLAIM = "https://api.openai.com/profile";
+const NAME_MAX = 40;
 
 function claimsOf(token: string): Record<string, unknown> {
   try {
@@ -54,108 +77,163 @@ function field(claim: unknown, key: string): string | undefined {
   return typeof value === "string" && value ? value : undefined;
 }
 
+/**
+ * The key a new account gets, from the name the owner typed: "ChatGPT boulot" -> `chatgpt-boulot`.
+ * A key already taken (by any provider) gets a number, so a second account never overwrites the
+ * first one's sign-in.
+ */
+export function accountKeyFor(name: string, kind: AccountKind, taken: ReadonlySet<string>): string {
+  const slug = name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, NAME_MAX);
+  const base = slug || (kind === "codex" ? "chatgpt" : "claude");
+  if (!taken.has(base)) return base;
+  for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
+}
+
 export interface AccountsController {
   status(): Promise<AccountsState>;
-  login(kind: AccountKind): Promise<AccountsState>;
-  cancel(kind: AccountKind): Promise<AccountsState>;
-  /** Claude: the code its page shows once the owner approved. */
-  code(input: string): Promise<AccountsState>;
-  /** Claude: a long-lived token from `claude setup-token`. */
-  token(token: string): Promise<AccountsState>;
-  logout(kind: AccountKind): Promise<AccountsState>;
+  login(provider: string): Promise<AccountsState>;
+  cancel(provider: string): Promise<AccountsState>;
+  code(provider: string, input: string): Promise<AccountsState>;
+  token(provider: string, token: string): Promise<AccountsState>;
+  logout(provider: string): Promise<AccountsState>;
+  add(kind: AccountKind, name: string): Promise<AccountsState & { added: string }>;
+  rename(provider: string, name: string): Promise<AccountsState>;
 }
 
 export function createAccounts(deps: AccountsDeps): AccountsController {
-  let codexLogin: { view: AccountLogin; abort: AbortController } | null = null;
-  let claudeLogin: AccountLogin | null = null;
+  const codexLogins = new Map<string, { view: AccountLogin; abort: AbortController }>();
+  // One Claude sign-in at a time: claude-auth keeps a single verifier, so starting a second one
+  // makes the first page's code useless, and only the second page shows a login.
+  let claudeLogin: { provider: string; view: AccountLogin } | null = null;
 
-  const live = (login: AccountLogin | null): AccountLogin | undefined =>
+  const live = (login: AccountLogin | undefined): AccountLogin | undefined =>
     login && login.expiresAt > Date.now() ? login : undefined;
 
-  const status = async (): Promise<AccountsState> => {
-    const cred = await loadCodexCredential();
-    const claims = cred ? claimsOf(cred.access) : {};
-    const email = field(claims[PROFILE_CLAIM], "email");
-    const plan = field(claims[AUTH_CLAIM], "chatgpt_plan_type");
-    const codexLive = live(codexLogin?.view ?? null);
-    const claude = await claudeTokenStatus();
-    const claudeLive = live(claudeLogin);
+  const accountOf = (provider: string) => {
+    const account = subscriptionProviders(deps.providers()).find((a) => a.key === provider);
+    if (!account) throw new Error(`No ChatGPT or Claude account named "${provider}".`);
+    return account;
+  };
+
+  const viewOf = async (account: { key: string; kind: AccountKind; name: string }): Promise<AccountView> => {
+    const base = { provider: account.key, kind: account.kind, name: account.name };
+    if (account.kind === "codex") {
+      const cred = await loadCodexCredential(account.key);
+      const claims = cred ? claimsOf(cred.access) : {};
+      const email = field(claims[PROFILE_CLAIM], "email");
+      const plan = field(claims[AUTH_CLAIM], "chatgpt_plan_type");
+      const login = live(codexLogins.get(account.key)?.view);
+      return { ...base, connected: cred !== null, ...(email ? { email } : {}), ...(plan ? { plan } : {}), ...(login ? { login } : {}) };
+    }
+    const claude = await claudeTokenStatus(account.key);
+    const login = claudeLogin?.provider === account.key ? live(claudeLogin.view) : undefined;
     return {
-      codex: { connected: cred !== null, ...(email ? { email } : {}), ...(plan ? { plan } : {}), ...(codexLive ? { login: codexLive } : {}) },
-      claude: {
-        connected: claude.present,
-        ...(claude.present ? { source: claude.source === "my-claw" ? "token" : claude.source === "env" ? "env" : "oauth" } : {}),
-        ...(claudeLive ? { login: claudeLive } : {}),
-      },
+      ...base,
+      connected: claude.present,
+      ...(claude.present ? { source: claude.source === "my-claw" ? ("token" as const) : ("oauth" as const) } : {}),
+      ...(login ? { login } : {}),
     };
   };
 
-  const startCodex = async (): Promise<void> => {
-    if (live(codexLogin?.view ?? null)) return;
-    codexLogin?.abort.abort();
+  const legacy = (views: AccountView[], kind: AccountKind): LegacyView => {
+    const first = views.find((v) => v.kind === kind);
+    if (!first) return { connected: false };
+    const { provider: _p, kind: _k, name: _n, ...rest } = first;
+    return rest;
+  };
+
+  const status = async (): Promise<AccountsState> => {
+    const accounts = await Promise.all(subscriptionProviders(deps.providers()).map(viewOf));
+    return { accounts, codex: legacy(accounts, "codex"), claude: legacy(accounts, "claude") };
+  };
+
+  const startCodex = async (provider: string): Promise<void> => {
+    if (live(codexLogins.get(provider)?.view)) return;
+    codexLogins.get(provider)?.abort.abort();
     const abort = new AbortController();
     const prompt = await new Promise<DeviceCodePrompt>((resolve, reject) => {
       let prompted = false;
-      codexLoginDeviceCode((p) => {
+      codexLoginDeviceCode(provider, (p) => {
         prompted = true;
         resolve(p);
       }, abort.signal)
         .then(async () => {
-          if (codexLogin?.abort === abort) codexLogin = null;
-          await deps.onAuthChanged("codex");
+          if (codexLogins.get(provider)?.abort === abort) codexLogins.delete(provider);
+          await deps.onAuthChanged(provider);
           deps.onSettled(await status());
         })
         .catch(async (err: unknown) => {
           if (!prompted) return reject(err);
-          if (codexLogin?.abort === abort) codexLogin = null;
+          if (codexLogins.get(provider)?.abort === abort) codexLogins.delete(provider);
           // A cancel is the owner's own doing: the page already shows it, nothing to report.
           if (abort.signal.aborted) return;
           deps.onSettled(await status(), err instanceof Error ? err.message : String(err));
         });
     });
-    codexLogin = {
+    codexLogins.set(provider, {
       abort,
       view: { url: prompt.verificationUri, code: prompt.userCode, expiresAt: Date.now() + prompt.expiresInSeconds * 1000 },
-    };
+    });
+  };
+
+  const claudeOnly = (provider: string): void => {
+    if (accountOf(provider).kind !== "claude") throw new Error("A code or a token is for a Claude account.");
   };
 
   return {
     status,
-    async login(kind) {
-      if (kind === "codex") await startCodex();
-      else claudeLogin = { url: claudeLoginStart().url, expiresAt: Date.now() + CLAUDE_LOGIN_TTL_MS };
+    async login(provider) {
+      const { kind } = accountOf(provider);
+      if (kind === "codex") await startCodex(provider);
+      else claudeLogin = { provider, view: { url: claudeLoginStart(provider).url, expiresAt: Date.now() + CLAUDE_LOGIN_TTL_MS } };
       return status();
     },
-    async cancel(kind) {
-      if (kind === "codex") {
-        codexLogin?.abort.abort();
-        codexLogin = null;
-      } else {
-        claudeLogin = null;
-      }
+    async cancel(provider) {
+      codexLogins.get(provider)?.abort.abort();
+      codexLogins.delete(provider);
+      if (claudeLogin?.provider === provider) claudeLogin = null;
       return status();
     },
-    async code(input) {
-      await claudeLoginComplete(input);
+    async code(provider, input) {
+      claudeOnly(provider);
+      await claudeLoginComplete(provider, input);
       claudeLogin = null;
-      await deps.onAuthChanged("claude");
+      await deps.onAuthChanged(provider);
       return status();
     },
-    async token(token) {
-      await setClaudeToken(token.trim());
-      await deps.onAuthChanged("claude");
+    async token(provider, token) {
+      claudeOnly(provider);
+      await setClaudeToken(provider, token.trim());
+      await deps.onAuthChanged(provider);
       return status();
     },
-    async logout(kind) {
-      if (kind === "codex") {
-        codexLogin?.abort.abort();
-        codexLogin = null;
-        await codexLogout();
-      } else {
-        claudeLogin = null;
-        await clearClaudeToken();
-      }
-      await deps.onAuthChanged(kind);
+    async logout(provider) {
+      const { kind } = accountOf(provider);
+      codexLogins.get(provider)?.abort.abort();
+      codexLogins.delete(provider);
+      if (claudeLogin?.provider === provider) claudeLogin = null;
+      if (kind === "codex") await codexLogout(provider);
+      else await clearClaudeToken(provider);
+      await deps.onAuthChanged(provider);
+      return status();
+    },
+    async add(kind, name) {
+      const trimmed = name.trim().slice(0, NAME_MAX);
+      const key = accountKeyFor(trimmed, kind, new Set(Object.keys(deps.providers() ?? {})));
+      await deps.addProvider(key, kind, trimmed || key);
+      return { ...(await status()), added: key };
+    },
+    async rename(provider, name) {
+      accountOf(provider);
+      const trimmed = name.trim().slice(0, NAME_MAX);
+      if (!trimmed) throw new Error("A name cannot be empty.");
+      await deps.renameProvider(provider, trimmed);
       return status();
     },
   };

@@ -1,8 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { MY_CLAW_DIR } from "../core/config.ts";
-import { writeFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
+import { readAccount, removeAccount, writeAccount } from "./accounts-store.ts";
 
 // Public OAuth client id of the official `codex` CLI. Using it is what lets a ChatGPT
 // Plus/Pro subscription drive the Codex backend without a per-token API key.
@@ -23,7 +20,6 @@ const SLOW_DOWN_INCREMENT_MS = 5000;
 const REFRESH_SKEW_MS = 60_000;
 
 export const CODEX_BASE_URL = "https://chatgpt.com/backend-api";
-const AUTH_PATH = join(MY_CLAW_DIR, "codex", "auth.json");
 
 export interface CodexCredential {
   access: string;
@@ -89,34 +85,29 @@ function credentialFromTokenResponse(json: TokenResponse): CodexCredential {
 // No in-memory cache: login happens in a separate short-lived CLI process, so the running
 // service must read the file fresh to pick up a first login or a re-login without a restart. The
 // file is tiny; a read per LLM request is negligible next to the request itself.
-async function readCredential(): Promise<CodexCredential | null> {
-  try {
-    const raw = await readFile(AUTH_PATH, "utf-8");
-    const parsed = JSON.parse(raw) as Partial<CodexCredential>;
-    if (parsed.access && parsed.refresh && typeof parsed.expires === "number" && parsed.accountId) {
-      return { access: parsed.access, refresh: parsed.refresh, expires: parsed.expires, accountId: parsed.accountId };
-    }
-  } catch {
-    // No credential file yet (or unreadable).
+async function readCredential(provider: string): Promise<CodexCredential | null> {
+  const parsed = await readAccount<Partial<CodexCredential>>(provider);
+  if (parsed?.access && parsed.refresh && typeof parsed.expires === "number" && parsed.accountId) {
+    return { access: parsed.access, refresh: parsed.refresh, expires: parsed.expires, accountId: parsed.accountId };
   }
   return null;
 }
 
-async function writeCredential(cred: CodexCredential): Promise<void> {
-  await writeFileAtomically(AUTH_PATH, JSON.stringify(cred, null, 2), { mode: 0o600 });
+async function writeCredential(provider: string, cred: CodexCredential): Promise<void> {
+  await writeAccount(provider, cred);
 }
 
-export async function loadCodexCredential(): Promise<CodexCredential | null> {
-  return readCredential();
+export async function loadCodexCredential(provider: string): Promise<CodexCredential | null> {
+  return readCredential(provider);
 }
 
-export async function codexLogout(): Promise<void> {
-  await writeFileAtomically(AUTH_PATH, "{}", { mode: 0o600 }).catch(() => {});
+export async function codexLogout(provider: string): Promise<void> {
+  await removeAccount(provider).catch(() => {});
 }
 
 /** True when a stored credential exists (independent of whether it is currently expired). */
-export async function codexIsLoggedIn(): Promise<boolean> {
-  return (await readCredential()) !== null;
+export async function codexIsLoggedIn(provider: string): Promise<boolean> {
+  return (await readCredential(provider)) !== null;
 }
 
 // ============================================================================
@@ -146,33 +137,38 @@ async function refreshCredential(refreshToken: string): Promise<CodexCredential>
   return credentialFromTokenResponse(json);
 }
 
-let refreshInFlight: Promise<CodexCredential> | null = null;
+const refreshInFlight = new Map<string, Promise<CodexCredential>>();
 
 /**
  * Return a valid access token + account id for a Codex request, refreshing (and persisting the
  * rotated refresh token) when the stored token is within the expiry skew. A single in-process
  * guard collapses concurrent refreshes — my-claw runs one process, so no cross-process lock.
  */
-export async function getCodexAccessToken(signal?: AbortSignal): Promise<{ accessToken: string; accountId: string }> {
-  const cred = await readCredential();
+export async function getCodexAccessToken(
+  provider: string,
+  signal?: AbortSignal,
+): Promise<{ accessToken: string; accountId: string }> {
+  const cred = await readCredential(provider);
   if (!cred) {
-    throw new Error("Not logged in to Codex. Run: my-claw codex login");
+    throw new Error(`Provider "${provider}" is not signed in to ChatGPT. Sign in from Settings → Models.`);
   }
   if (Date.now() < cred.expires - REFRESH_SKEW_MS) {
     return { accessToken: cred.access, accountId: cred.accountId };
   }
-  if (!refreshInFlight) {
-    refreshInFlight = refreshCredential(cred.refresh)
+  let inFlight = refreshInFlight.get(provider);
+  if (!inFlight) {
+    inFlight = refreshCredential(cred.refresh)
       .then(async (next) => {
-        await writeCredential(next);
-        void log("info", "codex token refreshed", { expiresInSec: Math.round((next.expires - Date.now()) / 1000) });
+        await writeCredential(provider, next);
+        void log("info", "codex token refreshed", { provider, expiresInSec: Math.round((next.expires - Date.now()) / 1000) });
         return next;
       })
       .finally(() => {
-        refreshInFlight = null;
+        refreshInFlight.delete(provider);
       });
+    refreshInFlight.set(provider, inFlight);
   }
-  const refreshed = await refreshInFlight;
+  const refreshed = await inFlight;
   if (signal?.aborted) throw new Error("aborted");
   return { accessToken: refreshed.access, accountId: refreshed.accountId };
 }
@@ -260,6 +256,7 @@ async function pollDeviceAuth(device: DeviceAuth, signal?: AbortSignal): Promise
  * (console for the CLI, or a chat message later). Persists the resulting credential on success.
  */
 export async function codexLoginDeviceCode(
+  provider: string,
   onPrompt: (prompt: DeviceCodePrompt) => void,
   signal?: AbortSignal,
 ): Promise<CodexCredential> {
@@ -278,6 +275,6 @@ export async function codexLoginDeviceCode(
     client_id: CLIENT_ID,
   }, signal);
   const cred = credentialFromTokenResponse(json);
-  await writeCredential(cred);
+  await writeCredential(provider, cred);
   return cred;
 }

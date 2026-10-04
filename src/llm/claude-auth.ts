@@ -1,20 +1,15 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { MY_CLAW_DIR } from "../core/config.ts";
-import { writeFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
+import { readAccount, removeAccount, writeAccount } from "./accounts-store.ts";
 import { claudeUserAgent } from "./anthropic-release.ts";
 
-// The Claude subscription credentials. Two kinds live here, in one 0600 file:
+// The Claude subscription credentials, one 0600 file per provider (accounts-store.ts). Two kinds:
 //   - `oauth`: access + refresh from the PKCE flow below, access valid ~8 h, refreshed in place;
 //   - `token`: the long-lived token `claude setup-token` prints (~1 year, no refresh).
 // Stored in a my-claw-owned file so it survives restarts and the native Anthropic transport can
 // inject it per run, independent of the systemd EnvironmentFile / ~/.my-claw/.env split. See
 // docs/anthropic-backend.md.
-const AUTH_PATH = join(MY_CLAW_DIR, "claude", "auth.json");
-const TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 // setup-token prints an "sk-ant-oat..." token; capture it defensively from mixed output.
 const TOKEN_PATTERN = /sk-ant-[A-Za-z0-9._-]+/;
 
@@ -50,22 +45,12 @@ interface ClaudeAuthFile {
   oauth?: ClaudeOAuthCredential;
 }
 
-async function readAuthFile(): Promise<ClaudeAuthFile> {
-  try {
-    const raw = await readFile(AUTH_PATH, "utf-8");
-    return JSON.parse(raw) as ClaudeAuthFile;
-  } catch {
-    return {};
-  }
+async function readAuthFile(provider: string): Promise<ClaudeAuthFile> {
+  return (await readAccount<ClaudeAuthFile>(provider)) ?? {};
 }
 
-async function writeAuthFile(file: ClaudeAuthFile): Promise<void> {
-  await writeFileAtomically(AUTH_PATH, JSON.stringify(file, null, 2), { mode: 0o600 });
-}
-
-async function readStoredToken(): Promise<string | null> {
-  const file = await readAuthFile();
-  return file.token && file.token.length > 0 ? file.token : null;
+async function writeAuthFile(provider: string, file: ClaudeAuthFile): Promise<void> {
+  await writeAccount(provider, file);
 }
 
 /**
@@ -75,30 +60,18 @@ async function readStoredToken(): Promise<string | null> {
  * runs on a *failed* refresh too, and that is the point of keeping both: a refresh outage degrades
  * to the one-year token instead of stopping every run.
  */
-export async function loadClaudeToken(): Promise<string | null> {
-  const file = await readAuthFile();
+export async function loadClaudeToken(provider: string): Promise<string | null> {
+  const file = await readAuthFile(provider);
   if (file.oauth) {
     try {
-      return await validAccessToken(file.oauth);
+      return await validAccessToken(provider, file.oauth);
     } catch (err) {
       void log("warn", "claude oauth refresh failed, falling back to the stored token", {
         error: err instanceof Error ? err.message : String(err),
       });
     }
   }
-  if (file.token) return file.token;
-  return process.env[TOKEN_ENV] ?? null;
-}
-
-/**
- * The ambient token, read synchronously. Availability is decided on a read path that cannot await
- * a file, so it works from a periodic sample -- and a token rotated in `.env` alone never reaches
- * that sample: the watcher refreshes `process.env` but returns before announcing anything, having
- * found no config section changed. Runs would then work while the picker called the model
- * unauthenticated. This is the half of the answer that needs no sampling at all.
- */
-export function claudeTokenInEnv(): boolean {
-  return Boolean(process.env[TOKEN_ENV]);
+  return file.token ?? null;
 }
 
 /**
@@ -106,19 +79,19 @@ export function claudeTokenInEnv(): boolean {
  * an explicit choice of which authentication to use, and leaving a credential that outranks it
  * would make the paste look like it did nothing.
  */
-export async function setClaudeToken(token: string): Promise<void> {
+export async function setClaudeToken(provider: string, token: string): Promise<void> {
   const trimmed = token.trim();
   if (!trimmed) throw new Error("empty token");
-  await writeAuthFile({ token: trimmed });
+  await writeAuthFile(provider, { token: trimmed });
 }
 
-export async function clearClaudeToken(): Promise<void> {
-  await writeFileAtomically(AUTH_PATH, "{}", { mode: 0o600 }).catch(() => {});
+export async function clearClaudeToken(provider: string): Promise<void> {
+  await removeAccount(provider).catch(() => {});
 }
 
 export interface ClaudeTokenStatus {
   present: boolean;
-  source: "oauth" | "my-claw" | "env" | "none";
+  source: "oauth" | "my-claw" | "none";
   masked?: string;
   /** Minutes until the OAuth access token expires. Negative once it has, which is recoverable. */
   expiresInMin?: number;
@@ -130,8 +103,8 @@ function mask(token: string): string {
   return token.length <= 14 ? "set" : `${token.slice(0, 10)}…${token.slice(-4)}`;
 }
 
-export async function claudeTokenStatus(): Promise<ClaudeTokenStatus> {
-  const file = await readAuthFile();
+export async function claudeTokenStatus(provider: string): Promise<ClaudeTokenStatus> {
+  const file = await readAuthFile(provider);
   if (file.oauth) {
     return {
       present: true,
@@ -142,8 +115,6 @@ export async function claudeTokenStatus(): Promise<ClaudeTokenStatus> {
     };
   }
   if (file.token) return { present: true, source: "my-claw", masked: mask(file.token) };
-  const env = process.env[TOKEN_ENV];
-  if (env) return { present: true, source: "env", masked: mask(env) };
   return { present: false, source: "none" };
 }
 
@@ -187,29 +158,31 @@ function credentialFrom(json: TokenResponse, previousRefresh: string): ClaudeOAu
   };
 }
 
-let refreshInFlight: Promise<ClaudeOAuthCredential> | null = null;
+const refreshInFlight = new Map<string, Promise<ClaudeOAuthCredential>>();
 
 /**
  * The access token of a credential, refreshed when it is inside the skew. One in-process guard
  * collapses concurrent refreshes: my-claw is a single process, and a rotated refresh token used
  * twice is the documented way to get locked out.
  */
-async function validAccessToken(cred: ClaudeOAuthCredential): Promise<string> {
+async function validAccessToken(provider: string, cred: ClaudeOAuthCredential): Promise<string> {
   if (Date.now() < cred.expires - REFRESH_SKEW_MS) return cred.access;
-  if (!refreshInFlight) {
-    refreshInFlight = postToken({ grant_type: "refresh_token", refresh_token: cred.refresh })
+  let inFlight = refreshInFlight.get(provider);
+  if (!inFlight) {
+    inFlight = postToken({ grant_type: "refresh_token", refresh_token: cred.refresh })
       .then(async (json) => {
         const next = credentialFrom(json, cred.refresh);
-        const file = await readAuthFile();
-        await writeAuthFile({ ...file, oauth: next });
-        void log("info", "claude token refreshed", { expiresInSec: Math.round((next.expires - Date.now()) / 1000) });
+        const file = await readAuthFile(provider);
+        await writeAuthFile(provider, { ...file, oauth: next });
+        void log("info", "claude token refreshed", { provider, expiresInSec: Math.round((next.expires - Date.now()) / 1000) });
         return next;
       })
       .finally(() => {
-        refreshInFlight = null;
+        refreshInFlight.delete(provider);
       });
+    refreshInFlight.set(provider, inFlight);
   }
-  return (await refreshInFlight).access;
+  return (await inFlight).access;
 }
 
 function base64url(buf: Buffer): string {
@@ -217,6 +190,7 @@ function base64url(buf: Buffer): string {
 }
 
 interface PendingLogin {
+  provider: string;
   verifier: string;
   state: string;
   startedAt: number;
@@ -229,11 +203,11 @@ let pending: PendingLogin | null = null;
  * which is what makes the exchange provable to Anthropic and unusable by anyone who only sees the
  * URL.
  */
-export function claudeLoginStart(): { url: string } {
+export function claudeLoginStart(provider: string): { url: string } {
   const verifier = base64url(randomBytes(32));
   const challenge = base64url(createHash("sha256").update(verifier).digest());
   const state = randomUUID().replace(/-/g, "");
-  pending = { verifier, state, startedAt: Date.now() };
+  pending = { provider, verifier, state, startedAt: Date.now() };
 
   const url = new URL(AUTHORIZE_URL);
   // `code=true` is what makes the callback page display the code instead of posting it back.
@@ -276,8 +250,10 @@ function parseCode(input: string): { code: string; state?: string } | null {
  * Finish a login with the code from the callback page. Keeps any long-lived token already stored:
  * it becomes the fallback for a refresh outage.
  */
-export async function claudeLoginComplete(input: string): Promise<{ expiresInMin: number }> {
-  if (!pending) throw new Error("No login in progress. Start one with /claude login.");
+export async function claudeLoginComplete(provider: string, input: string): Promise<{ expiresInMin: number }> {
+  // The verifier belongs to the provider it was started for: a code pasted on another account's
+  // page must not sign that one in with this one's identity.
+  if (!pending || pending.provider !== provider) throw new Error("No login in progress. Start one with /claude login.");
   if (Date.now() - pending.startedAt > PENDING_TTL_MS) {
     pending = null;
     throw new Error("Login expired. Start a new one with /claude login.");
@@ -296,21 +272,21 @@ export async function claudeLoginComplete(input: string): Promise<{ expiresInMin
   });
   if (!json.refresh_token) throw new Error("Claude OAuth response carried no refresh token");
   const cred = credentialFrom(json, json.refresh_token);
-  const file = await readAuthFile();
-  await writeAuthFile({ ...file, oauth: cred });
+  const file = await readAuthFile(provider);
+  await writeAuthFile(provider, { ...file, oauth: cred });
   pending = null;
   return { expiresInMin: Math.round((cred.expires - Date.now()) / 60_000) };
 }
 
 /** True while a started login is still within its window, so the chat can name the next step. */
-export function claudeLoginPending(): boolean {
-  return pending !== null && Date.now() - pending.startedAt <= PENDING_TTL_MS;
+export function claudeLoginPending(provider: string): boolean {
+  return pending !== null && pending.provider === provider && Date.now() - pending.startedAt <= PENDING_TTL_MS;
 }
 
 /** Test seam: both are module state shared by every test file. */
 export function resetClaudeAuthState(): void {
   pending = null;
-  refreshInFlight = null;
+  refreshInFlight.clear();
 }
 
 /**
@@ -321,7 +297,7 @@ export function resetClaudeAuthState(): void {
  * that backs the OAuth credential when a refresh fails, and it is the only path that does not
  * require my-claw to hold a refresh token at all.
  */
-export function runClaudeSetupToken(): Promise<{ ok: boolean; token?: string; message: string }> {
+export function runClaudeSetupToken(provider: string): Promise<{ ok: boolean; token?: string; message: string }> {
   return new Promise((resolve) => {
     let out = "";
     let child;
@@ -346,8 +322,8 @@ export function runClaudeSetupToken(): Promise<{ ok: boolean; token?: string; me
         return;
       }
       try {
-        await setClaudeToken(match[0]);
-        resolve({ ok: true, token: match[0], message: "Claude token stored in ~/.my-claw/claude/auth.json." });
+        await setClaudeToken(provider, match[0]);
+        resolve({ ok: true, token: match[0], message: `Claude token stored in ~/.my-claw/accounts/${provider}.json.` });
       } catch (err) {
         resolve({ ok: false, message: `Failed to store token: ${err instanceof Error ? err.message : String(err)}` });
       }

@@ -5,6 +5,14 @@ import { anthropicResponseStream } from "../../src/llm/anthropic.ts";
 import { ModelCatalog } from "../../src/llm/catalog.ts";
 import { resolveLlmConfig } from "../../src/llm/resolver.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { MY_CLAW_DIR } from "../../src/core/config.ts";
+
+/** The subscription's sign-in is the provider's own file (accounts-store.ts), not an env variable. */
+const SUBSCRIPTION = "CLAUDE_CODE_OAUTH_TOKEN";
+/** The plan providers these tests declare: "claude" for the runs, "abo" for discovery. */
+const ACCOUNTS = ["claude", "abo"].map((key) => join(MY_CLAW_DIR, "accounts", `${key}.json`));
 
 /**
  * `type: "anthropic"` is a transport, not one endpoint with one credential: `baseUrl` says where
@@ -20,13 +28,19 @@ const ZAI = "https://api.z.ai/api/anthropic";
 
 function withEnv(vars: Record<string, string | undefined>): { restore(): void } {
   const previous = new Map<string, string | undefined>();
-  for (const [name, value] of Object.entries(vars)) {
+  const { [SUBSCRIPTION]: token, ...env } = vars;
+  if (token) {
+    mkdirSync(join(MY_CLAW_DIR, "accounts"), { recursive: true });
+    for (const file of ACCOUNTS) writeFileSync(file, JSON.stringify({ token }));
+  }
+  for (const [name, value] of Object.entries(env)) {
     previous.set(name, process.env[name]);
     if (value === undefined) delete process.env[name];
     else process.env[name] = value;
   }
   return {
     restore() {
+      for (const file of ACCOUNTS) rmSync(file, { force: true });
       for (const [name, value] of previous) {
         if (value === undefined) delete process.env[name];
         else process.env[name] = value;

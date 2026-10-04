@@ -63,7 +63,9 @@ export interface MyClawAppCommandDeps {
   /** The kept browser windows, and the owner's release of any of them (`/windows`). */
   browserWindows?: Pick<import("../../tools/browser/windows.ts").BrowserWindows, "kept" | "release" | "extend">;
   postMessage?: (owner: string, text: string, threadId?: string) => Promise<void>;
-  onAuthChanged?: (provider: "codex" | "claude") => void | Promise<void>;
+  onAuthChanged?: (account: string) => void | Promise<void>;
+  /** The provider key `/codex` and `/claude` act on: the first account of the kind, declared if none. */
+  accountFor?: (kind: "codex" | "claude") => Promise<string>;
   reloadConfigNow?: () => Promise<{ changed: string[]; rebootRequired: string[] }>;
   toolRegistry?: ToolRegistry;
   mcpStatus?: () => import("../../mcp/manager.ts").McpServerStatus[];
@@ -363,6 +365,7 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
       case "claude":
         return handleAuthCommand({
           provider: command,
+          account: (await deps.accountFor?.(command)) ?? (command === "codex" ? "chatgpt" : "claude"),
           args,
           isDm: true,
           postFollowUp: (text) => void deps.postMessage?.(owner, text, threadId),

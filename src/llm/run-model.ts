@@ -40,10 +40,11 @@ export interface AvailabilityWorld {
   listedBy: (provider: string) => ReadonlySet<string>;
   /** Whether an env variable holds a value. */
   hasEnv: (name: string) => boolean;
-  /** The Claude subscription token is present (claudeTokenStatus). */
-  claudeAuth: boolean;
-  /** The ChatGPT subscription is logged in (codexIsLoggedIn). */
-  codexAuth: boolean;
+  /**
+   * Whether a ChatGPT or Claude plan provider holds a sign-in. Asked per provider: each one has its
+   * own (docs/subscription-accounts.md), and a second account signed out must not hide the first.
+   */
+  signedIn: (provider: string) => boolean;
 }
 
 /** Which step of the chain a run's model came from. */
@@ -140,14 +141,14 @@ export function availabilityOf(
   if (!provider) return config.providers === undefined ? { state: "ready" } : undefined;
 
   if (provider.type === "codex") {
-    return world.codexAuth ? { state: "ready" } : { state: "no-auth", provider: providerName };
+    return world.signedIn(providerName) ? { state: "ready" } : { state: "no-auth", provider: providerName };
   }
   if (provider.type === "anthropic") {
     // A provider that brings its own key is judged by that key: the subscription is what the type
     // means when nothing else is declared, not what it always means.
     const own = provider.apiKeyEnv;
     if (own) return world.hasEnv(own) ? { state: "ready" } : { state: "no-key", provider: providerName, env: own };
-    return world.claudeAuth ? { state: "ready" } : { state: "no-auth", provider: providerName };
+    return world.signedIn(providerName) ? { state: "ready" } : { state: "no-auth", provider: providerName };
   }
   // An openai-compatible provider needs its key. The resolver's own last-resort env names count:
   // a run would find them, so the picker must not pretend otherwise.

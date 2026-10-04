@@ -6,7 +6,7 @@ import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import { getCodexAccessToken, loadCodexCredential, codexLogout } from "../../src/llm/codex-auth.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
-const AUTH_PATH = join(MY_CLAW_DIR, "codex", "auth.json");
+const AUTH_PATH = join(MY_CLAW_DIR, "accounts", "chatgpt.json");
 
 function b64url(obj: unknown): string {
   return Buffer.from(JSON.stringify(obj)).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=/g, "");
@@ -20,7 +20,7 @@ function fakeJwt(accountId: string): string {
 }
 
 function writeAuth(cred: Record<string, unknown>): void {
-  mkdirSync(join(MY_CLAW_DIR, "codex"), { recursive: true });
+  mkdirSync(join(MY_CLAW_DIR, "accounts"), { recursive: true });
   writeFileSync(AUTH_PATH, JSON.stringify(cred));
 }
 
@@ -30,12 +30,12 @@ afterEach(() => {
   mock = undefined;
   // MY_CLAW_DIR is shared across test files; leaking a codex credential breaks
   // other suites that assume a fresh (logged-out) state.
-  rmSync(join(MY_CLAW_DIR, "codex"), { recursive: true, force: true });
+  rmSync(join(MY_CLAW_DIR, "accounts"), { recursive: true, force: true });
 });
 
 test("getCodexAccessToken returns the stored token when not near expiry", async () => {
   writeAuth({ access: "acc", refresh: "ref", expires: Date.now() + 3_600_000, accountId: "acct-1" });
-  const { accessToken, accountId } = await getCodexAccessToken();
+  const { accessToken, accountId } = await getCodexAccessToken("chatgpt");
   assert.equal(accessToken, "acc");
   assert.equal(accountId, "acct-1");
 });
@@ -49,7 +49,7 @@ test("getCodexAccessToken refreshes an expiring token and persists the rotation"
     return new Response(JSON.stringify({ access_token: newAccess, refresh_token: "new-refresh", expires_in: 3600 }), { status: 200 });
   });
 
-  const { accessToken, accountId } = await getCodexAccessToken();
+  const { accessToken, accountId } = await getCodexAccessToken("chatgpt");
   assert.equal(accessToken, newAccess);
   assert.equal(accountId, "acct-2");
   assert.equal(calledWith?.get("grant_type"), "refresh_token");
@@ -61,12 +61,21 @@ test("getCodexAccessToken refreshes an expiring token and persists the rotation"
 });
 
 test("getCodexAccessToken throws a helpful message when not logged in", async () => {
-  await codexLogout();
-  await assert.rejects(getCodexAccessToken(), /Not logged in to Codex/);
+  await codexLogout("chatgpt");
+  await assert.rejects(getCodexAccessToken("chatgpt"), /not signed in to ChatGPT/);
 });
 
 test("loadCodexCredential returns null after logout", async () => {
   writeAuth({ access: "acc", refresh: "ref", expires: Date.now() + 3_600_000, accountId: "acct-1" });
-  await codexLogout();
-  assert.equal(await loadCodexCredential(), null);
+  await codexLogout("chatgpt");
+  assert.equal(await loadCodexCredential("chatgpt"), null);
+});
+
+test("two ChatGPT providers hold two sign-ins: signing one out leaves the other", async () => {
+  writeAuth({ access: "a", refresh: "r", expires: Date.now() + 3_600_000, accountId: "acct-perso" });
+  writeFileSync(join(MY_CLAW_DIR, "accounts", "chatgpt-work.json"), JSON.stringify({ access: "b", refresh: "s", expires: Date.now() + 3_600_000, accountId: "acct-work" }));
+  assert.equal((await getCodexAccessToken("chatgpt-work")).accountId, "acct-work");
+  await codexLogout("chatgpt-work");
+  assert.equal(await loadCodexCredential("chatgpt-work"), null);
+  assert.equal((await getCodexAccessToken("chatgpt")).accountId, "acct-perso");
 });

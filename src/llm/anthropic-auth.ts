@@ -46,6 +46,8 @@ export async function anthropicAuthHeaders(
     }
     return { "x-api-key": credential.apiKey };
   }
-  const token = await loadClaudeToken();
+  // The subscription: each Claude provider holds its own sign-in (accounts-store.ts).
+  if (!provider) return null;
+  const token = await loadClaudeToken(provider);
   return token ? { authorization: `Bearer ${token}` } : null;
 }

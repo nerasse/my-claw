@@ -756,7 +756,7 @@ async function runAnthropic(
     if (signal?.aborted) throw new AbortedError();
     // Inside the loop, not above it: a subscription token can be refreshed between two attempts.
     const auth = await anthropicAuthHeaders({ apiKey: config.apiKey, apiKeyEnv: config.apiKeyEnv }, config.provider);
-    if (!auth) throw new Error("No Claude subscription token. Run /claude login to mint one.");
+    if (!auth) throw new Error(`Provider "${config.provider ?? "anthropic"}" is not signed in to Claude. Sign in from Settings → Models.`);
 
     const controller = new AbortController();
     let timedOut = false;

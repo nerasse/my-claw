@@ -124,7 +124,7 @@ test("a stale anthropic pin falls back to the default model, and the engine foll
 
   // The Claude subscription is not connected: the pin cannot run, the global default (mimo, an
   // openai-compatible model) can.
-  setAvailabilityWorld(() => ({ ...PERMISSIVE_WORLD, claudeAuth: false }));
+  setAvailabilityWorld(() => ({ ...PERMISSIVE_WORLD, signedIn: (p: string) => p !== "anthropic" }));
   try {
     assert.equal(await dispatcher.handleMessage(msg("m1"), session("s1")), "home");
     assert.deepEqual(calls, ["home"]);
@@ -190,7 +190,7 @@ test("a fallback is announced once per run, whatever resolves inside it", async 
   } as unknown as AgentBridge;
   const dispatcher = new BackendDispatcher(pinned, new ToolRegistry(), new SkillRegistry(), undefined, undefined, { home });
 
-  setAvailabilityWorld(() => ({ ...PERMISSIVE_WORLD, claudeAuth: false }));
+  setAvailabilityWorld(() => ({ ...PERMISSIVE_WORLD, signedIn: (p: string) => p !== "anthropic" }));
   try {
     await dispatcher.handleMessage(msg("m-once"), session("s-once"));
     assert.equal(events.length, 1);

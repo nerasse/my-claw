@@ -33,8 +33,7 @@ function world(overrides: Partial<AvailabilityWorld> = {}): AvailabilityWorld {
     answered: () => false,
     listedBy: () => new Set(),
     hasEnv: () => true,
-    claudeAuth: true,
-    codexAuth: true,
+    signedIn: () => true,
     ...overrides,
   };
 }

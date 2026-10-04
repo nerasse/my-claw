@@ -328,8 +328,8 @@ const CODEX_MODEL_DENYLIST = new Set(["codex-auto-review"]);
  * display name, vision support and per-model reasoning levels. Requires a valid OAuth token;
  * before `codex login` this throws and the catalog keeps its curated set.
  */
-async function fetchCodexModels(baseUrl: string): Promise<CodexDiscoveredModel[]> {
-  const { accessToken, accountId } = await getCodexAccessToken();
+async function fetchCodexModels(provider: string, baseUrl: string): Promise<CodexDiscoveredModel[]> {
+  const { accessToken, accountId } = await getCodexAccessToken(provider);
   const url = `${(baseUrl || CODEX_BASE_URL).replace(/\/+$/, "")}/codex/models?client_version=1.0.0`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DISCOVER_TIMEOUT_MS);
@@ -505,7 +505,7 @@ export class ModelCatalog {
           }
           next.push(...versioned);
         } else if (provider.type === "codex") {
-          const models = await fetchCodexModels(provider.baseUrl ?? "");
+          const models = await fetchCodexModels(name, provider.baseUrl ?? "");
           for (const m of models) {
             next.push(discoveredModel({
               id: m.id,

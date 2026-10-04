@@ -4,6 +4,9 @@ import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows, appl
 import { openRouterModels, clearOpenRouterCache } from "../../src/llm/openrouter-endpoints.ts";
 import type { EffortLevel, LlmConfig, LlmModelConfig } from "../../src/core/config.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { MY_CLAW_DIR } from "../../src/core/config.ts";
 
 // The catalog is fully dynamic (no disk cache): each ModelCatalog starts empty and is populated
 // by its own discovery, so tests no longer inherit each other's state through a shared file.
@@ -304,14 +307,14 @@ function anthropicAwareFetch(opts: { versions?: unknown[]; versionsFail?: boolea
   };
 }
 
-/** The anthropic provider only lists when a subscription token is present. */
+/** The anthropic provider only lists when it is signed in: its own account file. */
 function withClaudeToken(): { restore(): void } {
-  const original = process.env["CLAUDE_CODE_OAUTH_TOKEN"];
-  process.env["CLAUDE_CODE_OAUTH_TOKEN"] = "tok";
+  const file = join(MY_CLAW_DIR, "accounts", "anthropic.json");
+  mkdirSync(join(MY_CLAW_DIR, "accounts"), { recursive: true });
+  writeFileSync(file, JSON.stringify({ token: "tok" }));
   return {
     restore() {
-      if (original === undefined) delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
-      else process.env["CLAUDE_CODE_OAUTH_TOKEN"] = original;
+      rmSync(file, { force: true });
     },
   };
 }

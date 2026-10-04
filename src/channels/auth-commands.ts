@@ -13,13 +13,15 @@ import {
 // adapter's send), used by the Codex device-code flow to report success/failure minutes later.
 export interface AuthCommandParams {
   provider: "codex" | "claude";
+  /** The provider key the command acts on: the first account of that kind (docs/subscription-accounts.md). */
+  account: string;
   args: string;
   isDm: boolean;
   postFollowUp: (text: string) => void;
   // Called after a successful login/logout (or Claude set-token) so the host can ensure the
   // provider exists and re-run model discovery — otherwise the provider's models only appear
   // in /model after a restart or the next 6h refresh.
-  onAuthChanged?: (provider: "codex" | "claude") => void | Promise<void>;
+  onAuthChanged?: (account: string) => void | Promise<void>;
 }
 
 function errMsg(err: unknown): string {
@@ -37,32 +39,33 @@ export async function handleAuthCommand(p: AuthCommandParams): Promise<string> {
 async function handleCodex(sub: string, p: AuthCommandParams): Promise<string> {
   switch (sub) {
     case "status": {
-      const cred = await loadCodexCredential();
+      const cred = await loadCodexCredential(p.account);
       if (!cred) return "Codex : non connecté. Utilise `/codex login` (en privé) pour te connecter.";
       const mins = Math.round((cred.expires - Date.now()) / 60000);
       return `Codex : connecté (compte ${cred.accountId}). Token ${mins > 0 ? `valide ~${mins} min` : "expiré (rafraîchi au prochain appel)"}.`;
     }
     case "logout":
       if (!p.isDm) return DM_ONLY;
-      await codexLogout();
-      await p.onAuthChanged?.("codex");
+      await codexLogout(p.account);
+      await p.onAuthChanged?.(p.account);
       return "Codex : déconnecté.";
     case "login":
       if (!p.isDm) return DM_ONLY;
-      return startCodexLogin(p.postFollowUp, () => p.onAuthChanged?.("codex"));
+      return startCodexLogin(p.account, p.postFollowUp, () => p.onAuthChanged?.(p.account));
     default:
       return "Usage : `/codex login` | `/codex status` | `/codex logout`";
   }
 }
 
 async function startCodexLogin(
+  account: string,
   postFollowUp: (text: string) => void,
   onChanged?: () => void | Promise<void>,
 ): Promise<string> {
   try {
     let prompted = false;
     const prompt = await new Promise<DeviceCodePrompt>((resolve, reject) => {
-      codexLoginDeviceCode((pr) => {
+      codexLoginDeviceCode(account, (pr) => {
         prompted = true;
         resolve(pr);
       })
@@ -95,7 +98,7 @@ async function startCodexLogin(
 async function handleClaude(sub: string, parts: string[], p: AuthCommandParams): Promise<string> {
   switch (sub) {
     case "status": {
-      const st = await claudeTokenStatus();
+      const st = await claudeTokenStatus(p.account);
       if (!st.present) return "Claude : non connecté. Voir `/claude login`.";
       if (st.source !== "oauth") return `Claude : connecté (source ${st.source}, ${st.masked}).`;
       const life =
@@ -110,18 +113,18 @@ async function handleClaude(sub: string, parts: string[], p: AuthCommandParams):
       if (!p.isDm) return DM_ONLY;
       const token = parts.slice(1).join(" ").trim();
       if (!token) return "Usage : `/claude set-token <token>` (génère-le avec `claude setup-token`).";
-      await setClaudeToken(token);
-      await p.onAuthChanged?.("claude");
+      await setClaudeToken(p.account, token);
+      await p.onAuthChanged?.(p.account);
       return "Claude : token enregistré (modèles dans /model). Pense à supprimer le message contenant le token.";
     }
     case "logout":
       if (!p.isDm) return DM_ONLY;
-      await clearClaudeToken();
-      await p.onAuthChanged?.("claude");
+      await clearClaudeToken(p.account);
+      await p.onAuthChanged?.(p.account);
       return "Claude : token supprimé.";
     case "login": {
       if (!p.isDm) return DM_ONLY;
-      const { url } = claudeLoginStart();
+      const { url } = claudeLoginStart(p.account);
       return [
         "Connexion Claude (abonnement) :",
         `1. Ouvre ${url}`,
@@ -135,15 +138,15 @@ async function handleClaude(sub: string, parts: string[], p: AuthCommandParams):
       const code = parts.slice(1).join(" ").trim();
       if (!code) return "Usage : `/claude code <code>` (le code affiché après `/claude login`).";
       try {
-        const { expiresInMin } = await claudeLoginComplete(code);
-        await p.onAuthChanged?.("claude");
+        const { expiresInMin } = await claudeLoginComplete(p.account, code);
+        await p.onAuthChanged?.(p.account);
         return `Claude : connecté en OAuth (token valide ~${expiresInMin} min, rafraîchi automatiquement). Les modèles sont dans /model. Supprime le message contenant le code.`;
       } catch (err) {
         return `Claude : échec de la connexion (${errMsg(err)}).`;
       }
     }
     default: {
-      const next = claudeLoginPending() ? " — login en cours, renvoie le code avec `/claude code <code>`" : "";
+      const next = claudeLoginPending(p.account) ? " — login en cours, renvoie le code avec `/claude code <code>`" : "";
       return `Usage : \`/claude login\` | \`/claude code <code>\` | \`/claude set-token <token>\` | \`/claude status\` | \`/claude logout\`${next}`;
     }
   }

@@ -1725,35 +1725,37 @@ describe("MyClawAppAdapter", () => {
 
   test("accounts: a token that is not Claude's is refused before it is stored; a failure never echoes the secret", async () => {
     const calls: string[] = [];
-    const state = { codex: { connected: false }, claude: { connected: false } };
+    const state = { accounts: [], codex: { connected: false }, claude: { connected: false } };
     adapter.onAccountsController({
       status: async () => state,
       login: async () => state,
       cancel: async () => state,
-      code: async (code) => {
+      add: async () => ({ ...state, added: "x" }),
+      rename: async () => state,
+      code: async (_provider, code) => {
         calls.push(`code ${code}`);
         throw new Error("Claude OAuth request failed (400)");
       },
-      token: async (token) => {
+      token: async (_provider, token) => {
         calls.push(`token ${token}`);
         return { ...state, claude: { connected: true, source: "token" } };
       },
       logout: async () => state,
     });
 
-    client.ws.send(JSON.stringify({ type: "accounts.token", token: "sk-proj-an-openai-api-key" }));
+    client.ws.send(JSON.stringify({ type: "accounts.token", provider: "anthropic", token: "sk-proj-an-openai-api-key" }));
     const refused = (await nextFrame(client)) as { type: string; scope: string; message: string };
     assert.equal(refused.scope, "accounts");
     assert.match(refused.message, /sk-ant-oat/);
     assert.deepEqual(calls, []);
 
     const token = `sk-ant-oat01-${"z".repeat(40)}`;
-    client.ws.send(JSON.stringify({ type: "accounts.token", token }));
+    client.ws.send(JSON.stringify({ type: "accounts.token", provider: "anthropic", token }));
     const stored = (await nextFrame(client)) as { type: string; claude: { connected: boolean } };
     assert.equal(stored.type, "accounts.result");
     assert.equal(stored.claude.connected, true);
 
-    client.ws.send(JSON.stringify({ type: "accounts.code", code: "secret-code#state" }));
+    client.ws.send(JSON.stringify({ type: "accounts.code", provider: "anthropic", code: "secret-code#state" }));
     const failed = (await nextFrame(client)) as { type: string; scope: string; message: string };
     assert.equal(failed.scope, "accounts");
     assert.equal(failed.message, "Claude OAuth request failed (400)");
@@ -2917,8 +2919,9 @@ describe("a mutation reaches every window of the owner", () => {
       delete: async () => ({ type: "tags.result", tags: [] }),
     });
     adapter.onToolsController({
-      list: () => ({ tools: [{ name: "bash", description: "Run", source: "built-in", disabled: false }], missing: [] }),
-      toggle: async (name, disabled) => ({ tools: [{ name, description: "Run", source: "built-in", disabled }], missing: [] }),
+      list: () => ({ tools: [{ name: "bash", description: "Run", source: "built-in", disabled: false, confirm: false }], missing: [] }),
+      toggle: async (name, disabled) => ({ tools: [{ name, description: "Run", source: "built-in", disabled, confirm: false }], missing: [] }),
+      confirm: async (name, confirm) => ({ tools: [{ name, description: "Run", source: "built-in", disabled: false, confirm }], missing: [] }),
     });
     let mode: "cloud" | "local" | "auto" = "auto";
     adapter.onVoiceController({
@@ -3850,11 +3853,11 @@ describe("tools frames", () => {
   let client: WsClient;
   let store: FakeSessionStore;
   const TOOLS: MyClawAppToolEntry[] = [
-    { name: "read", description: "Read a file", source: "built-in", disabled: false },
-    { name: "bash", description: "Run a command", source: "built-in", disabled: true },
-    { name: "my_weather", description: "Forecast for a city", source: "plugin", disabled: false },
-    { name: "mcp__mailcow__get_status", description: "Mail server status", source: "mcp", server: "mailcow", disabled: false },
-    { name: "mcp__mailcow__send_mail", description: "Send a mail", source: "mcp", server: "mailcow", disabled: false },
+    { name: "read", description: "Read a file", source: "built-in", disabled: false, confirm: false },
+    { name: "bash", description: "Run a command", source: "built-in", disabled: true, confirm: false },
+    { name: "my_weather", description: "Forecast for a city", source: "plugin", disabled: false, confirm: false },
+    { name: "mcp__mailcow__get_status", description: "Mail server status", source: "mcp", server: "mailcow", disabled: false, confirm: false },
+    { name: "mcp__mailcow__send_mail", description: "Send a mail", source: "mcp", server: "mailcow", disabled: false, confirm: false },
   ];
 
   beforeEach(async () => {
@@ -3864,6 +3867,10 @@ describe("tools frames", () => {
       list: () => ({ tools: TOOLS, missing: [] }),
       toggle: async (name, disabled) => ({
         tools: TOOLS.map((t) => (t.name === name ? { ...t, disabled } : t)),
+        missing: [],
+      }),
+      confirm: async (name, confirm) => ({
+        tools: TOOLS.map((t) => (t.name === name ? { ...t, confirm } : t)),
         missing: [],
       }),
     });
@@ -3882,9 +3889,9 @@ describe("tools frames", () => {
     assert.equal(frame["type"], "tools.list.result");
     const tools = frame["tools"] as Array<Record<string, unknown>>;
     assert.equal(tools.length, TOOLS.length);
-    assert.deepEqual(tools[0], { name: "read", description: "Read a file", source: "built-in", disabled: false });
-    assert.deepEqual(tools[1], { name: "bash", description: "Run a command", source: "built-in", disabled: true });
-    assert.deepEqual(tools[2], { name: "my_weather", description: "Forecast for a city", source: "plugin", disabled: false });
+    assert.deepEqual(tools[0], { name: "read", description: "Read a file", source: "built-in", disabled: false, confirm: false });
+    assert.deepEqual(tools[1], { name: "bash", description: "Run a command", source: "built-in", disabled: true, confirm: false });
+    assert.deepEqual(tools[2], { name: "my_weather", description: "Forecast for a city", source: "plugin", disabled: false, confirm: false });
     assert.equal(tools[3]?.["server"], "mailcow");
   });
 
@@ -3895,6 +3902,14 @@ describe("tools frames", () => {
     const bash = (frame["tools"] as Array<Record<string, unknown>>).find((t) => t["name"] === "bash");
     assert.equal(bash?.["disabled"], false);
     assert.deepEqual(frame["missing"], []);
+  });
+
+  test("tools.confirm forwards name and confirm and answers with the fresh catalog", async () => {
+    client.ws.send(JSON.stringify({ type: "tools.confirm", name: "bash", confirm: true }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "tools.list.result");
+    const bash = (frame["tools"] as Array<Record<string, unknown>>).find((t) => t["name"] === "bash");
+    assert.equal(bash?.["confirm"], true);
   });
 
   test("tools.list without a controller answers an error instead of hanging", async () => {
@@ -3920,6 +3935,9 @@ describe("tools frames", () => {
         throw new Error("registry down");
       },
       toggle: async () => {
+        throw new Error("registry down");
+      },
+      confirm: async () => {
         throw new Error("registry down");
       },
     });

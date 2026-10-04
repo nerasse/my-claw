@@ -64,6 +64,7 @@ import type {
   MyClawAppTagsDelete,
   MyClawAppTagsUpsert,
   MyClawAppToolsToggle,
+  MyClawAppToolsConfirm,
   MyClawAppWorkspacesAdd,
   MyClawAppWorkspacesRemove,
   MyClawAppWorkspacesRename,
@@ -227,21 +228,37 @@ export async function handleAccounts(
     await d.refuse(ws, "accounts", "That is not a Claude token: it starts with sk-ant-oat (from claude setup-token).");
     return;
   }
+  if (frame.type === "accounts.add" && ((frame.kind !== "codex" && frame.kind !== "claude") || typeof frame.name !== "string")) {
+    await d.refuse(ws, "accounts", "An account is a ChatGPT or a Claude plan, with a name.");
+    return;
+  }
+  if (frame.type !== "accounts.add" && typeof frame.provider !== "string") {
+    await d.refuse(ws, "accounts", "Which account? Update the app.");
+    return;
+  }
   if (frame.type === "accounts.code" && !frame.code.trim()) {
     await d.refuse(ws, "accounts", "Paste the code Claude showed you.");
     return;
   }
   try {
-    const state =
-      frame.type === "accounts.login"
-        ? await accounts.login(frame.provider)
-        : frame.type === "accounts.cancel"
-          ? await accounts.cancel(frame.provider)
-          : frame.type === "accounts.logout"
-            ? await accounts.logout(frame.provider)
-            : frame.type === "accounts.code"
-              ? await accounts.code(frame.code)
-              : await accounts.token(frame.token);
+    const state = await (() => {
+      switch (frame.type) {
+        case "accounts.login":
+          return accounts.login(frame.provider);
+        case "accounts.cancel":
+          return accounts.cancel(frame.provider);
+        case "accounts.logout":
+          return accounts.logout(frame.provider);
+        case "accounts.code":
+          return accounts.code(frame.provider, frame.code);
+        case "accounts.token":
+          return accounts.token(frame.provider, frame.token);
+        case "accounts.add":
+          return accounts.add(frame.kind, frame.name);
+        case "accounts.rename":
+          return accounts.rename(frame.provider, frame.name);
+      }
+    })();
     d.broadcastFrame(ws.data.owner, { type: "accounts.result", ...state });
   } catch (err) {
     // Never the frame itself: a code or a token rides in it.
@@ -863,6 +880,26 @@ export async function handleToolsToggle(
     d.broadcastFrame(ws.data.owner, { type: "tools.list.result", ...(await d.tools.toggle(frame.name, frame.disabled)) });
   } catch (err) {
     await d.refuse(ws, "tools", "tools.toggle failed", { name: frame.name, error: String(err) });
+  }
+}
+
+export async function handleToolsConfirm(
+  d: MyClawAppSettingsDeps,
+  ws: ServerWebSocket<MyClawAppSessionData>,
+  frame: MyClawAppToolsConfirm,
+): Promise<void> {
+  if (!d.tools) {
+    await d.refuse(ws, "tools", "tool catalog unavailable");
+    return;
+  }
+  if (!frame.name || typeof frame.confirm !== "boolean") {
+    await d.refuse(ws, "tools", "invalid tool", { name: frame.name });
+    return;
+  }
+  try {
+    d.broadcastFrame(ws.data.owner, { type: "tools.list.result", ...(await d.tools.confirm(frame.name, frame.confirm)) });
+  } catch (err) {
+    await d.refuse(ws, "tools", "tools.confirm failed", { name: frame.name, error: String(err) });
   }
 }
 

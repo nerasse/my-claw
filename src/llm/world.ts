@@ -13,8 +13,7 @@ export const PERMISSIVE_WORLD: AvailabilityWorld = {
   // provider unrunnable, which is the opposite of permissive and would silently move a run onto
   // another model. The real environment is read by the world boot installs.
   hasEnv: () => true,
-  claudeAuth: true,
-  codexAuth: true,
+  signedIn: () => true,
 };
 
 let current: () => AvailabilityWorld = () => PERMISSIVE_WORLD;

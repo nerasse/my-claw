@@ -245,6 +245,8 @@ export interface MyClawAppToolsController {
   list(): { tools: MyClawAppToolEntry[]; missing: string[] };
   /** Toggles the global tools.disabled denylist; returns the fresh catalog. */
   toggle(name: string, disabled: boolean): Promise<{ tools: MyClawAppToolEntry[]; missing: string[] }>;
+  /** Asks before each run of a tool, or stops asking; returns the fresh catalog. */
+  confirm(name: string, confirm: boolean): Promise<{ tools: MyClawAppToolEntry[]; missing: string[] }>;
 }
 
 /** The raw config.json, for the one surface with no structured editor. */
