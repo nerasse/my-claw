@@ -1,6 +1,6 @@
 import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
-import { compactSession, planCompaction, summaryBodyOf, tailBudgetFor } from "../src/sessions/compaction.ts";
+import { compactSession, planCompaction, summaryBodyOf, retainedBudgetFor } from "../src/sessions/compaction.ts";
 import { type LegacySessionData, type SessionMessage } from "../src/sessions/store.ts";
 import { deleteSession } from "../src/sessions/store.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
@@ -562,7 +562,7 @@ test("a stopped compaction leaves its trace, and no boundary", async () => {
   await log.flush();
 
   // The plan the pass will be holding when it is aborted: same log, so same middle.
-  const planned = planCompaction(log, tailBudgetFor(makeConfig(), session));
+  const planned = planCompaction(log, retainedBudgetFor(makeConfig(), session));
   assert.equal(planned.ok, true);
   const expectedKept = planned.ok ? planned.plan.middle.length : -1;
 
@@ -631,7 +631,7 @@ test("a stopped pass never moves the boundary: the prompt is exactly what it was
   appendMessages(log, makeMessages(20).map((message) => ({ ...message, content: `${message.content} again` })));
   await log.flush();
 
-  const planned = planCompaction(log, tailBudgetFor(makeConfig(), session));
+  const planned = planCompaction(log, retainedBudgetFor(makeConfig(), session));
   assert.equal(planned.ok, true, "the second pass has something to fold");
   const promptBefore = promptOf(log.entries(), log.leaf());
 
@@ -665,7 +665,7 @@ test("a stopped pass never moves the boundary: the prompt is exactly what it was
  * A session's ceilings -- its Context choice, a tag route's cap -- are the gate's brakes: they
  * decide *when* a run compacts. They never decide how much verbatim survives one: this automatic
  * pass sizes its tail on the model's declared window, whole, exactly as `/compact` does. One
- * policy, one function (`tailBudgetFor`); the command's file pins the same side, the gate's is
+ * policy, one function (`retainedBudgetFor`); the command's file pins the same side, the gate's is
  * pinned by `tests/agent/bridge-context.test.ts`.
  */
 function declaredWindowConfig(over?: Partial<MyClawConfig>): MyClawConfig {
@@ -694,20 +694,20 @@ test("the automatic tail ignores the session's context override", () => {
   const config = declaredWindowConfig();
   const session = sessionMeta();
   session.modelOverride = "big-model";
-  session.contextOverride = 200_000;
+  session.contextOverride = 30_000;
 
-  // 0.12 x 0.8 x 1 000 000 = 96000, over the 64 000 ceiling. A capped reading would take the
-  // 200 000 override down to the 20 000 floor.
-  assert.equal(tailBudgetFor(config, session), 64_000);
+  // The declared 1M window leaves the full 20 000 budget; a capped reading would halve a 30 000
+  // window's threshold, under 12 000.
+  assert.equal(retainedBudgetFor(config, session), 20_000);
 
   session.contextOverride = "full";
-  assert.equal(tailBudgetFor(config, session), 64_000);
+  assert.equal(retainedBudgetFor(config, session), 20_000);
 });
 
 test("the automatic tail ignores a tag's contextCap", () => {
-  const config = declaredWindowConfig({ tags: { cheap: { model: "big-model", contextCap: 200_000 } } });
+  const config = declaredWindowConfig({ tags: { cheap: { model: "big-model", contextCap: 30_000 } } });
   const session = sessionMeta();
   session.modelOverride = "tag:cheap";
 
-  assert.equal(tailBudgetFor(config, session), 64_000);
+  assert.equal(retainedBudgetFor(config, session), 20_000);
 });

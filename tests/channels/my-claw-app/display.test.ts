@@ -435,6 +435,17 @@ describe("displayOf: what is shown and never sent", () => {
     expect(show(entries)[0]).toMatchObject({ role: "user", summaryOf: 12, compactionMs: 84_500 });
   });
 
+  test("a boundary replayed from history carries what it archived, and an empty archive carries nothing", () => {
+    const archived = chain([
+      { type: "compaction", prompt: true, summary: "resume", firstKeptEntryId: "x", tokensBefore: 900, count: 12, archive: "### Runner\n- released" },
+    ]);
+    expect(show(archived)[0]).toMatchObject({ summaryOf: 12, archive: "### Runner\n- released" });
+    const empty = chain([
+      { type: "compaction", prompt: true, summary: "resume", firstKeptEntryId: "x", tokensBefore: 900, count: 12, archive: "" },
+    ]);
+    expect("archive" in (show(empty)[0] as object)).toBe(false);
+  });
+
   test("a boundary nobody timed shows no span rather than a zero", () => {
     const entries = chain([
       { type: "compaction", prompt: true, summary: "resume", firstKeptEntryId: "x", tokensBefore: 900, count: 12 },

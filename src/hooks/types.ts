@@ -259,6 +259,8 @@ export interface HookEventMap {
     entryId: string;
     summary: string;
     count: number;
+    /** What the boundary archived, when it archived something. */
+    archive?: string;
   };
   /**
    * A `/compact` the owner typed is over, whichever engine answered it. The three events above

@@ -1104,7 +1104,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
    * device that already has it from a history load does not draw it twice. No notification and no
    * ring ride along: an automatic compaction is not an event the owner has to be told about.
    */
-  notifyCompaction(sessionId: string, boundary: { id: string; summary: string; count: number }): void {
+  notifyCompaction(sessionId: string, boundary: { id: string; summary: string; count: number; archive?: string }): void {
     const match = APP_THREAD_SESSION.exec(sessionId);
     if (!match) return;
     const owner = match[1]!;
@@ -1115,6 +1115,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       id: boundary.id,
       summary: boundary.summary,
       count: boundary.count,
+      ...(boundary.archive ? { archive: boundary.archive } : {}),
       ts: new Date().toISOString(),
     });
   }

@@ -22,17 +22,18 @@ import {
   entriesPromptTokens,
   planCompaction,
   summarizeForCompaction,
-  tailBudgetFor,
-  TAIL_BUDGET_TOKENS,
+  retainedBudgetFor,
   type CompactionPlan,
   type CompactionResult,
 } from "./compaction.ts";
 import type { SessionData } from "./store.ts";
 import { isAbort } from "../core/aborted.ts";
+import { indexCompactionArchive } from "../conversations/store.ts";
 
 interface Armed {
   plan: CompactionPlan;
   summary: string;
+  archive: string;
   elapsedMs: number;
 }
 
@@ -118,8 +119,8 @@ function lastCompactionId(entries: readonly Entry[]): string | undefined {
  */
 function stillValid(plan: CompactionPlan, entries: readonly Entry[], leafId: string | null, tailBudget: number): boolean {
   const path = pathOf(entries, leafId).filter((entry) => entry.prompt);
-  const keptAt = path.findIndex((entry) => entry.id === plan.firstKeptEntryId);
-  if (keptAt < 0) return false;
+  // A plan that keeps nothing names no entry: what was added since is kept at commit instead.
+  if (plan.firstKeptEntryId !== undefined && !path.some((entry) => entry.id === plan.firstKeptEntryId)) return false;
 
   const plannedLastCompaction = lastCompactionId(plan.entries);
   const currentLastCompaction = lastCompactionId(path);
@@ -147,7 +148,7 @@ export function startSpeculation(config: MyClawConfig, session: SessionData): vo
   const done = (async () => {
     try {
       const sessionLog = await sessionLogOf(sessionId);
-      const planned = planCompaction(sessionLog, tailBudgetFor(config, session));
+      const planned = planCompaction(sessionLog, retainedBudgetFor(config, session));
       if (!planned.ok) {
         void logLine("debug", "speculative compaction not planned", { sessionId, reason: planned.reason });
         return;
@@ -167,7 +168,7 @@ export function startSpeculation(config: MyClawConfig, session: SessionData): vo
       // The controller is aborted by `cancelSpeculation`, which also clears the map: arming here
       // would resurrect a summary a manual compaction has already superseded.
       if (controller.signal.aborted) return;
-      armed.set(sessionId, { plan: planned.plan, summary: summarized.summary, elapsedMs: summarized.elapsedMs });
+      armed.set(sessionId, { plan: planned.plan, summary: summarized.summary, archive: summarized.archive, elapsedMs: summarized.elapsedMs });
       void logLine("info", "speculative compaction armed", {
         sessionId,
         covered: planned.plan.middle.length,
@@ -197,12 +198,13 @@ export async function claimSpeculation(config: MyClawConfig, session: SessionDat
 
   const sessionLog = await sessionLogOf(session.id);
   const before = pathOf(sessionLog.entries(), sessionLog.leaf()).filter((e) => e.prompt).length;
-  if (!stillValid(entry.plan, sessionLog.entries(), sessionLog.leaf(), tailBudgetFor(config, session))) {
+  if (!stillValid(entry.plan, sessionLog.entries(), sessionLog.leaf(), retainedBudgetFor(config, session))) {
     void logLine("info", "speculative compaction discarded, the branch moved", { sessionId: session.id });
     return undefined;
   }
 
-  const boundary = await commitCompaction(sessionLog, entry.plan, entry.summary, entry.elapsedMs);
+  const boundary = await commitCompaction(sessionLog, entry.plan, entry.summary, entry.archive, entry.elapsedMs);
+  indexCompactionArchive(session, boundary);
   session.lastActiveAt = new Date().toISOString();
   const afterCount = contextEntries(sessionLog.entries(), sessionLog.leaf()).length;
   void logLine("info", "speculative compaction claimed", { sessionId: session.id, beforeCount: before, afterCount });
@@ -211,6 +213,7 @@ export async function claimSpeculation(config: MyClawConfig, session: SessionDat
     beforeCount: before,
     afterCount,
     summary: entry.summary,
+    ...(boundary.archive ? { archive: boundary.archive } : {}),
     boundary: { entryId: boundary.id, count: boundary.count, compactionMs: entry.elapsedMs },
   };
 }

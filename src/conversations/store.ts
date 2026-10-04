@@ -132,6 +132,22 @@ function getDb(): Database {
 
     CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts
       USING fts5(content, tokenize='unicode61 remove_diacritics 2');
+
+    CREATE TABLE IF NOT EXISTS compaction_archives (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      entry_id    TEXT NOT NULL UNIQUE,
+      session_id  TEXT NOT NULL,
+      platform    TEXT NOT NULL,
+      chat_id     TEXT,
+      thread_id   TEXT,
+      agent_type  TEXT,
+      content     TEXT NOT NULL,
+      occurred_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_compaction_archives_session
+      ON compaction_archives(session_id, occurred_at);
+    CREATE VIRTUAL TABLE IF NOT EXISTS compaction_archives_fts
+      USING fts5(content, tokenize='unicode61 remove_diacritics 2');
   `);
   return db;
 }
@@ -657,4 +673,137 @@ export function closeConversationArchive(): void {
   if (!db) return;
   db.close();
   db = null;
+}
+
+/**
+ * What a compaction archived, searchable -- docs/conversation-search.md.
+ *
+ * The boundary in the session log is the record (`CompactionEntry.archive`); this is its index, the
+ * way `messages` indexes the turns. A table of its own rather than a new `source_kind` of
+ * `messages`: an archive block is not a turn, it has no role, and the `CHECK` constraint of an
+ * existing database cannot be widened in place.
+ */
+export interface ArchiveHit {
+  id: string;
+  sessionId: string;
+  platform: string;
+  chatId?: string;
+  threadId?: string;
+  agentType?: string;
+  timestamp: string;
+  snippet: string;
+  score: number;
+}
+
+export interface ArchiveBlock {
+  id: string;
+  sessionId: string;
+  platform: string;
+  chatId?: string;
+  threadId?: string;
+  agentType?: string;
+  timestamp: string;
+  content: string;
+}
+
+type ArchiveRow = {
+  id: number;
+  session_id: string;
+  platform: string;
+  chat_id: string | null;
+  thread_id: string | null;
+  agent_type: string | null;
+  occurred_at: string;
+  content: string;
+  bm25?: number;
+};
+
+function archiveFromRow(row: ArchiveRow): ArchiveBlock {
+  return {
+    id: `a_${row.id}`,
+    sessionId: row.session_id,
+    platform: row.platform,
+    ...(row.chat_id ? { chatId: row.chat_id } : {}),
+    ...(row.thread_id ? { threadId: row.thread_id } : {}),
+    ...(row.agent_type ? { agentType: row.agent_type } : {}),
+    timestamp: row.occurred_at,
+    content: row.content,
+  };
+}
+
+/** Indexes a boundary's archive. Idempotent on the entry id; an empty archive is not indexed. */
+export function indexCompactionArchive(session: SessionData, entry: { id: string; ts: number; archive?: string }): void {
+  if (!entry.archive?.trim()) return;
+  try {
+    const d = getDb();
+    if (d.prepare("SELECT 1 FROM compaction_archives WHERE entry_id = ?").get(entry.id)) return;
+    const address = sessionAddress(session);
+    const result = d
+      .prepare(
+        `INSERT INTO compaction_archives (entry_id, session_id, platform, chat_id, thread_id, agent_type, content, occurred_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        entry.id,
+        session.id,
+        address.platform,
+        address.chatId ?? null,
+        address.threadId ?? null,
+        session.meta?.type ?? (session.platform === "cron" ? "cron" : "main"),
+        entry.archive,
+        new Date(entry.ts).toISOString(),
+      );
+    d.prepare("INSERT INTO compaction_archives_fts(rowid, content) VALUES (?, ?)").run(Number(result.lastInsertRowid), entry.archive);
+  } catch (error) {
+    void log("warn", "compaction archive index write failed", { sessionId: session.id, error: String(error) });
+  }
+}
+
+export function searchCompactionArchives(options: ConversationSearchOptions): ArchiveHit[] {
+  const match = toFtsQuery(options.query);
+  if (!match) return [];
+  const limit = Math.max(1, Math.min(options.limit ?? 10, 20));
+  const where = ["compaction_archives_fts MATCH ?"];
+  const params: Array<string | number> = [match];
+  if (options.platform) {
+    where.push("a.platform = ?");
+    params.push(options.platform);
+  }
+  if (options.chatId) {
+    where.push("a.chat_id = ?");
+    params.push(options.chatId);
+  }
+  if (options.from) {
+    where.push("a.occurred_at >= ?");
+    params.push(normalizeTimestamp(options.from));
+  }
+  if (options.to) {
+    where.push("a.occurred_at <= ?");
+    params.push(normalizeTimestamp(options.to));
+  }
+  const rows = getDb()
+    .prepare(
+      `SELECT a.id, a.session_id, a.platform, a.chat_id, a.thread_id, a.agent_type, a.occurred_at, a.content,
+              bm25(compaction_archives_fts) AS bm25
+       FROM compaction_archives_fts
+       JOIN compaction_archives a ON a.id = compaction_archives_fts.rowid
+       WHERE ${where.join(" AND ")}
+       ORDER BY bm25 ASC, a.occurred_at DESC
+       LIMIT ?`,
+    )
+    .all(...params, limit) as ArchiveRow[];
+  return rows.map((row) => {
+    const { content: _content, ...block } = archiveFromRow(row);
+    return { ...block, snippet: makeSnippet(row.content, options.query), score: Math.max(0, -(row.bm25 ?? 0)) };
+  });
+}
+
+/** One archive block, whole. */
+export function readCompactionArchive(hitId: string): ArchiveBlock | null {
+  const match = /^a_(\d+)$/.exec(hitId.trim());
+  if (!match) return null;
+  const row = getDb()
+    .prepare("SELECT id, session_id, platform, chat_id, thread_id, agent_type, occurred_at, content FROM compaction_archives WHERE id = ?")
+    .get(Number(match[1])) as ArchiveRow | null;
+  return row ? archiveFromRow(row) : null;
 }

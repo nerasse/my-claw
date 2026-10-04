@@ -98,8 +98,11 @@ export function messagesOf(context: readonly Entry[]): ChatMessage[] {
     }
 
     if (entry.type === "compaction") {
-      // A user turn, because that is the role the summary has to arrive in for the model to treat
-      // it as context rather than as its own prior words.
+      // The owner's recent words first, then the summary last: codex's order, so the state the
+      // model resumes from is the freshest thing above the next turn. A user turn, because that is
+      // the role the summary has to arrive in for the model to treat it as context rather than as
+      // its own prior words.
+      for (const text of entry.retained ?? []) out.push({ role: "user", content: text });
       out.push({ role: "user", content: summaryTurnText(entry.summary) });
       continue;
     }

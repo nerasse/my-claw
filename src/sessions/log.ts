@@ -149,11 +149,25 @@ export interface CompactionEntry extends EntryBase {
   summary: string;
   /**
    * First entry the summary does *not* cover. The prompt resumes there; everything between the
-   * start of the branch and this id is what the summary stands for, and is still on disk.
+   * start of the branch and this id is what the summary stands for, and is still on disk. The
+   * boundary's own id when nothing before it is kept: the prompt then resumes after it.
    */
   firstKeptEntryId: string;
   tokensBefore: number;
   count: number;
+  /**
+   * The owner's most recent messages, kept verbatim and replayed before the summary, oldest first,
+   * the oldest one cut to fit. Codex's own shape: the summary carries the state, these carry his
+   * words (docs/compaction.md). Absent on a boundary written before them.
+   */
+  retained?: string[];
+  /**
+   * What finished between the previous boundary and this one, in the detail the summary no longer
+   * carries. Written once, never replayed to the model; indexed for `conversation_search`. Present,
+   * possibly empty, on every boundary written since the archive exists, which is how the next pass
+   * tells a summary that still holds the whole history from one that holds only the open work.
+   */
+  archive?: string;
   /**
    * How long the summary took to write, so a replayed boundary shows it the way a replayed
    * thinking phase shows its own span -- docs/reasoning-visibility.md. Absent on a boundary

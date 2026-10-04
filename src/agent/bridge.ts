@@ -1831,6 +1831,7 @@ export class AgentBridge implements AgentBackend {
       entryId: result.boundary.entryId,
       summary: result.summary,
       count: result.boundary.count,
+      ...(result.archive ? { archive: result.archive } : {}),
     });
   }
 

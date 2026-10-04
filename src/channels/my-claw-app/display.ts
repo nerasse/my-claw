@@ -762,6 +762,7 @@ export function displayOf(
         ts,
         summaryOf: entry.count,
         ...(entry.compactionMs !== undefined ? { compactionMs: entry.compactionMs } : {}),
+        ...(entry.archive ? { archive: entry.archive } : {}),
       }));
       continue;
     }

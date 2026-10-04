@@ -858,8 +858,8 @@ async function main() {
     // The boundary a compaction wrote, automatic or typed, drawn now instead of at the next
     // history load. A session that is not one of this channel's threads is skipped by the
     // adapter. No notification is published for it on purpose -- see the hook's own note.
-    hooks.on("session:compact:boundary", ({ sessionId, entryId, summary, count }) => {
-      myClawApp.notifyCompaction(sessionId, { id: entryId, summary, count });
+    hooks.on("session:compact:boundary", ({ sessionId, entryId, summary, count, archive }) => {
+      myClawApp.notifyCompaction(sessionId, { id: entryId, summary, count, ...(archive ? { archive } : {}) });
     });
 
     // A send that lands while a run is active is parked in the run's mailbox and drained at the

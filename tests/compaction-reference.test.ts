@@ -143,7 +143,7 @@ test("a later compaction carries the summary before it, so the first turns never
     const prompt = second.bodies.join("\n");
     assert.ok(prompt.includes("<previous-summary>"), "the previous summary is handed over in its own block");
     assert.ok(prompt.includes("Summary one:"), "and it is the summary that was actually stored");
-    assert.ok(prompt.includes("PRESERVE every fact"), "with the update rules rather than the first-summary prompt");
+    assert.ok(prompt.includes("Keep from the previous summary what is still active"), "with the update rules rather than the first-summary prompt");
   } finally {
     second.restore();
   }
@@ -191,10 +191,35 @@ test("the verbatim tail is a token budget, and a boundary never lands inside a t
 });
 
 /**
- * A summary cut mid-sentence used to be stored as the permanent floor of the conversation, and what
- * it is missing is Next Steps -- the one section the next turn needs.
+ * A summary the ceiling cut used to be refused and thrown away: two 128 000-token summaries paid for
+ * nothing on 2026-10-04. It is continued instead, over the same prompt, and stored once it ends.
  */
-test("a summary that hit the output ceiling is refused instead of stored", async () => {
+test("a summary the output ceiling cut is continued from where it stopped, then stored whole", async () => {
+  conversation(8);
+  await log.flush();
+
+  const mock = summarizer((body) => {
+    const continuing = body.includes("cut by the output limit");
+    return continuing
+      ? answer(" and the release is next.\n</summary>\n<archive>(none)</archive>")
+      : answer(`<summary>\n## Goal\nShip the runner fix ${"carefully ".repeat(10)}`, { finish_reason: "length" });
+  });
+  try {
+    const result = await compactSession(config(), sess);
+    assert.equal(result.ok, true, result.reason ?? "");
+    assert.equal(mock.bodies.length, 2, "one continuation, over the same prompt");
+    const continuation = JSON.parse(mock.bodies[1]!) as { messages: Array<{ role: string; content: string }> };
+    assert.deepEqual(continuation.messages.map((m) => m.role), ["system", "user", "assistant", "user"]);
+    assert.match(continuation.messages[2]!.content, /Ship the runner fix/);
+    assert.match(result.summary ?? "", /Ship the runner fix carefully[\s\S]*and the release is next\./);
+    assert.doesNotMatch(result.summary ?? "", /<summary>|<\/summary>/);
+  } finally {
+    mock.restore();
+  }
+});
+
+/** The gate still holds: a summary that never ends is refused, never stored incomplete. */
+test("a summary still cut after every continuation is refused, and nothing is stored", async () => {
   conversation(8);
   await log.flush();
 
@@ -204,7 +229,7 @@ test("a summary that hit the output ceiling is refused instead of stored", async
     assert.equal(result.ok, false);
     assert.match(result.reason ?? "", /incomplete/);
     assert.match(result.reason ?? "", /finish_reason: length/);
-    assert.equal(mock.bodies.length, 1, "a truncated summary is refused, not retried");
+    assert.equal(mock.bodies.length, 4, "the first answer and three continuations, then the refusal");
   } finally {
     mock.restore();
   }
@@ -609,37 +634,23 @@ test("the threshold leaves room for the answer on a narrow window and never fire
   assert.equal(resolveAutoCompactThreshold(plain, undefined), 0.8);
 });
 
-test("the verbatim tail is configurable and defaults to the field's value", () => {
-  assert.equal(resolveCompactionTailTokens(config({ context: {} } as Partial<MyClawConfig>)), 64_000);
+test("the owner's kept words default to codex's 20 000 tokens, and are configurable", () => {
+  assert.equal(resolveCompactionTailTokens(config({ context: {} } as Partial<MyClawConfig>)), 20_000);
   assert.equal(resolveCompactionTailTokens(config()), 60);
-  assert.equal(resolveCompactionTailTokens(config({ context: { autoCompact: { tailTokens: -5 } } } as Partial<MyClawConfig>)), 64_000);
+  assert.equal(resolveCompactionTailTokens(config({ context: { autoCompact: { tailTokens: -5 } } } as Partial<MyClawConfig>)), 20_000);
 });
 
 /**
- * A flat tail is either wasteful or dangerous depending on the window it lands in, and the
- * dangerous end is silent: a tail wider than the window means the whole conversation always fits
- * in it, `planCompaction` never finds anything to compact, and the history is dropped by
- * `trimToContextWindow` instead of being summarised.
+ * The budget yields on a window too narrow for it: never more than half the threshold, or a
+ * compaction would leave no room for the summary and the new work after it.
  */
-test("the tail is scaled to the window, between the field's floor and the configured ceiling", () => {
+test("the kept words never take more than half the threshold", () => {
   const plain = config({ context: {} } as Partial<MyClawConfig>);
-  // 512k capped, threshold 0.8: 0.12 x 409600 = 49152, under the 64000 ceiling -- what this
-  // install actually runs.
-  assert.equal(resolveCompactionTailTokens(plain, 512_000 * 0.8), 49_152);
-  // 1M: still the ceiling, clamping the 96000 the ratio would scale to. Raising the cap must not
-  // make the tail run away.
-  assert.equal(resolveCompactionTailTokens(plain, 1_000_000 * 0.8), 64_000);
-  // 128k, the narrowest model here: back to the floor pi and oh-my-pi both keep.
-  assert.equal(resolveCompactionTailTokens(plain, 128_000 * 0.8), 20_000);
-  // In between, it scales rather than stepping.
-  assert.equal(resolveCompactionTailTokens(plain, 300_000 * 0.8), 28_800);
-  // A tiny window cannot be handed a tail it has no room for: the floor gives way to half the
-  // threshold, or the conversation would fit in its own tail and never be compactable at all.
-  assert.equal(resolveCompactionTailTokens(plain, 8_000), 4_000);
+  assert.equal(resolveCompactionTailTokens(plain, 512_000 * 0.8), 20_000);
+  assert.equal(resolveCompactionTailTokens(plain, 1_000_000 * 0.8), 20_000);
   assert.equal(resolveCompactionTailTokens(plain, 30_000), 15_000);
-  // The configured value is the ceiling, floor included: asking for less than the floor is a
-  // deliberate answer to a narrow window and the floor must not undo it.
+  assert.equal(resolveCompactionTailTokens(plain, 8_000), 4_000);
+  // The configured value is the ceiling, and nothing is guessed without a threshold.
   assert.equal(resolveCompactionTailTokens(config(), 512_000 * 0.8), 60);
-  // Without a threshold nothing is guessed: the ceiling is returned as written.
-  assert.equal(resolveCompactionTailTokens(plain), 64_000);
+  assert.equal(resolveCompactionTailTokens(plain), 20_000);
 });

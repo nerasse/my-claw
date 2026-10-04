@@ -61,7 +61,7 @@ export function resolveModelContextWindow(
 /**
  * The window a model declares, whole: no cap, no exemption, no session override.
  *
- * Every compaction pass sizes its verbatim tail on this window (`tailBudgetFor`,
+ * Every compaction pass sizes its verbatim tail on this window (`retainedBudgetFor`,
  * docs/compaction.md), the automatic gates and `/compact` alike. The ceilings the other readers
  * apply -- the standing cap, a tag route's cap, the session's own choice -- are what the
  * *trigger* reads: they decide when a run compacts, never how much a split keeps. The last rung

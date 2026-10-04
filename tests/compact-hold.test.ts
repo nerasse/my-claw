@@ -15,7 +15,8 @@ import type { LegacySessionData } from "../src/sessions/store.ts";
 import { MessageRouter } from "../src/core/router.ts";
 import { SessionManager } from "../src/sessions/manager.ts";
 import type { UnifiedMessage } from "../src/channels/types.ts";
-import { planCompaction, tailBudgetFor } from "../src/sessions/compaction.ts";
+import { retainedBudgetFor } from "../src/sessions/compaction.ts";
+import type { CompactionEntry } from "../src/sessions/log.ts";
 import { resolveFullContextWindow } from "../src/llm/context-window.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
 import { sseFromCompletion } from "./helpers/sse.ts";
@@ -436,7 +437,7 @@ test("a compaction that never rewrote anything announces no boundary", async () 
  *
  * The split reads the model's declared window, whole: the session's Context choice, a tag's cap
  * and the standing cap size the *trigger* instead -- they decide when a run compacts, never how
- * much verbatim survives. Both paths read one function (`tailBudgetFor`), and this block pins
+ * much verbatim survives. Both paths read one function (`retainedBudgetFor`), and this block pins
  * the split's side from the command's file; the gate's is pinned by
  * `tests/agent/bridge-context.test.ts`.
  */
@@ -469,22 +470,22 @@ test("the /compact tail ignores the session's context override", () => {
   const config = fullWindowConfig();
   const session = makeSession("s-window-override");
   session.modelOverride = "big-model";
-  session.contextOverride = 200_000;
+  session.contextOverride = 30_000;
 
-  // 0.12 x 0.8 x 1 000 000 = 96000, over the 64 000 ceiling. A capped reading -- the 200 000
-  // override leaves the 20 000 floor -- is the one being refused here.
-  assert.equal(tailBudgetFor(config, session), 64_000);
+  // The declared 1M window leaves the full 20 000 budget; a capped reading -- half of a 30 000
+  // window's threshold -- would be under 12 000. That one is being refused here.
+  assert.equal(retainedBudgetFor(config, session), 20_000);
 
   session.contextOverride = "full";
-  assert.equal(tailBudgetFor(config, session), 64_000);
+  assert.equal(retainedBudgetFor(config, session), 20_000);
 });
 
 test("the /compact tail ignores a tag's contextCap", () => {
-  const config = fullWindowConfig({ tags: { cheap: { model: "big-model", contextCap: 200_000 } } });
+  const config = fullWindowConfig({ tags: { cheap: { model: "big-model", contextCap: 30_000 } } });
   const session = makeSession("s-window-tag-cap");
   session.modelOverride = "tag:cheap";
 
-  assert.equal(tailBudgetFor(config, session), 64_000);
+  assert.equal(retainedBudgetFor(config, session), 20_000);
 });
 
 test("the /compact window is the one the model declares, whole", () => {
@@ -503,37 +504,34 @@ test("the /compact window falls to llm.limit.context when the model declares non
 });
 
 test("the /compact tail ignores the standing context cap", () => {
-  const config = fullWindowConfig({ context: { cap: 200_000 } });
+  const config = fullWindowConfig({ context: { cap: 30_000 } });
   const session = makeSession("s-window-cap");
   session.modelOverride = "big-model";
 
-  assert.equal(tailBudgetFor(config, session), 64_000);
+  assert.equal(retainedBudgetFor(config, session), 20_000);
 });
 
 test("a /compact runs its pass on the declared window, not the session's capped one", async () => {
   const config = fullWindowConfig();
   const session = makeSession("s-window-pass");
   session.modelOverride = "big-model";
-  session.contextOverride = 200_000;
+  session.contextOverride = 30_000;
   const setup = await setupSessionLog("s-window-pass");
-  // ~36k tokens: over the 20 000 floor a tail used to bottom out at, under the 64 000 the
-  // declared window keeps -- so a pass reading a smaller tail would fold this conversation
-  // instead of refusing it.
+  // ~16k tokens of the owner's words: all of them fit the declared window's 20 000 budget, and a
+  // pass reading the capped 30 000 window (under 12 000) would cut the oldest ones.
   for (let i = 0; i < 15; i++) {
     setup.log.append({ type: "user", prompt: true, text: `turn ${i * 2} ${"filler ".repeat(600)}` });
     setup.log.append({ type: "phase", prompt: true, text: `turn ${i * 2 + 1} ${"filler ".repeat(600)}`, runId: `run-${i}` });
   }
   await setup.log.flush();
 
-  // The fixture discriminates only if a 20k tail still has a middle here.
-  const small = planCompaction(setup.log, 20_000);
-  assert.equal(small.ok, true, "the fixture must discriminate: under a 20k tail there is a middle");
-
   const mock = mockFetch(async () => summaryResponse(SUMMARY));
   try {
     const outcome = await handleCompactCommand({ config, session, persist: async () => {} });
-    assert.equal(outcome.ok, false);
-    assert.match(outcome.text, /Nothing to compact/);
+    assert.equal(outcome.ok, true);
+    const boundary = setup.log.entries().find((entry): entry is CompactionEntry => entry.type === "compaction");
+    assert.equal(boundary?.retained?.length, 15, "every one of the owner's turns is kept whole");
+    assert.doesNotMatch(boundary!.retained!.join(""), /characters cut/);
   } finally {
     mock.restore();
     await setup.cleanup();

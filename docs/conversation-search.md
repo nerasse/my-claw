@@ -47,6 +47,23 @@ Optional filters include `platform`, `chat_id`, `from`, `to`, `limit`,
 `before`, and `after`. The model cannot provide filesystem paths or select a
 parent-only scope.
 
+## Compaction archives
+
+A compaction moves finished work out of the summary into an archive block written on the boundary
+(`CompactionEntry.archive`, docs/compaction.md). The boundary is the record; `conversations.db`
+indexes it in a table of its own, `compaction_archives` with its FTS5 `compaction_archives_fts`. Not a
+new `source_kind` of `messages`: a block is not a turn, has no role, and the `CHECK` of an existing
+database cannot be widened in place.
+
+```json
+{ "action": "search", "source": "archive", "query": "runner rebuild" }
+{ "action": "read", "hit_id": "a_12" }
+```
+
+`source: "archive"` searches those blocks (same filters as messages) and returns `a_<n>` ids;
+`read` on one returns the block whole. A summary keeps a one-line pointer for each archived piece
+of work, and this is how the agent follows it, from any conversation.
+
 ## Indexing
 
 The first startup backfills current and archived session JSON files once. The

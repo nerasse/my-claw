@@ -8,38 +8,36 @@ import { availabilityWorld } from "../llm/world.ts";
 import type { SessionData } from "./store.ts";
 import { agentTypeOf, attributionParent, usageFolderOf, usageWorkspaceOf } from "./store.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
+import { indexCompactionArchive } from "../conversations/store.ts";
 import { cacheAttributionOf } from "../llm/cache-policy.ts";
 import { hooks } from "../hooks/index.ts";
 import { usageModelOf } from "../llm/model-ref.ts";
 import { sessionLogOf } from "./log-access.ts";
 import { contextEntries } from "./projection.ts";
 import type { Entry, PhaseEntry, ToolEntry, UserEntry, CompactionEntry, CompactionStoppedEntry } from "./log.ts";
-import { estimateMessagesTokens } from "../llm/tokens.ts";
+import { estimateMessagesTokens, estimateTokens } from "../llm/tokens.ts";
 import { cutByOutputCeiling } from "../llm/truncation.ts";
-import type { LlmResponse } from "../llm/provider.ts";
+import type { ChatMessage, LlmResponse } from "../llm/provider.ts";
 import { messagesOf, promptOf } from "./projection.ts";
 import { normalizeUntrusted } from "../agent/prompt/normalize-untrusted.ts";
-import { firstSummaryPrompt, updateSummaryPrompt, SUMMARIZER_SYSTEM } from "./compaction-prompts.ts";
+import { CONTINUE_SUMMARY, firstSummaryPrompt, splitSummaryOutput, updateSummaryPrompt, SUMMARIZER_SYSTEM } from "./compaction-prompts.ts";
 import { fileAnchorOf } from "./compaction-files.ts";
-import type { SessionLog } from "./log.ts";
+import { newEntryId, type SessionLog } from "./log.ts";
 import { isAbort, rethrowIfAborted } from "../core/aborted.ts";
 
 const MIN_MESSAGES_TO_COMPACT = 10;
 
 /**
- * How much of the end of the conversation survives a compaction verbatim.
+ * How much of the owner's own words survive a compaction verbatim -- codex's shape, taken whole
+ * (owner, 2026-10-04: "vraiment la même chose").
  *
- * A token budget, not a count of entries. It used to be four entries, and an entry is a log unit
- * rather than a turn -- a `phase`, a `tool`, a `user` -- so four of them is routinely half of one
- * agent turn without the message that caused it, and the model restarted from the summary alone.
- * That is the worst place to stand: TRACE (arXiv:2608.06503, 4640 paired rollouts) measures plain
- * truncation *beating* LLM summarisation once the verbatim budget gets that tight.
- *
- * 20000 is the field's number: pi and oh-my-pi both keep exactly this, codex keeps 20000 of user
- * messages. Unlike codex's 64000 it covers tool results too, which is where the working state
- * actually lives.
+ * The prompt after a compaction is the owner's most recent messages, newest kept first until this
+ * budget is spent and the oldest cut to fit, then the summary, then whatever the pass had to keep
+ * whole to stay valid (the message being answered, or the turn whose tool results the run is about
+ * to read). The assistant's prose and old tool results are not kept: the summary carries the state,
+ * and a 64 000-token tail of everything made every summary re-describe what the tail already held.
  */
-export const TAIL_BUDGET_TOKENS = DEFAULT_COMPACTION_TAIL_TOKENS;
+export const RETAINED_BUDGET_TOKENS = DEFAULT_COMPACTION_TAIL_TOKENS;
 
 /**
  * Why the summary carries no output cap.
@@ -89,6 +87,8 @@ export interface CompactionResult {
   beforeCount: number;
   afterCount: number;
   summary?: string;
+  /** What the boundary archived, when it archived something (`CompactionEntry.archive`). */
+  archive?: string;
   /**
    * The boundary that was written, when one was.
    *
@@ -143,27 +143,15 @@ export function entriesPromptTokens(slice: readonly Entry[]): number {
 }
 
 /**
- * The first index of the tail: walk back from the end until the budget is spent, then align.
+ * Serialize entries for the compaction prompt.
  *
- * Aligning can only move the boundary earlier, so the tail can exceed the budget by the size of the
- * turn it had to keep whole. Splitting a tool block instead would hand the provider a result whose
- * call it never saw.
+ * The previous boundary's kept messages lead: they are the owner's words the prompt still showed,
+ * replayed before its summary, and the summarizer has to read them as the model did.
  */
-function tailStartFor(entries: Entry[], budget: number): number {
-  let start = entries.length;
-  while (start > 0) {
-    const candidate = entries.slice(start - 1);
-    if (entriesPromptTokens(candidate) > budget) break;
-    start -= 1;
-  }
-  // Never an empty tail: the turn the model is answering has to be in the prompt.
-  if (start >= entries.length) start = entries.length - 1;
-  return alignEntryTailBoundary(entries, start);
-}
-
-/** Serialize entries for the compaction prompt. */
 function serializeEntriesForCompaction(entries: Entry[]): string {
   const parts: string[] = [];
+  const previous = entries[0]?.type === "compaction" ? (entries[0] as CompactionEntry) : undefined;
+  for (const text of previous?.retained ?? []) parts.push(`User: ${text}`);
   let currentRunId: string | undefined;
   let currentAssistantText = "";
   let currentToolNames: string[] = [];
@@ -222,10 +210,21 @@ export interface CompactionPlan {
   entries: Entry[];
   /** What the summary stands for. */
   middle: Entry[];
-  /** Where the verbatim tail starts. */
-  firstKeptEntryId: string;
+  /**
+   * Where the kept tail starts, when something has to be kept whole: the message being answered, or
+   * the turn whose tool results the run is about to read. Absent when nothing is: the boundary then
+   * resumes after itself, resolved at commit (`commitCompaction`) so turns added meanwhile survive.
+   */
+  firstKeptEntryId?: string;
+  /** The owner's recent messages, replayed verbatim before the summary (`CompactionEntry.retained`). */
+  retained: string[];
   /** The summary this one carries forward, when the branch already has a boundary. */
   previousSummary?: string;
+  /**
+   * The previous summary predates the archive and still holds the whole history: the commit
+   * archives it as it is, and the summarizer is told not to rewrite that history.
+   */
+  previousIsLegacy?: boolean;
   tokensBefore: number;
   /** The leaf the plan was made against: a snapshot is only claimable while it still holds. */
   leafId: string | null;
@@ -233,7 +232,59 @@ export interface CompactionPlan {
 
 export type CompactionPlanResult = { ok: true; plan: CompactionPlan } | { ok: false; reason: string; count: number };
 
-export function planCompaction(log: SessionLog, tailBudget: number = TAIL_BUDGET_TOKENS): CompactionPlanResult {
+/** A message cut to `tokens`, its head and its end kept, the middle named rather than lost. */
+function cutToTokens(text: string, tokens: number): string {
+  const chars = Math.max(0, tokens * 4);
+  if (text.length <= chars) return text;
+  const half = Math.floor(chars / 2);
+  return `${text.slice(0, half)}\n[... ${text.length - chars} characters cut ...]\n${text.slice(text.length - half)}`;
+}
+
+/**
+ * The owner's words a boundary keeps: newest first until the budget is spent, the one that crosses
+ * it cut to what is left, returned oldest first -- codex's `build_compacted_history`. The candidates
+ * are the previous boundary's kept messages, then every owner turn it did not cover.
+ */
+export function retainedMessages(candidates: readonly string[], budget: number): string[] {
+  const kept: string[] = [];
+  let left = budget;
+  for (let i = candidates.length - 1; i >= 0 && left > 0; i--) {
+    const text = candidates[i]!;
+    if (!text.trim()) continue;
+    const cost = estimateTokens(text);
+    if (cost <= left) {
+      kept.push(text);
+      left -= cost;
+    } else {
+      kept.push(cutToTokens(text, left));
+      left = 0;
+    }
+  }
+  return kept.reverse();
+}
+
+/**
+ * Where the kept tail starts, or `entries.length` when nothing has to stay whole.
+ *
+ * Two cases keep something, and both are about validity, not memory. A branch ending on the owner's
+ * message is a run about to answer it: that message must follow the summary. A branch ending on tool
+ * results is a run between two iterations: the turn that called them must stay with them, or the next
+ * call reads results whose call it never saw -- unless that turn alone is over the budget, in which
+ * case the summary, which saw it, carries it. Anything else (a finished answer, a `/compact` at
+ * rest) keeps nothing, as codex does.
+ */
+function keptTailStart(entries: Entry[], budget: number): number {
+  const last = entries[entries.length - 1];
+  if (!last) return 0;
+  if (last.type === "user") return entries.length - 1;
+  if (last.type === "tool") {
+    const turnStart = alignEntryTailBoundary(entries, entries.length - 1);
+    if (entriesPromptTokens(entries.slice(turnStart)) <= budget) return turnStart;
+  }
+  return entries.length;
+}
+
+export function planCompaction(log: SessionLog, retainedBudget: number = RETAINED_BUDGET_TOKENS): CompactionPlanResult {
   const entries = contextEntries(log.entries(), log.leaf());
   if (entries.length < MIN_MESSAGES_TO_COMPACT) {
     return {
@@ -243,34 +294,30 @@ export function planCompaction(log: SessionLog, tailBudget: number = TAIL_BUDGET
     };
   }
 
-  const tailStart = tailStartFor(entries, tailBudget);
-  if (tailStart <= 0) {
-    // Not a failure of the summarizer: the conversation is smaller than the slice a compaction
-    // would have kept verbatim anyway, so there is nothing a summary could stand for.
-    return {
-      ok: false,
-      reason: `Nothing to compact: the whole conversation fits in the ${tailBudget}-token verbatim tail.`,
-      count: entries.length,
-    };
-  }
-
-  const middle = entries.slice(0, tailStart);
-  const firstKeptEntry = entries[tailStart];
-  if (!firstKeptEntry) {
-    return { ok: false, reason: "No entries in tail after boundary alignment.", count: entries.length };
-  }
-
+  const tailStart = keptTailStart(entries, retainedBudget);
   // `contextEntries` puts the branch's last boundary first, so this is the summary the new one has
   // to carry forward rather than replace.
-  const previous = entries[0]?.type === "compaction" ? (entries[0] as CompactionEntry).summary : undefined;
+  const previous = entries[0]?.type === "compaction" ? (entries[0] as CompactionEntry) : undefined;
+  const middle = entries.slice(0, tailStart);
+  if (middle.filter((entry) => entry.type !== "compaction").length === 0) {
+    // Not a failure of the summarizer: everything after the last boundary has to stay whole anyway,
+    // so there is nothing a new summary could stand for.
+    return { ok: false, reason: "Nothing to compact: everything since the last summary has to stay as it is.", count: entries.length };
+  }
+
+  const candidates = [
+    ...(previous?.retained ?? []),
+    ...middle.filter((entry): entry is UserEntry => entry.type === "user").map((entry) => entry.text),
+  ];
 
   return {
     ok: true,
     plan: {
       entries,
       middle,
-      firstKeptEntryId: firstKeptEntry.id,
-      ...(previous ? { previousSummary: previous } : {}),
+      ...(tailStart < entries.length ? { firstKeptEntryId: entries[tailStart]!.id } : {}),
+      retained: retainedMessages(candidates, retainedBudget),
+      ...(previous ? { previousSummary: previous.summary, ...(previous.archive === undefined ? { previousIsLegacy: true } : {}) } : {}),
       tokensBefore: estimateMessagesTokens(promptOf(log.entries(), log.leaf())),
       leafId: log.leaf(),
     },
@@ -319,13 +366,20 @@ const REFUSAL_PATTERNS = [
 ];
 
 export type SummaryResult =
-  | { ok: true; summary: string; elapsedMs: number }
+  | { ok: true; summary: string; archive: string; elapsedMs: number }
   | { ok: false; reason: string };
 
-/** One summarizer call, before the retry decision. `retryable` is what earns the one retry. */
+/** One summarizer pass, before the retry decision. `retryable` is what earns the one retry. */
 type SummaryAttempt =
   | { ok: true; summary: string; elapsedMs: number }
   | { ok: false; reason: string; retryable: boolean };
+
+/**
+ * How many times a summary the output ceiling cut is asked for its rest. A bound against a model
+ * that keeps writing past every ceiling, not a size: each continuation carries on from the text,
+ * and a summary that still has not ended after this many is not converging.
+ */
+const MAX_CONTINUATIONS = 3;
 
 /**
  * What one call actually came back with, and what to call it.
@@ -421,7 +475,7 @@ export async function summarizeForCompaction(
 ): Promise<SummaryResult> {
   const serialized = serializeEntriesForCompaction(plan.middle);
   const prompt = plan.previousSummary
-    ? updateSummaryPrompt(serialized, plan.previousSummary, instructions)
+    ? updateSummaryPrompt(serialized, plan.previousSummary, instructions, plan.previousIsLegacy === true)
     : firstSummaryPrompt(serialized, instructions);
 
   const runModel = tryResolveRunModel(
@@ -457,8 +511,8 @@ export async function summarizeForCompaction(
    * transport allows 600. Streaming also gives the summary a live mouth: the fragments go out as
    * they arrive, so a window can watch it being written -- docs/compaction.md.
    */
-  const attemptOnce = async (): Promise<SummaryAttempt> => {
-    const attemptStartedAt = now();
+  const callOnce = async (messages: ChatMessage[]): Promise<LlmResponse> => {
+    const callStartedAt = Date.now();
     const progress = compactionProgress(session.id);
     // The thinking goes out too, batched the same way. A summarizer inheriting the session's effort
     // spends that time before its first word, and the rule with a counter was the only thing on
@@ -466,10 +520,7 @@ export async function summarizeForCompaction(
     const thinking = compactionProgress(session.id, "session:compact:reasoning");
     const response = await llmCompleteStream(
       llmConfig,
-      [
-        { role: "system", content: SUMMARIZER_SYSTEM },
-        { role: "user", content: prompt },
-      ],
+      messages,
       (chunk: string) => progress.push(chunk),
       undefined,
       signal,
@@ -496,12 +547,40 @@ export async function summarizeForCompaction(
       cacheWriteTokens: response.usage?.cacheWriteTokens ?? 0,
       toolCalls: 0,
       iteration: 0,
-      durationMs: Date.now() - attemptStartedAt,
+      durationMs: Date.now() - callStartedAt,
       proxyCostUsd: response.proxyCostUsd,
       upstreamApiBase: response.upstreamApiBase,
       ...cacheAttributionOf(llmConfig),
     });
-    const classified = classifySummaryResponse(response);
+    return response;
+  };
+
+  /**
+   * One summary, continued while the ceiling cuts it.
+   *
+   * A cut answer used to be refused and thrown away: the owner paid twice for 128 000 tokens of a
+   * summary missing its end (2026-10-04). It is now kept and asked for its rest in a new turn, over
+   * the same prompt, so the provider serves the prefix from cache and only the rest is written. The
+   * gate still holds: a summary that has not ended after `MAX_CONTINUATIONS` is refused, never
+   * stored incomplete.
+   */
+  const attemptOnce = async (): Promise<SummaryAttempt> => {
+    const attemptStartedAt = now();
+    const base: ChatMessage[] = [
+      { role: "system", content: SUMMARIZER_SYSTEM },
+      { role: "user", content: prompt },
+    ];
+    let response = await callOnce(base);
+    let written = response.content;
+    for (let round = 0; round < MAX_CONTINUATIONS && cutAfterWriting(response); round++) {
+      response = await callOnce([
+        ...base,
+        { role: "assistant", content: written },
+        { role: "user", content: CONTINUE_SUMMARY },
+      ]);
+      written += response.content;
+    }
+    const classified = classifySummaryResponse({ ...response, content: written });
     return classified.ok ? { ok: true, summary: classified.summary, elapsedMs: now() - attemptStartedAt } : classified;
   };
 
@@ -514,10 +593,43 @@ export async function summarizeForCompaction(
   if (!attempt.ok && attempt.retryable) attempt = await attemptOnce();
   if (!attempt.ok) return { ok: false, reason: attempt.reason };
 
+  const { summary, archive } = splitSummaryOutput(attempt.summary);
+  if (summary.length < 50) return { ok: false, reason: "The model returned a summary that is too short." };
   // The anchor is computed over the whole branch, not over `middle`: a path the tail still shows is
   // one the next turn is most likely to need, and naming it twice costs a line.
   const anchor = fileAnchorOf(plan.entries);
-  return { ok: true, summary: anchor ? `${attempt.summary}\n\n${anchor}` : attempt.summary, elapsedMs: attempt.elapsedMs };
+  return { ok: true, summary: anchor ? `${summary}\n\n${anchor}` : summary, archive, elapsedMs: attempt.elapsedMs };
+}
+
+/** An answer the output ceiling stopped after it had started writing: the one worth continuing. */
+function cutAfterWriting(response: LlmResponse): boolean {
+  return cutByOutputCeiling(response.finishReason) && response.content.trim().length > 0;
+}
+
+/**
+ * What a boundary archives: what the summarizer says finished, preceded -- once, on the first pass
+ * since the archive exists -- by the previous summary as it was, since that one still holds the
+ * whole history the new summary no longer carries. Nothing is rewritten by a model to get there.
+ */
+export function archiveOf(plan: CompactionPlan, archived: string): string {
+  if (!plan.previousIsLegacy || !plan.previousSummary) return archived;
+  const legacy = `## Summary before the archive\n\n${plan.previousSummary}`;
+  return archived ? `${legacy}\n\n## Finished since\n\n${archived}` : legacy;
+}
+
+/**
+ * Where the prompt resumes after this boundary, decided now rather than when the plan was made.
+ *
+ * A plan that keeps nothing still has to keep what landed after it was made: a background summary
+ * is committed minutes later, and the turns added meanwhile are not in it. They become the kept
+ * tail. With none, the boundary resumes after itself.
+ */
+function firstKeptAtCommit(log: SessionLog, plan: CompactionPlan, ownId: string): string {
+  if (plan.firstKeptEntryId) return plan.firstKeptEntryId;
+  const plannedLast = plan.entries[plan.entries.length - 1]?.id;
+  const path = contextEntries(log.entries(), log.leaf());
+  const at = path.findIndex((entry) => entry.id === plannedLast);
+  return (at >= 0 ? path[at + 1]?.id : undefined) ?? ownId;
 }
 
 /** Append the boundary. The turns it stands for stay on disk and stay on screen. */
@@ -525,17 +637,21 @@ export async function commitCompaction(
   log: SessionLog,
   plan: CompactionPlan,
   summary: string,
+  archived: string,
   compactionMs?: number,
 ): Promise<CompactionEntry> {
+  const id = newEntryId();
   const entry = log.append<CompactionEntry>({
     type: "compaction",
     prompt: true,
     summary,
-    firstKeptEntryId: plan.firstKeptEntryId,
+    firstKeptEntryId: firstKeptAtCommit(log, plan, id),
     tokensBefore: plan.tokensBefore,
     count: plan.middle.length,
+    ...(plan.retained.length > 0 ? { retained: plan.retained } : {}),
+    archive: archiveOf(plan, archived),
     ...(compactionMs !== undefined ? { compactionMs } : {}),
-  });
+  }, id);
   await log.flush();
   return entry;
 }
@@ -578,7 +694,7 @@ export async function commitCompactionStopped(
  * The model is the one the session runs (agent pin and tag included), the same resolution the
  * summarizer uses.
  */
-export function tailBudgetFor(config: MyClawConfig, session: SessionData): number {
+export function retainedBudgetFor(config: MyClawConfig, session: SessionData): number {
   const modelId = sessionRunModelId(config, session);
   if (!modelId) return resolveCompactionTailTokens(config);
   const window = resolveFullContextWindow(config, modelId);
@@ -599,7 +715,7 @@ function sessionRunModelId(config: MyClawConfig, session: SessionData): string |
 /**
  * A compaction pass, whoever asked for it: the automatic gates (`AgentBridge.runCompaction`)
  * and `/compact` (`channels/compact-command.ts`). Both size their split the same way --
- * `tailBudgetFor` -- and differ only in what the caller brings: a hold, a signal, instructions.
+ * `retainedBudgetFor` -- and differ only in what the caller brings: a hold, a signal, instructions.
  */
 export async function compactSession(
   config: MyClawConfig,
@@ -608,7 +724,7 @@ export async function compactSession(
   signal?: AbortSignal,
   now: () => number = Date.now,
 ): Promise<CompactionResult> {
-  return await runCompactionPass(config, session, tailBudgetFor(config, session), instructions, signal, now);
+  return await runCompactionPass(config, session, retainedBudgetFor(config, session), instructions, signal, now);
 }
 
 async function runCompactionPass(
@@ -641,7 +757,8 @@ async function runCompactionPass(
       if (!summarized.ok) {
         return { ok: false, reason: summarized.reason, beforeCount, afterCount: beforeCount };
       }
-      const boundary = await commitCompaction(log, plan, summarized.summary, summarized.elapsedMs);
+      const boundary = await commitCompaction(log, plan, summarized.summary, summarized.archive, summarized.elapsedMs);
+      indexCompactionArchive(session, boundary);
       session.lastActiveAt = new Date().toISOString();
       const afterCount = contextEntries(log.entries(), log.leaf()).length;
       hooks.emit("session:compact:end", {
@@ -655,6 +772,7 @@ async function runCompactionPass(
         beforeCount,
         afterCount,
         summary: summarized.summary,
+        ...(boundary.archive ? { archive: boundary.archive } : {}),
         boundary: { entryId: boundary.id, count: boundary.count, compactionMs: summarized.elapsedMs },
       };
     } catch (err) {

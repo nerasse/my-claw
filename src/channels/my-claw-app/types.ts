@@ -1393,6 +1393,8 @@ export type MyClawAppHistoryEntry =
        * reopened an hour later cannot re-measure it -- docs/reasoning-visibility.md.
        */
       compactionMs?: number;
+      /** On a boundary: what it archived (finished work), folded beside the summary. */
+      archive?: string;
       /** The run this entry belongs to, when it sits inside one. */
       run?: MyClawAppRunMeta;
     }
@@ -1498,6 +1500,8 @@ export interface MyClawAppChatCompaction {
   summary: string;
   /** Turns the summary stands for. They stay on disk and stay on screen, above the rule. */
   count: number;
+  /** What this boundary archived (finished work), folded under the rule beside the summary. */
+  archive?: string;
   ts?: string;
 }
 

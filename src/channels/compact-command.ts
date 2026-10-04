@@ -67,6 +67,7 @@ export async function handleCompactCommand(p: CompactCommandParams): Promise<Com
         entryId: result.boundary.entryId,
         summary: result.summary,
         count: result.boundary.count,
+        ...(result.archive ? { archive: result.archive } : {}),
       });
     }
     return finished({

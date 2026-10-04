@@ -28,71 +28,36 @@ La frontière est ajoutée **après** les tours qu'elle couvre, et la projection
 Aucune donnée ne bouge : c'est une relecture. Même géométrie que pi, et la raison est la même — un
 journal append-only n'a pas de place pour une réécriture.
 
-## 2. Le tail : un budget en tokens, mis à l'échelle de la fenêtre déclarée
+## 2. Ce qui franchit la frontière : les mots de l'owner, comme codex
 
-`context.autoCompact.tailTokens`, défaut **64 000**, et c'est un **plafond**.
-
-C'était `TAIL_KEEP = 4` **entrées**. Une entrée est une unité de log, pas un tour : quatre d'entre
-elles, c'est couramment un demi-tour d'agent sans le message qui l'a déclenché, et le modèle
-repartait du résumé seul. C'est la pire position mesurée : TRACE (arXiv:2608.06503, 4 640 rollouts
-appariés) montre la troncature simple **battant** le résumé LLM dès que le verbatim se resserre à ce
-point.
-
-20 000 est la valeur du terrain : pi et oh-my-pi gardent exactement ça. Les 64 000 de codex ne sont
-pas comparables — c'est une sélection filtrée de messages sur tout l'historique, sans aucune sortie
-d'outil, et le chiffre est une copie du défaut serveur de `/responses/compact`
-(`compact_remote_v2.rs:74`).
-
-### Pourquoi un plafond et pas une constante
-
-Ce que le tail dépense vraiment, c'est **l'intervalle entre deux compactions** : le seuil moins le
-plancher qu'une compaction laisse derrière elle (tail + résumé). Le même nombre ne coûte pas la
-même chose selon la fenêtre où il atterrit.
-
-| fenêtre déclarée | seuil | tail | travail neuf par cycle |
-|---|---|---|---|
-| 128k | 102k | 20 000 | 78k |
-| 128k | 102k | *64 000* | *34k, soit 2,3× plus de compactions* |
-| 512k | 410k | 49 152 | 356k, contre 385k à 20 000 |
-
-Sur 512k, 49 152 coûte 29 152 tokens d'intervalle sur 385 000, soit 7,6 %, pour 2,46× plus de
-verbatim : gratuit. Sur 128k, le plafond appliqué à plat ferait 2,3× plus d'appels de résumé, et
-chacun relit tout l'historique.
-
-D'où :
+Depuis le 04/10/2026, le prompt après une frontière a la forme de codex, prise entière (owner :
+« vraiment la même chose ») :
 
 ```
-tail = clamp(seuil × 0,12, 20 000, tailTokens)
+prompt  [ses messages récents, verbatim] [résumé] [ce qui doit rester entier] [la suite]
 ```
 
-128k → 20 000 · 300k → 28 800 · **512k → 49 152** · 1M → 64 000.
+- **Ses messages** (`CompactionEntry.retained`) : les tours de l'owner, du plus récent au plus
+  ancien jusqu'à **20 000 tokens** (`COMPACT_USER_MESSAGE_MAX_TOKENS` de codex), le dernier gardé
+  coupé au milieu pour tenir, rendus dans l'ordre. Les candidats sont ceux que la frontière
+  précédente gardait, puis tous ses tours qu'elle ne couvrait pas : ses mots ne quittent le prompt
+  que quand des plus récents prennent leur place. Ils sont rejoués avant le résumé, qui reste en
+  dernier : l'état d'où le modèle repart est la chose la plus fraîche au-dessus du tour suivant.
+- **Rien d'autre n'est gardé verbatim**, sauf ce qu'exige la validité du prompt
+  (`keptTailStart`) : le message que le run s'apprête à traiter quand la branche finit sur lui, ou
+  le tour dont le run va lire les résultats d'outils quand la compaction tombe entre deux itérations
+  (sauf si ce tour dépasse à lui seul le budget : le résumé, qui l'a vu, le porte). Une compaction au
+  repos ne garde rien, et la frontière pointe sur elle-même (`firstKeptEntryId` = son propre id) :
+  la projection reprend après elle, sans changement.
+- **Le point de reprise se décide à l'écriture**, pas à la planification (`firstKeptAtCommit`) : un
+  résumé spéculatif est réclamé des minutes plus tard, et les tours arrivés entre-temps deviennent
+  le tail au lieu d'être perdus.
 
-Le `seuil` de cette formule est celui de la fenêtre **déclarée**, entière. C'est la politique
-unique des deux chemins : les portes automatiques et `/compact` lisent la même fonction
-(`tailBudgetFor`), donc une compaction automatique sur un modèle qui déclare 1 M garde 64 000
-tokens de verbatim, pas les 49 152 qu'une lecture capée à 512k donnait. Les plafonds qu'une
-session porte -- choix Context, `contextCap` d'une route de tag, `context.cap` global, exemption --
-gardent leur rôle, et c'est celui du **déclenchement** : ils décident *quand* un run compacte, et
-jamais combien de verbatim il garde. Le seuil de la porte, lui, continue de se calculer sur la
-fenêtre effective (docs/context-window.md §4) : c'est le frein délibéré de l'owner.
-
-Le plancher cède à son tour à la moitié du seuil, parce qu'un plancher n'est pas une garantie : sur
-une fenêtre assez étroite, 20 000 est *plus* que le seuil, toute la conversation tient dans son
-propre tail, `planCompaction` ne trouve jamais rien à compacter et l'historique finit jeté par
-`trimToContextWindow` au lieu d'être résumé. C'est une panne silencieuse, et c'est celle qu'un
-`tailTokens` absolu introduisait.
-
-La valeur configurée reste le plafond en toutes circonstances, plancher compris : demander moins de
-20 000 est une réponse délibérée à une fenêtre étroite.
-
-Un cas limite, mesuré, vient de ce partage : le seuil de la porte et le tail ne se calculent plus
-sur la même fenêtre. Sur une session dont la fenêtre effective tombe très en dessous de la
-déclarée -- un override à 64 000 sur un modèle qui déclare 1 M -- la porte s'ouvre à **47 616**
-tokens (64 000 × 0,744) et le tail en garde **64 000** : une conversation qui a franchi le seuil
-tient encore entière dans le tail, la passe refuse (`Nothing to compact: the whole conversation
-fits in the 64000-token verbatim tail`) et le seul frein restant est la troncature par
-`trimToContextWindow`. Mesuré : une conversation de 53 283 tokens rend ce refus, là où le tail de
-20 000 qu'une fenêtre capée gardait y trouvait 14 entrées à replier.
+C'était un tail de **64 000 tokens de tout** : réponses de l'assistant et sorties d'outils comprises,
+que chaque résumé re-décrivait. `context.autoCompact.tailTokens` est désormais le budget des mots de
+l'owner (défaut 20 000), jamais plus de la moitié du seuil sur une fenêtre étroite
+(`resolveCompactionTailTokens`), et toujours lu sur la fenêtre **déclarée** du modèle
+(`retainedBudgetFor`), jamais sur une fenêtre capée.
 
 ### Ce que l'owner en voit
 
@@ -144,10 +109,9 @@ Côté app, c'est la **même** bulle que la commande, dans le même emplacement 
 Deux invariants :
 
 - la frontière ne tombe jamais dans un bloc d'outils ni au milieu d'un tour
-  (`alignEntryTailBoundary`), donc le tail peut dépasser son budget de la taille du tour qu'il a dû
-  garder entier ;
-- si toute la conversation tient dans le tail, il n'y a rien à compacter et `planCompaction` le dit.
-  Ce n'est pas un échec du résumeur.
+  (`alignEntryTailBoundary`) ;
+- si tout ce qui suit la dernière frontière doit rester entier, il n'y a rien à compacter et
+  `planCompaction` le dit. Ce n'est pas un échec du résumeur.
 
 **Piège mesuré.** Le poids d'une tranche se mesure avec `messagesOf`, jamais avec `promptOf`.
 `promptOf` résout la branche, et résoudre veut dire remonter les `parentId` ; une *tranche* d'un
@@ -160,8 +124,28 @@ déclenchait plus jamais.
 
 Prompts dans `sessions/compaction-prompts.ts`. Trois pièces.
 
-**Un schéma imposé** : `Goal` / `Constraints & Preferences` / `Progress` (Done, In Progress,
-Blocked) / `Key Decisions` / `Next Steps` / `Critical Context`. Le texte libre d'avant est ce que
+**L'actif dans le résumé, le fini dans l'archive** (04/10/2026). Le résumé est l'état du travail,
+pas son histoire. Il portait une section « Done » sous une règle qui préservait tout fait encore
+vrai, et un chantier fini reste vrai pour toujours : le résumé d'une conversation est passé de
+8 000 à **182 500 caractères** en 91 compactions, jusqu'à ce que le réécrire ne tienne plus dans le
+plafond de sortie du modèle (deux tentatives à 128 000 tokens pile, 16 minutes et 3 $ chacune,
+coupées puis jetées). La réponse du résumeur a maintenant deux blocs (`splitSummaryOutput`) :
+
+- `<summary>` : l'objectif, les contraintes qui tiennent, le travail ouvert, les décisions encore en
+  vigueur, la suite, et une ligne par chantier récemment archivé ;
+- `<archive>` : ce qui s'est terminé depuis la frontière précédente, en détail, écrit **une fois**.
+
+Il n'y a **aucune taille cible** (choix de l'owner) : c'est la quantité de travail ouvert qui fait la
+taille, et ce qui se termine en sort à chaque passe. L'archive est stockée sur la frontière
+(`CompactionEntry.archive`, jamais rejouée au modèle) et indexée dans `conversations.db` pour
+`conversation_search` (`source: "archive"`, `docs/conversation-search.md`). La première passe
+après ce changement trouve un résumé qui contient encore toute l'histoire : le serveur le verse
+**tel quel** dans l'archive (`archiveOf`, aucun appel au modèle), et le prompt dit au modèle de ne
+garder que l'actif sans recopier ce passé. Une frontière écrite depuis porte toujours `archive`,
+vide au besoin : c'est ce qui distingue l'ancien résumé du nouveau.
+
+**Un schéma imposé** : `Goal` / `Constraints & Preferences` / `In Progress` / `Blocked` /
+`Key Decisions` / `Next Steps` / `Critical Context` / `Recently Archived`. Le texte libre d'avant est ce que
 tout le monde a abandonné : un résumé de résumé de résumé se paraphrase jusqu'à l'inutile, et les
 titres sont le contrat qui tient à la troisième compaction. Claude Code impose 9 sections, pi 6,
 oh-my-pi 7.
@@ -238,7 +222,7 @@ Quatre formes, pas une de plus :
 
 | ce que le fil a porté | message | reprise |
 |---|---|---|
-| troncature (`length` / `max_tokens` / `incomplete`) **avec** du texte ou des tokens | `output ceiling` | non — un résumé tronqué ne devient jamais un checkpoint |
+| troncature (`length` / `max_tokens` / `incomplete`) **avec** du texte | **continué** (jusqu'à 3 fois), puis `output ceiling` s'il n'a toujours pas fini | non — un résumé tronqué ne devient jamais un checkpoint |
 | un `stop` propre, contenu vide | `empty summary` | non — le modèle a conclu, et il a conclu qu'il n'écrivait rien |
 | **aucun `finish_reason`** — vide, après du texte, ou après des fragments de raisonnement | `closed the stream` | **oui, une fois** — et rien n'est stocké |
 | non `stop`, **aucun fragment, aucun usage, contenu vide** | `empty stream`, avec le `finish_reason` reçu | **oui, une fois** |
@@ -250,6 +234,16 @@ politique de transport : les transports reprennent déjà les statuts et les tra
 même requête qui rend 6 689 tokens 30 secondes plus tard, et les deux coupures du 20/09 dont la
 seconde est passée. Un résumé **tronqué** ne devient toujours jamais un checkpoint : ni la
 troncature annoncée, ni la coupure silencieuse.
+
+### Un résumé coupé est continué, pas jeté
+
+Un résumé que le plafond coupe après avoir commencé à écrire n'est plus refusé d'emblée : il est
+gardé, et un nouveau tour lui demande la suite (`CONTINUE_SUMMARY`) — le même prompt, la réponse
+partielle en message assistant, puis la consigne en message utilisateur. Jamais un pré-remplissage
+de la réponse : Anthropic le refuse quand la réflexion est active, et un tour utilisateur se lit
+pareil dans les trois dialectes. Le préfixe est celui qui vient d'être envoyé, donc servi depuis le
+cache. Trois continuations au plus, une borne contre un modèle qui ne converge pas, pas une taille :
+au-delà le garde refuse, et rien n'est stocké incomplet. Chaque appel est compté dans les stats.
 
 ### Le budget de sortie : aucun
 
@@ -470,7 +464,7 @@ vers laquelle on vient de basculer.
 `/compact <instructions>` ajoute un focus au prompt et force un recalcul : jamais de résumé armé.
 
 **La fenêtre.** Le découpage d'une compaction -- automatique ou commande -- se calcule sur la
-fenêtre du modèle **déclarée, entière** (`resolveFullContextWindow`, `tailBudgetFor`), et n'en
+fenêtre du modèle **déclarée, entière** (`resolveFullContextWindow`, `retainedBudgetFor`), et n'en
 dérive pas moins : ni le choix Context de la session, ni le `contextCap` d'une route de tag, ni le
 `context.cap` global, ni une exemption ne resserrent le tail. `llm.limit.context` reste le dernier
 recours quand le modèle n'en déclare aucune, jamais un plafond au-dessus d'une fenêtre déclarée.
@@ -478,8 +472,7 @@ Ces plafonds gardent leur rôle, et c'est celui du **déclenchement** : la porte
 lit toujours -- seuil, fenêtre effective, bande spéculative, occupation affichée -- parce qu'elle
 décide *quand* un run se compacte. Ce qu'ils ne décident plus, c'est *combien de verbatim* une
 compaction garde : un split taillé sur une fenêtre capée replie des tours que le modèle aurait pu
-garder, et une compaction automatique sur un modèle qui déclare 1 M garde 64 000 tokens, pas les
-49 152 qu'une lecture capée à 512k donnait. Une politique, une fonction (`tailBudgetFor`), le même
+garder, et une fenêtre capée étroite rognerait les mots de l'owner sous le budget de 20 000. Une politique, une fonction (`retainedBudgetFor`), le même
 tail pour les deux chemins ; les deux passent par la même passe (`compactSession`), et ce qui les
 sépare n'est que ce que l'appelant apporte : le hold, le signal, les instructions.
 
@@ -597,5 +590,5 @@ Tests : `tests/compaction-reference.test.ts` (le contrat, cas par cas),
 `tests/compaction.test.ts`, `tests/compact-hold.test.ts`, `tests/agent/compact-summary.test.ts`,
 `tests/agent/bridge-mid-run-compaction.test.ts`.
 
-Les fixtures déclarent un `tailTokens` étroit : au défaut de 64 000, une douzaine de messages courts
-tient entière dans le tail et il n'y a rien à résumer.
+Les fixtures déclarent un `tailTokens` étroit (60) pour tester le budget des mots gardés sans écrire
+des milliers de tokens de conversation.

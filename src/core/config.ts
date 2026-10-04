@@ -733,7 +733,7 @@ export interface AutoCompactConfig {
   thresholdRatio?: number; // fraction of the context limit that triggers compaction (default 0.8)
   /** Compact in the background before the threshold, so the crossing costs nothing. Default true. */
   speculative?: boolean;
-  /** Ceiling on the tokens kept verbatim past a boundary. Default 64000, scaled to the window. */
+  /** Ceiling on the owner's messages kept verbatim past a boundary. Default 20000 (codex's). */
   tailTokens?: number;
 }
 
@@ -794,43 +794,24 @@ export function autoCompactSpeculative(config: MyClawConfig): boolean {
 }
 
 /**
- * How much of the end of a conversation survives a compaction verbatim.
+ * How much of the owner's own messages a compaction keeps verbatim, beside the summary.
  *
- * A ceiling, and the effective tail is scaled to the window under it, because a flat number is
- * either wasteful or dangerous depending on where it lands. What the tail really spends is the
- * *interval between two compactions*: threshold minus the floor a compaction leaves behind (tail +
- * summary). On a 512k window a 64000 tail costs 11% of that interval, on a 128k one it costs 57%,
- * and on a window narrower than the tail itself the whole conversation fits in the tail, nothing
- * is ever compactable, and the history is silently dropped by `trimToContextWindow` instead.
+ * 20000 is codex's `COMPACT_USER_MESSAGE_MAX_TOKENS`, taken with codex's shape (owner, 2026-10-04):
+ * only the owner's turns, newest first, the oldest cut to fit. It used to be a 64000-token tail of
+ * everything, assistant prose and tool results included, which every summary then re-described.
  *
- * 20000 is the floor because it is what pi and oh-my-pi both keep, measured; 0.12 of the threshold
- * is what lands 512k -- the standing cap -- at 49152, with the ceiling taking over only past a
- * 667k window.
+ * On a narrow window the budget yields: never more than half the threshold, so a compaction always
+ * leaves room for the summary and for new work after it. The configured value is the ceiling.
  */
-export const DEFAULT_COMPACTION_TAIL_TOKENS = 64_000;
-const MIN_COMPACTION_TAIL_TOKENS = 20_000;
-const COMPACTION_TAIL_RATIO = 0.12;
-/**
- * The floor is a floor, not a guarantee: on a window narrow enough, 20000 is *more* than the
- * threshold, the whole conversation fits in the tail forever and nothing is ever compactable. Half
- * the threshold is the last word, so a compaction always leaves room for the summary and for some
- * new work after it.
- */
+export const DEFAULT_COMPACTION_TAIL_TOKENS = 20_000;
 const COMPACTION_TAIL_MAX_SHARE = 0.5;
 
-/**
- * Without a threshold the configured ceiling is returned as written: a caller that does not know
- * the window has no business shrinking the tail on a guess.
- *
- * The configured value is always the ceiling, floor included -- setting `tailTokens` below 20000
- * is a deliberate answer to a narrow window and the floor must not undo it.
- */
+/** Without a threshold the configured ceiling is returned as written. */
 export function resolveCompactionTailTokens(config: MyClawConfig, thresholdTokens?: number): number {
   const t = config.context?.autoCompact?.tailTokens;
   const ceiling = typeof t === "number" && Number.isFinite(t) && t > 0 ? Math.floor(t) : DEFAULT_COMPACTION_TAIL_TOKENS;
   if (thresholdTokens === undefined || !Number.isFinite(thresholdTokens) || thresholdTokens <= 0) return ceiling;
-  const floor = Math.min(MIN_COMPACTION_TAIL_TOKENS, ceiling, Math.floor(thresholdTokens * COMPACTION_TAIL_MAX_SHARE));
-  return Math.min(ceiling, Math.max(floor, Math.floor(thresholdTokens * COMPACTION_TAIL_RATIO)));
+  return Math.min(ceiling, Math.floor(thresholdTokens * COMPACTION_TAIL_MAX_SHARE));
 }
 
 /** Mid-run message injection (steering). See `docs/injection.md`. */
