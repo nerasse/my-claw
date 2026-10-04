@@ -49,6 +49,13 @@ spawn, and `executeRunWithSession` hard-codes `depth = 1`.
   nobody can name, drive or kill. An aborted run is kept, the owner stopped it and its transcript
   is the point.
 - `workspaceDir` — optional absolute path. All filesystem tools (`read`, `write`, `apply_patch`, `bash`, `ls`, `search`) resolve against this path instead of the global workspace.
+- `model` — optional: a tag (`tag:Cheap`) or a model id (`provider/model`); the configured
+  sub-agent model otherwise. A plain string, checked when the call comes in: a known id or tag
+  passes, anything else is refused with the five ids that look most like it and the tags.
+  It used to be an `enum` of the whole catalog, 544 ids and about 5 000 tokens on every request of
+  the orchestrator (measured 2026-10-04), and the enum moved whenever discovery found a model while
+  the tool definitions open the cached prefix. The tags, a handful that change only with the
+  config, are named in the parameter's description.
 
 ### `send(id, message, attachments?)`
 
@@ -56,17 +63,17 @@ Loads the session, appends the message (with optional attachments), executes an 
 
 **FIFO queueing**: concurrent `send` to the same sub-agent chains sequentially. No reject, no error. The second `send` waits for the first to complete, then executes.
 
-### `list_agents()`
+### `agents(action, id?)`
 
-Scans `sessions/subagent/*.json`. Returns: id, displayName, type, messageCount, status (`idle` | `running`).
+One tool for the three rare actions on persistent sub-agents (they were `list_agents`,
+`kill_agent` and `reset_agent` until 2026-10-04: three definitions on every request for one shape).
+`spawn` and `send` stay their own, they are the hot path.
 
-### `kill_agent(id)`
-
-Deletes the session file permanently. Workspace directory is NOT touched.
-
-### `reset_agent(id)`
-
-Archives the current session to `sessions-archive/`, then recreates an empty session with the same `meta` (preserving name, type, workspaceDir).
+- `list` — scans `sessions/subagent/`. Returns: id, displayName, type, messageCount, status
+  (`idle` | `running`), visibility.
+- `kill` (id) — deletes the session permanently. Workspace directory is NOT touched.
+- `reset` (id) — archives the current session to `sessions-archive/`, then recreates an empty
+  session with the same `meta` (preserving name, type, workspaceDir).
 
 ## Attachments
 
@@ -129,7 +136,7 @@ Single message per agent run on both Telegram and Matrix. Tool call output is ap
 
 ## Reboot behavior
 
-On boot, `SubAgentRegistry.load()` scans `sessions/subagent/`. All existing sub-agents appear as `idle` in `list_agents()`. A `send()` immediately reloads the full session history from disk and continues the conversation.
+On boot, `SubAgentRegistry.load()` scans `sessions/subagent/`. All existing sub-agents appear as `idle` in `agents(action="list")`. A `send()` immediately reloads the full session history from disk and continues the conversation.
 
 ## Example interaction
 
@@ -143,15 +150,15 @@ LLM → send("subagent/code-explorer-a7b3", "analyze core/")
 → (sub-agent reuses its full session history)
 
 User: "list my sub-agents"
-LLM → list_agents()
+LLM → agents(action="list")
 → "subagent/code-explorer-a7b3 | code-explorer | research | 12 messages | idle"
 
 User: "reset code-explorer"
-LLM → reset_agent("subagent/code-explorer-a7b3")
+LLM → agents(action="reset", id="subagent/code-explorer-a7b3")
 → "Session reset. Workspace preserved."
 
 User: "delete it"
-LLM → kill_agent("subagent/code-explorer-a7b3")
+LLM → agents(action="kill", id="subagent/code-explorer-a7b3")
 → "Sub-agent deleted."
 ```
 
@@ -164,9 +171,7 @@ LLM → kill_agent("subagent/code-explorer-a7b3")
 | `src/subagents/runner.ts` | `SubAgentRunner` — spawn, send, kill, reset, list |
 | `src/tools/spawn.ts` | `spawn` tool |
 | `src/tools/send.ts` | `send` tool with attachments |
-| `src/tools/list-agents.ts` | `list_agents` tool |
-| `src/tools/kill-agent.ts` | `kill_agent` tool |
-| `src/tools/reset-agent.ts` | `reset_agent` tool |
+| `src/tools/agents.ts` | `agents` tool (list, kill, reset) |
 | `src/tools/workspace.ts` | `resolveWorkspacePath(input, workspaceDir?)` |
 | `src/agent/bridge.ts` | Injects `__workspaceDir` into tool args |
 

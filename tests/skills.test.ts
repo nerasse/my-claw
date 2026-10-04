@@ -9,7 +9,6 @@ import type { MyClawConfig } from "../src/core/config.ts";
 import { VoiceManager, SttPipeline } from "../src/voice/index.ts";
 import { syncBuiltIn } from "../src/skills/sync.ts";
 import {
-  createListSkillsTool,
   createReadSkillTool,
   createManageSkillsTool,
 } from "../src/tools/skills.ts";
@@ -50,7 +49,7 @@ test("built-in subagent-workflow exists in repo and is valid", async () => {
   assert.ok(content.includes("description:"), "Missing description frontmatter");
   assert.ok(content.includes("spawn("), "Should mention spawn tool");
   assert.ok(content.includes("send("), "Should mention send tool");
-  assert.ok(content.includes("kill_agent("), "Should mention kill_agent tool");
+  assert.ok(content.includes('agents(action="kill"'), "Should mention the agents tool");
 });
 
 test("built-in web-browsing skill tells the agent screenshots are auto-attached", async () => {
@@ -270,18 +269,21 @@ test("syncBuiltIn removes deleted skills", async () => {
   await rm(builtin, { recursive: true, force: true });
 });
 
-test("list_skills tool", async () => {
+test("read_skill names what is there when the name is wrong: no listing tool is needed", async () => {
+  // The prompt catalog already lists every skill an agent may read; `list_skills` repeated it at
+  // the price of a tool definition on every request. The one case it covered, a wrong name, is
+  // answered here.
   const dir = await setupDir();
   await writeSkill(dir, "s1", "---\nname: s1\ndescription: First\n---\n\nOne.");
+  await writeSkill(dir, "s4", "---\nname: s4\ndescription: Fourth\n---\n\nFour.");
 
   const skills = await loadAllSkills({ builtInDir: dir, customDir: dir });
-  const registry = new SkillRegistry(skills);
-  const tool = createListSkillsTool(registry, noScope);
+  const tool = createReadSkillTool(new SkillRegistry(skills), noScope);
 
-  const result = await tool.execute({});
-  assert.equal(result.success, true);
-  assert.ok(result.output.includes("s1"));
-  assert.ok(result.output.includes("First"));
+  const result = await tool.execute({ name: "s9" });
+  assert.equal(result.success, false);
+  assert.match(result.output, /not found/);
+  assert.match(result.output, /Skills available to you: s1, s4\./);
 
   await rm(dir, { recursive: true, force: true });
 });
@@ -304,7 +306,7 @@ test("read_skill tool", async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-test("a session-filtered skill disappears from list and read", async () => {
+test("a session-filtered skill is refused, and left out of what the refusal names", async () => {
   const dir = await setupDir();
   await writeSkill(dir, "s3", "---\nname: s3\ndescription: Third\n---\n\nHidden by session.");
 
@@ -314,16 +316,12 @@ test("a session-filtered skill disappears from list and read", async () => {
   // A SessionManager whose session carries skillsOff: the reply is "filtered" the same way.
   // Tools get the session id via __sessionId; build the same observable here with a fake manager.
   const fakeSession = { peek: async () => ({ skillsOff: ["s3"] }) };
-  const listTool = createListSkillsTool(registry, noScope, fakeSession as never);
   const readTool = createReadSkillTool(registry, noScope, fakeSession as never);
-
-  const listed = await listTool.execute({ __sessionId: "sess-1" });
-  assert.equal(listed.success, true);
-  assert.equal(listed.output.includes("s3"), false);
 
   const read = await readTool.execute({ name: "s3", __sessionId: "sess-1" });
   assert.equal(read.success, false);
   assert.ok(read.output.includes("not in this session's scope"));
+  assert.match(read.output, /No skill is available to you/);
 
   await rm(dir, { recursive: true, force: true });
 });
@@ -808,21 +806,21 @@ test("scope: registry.list filters, get stays unscoped", async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-test("scope: list_skills shows only the calling agent's skills", async () => {
+test("scope: a refusal names only the calling agent's skills", async () => {
   const { registry, dir } = await twoSkillRegistry();
   const config = scoped({ general: { skills: ["allowed"] } });
-  const tool = createListSkillsTool(registry, config);
+  const tool = createReadSkillTool(registry, config);
 
-  const asGeneral = await tool.execute({ __agentType: "general" });
-  assert.match(asGeneral.output, /allowed/);
+  const asGeneral = await tool.execute({ name: "nope", __agentType: "general" });
+  assert.match(asGeneral.output, /available to you: allowed\./);
   assert.doesNotMatch(asGeneral.output, /hidden/);
 
   // The orchestrator has no list of its own here, so it stays unrestricted.
-  const asMain = await tool.execute({ __agentType: "main" });
+  const asMain = await tool.execute({ name: "nope", __agentType: "main" });
   assert.match(asMain.output, /hidden/);
 
   // No __agentType means the call did not come from an agent run: treated as the orchestrator.
-  assert.match((await tool.execute({})).output, /hidden/);
+  assert.match((await tool.execute({ name: "nope" })).output, /hidden/);
   await rm(dir, { recursive: true, force: true });
 });
 
@@ -851,10 +849,10 @@ test("scope: read_skill refuses an out-of-scope skill and says why", async () =>
 test("scope: an empty list leaves an agent with no skills at all", async () => {
   const { registry, dir } = await twoSkillRegistry();
   const config = scoped({ orchestrator: { skills: ["*"] }, research: { skills: [] } });
-  const list = createListSkillsTool(registry, config);
   const read = createReadSkillTool(registry, config);
 
-  assert.match((await list.execute({ __agentType: "research" })).output, /No skills available/);
-  assert.equal((await read.execute({ name: "allowed", __agentType: "research" })).success, false);
+  const refused = await read.execute({ name: "allowed", __agentType: "research" });
+  assert.equal(refused.success, false);
+  assert.match(refused.output, /No skill is available to you/);
   await rm(dir, { recursive: true, force: true });
 });

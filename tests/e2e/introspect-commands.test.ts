@@ -55,7 +55,7 @@ async function realAgents(): Promise<AgentRegistry> {
 
 function toolRegistry(): ToolRegistry {
   const tools = new ToolRegistry();
-  for (const n of ["read", "search", "ls", "fetch", "web_search", "list_skills", "read_skill", "manage_skills", "bash"]) {
+  for (const n of ["read", "search", "ls", "fetch", "web_search", "read_skill", "manage_skills", "bash"]) {
     tools.register({ name: n, description: n, parameters: { type: "object", properties: {} }, execute: async () => ({ success: true, output: "" }) });
   }
   return tools;

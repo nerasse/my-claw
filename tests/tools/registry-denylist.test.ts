@@ -45,7 +45,7 @@ test("denylist filters tools out of the main set", () => {
 });
 
 test("denylist stacks on top of the per-agent exclusion (research is read-only)", () => {
-  const r = registry(["read", "search", "ls", "fetch", "web_search", "list_skills", "read_skill", "write", "bash"]);
+  const r = registry(["read", "search", "ls", "fetch", "web_search", "read_skill", "write", "bash"]);
   const research = r.getForAgent("research", ["fetch"]).map((t) => t.name);
   assert.ok(research.includes("read"));
   assert.ok(!research.includes("fetch"), "denylist removes fetch even from the read-only set");
@@ -67,6 +67,16 @@ test("an agent name the chain does not know falls back to the sub-agent set, not
   for (const escalation of ["spawn", "memory", "manage_skills", "question"]) {
     assert.ok(!names.includes(escalation), `an unknown agent must not receive ${escalation}`);
   }
+});
+
+test("agents (list, kill, reset) is the orchestrator's and a job's, never a sub-agent's", () => {
+  // A sub-agent that could kill or reset its siblings is a worker reaching into what its caller
+  // runs; the three tools it replaced were withheld the same way.
+  const r = registry(["agents", "read", "bash"]);
+  assert.ok(r.getForAgent("main").some((t) => t.name === "agents"));
+  assert.ok(r.getForAgent("cron").some((t) => t.name === "agents"));
+  assert.ok(!r.getForAgent("general").some((t) => t.name === "agents"));
+  assert.ok(!r.getForAgent("research").some((t) => t.name === "agents"));
 });
 
 test("question is main-only: never offered to sub-agents or cron", () => {
@@ -113,7 +123,7 @@ test("adding a tools denylist at runtime is a hot change", () => {
 
 // ── dynamic provider (external MCP tools) ────────────────────────────────────
 
-const readOnlySet = ["read", "search", "ls", "fetch", "web_search", "list_skills", "read_skill", "bash"];
+const readOnlySet = ["read", "search", "ls", "fetch", "web_search", "read_skill", "bash"];
 
 test("dynamic provider tools are added for every agent class the scope allows", () => {
   const r = registry(readOnlySet);

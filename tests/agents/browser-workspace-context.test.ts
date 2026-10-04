@@ -24,12 +24,12 @@ const base = { whitelist: [], blacklist: [], channels: {}, llm: { models: [] }, 
 
 test("the browser's tools: its own, plus reading skills, and nothing that writes or reaches out", () => {
   const registry = new ToolRegistry();
-  for (const name of ["browser_navigate", "browser_done", "list_skills", "read_skill", "bash", "write", "fetch", "memory", "manage_skills"]) {
+  for (const name of ["browser_navigate", "browser_done", "read_skill", "bash", "write", "fetch", "memory", "manage_skills"]) {
     registry.register(stub(name));
   }
   registry.setDynamicProvider(() => [stub("mcp__gmail__search")]);
   const names = registry.getForAgent("browser").map((t) => t.name).sort();
-  expect(names).toEqual(["browser_done", "browser_navigate", "list_skills", "read_skill"]);
+  expect(names).toEqual(["browser_done", "browser_navigate", "read_skill"]);
 });
 
 test("its skill scope follows the ordinary chain, so the config can narrow it or take it away", () => {

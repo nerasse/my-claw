@@ -199,7 +199,7 @@ export async function deleteTag(name: string): Promise<ConfigEditResult> {
 /**
  * Persists the speech-to-text engine choice.
  *
- * The `voice_mode` tool only mutates the live config object, which is right for "use local just
+ * The `audio` tool's `mode` only mutates the live config object, which is right for "use local just
  * for this one": it evaporates on restart. A switch the owner flips in the app means the opposite,
  * so it is written to the file. `voice` is hot-reloaded and read per call, so the next voice note
  * uses the new engine without a restart.

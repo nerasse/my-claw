@@ -137,8 +137,8 @@ hooks.tap("transform:system:prompt", ({ prompt, sessionId }) => {
 - `subagent:complete` -- subagent returned result
 - `subagent:error` -- subagent threw exception
 - `subagent:aborted` -- subagent stopped by user (`/stop`)
-- `subagent:killed` -- kill_agent tool
-- `subagent:reset` -- reset_agent tool
+- `subagent:killed` -- `agents` tool, `kill`
+- `subagent:reset` -- `agents` tool, `reset`
 
 ### Cron lifecycle
 - `cron:tick` -- scheduler tick

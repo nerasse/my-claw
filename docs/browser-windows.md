@@ -67,7 +67,7 @@ current tab), and a restart freed everything.
   showing the same pages takes the hold (`bindHolds`). A hold whose window never comes back stays
   until it expires, listed as "not open right now".
 - **Released** by the run's conversation when it takes the window back, by that conversation through
-  `held_browser_windows` (list, extend, release), by the owner with `/windows` (list with deadlines,
+  `delegate_browser_task` with `kept` (list, extend, release), by the owner with `/windows` (list with deadlines,
   `/windows keep <n> [24h]`, `/windows release <n>|all`), when the window is closed, or at its
   deadline. A release or a deadline closes the pages the run opened in it (see "Who closes a page").
   The owner's live view shows a kept window as waiting, with `keptUntil`.
@@ -218,7 +218,7 @@ a click opened is kept for the page, the next snapshot says so, and `browser_upl
 | holds, aliases, each run's page per window, kept windows (`endRun`, `bindHolds`, `release`, `extend`, `expiring`), `keptForHuman`, page ownership (`OwnedPage`, `bindPages`, `sweep`) | `src/tools/browser/windows.ts` (`BrowserWindows`) |
 | where kept windows and owned pages are persisted, the hold policy from config, `browser_done(keep_window, hold)`, the housekeeping tick | `src/tools/browser/session.ts` |
 | the notification before a hold ends | `src/notifications/run-notifications.ts` (`browser:hold:expiring`) |
-| `held_browser_windows` (the delegating side) | `src/tools/browser/held.ts` |
+| `delegate_browser_task(kept)` (the delegating side) | `src/tools/browser/held.ts` |
 | `/windows` (the owner) | `src/channels/my-claw-app/commands.ts` |
 | a frozen tab: probe, close, keep the human's | `src/browser/client.ts` (`call`), `sidecar/browser.mjs` (`responsive`, `frozenPages`, `closeTarget`, the connect budget) |
 | a run's long results | `src/tools/browser/output.ts` (`browser_read_output`) |

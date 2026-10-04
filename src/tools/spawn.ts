@@ -6,6 +6,44 @@ import type { UnifiedMessage } from "../channels/types.ts";
 import { isAbort, rethrowIfAborted } from "../core/aborted.ts";
 import type { AgentInfo } from "../agents/types.ts";
 
+const SUGGESTIONS = 5;
+
+const tokensOf = (text: string): string[] => text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+
+/**
+ * The ids a mistyped model most looks like: the ones sharing the most of its name, the id that
+ * contains it whole before the others, the shorter first. Tags are left out, they are listed apart.
+ *
+ * Exported for its own test.
+ */
+export function closestModels(query: string, ids: readonly string[], limit = SUGGESTIONS): string[] {
+  const wanted = tokensOf(query);
+  if (wanted.length === 0) return [];
+  const floor = Math.max(1, Math.ceil(wanted.length / 2));
+  const whole = query.toLowerCase();
+  return ids
+    .filter((id) => !id.startsWith("tag:"))
+    .map((id) => {
+      const own = new Set(tokensOf(id));
+      return { id, score: wanted.filter((token) => own.has(token)).length, whole: id.toLowerCase().includes(whole) };
+    })
+    .filter((candidate) => candidate.score >= floor)
+    .sort((a, b) => b.score - a.score || Number(b.whole) - Number(a.whole) || a.id.length - b.id.length)
+    .slice(0, limit)
+    .map((candidate) => candidate.id);
+}
+
+/** Every id a spawn may name: the tags, as `tag:<name>`, then the catalog. */
+export function spawnModelIds(config: { tags?: Record<string, unknown>; llm: { models?: Array<{ id: string }> } }): string[] {
+  return [...Object.keys(config.tags ?? {}).map((tag) => `tag:${tag}`), ...(config.llm.models ?? []).map((m) => m.id)];
+}
+
+/**
+ * `listModelIds` answers every id a spawn may name (`spawnModelIds`), the tags included as `tag:<name>`. None of
+ * them is drawn in the schema: the catalog is hundreds of ids (544 on this install, about 5 000
+ * tokens on every request) and it moves with discovery, while the tool definitions open the cached
+ * prefix. The tags, a handful that change only with the config, are named in the description.
+ */
 export function createSpawnTool(
   runner: SubAgentRunner,
   registry: SubAgentRegistry,
@@ -29,13 +67,12 @@ export function createSpawnTool(
         "Provide workspaceDir to isolate the sub-agent's filesystem. " +
         "visibility decides who can later list and drive it: 'global' (default, every conversation), " +
         "'workspace' (only conversations of the workspace spawning it), 'private' (this conversation alone). " +
-        "Optionally pick the sub-agent's model from the listed ones (default: the configured sub-agent model). " +
         "No cap on concurrent runs. Max depth 2.";
     },
-    // Getter on purpose: both engines rebuild tool definitions per run, so the model enum
-    // follows config hot-reloads instead of freezing at boot.
+    // Getter on purpose: both engines rebuild tool definitions per run, so the agent types and the
+    // tags follow hot-reloads instead of freezing at boot.
     get parameters() {
-      const models = listModelIds?.() ?? [];
+      const tags = (listModelIds?.() ?? []).filter((id) => id.startsWith("tag:"));
       const names = agents().map((a) => a.name);
       return {
         type: "object",
@@ -55,9 +92,10 @@ export function createSpawnTool(
             description: "Who can list and drive this sub-agent later. 'global' (default) = any conversation; 'workspace' = only conversations of the workspace it was spawned from; 'private' = only this conversation.",
           },
           private: { type: "boolean", description: "Deprecated alias for visibility='private'. Ignored when visibility is set." },
-          ...(models.length > 0
-            ? { model: { type: "string", enum: models, description: "Optional model for this sub-agent" } }
-            : {}),
+          model: {
+            type: "string",
+            description: `Optional model for this sub-agent: ${tags.length > 0 ? `a tag (${tags.join(", ")}) or ` : ""}a model id (provider/model). Default: the configured sub-agent model.`,
+          },
         },
         required: ["name", "type", "mode", "task"],
       };
@@ -76,7 +114,13 @@ export function createSpawnTool(
         if (model) {
           const known = listModelIds?.() ?? [];
           if (!known.includes(model)) {
-            return { success: false, output: "", error: `Unknown model "${model}". Available: ${known.join(", ") || "none"}` };
+            const near = closestModels(model, known);
+            const tags = known.filter((id) => id.startsWith("tag:"));
+            const hints = [
+              near.length > 0 ? `Closest ids: ${near.join(", ")}.` : "No known id looks like it.",
+              tags.length > 0 ? `Tags: ${tags.join(", ")}.` : "",
+            ].filter(Boolean).join(" ");
+            return { success: false, output: "", error: `Unknown model "${model}". ${hints} Omit model to use the configured one.` };
           }
         }
         // The confinement check lives in the runner: only it knows the sub-agent's base

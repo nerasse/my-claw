@@ -5,7 +5,8 @@ import type { MyClawConfig } from "../../src/core/config.ts";
 import { writeFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSttTool } from "../../src/tools/stt.ts";
+import { createAudioTool } from "../../src/tools/audio.ts";
+import { TtsPipeline } from "../../src/voice/tts.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
 function createConfig(overrides?: Record<string, unknown>): MyClawConfig {
@@ -104,19 +105,17 @@ describe("STT language selection", () => {
     expect(bare.voiceNoteLanguage()).toBeUndefined();
   });
 
-  test("the stt tool forwards an explicit language and defaults to auto", async () => {
+  test("the audio tool's transcribe forwards an explicit language and defaults to auto", async () => {
     const filePath = await audioFixture();
-    const pipeline = new SttPipeline(
-      new VoiceManager(createConfig({ voice: { mode: "cloud", stt: { language: "fr" } } })),
-    );
-    const tool = createSttTool(pipeline);
+    const manager = new VoiceManager(createConfig({ voice: { mode: "cloud", stt: { language: "fr" } } }));
+    const tool = createAudioTool({ stt: new SttPipeline(manager), tts: new TtsPipeline(manager), manager });
     const capture = captureUpload("groq.com");
     try {
       process.env.GROQ_API_KEY = "test-key";
-      await tool.execute({ filePath, language: "en" });
+      await tool.execute({ action: "transcribe", filePath, language: "en" });
       expect(capture.calls[0]!.get("language")).toBe("en");
 
-      await tool.execute({ filePath });
+      await tool.execute({ action: "transcribe", filePath });
       expect(capture.calls[1]!.get("language")).toBeNull();
     } finally {
       capture.restore();

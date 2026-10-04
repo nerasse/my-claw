@@ -50,7 +50,7 @@ mail already handled. It is now a switch a job turns on (below).
 Two families sit behind a per-job switch rather than a hard exclusion, because a job is the
 orchestrator's only stand-in when nobody is watching:
 
-- `subagents` — `spawn`, `send`, `list_agents`, `kill_agent`, `reset_agent`. The whole family
+- `subagents` — `spawn`, `send`, `agents` (list, kill, reset). The whole family
 together: a job that can start an agent but not list, steer or kill it leaves orphans it cannot
 see.
 - `browser` — `delegate_browser_task`.

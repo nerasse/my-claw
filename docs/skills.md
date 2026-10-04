@@ -132,8 +132,7 @@ you MUST call read_skill(name) to load its full instructions.
 
 | Tool | Description |
 |---|---|
-| `list_skills()` | List all available skills with source |
-| `read_skill(name, file_path?)` | Load full content of a skill. If `file_path` is provided, reads a specific file within the skill directory (e.g., `references/format.md`). Replaces `${SKILL_DIR}` with the absolute skill directory path in the returned content. |
+| `read_skill(name, file_path?)` | Load full content of a skill. A wrong or out-of-scope name is answered with the skills the caller may read. If `file_path` is provided, reads a specific file within the skill directory (e.g., `references/format.md`). Replaces `${SKILL_DIR}` with the absolute skill directory path in the returned content. |
 | `manage_skills(action, name?, description?, instructions?)` | Manage skills: `create` (needs name + description + instructions), `update` (needs name + instructions), `delete` (needs name), `reload` (no args). Auto-refreshes registry after create/update/delete. |
 | `/reload-skills` | User command to force rescan all skills from disk |
 
@@ -168,7 +167,11 @@ When implemented, skills could be conditionally shown based on installed binarie
 
 ### Token Budget / Compact Mode
 
-If the number of skills grows large enough to impact the context window, a compact mode can be implemented where only skill names (no descriptions) are shown, or pagination can be added to `list_skills(offset)`.
+If the number of skills grows large enough to impact the context window, a compact mode can be implemented where only skill names (no descriptions) are shown, or the catalog can be cut to the suggested skills.
+
+There is no `list_skills` tool any more (2026-10-04): it returned the prompt catalog again, at the
+price of a tool definition on every request. The one case it covered, a name the agent got wrong,
+is answered by `read_skill`'s refusal, which names what the caller may read.
 
 ## Notes
 

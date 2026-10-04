@@ -15,13 +15,13 @@ export function mcpServerOf(toolName: string): string | undefined {
   return separator > 0 ? rest.slice(0, separator) : undefined;
 }
 
-// read_skill/list_skills are read-only and the system prompt tells every agent to call
-// read_skill to load a skill; research agents need them or they hit unknown-tool errors.
-export const READ_ONLY_TOOLS = ["read", "search", "ls", "fetch", "web_search", "conversation_search", "list_skills", "read_skill"];
+// read_skill is read-only and the system prompt tells every agent to call it to load a skill;
+// research agents need it or they hit unknown-tool errors.
+export const READ_ONLY_TOOLS = ["read", "search", "ls", "fetch", "web_search", "conversation_search", "read_skill"];
 // `notify` reaches the owner's phone, which is the orchestrator's and the cron agent's business: a
 // sub-agent is a delegated worker whose results are reported by whoever spawned it, and a worker
 // that can ring the phone is a worker that can ring it fifty times.
-const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "list_agents", "kill_agent", "reset_agent", "manage_skills", "memory", "cron", "workspaces", "question", "notify"];
+const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "agents", "manage_skills", "memory", "cron", "workspaces", "question", "notify"];
 
 /**
  * What the cron role is never given, however a job is configured. A job has no one to ask
@@ -39,8 +39,8 @@ const CRON_ALWAYS_EXCLUDED = ["cron", "manage_skills", "memory", "workspaces", "
  * low-level tools to a second driver would put two on one Chromium (docs/browser.md).
  */
 export const CRON_CAPABILITIES = {
-  subagents: ["spawn", "send", "list_agents", "kill_agent", "reset_agent"],
-  browser: ["delegate_browser_task", "held_browser_windows"],
+  subagents: ["spawn", "send", "agents"],
+  browser: ["delegate_browser_task"],
 } as const;
 
 /**
@@ -81,12 +81,12 @@ export function isBrowserTool(name: string): boolean {
 }
 
 /**
- * The only non-browser tools the browser agent gets: reading the workspace's skills, which carry the
+ * The only non-browser tool the browser agent gets: reading the workspace's skills, which carry the
  * rules of what it fills in (an application's wording, what never to state). Read-only, scoped by
  * the agent's `skills` like everyone's, and a skill holds no secret (those live in ~/.my-claw/.env
  * and secrets/). Nothing that writes, runs or reaches another machine: docs/browser.md.
  */
-export const BROWSER_SKILL_TOOLS = ["list_skills", "read_skill"];
+export const BROWSER_SKILL_TOOLS = ["read_skill"];
 
 /** The tool names a file agent of the given base may narrow from. Exported so the app channel can
  *  offer exactly the names `getForAgent` will intersect the file's `tools:` against. */

@@ -88,7 +88,7 @@ async kill(id: string): Promise<string> {
   await deleteSession(id);
 ```
 
-`deleteSession` takes any session id. `kill_agent` pointed at `matrix/room/!x:example.org` would
+`deleteSession` takes any session id. A kill (`kill_agent` then, `agents` kill now) pointed at `matrix/room/!x:example.org` would
 have deleted a conversation, and the model chooses that argument. It now requires a `subagent/`
 prefix, existing metadata, and reachability. `reset` already checked for metadata, which is why it
 was never exposed the same way.

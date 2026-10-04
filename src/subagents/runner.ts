@@ -508,7 +508,7 @@ export class SubAgentRunner {
    * own error and a stuck file is the lesser fault to report.
    */
   async kill(id: string, callerSessionId: string): Promise<string> {
-    // deleteSession takes any session id, so without this guard `kill_agent` could be pointed at
+    // deleteSession takes any session id, so without this guard a kill could be pointed at
     // a chat session and delete a conversation.
     const session = await loadSession(id);
     if (!id.startsWith("subagent/") || !session?.meta || !isReachableFrom(session.meta, await this.resolveCaller(callerSessionId))) {

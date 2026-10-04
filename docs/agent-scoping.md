@@ -147,9 +147,8 @@ Five points, all of which must use the same resolvers:
 | --- | --- | --- | --- |
 | 1 | Prompt layer 5 (`# Available skills`) | `bridge.ts:253`, `backend.ts:350` | catalog filtered to the scope |
 | 2 | Prompt layer 9 (suggested skills) | same call sites | `selectRelevantSkills` receives the filtered list, never suggests out-of-scope |
-| 3 | `list_skills` tool | `src/tools/skills.ts:30` | lists the caller's scope only |
-| 4 | `read_skill` tool | `src/tools/skills.ts:51` | refuses an out-of-scope name with an explicit message |
-| 5 | MCP tools | `src/tools/registry.ts:39` | `dynamic` filtered by the `mcp__<server>__` prefix |
+| 3 | `read_skill` tool | `src/tools/skills.ts` | refuses an out-of-scope name with an explicit message, and names only the caller's scope |
+| 4 | MCP tools | `src/tools/registry.ts:39` | `dynamic` filtered by the `mcp__<server>__` prefix |
 
 ### How a tool learns who called it
 
@@ -220,7 +219,7 @@ Configured but not found: nextcloud
 ### `/agents`
 
 Three sections, because three different things are called "agent" in this codebase and conflating
-them is how the current `list_agents` tool ends up looking complete while hiding the browser agent.
+them is how the `agents` tool's list ends up looking complete while hiding the browser agent.
 
 ```
 Configured types
@@ -234,7 +233,7 @@ Live sub-agents
 
 Special
 - browser: prompt in agents/browser.md, private runner and tool registry, reached through
-  delegate_browser_task rather than spawn, no skills, no MCP, invisible to list_agents
+  delegate_browser_task rather than spawn, no skills, no MCP, invisible to `agents list`
 ```
 
 The command reads the agent registry, so a file dropped in `agents/` shows up with no restart and
@@ -403,7 +402,7 @@ despite being advertised in `MATRIX_COMMANDS:8`, matched by `META_COMMAND_PATTER
   the owner actually wrote, not the reserved roles, so a typo under a file-defined agent is caught;
   a config predating file agents still validates clean.
 - Prompt: layer 5 and layer 9 restricted to the scope; an out-of-scope skill never appears.
-- `list_skills` scoped by `__agentType`; `read_skill` refuses out-of-scope with a clear message.
+- `read_skill` scoped by `__agentType`: refuses out-of-scope with a clear message, naming the caller's scope only.
 - `getForAgent`: MCP filtered per agent; `research` with an explicit list gets exactly it; built-in
   tools unaffected by the MCP scope; an agent name the chain does not know falls back to the
   sub-agent set rather than the orchestrator's, so a typo cannot hand out `spawn` or `memory`.

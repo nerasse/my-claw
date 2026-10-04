@@ -449,8 +449,8 @@ export interface SessionData {
   promptLayersOff?: string[];
   /**
    * Skills this session filtered out, by skill name: they do not appear in the prompt catalog,
-   * and list_skills/read_skill with `__agentType` in scope keep responding as if they were not
-   * scoped to this session (they stay visible to other sessions and to the global run).
+   * and read_skill refuses them in this session (they stay visible to other sessions and to the
+   * global run).
    * Persisted on the session.
    */
   skillsOff?: string[];
@@ -657,7 +657,7 @@ const SESSION_STALE_DAYS = 30;
  *
  * Sub-agents joined the list when the app started showing them: a named one is advertised as
  * re-invocable, and deleting it after a quiet month would break that promise silently. Reclaiming
- * the space is `kill_agent`, or the app's own delete. See docs/subagent-navigation.md.
+ * the space is `agents` (kill), or the app's own delete. See docs/subagent-navigation.md.
  */
 const PRUNE_EXEMPT_PREFIXES = ["my-claw-app/", "subagent/"];
 
@@ -747,7 +747,7 @@ export async function listSessionIdsByPrefix(prefix: string, limit = 50): Promis
  * Removes everything a conversation owns: the directory, the legacy file, and its archives.
  *
  * `deleteSessionFile` alone stopped being a delete at the storage switch. It removes `<id>.json`,
- * and the conversation is `<id>/entries.jsonl`: `kill_agent` reported a deletion and the sub-agent
+ * and the conversation is `<id>/entries.jsonl`: a kill reported a deletion and the sub-agent
  * came back on the next read, settings and history intact.
  */
 export async function deleteStoredSession(sessionId: string): Promise<void> {

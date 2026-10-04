@@ -1,4 +1,4 @@
-import { type Tool, type ToolResult } from "../types.ts";
+import { type ToolResult } from "../types.ts";
 import { formatDuration, parseDurationMs } from "../../utils/duration.ts";
 import { holderOf, type BrowserWindows, type WindowHold } from "./windows.ts";
 
@@ -14,56 +14,41 @@ export function describeHold(hold: WindowHold & { alias?: number; open: boolean 
 
 /**
  * The windows a browser run kept for its conversation, as that conversation sees them: the list,
- * with what each waits for and until when, and the release of its own. Not a `browser_*` tool on
- * purpose: those belong to the browser agent alone, and this one belongs to whoever delegates.
+ * with what each waits for and until when, and the release or extension of its own. Reached
+ * through `delegate_browser_task` with `kept` rather than a tool of its own (2026-10-04): it is
+ * the delegating side's business, and one definition fewer on every request of the orchestrator.
  */
-export function createHeldBrowserWindowsTool(windows: BrowserWindows): Tool {
-  return {
-    name: "held_browser_windows",
-    description: "The browser windows kept after a browsing task (for a human, or for this conversation to continue in): list them with what each waits for and until when, keep one of this conversation's longer (extend), or release them once they are no longer needed. A kept window closes with its tabs when its time is up. To continue in a kept window, delegate a new browsing task: it is offered that window first.",
-    parameters: {
-      type: "object",
-      properties: {
-        action: { type: "string", enum: ["list", "release", "extend"] },
-        window: { type: "number", description: "The window number to release or extend" },
-        hold: { type: "string", description: "How long to keep it from now (extend), e.g. 24h. Capped at browser.holdMax." },
-        all: { type: "boolean", description: "Release every window kept for this conversation (release)" },
-      },
-      required: ["action"],
-    },
-    async execute(args): Promise<ToolResult> {
-      const caller = typeof args["__sessionId"] === "string" ? args["__sessionId"] : "";
+export async function keptWindows(windows: BrowserWindows, args: Record<string, unknown>, caller: string): Promise<ToolResult> {
+  try {
+    if (args["kept"] === "extend") {
+      const alias = typeof args["window"] === "number" ? args["window"] : undefined;
+      if (alias === undefined) return { success: false, output: "", error: "Name the window to keep longer." };
+      let ms: number;
       try {
-        if (args["action"] === "extend") {
-          const alias = typeof args["window"] === "number" ? args["window"] : undefined;
-          if (alias === undefined) return { success: false, output: "", error: "Name the window to keep longer." };
-          let ms: number;
-          try {
-            ms = parseDurationMs(typeof args["hold"] === "string" ? args["hold"] : "24h");
-          } catch (err) {
-            return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
-          }
-          const hold = await windows.extend({ alias, holder: caller }, ms);
-          return hold
-            ? { success: true, output: describeHold({ ...hold, alias, open: true }, Date.now(), caller) }
-            : { success: false, output: "", error: "No window of that number is kept for this conversation." };
-        }
-        if (args["action"] === "release") {
-          const alias = typeof args["window"] === "number" ? args["window"] : undefined;
-          const all = args["all"] === true;
-          if (alias === undefined && !all) return { success: false, output: "", error: "Name the window to release, or set all=true." };
-          const released = await windows.release({ ...(alias !== undefined ? { alias } : {}), all, holder: caller });
-          return released > 0
-            ? { success: true, output: `Released ${released} window${released > 1 ? "s" : ""}: the next task may use ${released > 1 ? "them" : "it"}.` }
-            : { success: false, output: "", error: "No window of that number is kept for this conversation. The owner can release any window with /windows." };
-        }
-        const kept = await windows.kept();
-        if (kept.length === 0) return { success: true, output: "No browser window is kept." };
-        const now = Date.now();
-        return { success: true, output: kept.map((hold) => describeHold(hold, now, caller)).join("\n") };
+        ms = parseDurationMs(typeof args["hold"] === "string" ? args["hold"] : "24h");
       } catch (err) {
-        return { success: false, output: "", error: `Could not read the browser's windows: ${err instanceof Error ? err.message : String(err)}` };
+        return { success: false, output: "", error: err instanceof Error ? err.message : String(err) };
       }
-    },
-  };
+      const hold = await windows.extend({ alias, holder: caller }, ms);
+      return hold
+        ? { success: true, output: describeHold({ ...hold, alias, open: true }, Date.now(), caller) }
+        : { success: false, output: "", error: "No window of that number is kept for this conversation." };
+    }
+    if (args["kept"] === "release") {
+      const alias = typeof args["window"] === "number" ? args["window"] : undefined;
+      const all = args["all"] === true;
+      if (alias === undefined && !all) return { success: false, output: "", error: "Name the window to release, or set all=true." };
+      const released = await windows.release({ ...(alias !== undefined ? { alias } : {}), all, holder: caller });
+      return released > 0
+        ? { success: true, output: `Released ${released} window${released > 1 ? "s" : ""}: the next task may use ${released > 1 ? "them" : "it"}.` }
+        : { success: false, output: "", error: "No window of that number is kept for this conversation. The owner can release any window with /windows." };
+    }
+    if (args["kept"] !== "list") return { success: false, output: "", error: `Unknown kept action "${String(args["kept"])}": use list, release or extend.` };
+    const kept = await windows.kept();
+    if (kept.length === 0) return { success: true, output: "No browser window is kept." };
+    const now = Date.now();
+    return { success: true, output: kept.map((hold) => describeHold(hold, now, caller)).join("\n") };
+  } catch (err) {
+    return { success: false, output: "", error: `Could not read the browser's windows: ${err instanceof Error ? err.message : String(err)}` };
+  }
 }

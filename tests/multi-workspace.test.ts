@@ -219,10 +219,11 @@ test("a workspace skill that masks a built-in says so", async () => {
   assert.equal(registry.listAll().find((s) => s.workspace === "a")!.overrides, "built-in");
 });
 
-test("read_skill and list_skills follow the run's workspace", async () => {
+test("read_skill follows the run's workspace", async () => {
   const dir = await tmpDir();
   const a = await tmpDir();
   await writeSkill(dir, "shared", "custom copy");
+  await writeSkill(a, "only-a", "A only");
   await writeSkill(a, "shared", "A copy");
   const all = await loadAllSkills({
     builtInDir: dir,
@@ -231,17 +232,17 @@ test("read_skill and list_skills follow the run's workspace", async () => {
   });
   const registry = new SkillRegistry(all);
 
-  const { createReadSkillTool, createListSkillsTool } = await import("../src/tools/skills.ts");
+  const { createReadSkillTool } = await import("../src/tools/skills.ts");
   const config = configWith({ a });
   const read = createReadSkillTool(registry, config);
-  const list = createListSkillsTool(registry, config);
 
   const inA = await read.execute({ name: "shared", __workspaceDir: a });
   assert.match(inA.output, /A copy/);
   const inDefault = await read.execute({ name: "shared", __workspaceDir: dir });
   assert.match(inDefault.output, /custom copy/);
-  const listed = await list.execute({ __workspaceDir: a });
-  assert.match(listed.output, /shared/);
+  // What a refusal names follows the workspace too: another project's skills are not offered.
+  assert.match((await read.execute({ name: "nope", __workspaceDir: a })).output, /only-a/);
+  assert.doesNotMatch((await read.execute({ name: "nope", __workspaceDir: dir })).output, /only-a/);
 });
 
 // --- Per-agent workspaces ---

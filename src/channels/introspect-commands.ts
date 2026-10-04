@@ -194,7 +194,7 @@ export async function handleAgentsCommand(p: IntrospectParams): Promise<string> 
     "",
     "Spécial",
     "- browser : prompt dans agents/browser.md, mais runner et registre d'outils privés."
-      + " Atteint par delegate_browser_task et non par spawn, aucune skill, aucun MCP, invisible de list_agents",
+      + " Atteint par delegate_browser_task et non par spawn, aucune skill, aucun MCP, invisible de `agents list`",
   );
   return lines.join("\n");
 }

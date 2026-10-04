@@ -55,7 +55,7 @@ python -c "from faster_whisper import WhisperModel; m = WhisperModel('large-v3',
 
 **Notes:**
 - Voice features work in **cloud**, **local**, or **auto** mode. No fallback — if the chosen mode fails, the error is explicit.
-- TTS is **manual only** (agent calls `tts` tool when user asks). No automatic TTS post-response.
+- TTS is **manual only** (agent calls the `audio` tool when user asks). No automatic TTS post-response.
 - For unlimited token plans, video frame extraction uses up to 20 frames per video (1 every 3 seconds).
 
 ### Skills (separate)

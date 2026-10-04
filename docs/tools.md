@@ -35,6 +35,32 @@ So `web_search` inspects `unresponsive_engines`:
 Limitation: this relies on SearXNG populating `unresponsive_engines`. An instance that returns a clean
 empty body while throttled would still look like a genuine "no results".
 
+## The tool set is kept small (2026-10-04)
+
+Every tool definition is sent with every request, and the orchestrator carries the most. What
+decides whether a tool stands alone:
+
+- **A catalog is never enumerated in a schema.** `spawn`'s `model` was an `enum` of every known
+  model: 544 ids, 20 000 characters, about 5 000 tokens per request, more than every other change
+  here together, and it moved whenever discovery found a model while the tool definitions open the
+  cached prefix. It is a string now, checked at call time; a wrong one is answered with the closest
+  ids (docs/subagents.md).
+- **Rare actions of one shape share a tool.** `agents` (list, kill, reset) replaced three tools;
+  `audio` (transcribe, speak, mode) replaced `stt`, `tts`, `voice_mode`; the kept browser windows
+  moved onto `delegate_browser_task` as `kept` (list, release, extend) instead of
+  `held_browser_windows`.
+- **A tool that repeats the prompt goes.** `list_skills` returned the catalog layer 5 already
+  lists; `read_skill`'s refusal now names what the caller may read, which was the one case it
+  covered.
+- **The hot path and the permission boundaries stay apart.** `spawn` and `send` (rich arguments,
+  called often), the file tools, `web_search`, `fetch`, `question`: one tool each. `read_skill` and
+  `manage_skills` are not merged because the research and browser agents may read skills and never
+  write them, and permissions are by tool name.
+
+A tool with an `action` puts every action's parameters in one schema, so it is reserved for rare
+calls with few arguments: a merged schema cannot say which argument each action requires, and
+each action checks its own instead.
+
 ## Tool availability
 
 `ToolRegistry.getForAgent(agentType, disabled)` builds each agent's tool set: per-agent exclusion lists

@@ -67,7 +67,7 @@ const INSTANCES: SubAgentInfo[] = [
 
 function params(agents: MyClawConfig["agents"], args = "", overrides: Partial<IntrospectParams> = {}): IntrospectParams {
   const tools = new ToolRegistry();
-  for (const n of ["read", "search", "ls", "fetch", "web_search", "list_skills", "read_skill", "manage_skills", "bash", "memory", "cron", "spawn"]) {
+  for (const n of ["read", "search", "ls", "fetch", "web_search", "read_skill", "manage_skills", "bash", "memory", "cron", "spawn"]) {
     tools.register(tool(n));
   }
   tools.setDynamicProvider(() => [tool("mcp__mailcow__list"), tool("mcp__weather__now")]);
@@ -146,7 +146,7 @@ describe("/agents", () => {
     expect(out).toContain("Agents (fichiers)");
     for (const t of ["general", "research"]) expect(out).toContain(`- ${t} [built-in] |`);
     expect(out).toContain("subagent/deploy-a1b2 | deploy | general | 14 messages | idle");
-    // The one agent invisible to list_agents, which is why it is named explicitly.
+    // The one agent invisible to `agents list`, which is why it is named explicitly.
     expect(out).toContain("browser :");
   });
 

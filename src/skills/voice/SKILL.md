@@ -19,15 +19,15 @@ that is simply wrong.
 
 ## Manual TTS (outbound)
 
-TTS is **never automatic**. The agent must call the `tts` tool
+TTS is **never automatic**. The agent must call the `audio` tool (`action="speak"`)
 when the user asks for audio. The file it makes is **not sent by itself**: put
-`MEDIA:<path>` in the answer to send it. Listening to it (`stt`) and making it again is fine;
-only the take the answer names is delivered.
+`MEDIA:<path>` in the answer to send it. Listening to it (`action="transcribe"`) and making it
+again is fine; only the take the answer names is delivered.
 
 ```tool
-tts(text="Hello")                     # Effective mode
-tts(text="Hello", forceCloud=true)    # Force cloud
-tts(text="Hello", forceLocal=true)    # Force local
+audio(action="speak", text="Hello")                     # Effective mode
+audio(action="speak", text="Hello", forceCloud=true)    # Force cloud
+audio(action="speak", text="Hello", forceLocal=true)    # Force local
 ```
 
 Limit: **5000 characters max** per call — longer text is rejected, shorten or split it.
@@ -35,8 +35,8 @@ Limit: **5000 characters max** per call — longer text is rejected, shorten or 
 ## Manual STT
 
 ```tool
-stt(filePath="/tmp/audio.ogg")                    # Auto-detect the language
-stt(filePath="/tmp/audio.ogg", language="en")     # Force a language you are sure of
+audio(action="transcribe", filePath="/tmp/audio.ogg")                 # Auto-detect the language
+audio(action="transcribe", filePath="/tmp/audio.ogg", language="en")  # Force a language you are sure of
 ```
 
 Limit: **25 MB max** per audio file — compress/split longer recordings first.
@@ -48,9 +48,9 @@ reliable, whereas a wrong forced language yields plausible nonsense with no erro
 ## Mode Switch (runtime)
 
 ```tool
-voice_mode(mode="cloud", feature="all")     # Everything cloud
-voice_mode(mode="local", feature="stt")     # STT local only
-voice_mode(mode="local", feature="tts")     # TTS local only
+audio(action="mode", mode="cloud", feature="all")     # Everything cloud
+audio(action="mode", mode="local", feature="stt")     # STT local only
+audio(action="mode", mode="local", feature="tts")     # TTS local only
 ```
 
 The change is **runtime** — no reboot needed.

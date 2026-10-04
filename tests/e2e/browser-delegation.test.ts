@@ -285,7 +285,10 @@ describe("E2E browser delegation", () => {
     expect(names).not.toContain("read");
   });
 
-  test("delegate_browser_task has url and instructions as required params", async () => {
+  // `url` and `instructions` are no longer schema-required since `kept` moved onto this tool
+  // (2026-10-04): a call with `kept` runs no task. The tool refuses a task missing either one
+  // (tests/tools/browser-holds.test.ts).
+  test("delegate_browser_task offers a task (url, instructions) and the kept windows", async () => {
     const registry = await withBrowser(config);
     const router = makeRouter(registry);
 
@@ -301,10 +304,10 @@ describe("E2E browser delegation", () => {
       const browserTool = capturedTools.find((t) => t.function.name === "delegate_browser_task");
       expect(browserTool).toBeDefined();
       const params = browserTool!.function.parameters as { required?: string[]; properties?: Record<string, unknown> };
-      expect(params.required).toContain("url");
-      expect(params.required).toContain("instructions");
       expect(params.properties).toHaveProperty("url");
       expect(params.properties).toHaveProperty("instructions");
+      expect(params.properties).toHaveProperty("kept");
+      expect(capturedTools.some((t) => t.function.name === "held_browser_windows")).toBe(false);
     } finally {
       mock.restore();
     }

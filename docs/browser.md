@@ -49,7 +49,7 @@ uses, and `BrowserSession.endRun` in the `finally` gives them back however the r
 of runs drive the one Chromium at once, each in windows of its own: `docs/browser-windows.md`.
 
 `spawn` still does not offer `browser` (`AgentRegistry.list`): a spawn of it would skip the framing,
-the windows and the handoff. The delegate is the door; `list_agents`, `/agents`, the roster and the
+the windows and the handoff. The delegate is the door; `agents list`, `/agents`, the roster and the
 app see the runs it creates like any other one-shot.
 
 ## Layers
@@ -106,7 +106,7 @@ offer — a `fetch` to the site's own API, `location.reload`, and reading `docum
 Those three are now tools of their own, so `eval` keeps its place as the top rung of the ladder.
 
 **Scoping.** The `browser_*` tools are the `browser` tool base (`ToolRegistry.getForAgent("browser")`,
-a closed set: its own tools plus `list_skills` and `read_skill`, no MCP, no plugin) and every other base (`main`, `general`, `research`,
+a closed set: its own tools plus `read_skill`, no MCP, no plugin) and every other base (`main`, `general`, `research`,
 `cron`) is filtered of them: a driver outside a browser run would hold no window and be released by nothing.
 `browser_eval` and `browser_cdp` are registered always and taken away per run through
 `ResolvedAgent.deny` when `browser.allowEval` / `browser.allowCdp` are off, so a hot-reload toggles
@@ -245,7 +245,7 @@ what `browser_click_at` exists for.
 It used to get CORE, SOUL and USER only: neither the workspace's AGENTS.md, where the rules of what
 it fills in live (how an application is worded, what is never stated), nor the skills. The
 conversation driving it had to copy all of that into every brief. It now reads the AGENTS.md of the
-workspace it runs in and can read skills with `list_skills` / `read_skill`, under its `skills`
+workspace it runs in and can read skills with `read_skill`, under its `skills`
 scope like any agent (`agents.browser.skills` narrows it; `[]` takes skills away).
 
 The risk this adds is not a new capability but more text to leak: a page cannot make the agent run

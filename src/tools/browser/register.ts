@@ -34,7 +34,6 @@ import {
   createBrowserSnapshotTool,
 } from "./navigation.ts";
 import { createBrowserDoneTool, guardedBrowserTool, holdPolicyOf, type BrowserSession } from "./session.ts";
-import { createHeldBrowserWindowsTool } from "./held.ts";
 import { createBrowserMailVerificationTool } from "./mail.ts";
 import { GmailSource } from "../../mail/gmail.ts";
 import { createBrowserReadOutputTool } from "./output.ts";
@@ -92,7 +91,4 @@ export function registerBrowserTools(registry: ToolRegistry, config: MyClawConfi
   ];
   for (const tool of tools) registry.register(guardedBrowserTool(tool));
   registry.register(createBrowserDoneTool(() => holdPolicyOf(config), () => windows.keepRoom()));
-  // The delegating side's view of the windows kept for it: not a browser_* tool, so it reaches the
-  // orchestrator, the general sub-agents and the jobs, and never the browser agent itself.
-  registry.register(createHeldBrowserWindowsTool(windows));
 }

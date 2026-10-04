@@ -111,15 +111,11 @@ import { applyPatchTool } from "./tools/apply-patch.ts";
 import { lsTool } from "./tools/ls.ts";
 import { createMemoryTool } from "./tools/memory.ts";
 import { createConversationSearchTool } from "./tools/conversation-search.ts";
-import { createSpawnTool } from "./tools/spawn.ts";
+import { createSpawnTool, spawnModelIds } from "./tools/spawn.ts";
 import { createSendTool } from "./tools/send.ts";
-import { createListAgentsTool } from "./tools/list-agents.ts";
-import { createKillAgentTool } from "./tools/kill-agent.ts";
-import { createResetAgentTool } from "./tools/reset-agent.ts";
-import { createListSkillsTool, createReadSkillTool, createManageSkillsTool } from "./tools/skills.ts";
-import { createSttTool } from "./tools/stt.ts";
-import { createTtsTool } from "./tools/tts.ts";
-import { createVoiceModeTool } from "./tools/voice-mode.ts";
+import { createAgentsTool } from "./tools/agents.ts";
+import { createReadSkillTool, createManageSkillsTool } from "./tools/skills.ts";
+import { createAudioTool } from "./tools/audio.ts";
 import { createWebSearchTool } from "./tools/web-search.ts";
 import { BrowserSession, createDelegateBrowserTool, registerBrowserTools } from "./tools/browser/index.ts";
 import { runReasoningSink } from "./channels/my-claw-app/run-sink.ts";
@@ -3006,9 +3002,7 @@ function registerCoreTools(registry: ToolRegistry, config: MyClawConfig): void {
 }
 
 function registerVoiceTools(registry: ToolRegistry, stt: SttPipeline, tts: TtsPipeline, voice: VoiceManager): void {
-  registry.register(createSttTool(stt));
-  registry.register(createTtsTool(tts));
-  registry.register(createVoiceModeTool(voice));
+  registry.register(createAudioTool({ stt, tts, manager: voice }));
 }
 
 function registerSubAgentTools(
@@ -3021,7 +3015,7 @@ function registerSubAgentTools(
   registry.register(createSpawnTool(
     runner,
     subRegistry,
-    () => (config.llm.models ?? []).map((m) => m.id),
+    () => spawnModelIds(config),
     () => agentRegistry.list(),
     streamProvider,
   ));
@@ -3029,9 +3023,7 @@ function registerSubAgentTools(
   // The browser is a sub-agent like the others, reached through its own door rather than `spawn`:
   // one shared Chromium, one task at a time (docs/browser.md).
   registry.register(createDelegateBrowserTool(config, runner, subRegistry, browserSession, streamProvider));
-  registry.register(createListAgentsTool(runner, subRegistry));
-  registry.register(createKillAgentTool(runner));
-  registry.register(createResetAgentTool(runner));
+  registry.register(createAgentsTool(runner, subRegistry));
 }
 
 function registerSkillTools(
@@ -3041,7 +3033,6 @@ function registerSkillTools(
 ): void {
   // config is the live object mutated in place by the hot-reload appliers, so a scope edit takes
   // effect on the next tool call without re-registering anything.
-  registry.register(createListSkillsTool(skillRegistry, config, sessionManager));
   registry.register(createReadSkillTool(skillRegistry, config, sessionManager));
   registry.register(createManageSkillsTool(skillRegistry, config, builtinDir, customDir, workspaceSkillsDir));
 }

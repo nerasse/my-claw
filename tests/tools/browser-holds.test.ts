@@ -18,7 +18,11 @@ import {
   type WindowsBackend,
 } from "../../src/tools/browser/windows.ts";
 import { createBrowserDoneTool, holdPolicyOf, takeBrowserOutcome } from "../../src/tools/browser/session.ts";
-import { createHeldBrowserWindowsTool } from "../../src/tools/browser/held.ts";
+import { keptWindows } from "../../src/tools/browser/held.ts";
+import { createDelegateBrowserTool } from "../../src/tools/browser/delegate.ts";
+import type { BrowserSession } from "../../src/tools/browser/session.ts";
+import type { SubAgentRunner } from "../../src/subagents/runner.ts";
+import type { SubAgentRegistry } from "../../src/subagents/registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 
 function browser(initial: BrowserWindowView[]) {
@@ -180,7 +184,7 @@ describe("releasing", () => {
     await w.page(call("b", 2));
     w.endRun("b", { reason: "kept" });
 
-    const tool = createHeldBrowserWindowsTool(w);
+    const tool = { execute: (args: Record<string, unknown>) => keptWindows(w, { ...args, kept: args["action"] }, String(args["__sessionId"])) };
     const listed = await tool.execute({ action: "list", __sessionId: "conv-a" });
     expect(listed.output).toContain("Window 1: kept to continue");
     expect(listed.output).toContain("yours");
@@ -192,6 +196,52 @@ describe("releasing", () => {
 
     expect(await w.release({ all: true })).toBe(1);
     expect(store.holds).toEqual([]);
+  });
+});
+
+describe("the kept windows, through the delegate", () => {
+  // They had a tool of their own, `held_browser_windows`; they are the delegating side's business,
+  // so they moved onto its door (2026-10-04). A call with `kept` must settle windows and start no
+  // browser run.
+  function delegate(w: BrowserWindows) {
+    const spawned: unknown[] = [];
+    const runner = { spawn: async (opts: unknown) => { spawned.push(opts); return { id: "subagent/run-x", result: "", attachments: [] }; } } as unknown as SubAgentRunner;
+    const session = { windows: w } as unknown as BrowserSession;
+    const tool = createDelegateBrowserTool({ browser: {} } as MyClawConfig, runner, {} as SubAgentRegistry, session);
+    return { tool, spawned };
+  }
+
+  test("kept lists, extends and releases this conversation's windows, and runs no task", async () => {
+    const store = memoryStore();
+    const b = browser([hellowork(11)]);
+    const w = new BrowserWindows(b.backend, () => 0, store);
+    w.beginRun("a", "conv-a");
+    await w.page(call("a", 1));
+    w.endRun("a", { reason: "kept" });
+    const { tool, spawned } = delegate(w);
+
+    const listed = await tool.execute({ kept: "list", __sessionId: "conv-a" });
+    expect(listed.output).toContain("Window 1: kept to continue");
+    expect((await tool.execute({ kept: "extend", window: 1, hold: "2h", __sessionId: "conv-a" })).success).toBe(true);
+    expect((await tool.execute({ kept: "release", window: 1, __sessionId: "conv-a" })).success).toBe(true);
+    expect(store.holds).toEqual([]);
+    expect(spawned).toEqual([]);
+  });
+
+  test("a kept action it does not know is refused, not read as a list", async () => {
+    const { tool, spawned } = delegate(new BrowserWindows(browser([]).backend, () => 0, memoryStore()));
+    const result = await tool.execute({ kept: "close", __sessionId: "conv-a" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("list, release or extend");
+    expect(spawned).toEqual([]);
+  });
+
+  test("a task without its url or instructions is refused before a run starts", async () => {
+    const { tool, spawned } = delegate(new BrowserWindows(browser([]).backend, () => 0, memoryStore()));
+    const result = await tool.execute({ instructions: "find the price", __sessionId: "conv-a" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("url and instructions");
+    expect(spawned).toEqual([]);
   });
 });
 

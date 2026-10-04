@@ -21,8 +21,10 @@ import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
-import { createTtsTool } from "../../src/tools/tts.ts";
+import { createAudioTool } from "../../src/tools/audio.ts";
 import type { TtsPipeline } from "../../src/voice/tts.ts";
+import type { SttPipeline } from "../../src/voice/stt.ts";
+import type { VoiceManager } from "../../src/voice/manager.ts";
 
 const config: MyClawConfig = {
   whitelist: ["u1"],
@@ -130,12 +132,12 @@ describe("a voice note the agent makes twice", () => {
       },
     } as unknown as TtsPipeline;
     const reg = new ToolRegistry();
-    reg.register(createTtsTool(pipeline));
+    reg.register(createAudioTool({ tts: pipeline, stt: {} as SttPipeline, manager: {} as VoiceManager }));
     const router = new MessageRouter(new SessionManager(), new AgentBridge(config, reg, new SkillRegistry()), config);
     const media = store();
     router.setMediaStore(media.hook);
     let n = 0;
-    const tts = (id: string) => ({ content: "", tool_calls: [{ id, function: { name: "tts", arguments: JSON.stringify({ text: "Bonjour" }) } }] });
+    const tts = (id: string) => ({ content: "", tool_calls: [{ id, function: { name: "audio", arguments: JSON.stringify({ action: "speak", text: "Bonjour" }) } }] });
     const mock = mockFetch(async () => {
       n++;
       if (n <= 2) return llm(tts(`tc${n}`));

@@ -33,9 +33,7 @@ function cronRegistry(): ToolRegistry {
     "bash",
     "spawn",
     "send",
-    "list_agents",
-    "kill_agent",
-    "reset_agent",
+    "agents",
     "delegate_browser_task",
     "notify",
     "question",
@@ -98,7 +96,7 @@ describe("E2E cron capabilities", () => {
       expect(names).toContain("notify");
       expect(names).not.toContain("spawn");
       expect(names).not.toContain("send");
-      expect(names).not.toContain("list_agents");
+      expect(names).not.toContain("agents");
       expect(names).not.toContain("delegate_browser_task");
       // What no job ever gets, whatever it is configured with.
       expect(names).not.toContain("question");
@@ -131,7 +129,7 @@ describe("E2E cron capabilities", () => {
       await router.routeCron(cronMessage(), SESSION_ID);
 
       const names = toolNamesOf(bodies[0]!);
-      for (const granted of ["spawn", "send", "list_agents", "kill_agent", "reset_agent", "delegate_browser_task"]) {
+      for (const granted of ["spawn", "send", "agents", "delegate_browser_task"]) {
         expect(names).toContain(granted);
       }
       expect(names).not.toContain("browser_click");

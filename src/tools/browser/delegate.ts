@@ -5,6 +5,7 @@ import { isAbort, rethrowIfAborted } from "../../core/aborted.ts";
 import type { SubAgentRegistry } from "../../subagents/registry.ts";
 import type { SubAgentRunner, SubAgentStream } from "../../subagents/runner.ts";
 import { DEFAULT_NOVNC_URL, takeBrowserOutcome, type BrowserSession } from "./session.ts";
+import { keptWindows } from "./held.ts";
 
 /**
  * The door to the browser: a task, run by the `browser` agent as a private one-shot sub-agent of
@@ -12,6 +13,9 @@ import { DEFAULT_NOVNC_URL, takeBrowserOutcome, type BrowserSession } from "./se
  * opens it, watches it live, steers it and can `send` to it afterwards to carry on in the same
  * browser; this tool only frames the task, waits for the run and reads back what the run recorded
  * for the caller (a human handoff, a dead sidecar) that its final message cannot carry.
+ *
+ * With `kept`, no task runs: the call reads or settles the windows earlier tasks kept for this
+ * conversation (held.ts). Those are the delegating side's business, so they live on its door.
  */
 export function createDelegateBrowserTool(
   config: MyClawConfig,
@@ -22,24 +26,32 @@ export function createDelegateBrowserTool(
 ): Tool {
   return {
     name: "delegate_browser_task",
-    description: "Delegate a web browsing task to a specialized subagent. Use for multi-step web interactions like filling forms, booking, or searching on specific websites. Tasks run in parallel on one shared browser, each in windows of its own: parallel calls are fine, even on the same site. The subagent may take screenshots during the task; any captured images are automatically attached to your response and delivered to the user. Do NOT try to find, read, or re-attach these screenshots, and do NOT reference them with MEDIA: — they are already attached. Just describe the result in your reply.",
+    description: "Delegate a web browsing task to a specialized subagent. Use for multi-step web interactions like filling forms, booking, or searching on specific websites. Tasks run in parallel on one shared browser, each in windows of its own: parallel calls are fine, even on the same site. The subagent may take screenshots during the task; any captured images are automatically attached to your response and delivered to the user. Do NOT try to find, read, or re-attach these screenshots, and do NOT reference them with MEDIA: — they are already attached. Just describe the result in your reply. " +
+      "With `kept` instead of a task: the windows earlier tasks kept (for a human, or for this conversation to continue in): 'list' them with what each waits for and until when, 'extend' one of this conversation's (window, hold), or 'release' them (window, or all) once no longer needed. A kept window closes with its tabs when its time is up; to continue in one, delegate the next step: it is offered that window first.",
     parameters: {
       type: "object",
       properties: {
-        url: { type: "string", description: "Starting URL" },
+        url: { type: "string", description: "Starting URL (a task)" },
         instructions: { type: "string", description: "Detailed instructions for the browsing task" },
+        kept: { type: "string", enum: ["list", "release", "extend"], description: "Instead of a task: act on the windows kept for this conversation" },
+        window: { type: "number", description: "kept: the window number to release or extend" },
+        hold: { type: "string", description: "kept=extend: how long to keep it from now, e.g. 24h. Capped at browser.holdMax." },
+        all: { type: "boolean", description: "kept=release: every window kept for this conversation" },
       },
-      required: ["url", "instructions"],
     },
     async execute(args): Promise<ToolResult> {
       // Read enabled live so the config hot-reload watcher can toggle it at runtime.
       if (config.browser?.enabled === false) {
         return { success: false, output: "", error: "Browser tool is disabled (browser.enabled = false in config.json)." };
       }
+      const callerSessionId = typeof args["__sessionId"] === "string" ? args["__sessionId"] : "";
+      if (args["kept"] !== undefined) return keptWindows(session.windows, args, callerSessionId);
       const url = str(args, "url");
       const instructions = str(args, "instructions");
+      if (!url || !instructions) {
+        return { success: false, output: "", error: "A browsing task needs url and instructions (or set kept to act on the kept windows)." };
+      }
       const signal = args["__signal"] instanceof AbortSignal ? args["__signal"] : undefined;
-      const callerSessionId = typeof args["__sessionId"] === "string" ? args["__sessionId"] : "";
       const workspaceDir = typeof args["__workspaceDir"] === "string" ? args["__workspaceDir"] : undefined;
       const toolCallId = typeof args["__toolCallId"] === "string" ? args["__toolCallId"] : undefined;
       const message = args["__message"] as UnifiedMessage | undefined;
@@ -86,7 +98,7 @@ export function createDelegateBrowserTool(
         }
         const summary = outcome.summary;
         const keptNote = outcome.kept
-          ? `\nKept for this conversation until ${new Date(outcome.kept.until).toLocaleString("fr-FR", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}: window ${outcome.kept.windows.join(", ")}. To continue there, delegate the next step: the task will be offered that window first. Release it with held_browser_windows once it is no longer needed.`
+          ? `\nKept for this conversation until ${new Date(outcome.kept.until).toLocaleString("fr-FR", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}: window ${outcome.kept.windows.join(", ")}. To continue there, delegate the next step: the task will be offered that window first. Release it with delegate_browser_task(kept: "release", window) once it is no longer needed.`
           : "";
         if (outcome.needsHuman) {
           const novncUrl = config.browser?.novncUrl ?? DEFAULT_NOVNC_URL;

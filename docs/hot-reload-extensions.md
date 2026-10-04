@@ -170,7 +170,7 @@ implement the applier in `index.ts` as a closure (mirror `syncMcp`).
 ### B1 -- voice config (EASY)
 
 `VoiceManager` captures the root `config` and reads `config.voice` live on every
-call (`src/voice/manager.ts:14-20`); it already mutates in place for `voice_mode`.
+call (`src/voice/manager.ts:14-20`); it already mutates in place for the `audio` tool's `mode`.
 Pipelines are stateless, no teardown. So: make `voice` a HOT object section --
 the in-place mutation is picked up live, no recreate, no applier. Tests: assert
 `voice` hot-applies and preserves object identity.

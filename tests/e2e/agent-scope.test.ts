@@ -8,7 +8,7 @@ import { parseConfig, type MyClawConfig } from "../../src/core/config.ts";
 import { loadAllSkills } from "../../src/skills/loader.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
-import { createListSkillsTool, createReadSkillTool } from "../../src/tools/skills.ts";
+import { createReadSkillTool } from "../../src/tools/skills.ts";
 import { AgentBridge } from "../../src/agent/bridge.ts";
 import { MessageRouter } from "../../src/core/router.ts";
 import { SessionManager } from "../../src/sessions/manager.ts";
@@ -79,7 +79,6 @@ async function realSkills(): Promise<SkillRegistry> {
  */
 function stack(config: MyClawConfig, skills: SkillRegistry, opts: { depth?: number; agentKind?: "general" | "research" } = {}) {
   const tools = new ToolRegistry();
-  tools.register(createListSkillsTool(skills, config));
   tools.register(createReadSkillTool(skills, config));
   const bridge = new AgentBridge(config, tools, skills, undefined, undefined, opts.depth ?? 0, undefined, opts.agentKind);
   return { router: new MessageRouter(new SessionManager(), bridge), bridge };
@@ -144,7 +143,7 @@ describe("E2E agent scoping", () => {
     const config = configWith({ orchestrator: { skills: ["*"] }, general: { skills: ["alpha"] } });
     const { router } = stack(config, skills, { depth: 1, agentKind: "general" });
 
-    const listed = await callTool(router, "list_skills", {});
+    const listed = await callTool(router, "read_skill", { name: "nope" });
     expect(listed.toolOutput).toContain("alpha");
     expect(listed.toolOutput).not.toContain("beta");
     // The prompt catalog and the tool must agree, or the model is told to read something it cannot.
@@ -167,7 +166,7 @@ describe("E2E agent scoping", () => {
     const { router } = stack(config, skills, { depth: 0 });
 
     expect((await callTool(router, "read_skill", { name: "beta" })).toolOutput).toContain("BETA BODY");
-    expect((await callTool(router, "list_skills", {})).toolOutput).toContain("beta");
+    expect((await callTool(router, "read_skill", { name: "nope" })).toolOutput).toContain("beta");
   });
 
   test("editing the scope on disk applies to the next message, with no restart", async () => {
@@ -236,7 +235,7 @@ describe("E2E agent scoping", () => {
     const config = configWith({});
     for (const opts of [{ depth: 0 }, { depth: 1, agentKind: "general" as const }, { depth: 1, agentKind: "research" as const }]) {
       const { router } = stack(config, skills, opts);
-      const listed = await callTool(router, "list_skills", {});
+      const listed = await callTool(router, "read_skill", { name: "nope" });
       expect(listed.toolOutput).toContain("alpha");
       expect(listed.toolOutput).toContain("beta");
       expect((await callTool(router, "read_skill", { name: "beta" })).toolOutput).toContain("BETA BODY");

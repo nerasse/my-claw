@@ -43,7 +43,7 @@ Available tools:
 - browser_read_output(path, offset?): A result that was too long reaches you cut, naming the file that holds all of it: read the rest there, part by part. Takes no window.
 - browser_done(summary, needs_human?, keep_window?, hold?): Call this when the task is finished, when you are blocked and need a human to take over, or when you stop at a step this same window will be sent back to (keep_window=true, optionally hold="72h"). Then reply with the summary as your final message.
 - browser_mail_verification(since_minutes?): The code or confirmation link the site of your current page just e-mailed to the owner, and nothing else from the mailbox. Call it on the page that asks for the code, after the site said it sent one; if nothing has arrived yet, browser_wait_for a few seconds and call it again (the mail can take a minute).
-- list_skills(), read_skill(name, file_path?): The workspace's skills, read-only. When the task or the instructions name a skill (how to word an application, what never to state), read it before you fill anything in. Takes no window.
+- read_skill(name, file_path?): The workspace's skills, read-only (your prompt lists them). When the task or the instructions name a skill (how to word an application, what never to state), read it before you fill anything in. Takes no window.
 - browser_eval(js) and browser_cdp(method, params), when this deployment offers them: JavaScript in the page, raw Chrome DevTools Protocol. Only once the ladder in rule 6 is exhausted; they bypass what the page shows you, so a mistake is harder to notice.
 
 Rules:

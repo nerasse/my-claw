@@ -548,8 +548,8 @@ entry means the global default, not whatever the owner picked for his own chats.
   every server on upgrade. Only an explicit `agents.research.mcp` grants it servers.
 - Granting MCP to `research` **ends the "read-only research agent" guarantee**: its built-in tools
   are a read-only allowlist, but an MCP server's tools are arbitrary and may write.
-- The scope binds visibility *and* execution: the prompt catalog, `list_skills` and `read_skill` all
-  agree, and out-of-scope MCP tools are not exposed. It scopes the skill system, not the filesystem —
+- The scope binds visibility *and* execution: the prompt catalog and `read_skill` (what it reads, and what its
+  refusals name) agree, and out-of-scope MCP tools are not exposed. It scopes the skill system, not the filesystem —
   `read` can still open a `SKILL.md` by path.
 - A name matching no installed skill and no declared MCP server is reported to the owner at boot and
   logged at `warn`. It never blocks a boot.
@@ -566,7 +566,7 @@ is per type). No argument means the orchestrator, and an unknown name lists the 
   (`manage_skills` is orchestrator-only), and any configured name matching no installed skill.
 - `/agents` — the three configured types with iterations, model, tool class and both scopes; then
   `cron` (inherits the orchestrator when it has no entry of its own); then the live sub-agents; then the browser
-  sub-agent, which is hardcoded, has no skills or MCP, and is invisible to `list_agents`.
+  sub-agent, which is hardcoded, has no skills or MCP, and is invisible to `agents list`.
 - `/mcp [agent]` — every **declared** server with its state (`connected`/`disabled`/`failed`, with the
   connect error), marked in or out of that agent's scope. A failed server stays listed, which is the
   point: it used to be logged and dropped. Warns when `research` has servers.
@@ -685,7 +685,7 @@ See `docs/my-claw-app-channel.md` for the wire protocol and `docs/web-pairing.md
 - `stt.language` — Whisper language code. **No default: absent means auto-detect**, and it
   applies to the owner's voice notes only. Other audio files are always auto-detected, since
   forcing the wrong language makes Whisper emit confident nonsense rather than an error. The
-  `stt` tool takes a per-call `language` for the cases the agent is sure about.
+  `audio` tool's `transcribe` takes a per-call `language` for the cases the agent is sure about.
 - `tts.mode` — override for TTS. Cloud uses Edge TTS, local uses Piper.
 - `tts.voice` — voice ID (Edge TTS voice name or Piper model name).
 

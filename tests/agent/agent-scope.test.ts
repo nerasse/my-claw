@@ -209,7 +209,7 @@ test("scope: a cron run uses the orchestrator's list", async () => {
 // --- __agentType reaching the tools ---
 
 test("scope: the home loop tells a tool which agent class called it", async () => {
-  // Without this the scope inside list_skills/read_skill silently falls back to the orchestrator,
+  // Without this the scope inside read_skill silently falls back to the orchestrator,
   // and a restricted sub-agent would read anything.
   const { skills } = fixtures();
   assert.equal((await runHome(baseConfig(), skills, { depth: 0 })).toolArgs?.["__agentType"], "main");

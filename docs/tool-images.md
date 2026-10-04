@@ -84,7 +84,7 @@ screenshots to check a layout, then deleted their folder before answering.*
 
 - **Kept from the reply** (`ToolResult.keepFromReply`): `read` of an image is the agent looking at
   a file, so its picture rides the tool message to the model and is not attached to the reply.
-  `tts` makes a draft: the agent may listen to it (`stt`) and make it again, and only the take its
+  `audio` (`speak`) makes a draft: the agent may listen to it (`transcribe`) and make it again, and only the take its
   answer names with `MEDIA:` is delivered. A browser screenshot still attaches by itself.
 
   Why not dedup: a regenerated voice note is the same text and not the same bytes (two Edge

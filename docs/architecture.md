@@ -9,7 +9,7 @@
 | Sessions (memory + disk) | Complete |
 | Agent bridge | Complete — tool call loop, configurable iteration budgets (90/50), grace call summary, typed session messages |
 | LLM provider | Complete — sync + streaming |
-| Tools (8 base + voice, browser, skill, subagent, search, cron) | Complete: bash, read, write, apply_patch, fetch, search, ls, memory + stt, tts, voice_mode, delegate_browser_task, spawn, send, list_agents, kill_agent, reset_agent, list_skills, read_skill, manage_skills, web_search, cron |
+| Tools (8 base + voice, browser, skill, subagent, search, cron) | Complete: bash, read, write, apply_patch, fetch, search, ls, memory + audio, delegate_browser_task, spawn, send, agents, read_skill, manage_skills, web_search, cron |
 | System prompt builder | Complete (8-layer: hardcoded core + 3 workspace files + 4 dynamic) |
 | Nested AGENTS.md | Complete — lazy per-tool discovery: the AGENTS.md chain from the git root down to a touched subtree is appended to the tool result (file tools via `path`, bash via `workdir`), scanned + byte-capped + deduped per run — see `docs/nested-agents.md` |
 | Context pruning + auto-compaction | Complete — prompt-side stubbing of tool results older than 5 assistant turns (session file untouched), auto LLM compaction on a dynamic threshold checked at run start, mid-run and on provider overflow, with a 20k verbatim tail and a speculative pre-threshold summary — see `docs/context-pruning.md` and `docs/compaction.md` |
@@ -69,7 +69,7 @@
   - Local: faster-whisper server on :8000 (matches the my-claw-whisper systemd unit; override via `FASTER_WHISPER_ENDPOINT`)
   - No fallback — error explicit if chosen mode fails
   - Echo transcript sent as visible message: `📝 "transcription"`
-- **TTS manual**: agent calls `tts` tool only when user asks for audio
+- **TTS manual**: agent calls the `audio` tool (`speak`) only when user asks for audio
   - Cloud: Edge TTS (fr-FR-RemyMultilingualNeural)
   - Local: Piper (fr_FR-siwis-medium)
   - No automatic TTS post-response
@@ -83,7 +83,7 @@
   - Original video attachments removed after extraction
   - Text note `[Video]: "filename" (N frames extracted)` added to message
 - **Voice mode**: runtime switchable without reboot
-  - `voice_mode(mode="cloud", feature="all")`
+  - `audio(action="mode", mode="cloud", feature="all")`
   - Priority: per-call > feature-level > global > auto-detect
 - Config: `voice.mode`, `voice.stt.mode`, `voice.tts.mode`, `voice.tts.voice`, `llm.vision`
 - See `docs/config.md` for full LLM configuration reference
@@ -166,7 +166,7 @@ Hooks are an in-process event bus (`src/hooks/`), not persisted to disk.
 - 2 types: **general** (full tools) and **research** (read-only: read, search, ls, fetch)
 - Mode `run` = one-shot (no concurrency cap, depth 2), mode `session` = persistent on disk
 - Persistent sessions stored in `~/.my-claw/sessions/subagent/${name}-${hex4}.json`
-- 5 tools: `spawn`, `send`, `list_agents`, `kill_agent`, `reset_agent`
+- 3 tools: `spawn`, `send`, `agents` (list, kill, reset)
 - FIFO queueing: concurrent `send` to same sub-agent queues instead of rejecting
 - Configurable LLM per type via `config.agents.<agent>.llm.defaultModel` (`docs/agent-model.md`)
 - Optional `workspaceDir` per sub-agent for filesystem isolation
@@ -178,7 +178,7 @@ Hooks are an in-process event bus (`src/hooks/`), not persisted to disk.
 - Progressive disclosure: only index (name + description) in system prompt; full content loaded on-demand via `read_skill`
 - Multi-file skills: `references/`, `examples/`, `scripts/` subdirectories supported
 - Script execution: `${SKILL_DIR}` placeholder substituted with absolute skill directory path in `read_skill` output
-- 3 tools: `list_skills` (read), `read_skill` (read), `manage_skills` (write)
+- 2 tools: `read_skill` (read), `manage_skills` (write); the catalog is the prompt's layer 5
   - `manage_skills` actions: `create`, `update`, `delete`, `reload`
   - Auto-reload: registry refreshes automatically after create/update/delete
   - User command: `/reload-skills` forces rescan from disk

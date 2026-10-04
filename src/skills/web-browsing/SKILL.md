@@ -43,7 +43,8 @@ own tools, or a gap to report, never something to work around.
    says which window, until when, and what is needed). Get what is needed, then delegate the next
    step: the new task is offered that window first. A code the site e-mails is fetched by the
    browser agent itself (`browser_mail_verification`); you only step in when it could not. List or
-   release kept windows with `held_browser_windows`; the owner has `/windows`.
+   release kept windows with `delegate_browser_task(kept="release", window)`
+   (`kept="list"` shows them); the owner has `/windows`.
 
 ## The browser persists
 

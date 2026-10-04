@@ -4,7 +4,7 @@
  * A persistent sub-agent is reachable by id and by nothing else, and the runner used to keep that
  * id to itself: the tool returned the agent's first answer alone. The caller then had to guess
  * `subagent/<name>-<four hex>`, which is a "sub-agent not found" every time, or spend a round trip
- * on `list_agents`.
+ * on `agents list`.
  *
  * The other half of the same problem: a spawn whose first run dies hands back an error and no id,
  * so the session it created was a roster entry nobody could name, drive or kill.
@@ -92,7 +92,7 @@ test("a session spawn hands back the id, and that id is what send answers to", a
     id = idOf(spawned.output);
     assert.ok(id, `no id in the spawn output: ${spawned.output}`);
 
-    // The round trip is the whole point: no guessing, no list_agents.
+    // The round trip is the whole point: no guessing, no `agents list`.
     const sent = await send.execute({
       id,
       message: "still there?",

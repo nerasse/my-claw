@@ -228,8 +228,8 @@ src/
 │   ├── plugins.ts         # PluginLoader: external tool plugins
 │   ├── skills.ts          # Skill management tools
 │   ├── cron.ts            # Schedule/list/pause/resume/trigger cron jobs
-│   ├── stt.ts, tts.ts, voice-mode.ts  # Manual voice tools (thin wrappers over voice/)
-│   └── spawn.ts, send.ts, list-agents.ts, kill-agent.ts, reset-agent.ts
+│   ├── audio.ts           # Transcribe, speak, voice mode: one tool over voice/
+│   └── spawn.ts, send.ts, agents.ts  # agents = list, kill, reset
 ├── subagents/
 │   ├── runner.ts          # Sub-agent execution (spawn, send, kill, reset) -- docs/subagent-visibility.md
 │   ├── registry.ts        # Sub-agent ID generation + listing

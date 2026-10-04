@@ -21,7 +21,7 @@ Not for a question one or two tool calls answer, or a task that already fits you
 
 | Type | Tools | Use for |
 |---|---|---|
-| `research` | read, search, ls, fetch, web_search, conversation_search, list_skills, read_skill | Exploration and analysis, nothing written |
+| `research` | read, search, ls, fetch, web_search, conversation_search, read_skill | Exploration and analysis, nothing written |
 | `general` | Everything except sub-agent management, `manage_skills`, `memory`, `cron`, `workspaces`, `question`, `notify` and the raw browser tools | Execution, coding, changes |
 
 The browser is reached with `delegate_browser_task`, never `spawn` (see the web-browsing skill).
@@ -34,12 +34,13 @@ spawn("review-tests", "research", "run", "Review tests/ for missing edge cases")
 
 spawn("explorer", "research", "session", "Map the codebase architecture")
 send("subagent/explorer-a7b3", "Now analyze src/agent/ in detail")
-kill_agent("subagent/explorer-a7b3")
+agents(action="kill", id="subagent/explorer-a7b3")
 ```
 
 - `mode: "run"`: answers once, not meant to be driven again. `mode: "session"`: persistent, the
   answer ends with the id to pass to `send`.
-- `list_agents()` shows what this conversation can reach, and whether each is `running` or `idle`.
+- `agents(action="list")` shows what this conversation can reach, and whether each is `running`
+  or `idle`.
 - **A sub-agent that was stopped or failed keeps its work.** Its result says so and names it:
   `send(id)` with no message resumes it where it stopped. Never spawn a new one for the same task.
 - Parameters (`workspaceDir`, `visibility`, `model`), sends with attachments, reset and kill:
