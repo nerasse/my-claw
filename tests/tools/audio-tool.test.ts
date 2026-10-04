@@ -12,6 +12,7 @@ import { TtsPipeline } from "../../src/voice/tts.ts";
 import { SttPipeline } from "../../src/voice/stt.ts";
 import { VoiceManager } from "../../src/voice/manager.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
+import { AbortedError } from "../../src/core/aborted.ts";
 
 function createConfig(overrides?: Record<string, unknown>): MyClawConfig {
   return {
@@ -60,6 +61,32 @@ describe("audio: speak", () => {
     expect(result.output).toContain("MEDIA:/tmp/generated.mp3");
     expect(result.attachments).toEqual([{ type: "audio", path: "/tmp/generated.mp3", mimeType: "audio/mpeg" }]);
     expect(result.keepFromReply).toBe(true);
+  });
+
+  test("forwards the run signal and propagates a stop rather than swallowing it", async () => {
+    const controller = new AbortController();
+    const tts = {
+      generate: async (_text: string, _opts: unknown, signal?: AbortSignal) => {
+        expect(signal).toBe(controller.signal);
+        controller.abort();
+        throw new AbortedError();
+      },
+    };
+    await expect(tool({ tts }).execute({ action: "speak", text: "hello", __signal: controller.signal }))
+      .rejects.toBeInstanceOf(AbortedError);
+  });
+
+  test("an audio deadline becomes a single failure with no attachment or retry", async () => {
+    let calls = 0;
+    const tts = { generate: async () => {
+      calls++;
+      throw new Error("TTS cloud timed out after 90s.");
+    } };
+    const result = await tool({ tts }).execute({ action: "speak", text: "hello" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("timed out after 90s");
+    expect(result.attachments).toBeUndefined();
+    expect(calls).toBe(1);
   });
 
   test("a pipeline failure becomes a tool error, not a throw", async () => {

@@ -73,6 +73,12 @@
   - Cloud: Edge TTS (fr-FR-RemyMultilingualNeural)
   - Local: Piper (fr_FR-siwis-medium)
   - No automatic TTS post-response
+  - Written answer streamed before generation; a short spoken summary by default, full reading only on request.
+  - Edge generation has a 90s deadline and binary discovery probes have 5s each. Timeout or the existing
+    run `__signal` kills the subprocess with SIGKILL; partial files are removed before failure returns.
+    Errors never echo Edge command arguments or the spoken text. No automatic retries or engine fallback.
+  - Piper keeps its 30s deadline and now honours the same run signal (CLI and HTTP).
+  - Uses the existing commentary stream and cancellation plumbing, not a background job or new tool API.
 - **Images (vision)**: inbound images converted to base64 and sent via `image_url` in content array
   - ffmpeg resize if > 2MB (scale to max 2000px)
   - Only sent when `llm.vision: true` in config

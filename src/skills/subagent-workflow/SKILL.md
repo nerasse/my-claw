@@ -17,6 +17,11 @@ task out of your context, or carry a long task across several messages.
 
 Not for a question one or two tool calls answer, or a task that already fits your context.
 
+Give a short progress update before lengthy research; share useful conclusions as they become
+available instead of holding the whole answer for optional follow-ups. Run independent read-only
+research in parallel, not as successive blocking spawns. Keep dependent steps and edits to shared
+files sequential. Do not add agents merely to fill every available slot.
+
 ## Types
 
 | Type | Tools | Use for |

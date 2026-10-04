@@ -30,7 +30,17 @@ audio(action="speak", text="Hello", forceCloud=true)    # Force cloud
 audio(action="speak", text="Hello", forceLocal=true)    # Force local
 ```
 
-Limit: **5000 characters max** per call — longer text is rejected, shorten or split it.
+**Text first.** Show the useful written answer in a commentary message before calling
+`audio(action="speak")`, so the user can read it while audio is generated. Send the chosen
+`MEDIA:<path>` in the final answer; do not duplicate the whole written answer there.
+
+Prefer a short spoken summary (about 30–60 seconds), unless the user explicitly requests
+the full reading. The **5000-character limit** is a ceiling, not a target.
+
+Cloud generation has a **90-second deadline**; Stop cancels generation and kills its process.
+If generation fails or times out, finish with the written answer and a brief audio error.
+Do not retry automatically, change engines silently, or deliver a partial file. A new attempt
+or a different engine needs the user's choice.
 
 ## Manual STT
 

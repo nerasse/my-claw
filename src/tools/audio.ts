@@ -2,6 +2,7 @@ import { type Tool, type ToolResult, str, strOpt, bool } from "./types.ts";
 import type { SttPipeline } from "../voice/stt.ts";
 import type { TtsPipeline } from "../voice/tts.ts";
 import type { VoiceManager } from "../voice/manager.ts";
+import { rethrowIfAborted } from "../core/aborted.ts";
 
 type Mode = "cloud" | "local" | "auto";
 const MODES: readonly string[] = ["cloud", "local", "auto"];
@@ -20,14 +21,14 @@ export function createAudioTool(voice: { stt: SttPipeline; tts: TtsPipeline; man
     return { success: true, output: result.text };
   }
 
-  async function speak(args: Record<string, unknown>): Promise<ToolResult> {
+  async function speak(args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
     const text = str(args, "text");
     if (!text) return { success: false, output: "", error: "speak needs text" };
     const result = await voice.tts.generate(text, {
       voice: strOpt(args, "voice"),
       forceCloud: bool(args, "forceCloud", false),
       forceLocal: bool(args, "forceLocal", false),
-    });
+    }, signal);
     return {
       success: true,
       // Not sent by itself: the answer sends it, once, the version the agent keeps.
@@ -57,7 +58,9 @@ export function createAudioTool(voice: { stt: SttPipeline; tts: TtsPipeline; man
       "you pass `language`, so set it when you already know it and the audio is short or noisy, and leave it out " +
       "otherwise, because a forced language makes the transcriber invent plausible text instead of failing. " +
       "action='speak' (text): text to an audio file (cloud: Edge TTS, local: Piper); it is not sent until your answer " +
-      "includes MEDIA:<path>. action='mode' (mode, feature): set the voice engine to cloud, local or auto, at runtime.",
+      "includes MEDIA:<path>. Show the written answer before calling speak; prefer a short spoken summary. " +
+      "On failure, finish the written answer without automatic retries or engine changes. " +
+      "action='mode' (mode, feature): set the voice engine to cloud, local or auto, at runtime.",
     parameters: {
       type: "object",
       properties: {
@@ -74,13 +77,15 @@ export function createAudioTool(voice: { stt: SttPipeline; tts: TtsPipeline; man
       required: ["action"],
     },
     async execute(args): Promise<ToolResult> {
+      const signal = args["__signal"] instanceof AbortSignal ? args["__signal"] : undefined;
       const action = str(args, "action");
       try {
         if (action === "transcribe") return await transcribe(args);
-        if (action === "speak") return await speak(args);
+        if (action === "speak") return await speak(args, signal);
         if (action === "mode") return setMode(args);
         return { success: false, output: "", error: `Unknown action "${action}": use transcribe, speak or mode.` };
       } catch (err) {
+        rethrowIfAborted(err, signal);
         return { success: false, output: "", error: String(err) };
       }
     },
