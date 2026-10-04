@@ -93,6 +93,26 @@ describe("browser.info", () => {
     }
   });
 
+  test("units are asked as the user's (the installer's units are user units), active read as up", async () => {
+    const { deps, sent } = collect();
+    const asked: string[][] = [];
+    await handleBrowserInfo(
+      {
+        ...deps({ enabled: false, units: ["my-claw-chromium", "my-claw-vnc"] }),
+        systemctl: async (args) => {
+          asked.push(args);
+          return { code: args[1] === "my-claw-vnc" ? 3 : 0, stdout: args[1] === "my-claw-vnc" ? "inactive" : "active" };
+        },
+      },
+      WS,
+    );
+    expect(asked).toEqual([["is-active", "my-claw-chromium"], ["is-active", "my-claw-vnc"]]);
+    expect(result(sent).services).toEqual([
+      { unit: "my-claw-chromium", active: true },
+      { unit: "my-claw-vnc", active: false },
+    ]);
+  });
+
   test("a unit that does not exist reports as down instead of throwing", async () => {
     const { deps, sent, refusals } = collect();
     await handleBrowserInfo(deps({ enabled: false, units: ["my-claw-does-not-exist"] }), WS);

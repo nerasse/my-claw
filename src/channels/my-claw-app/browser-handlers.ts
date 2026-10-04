@@ -12,6 +12,7 @@ import type {
   MyClawAppErrorScope,
   MyClawAppServerFrame,
 } from "./types.ts";
+import { systemctlUser, type Systemctl } from "../../services/on-demand.ts";
 import type { MyClawAppSessionData } from "./controllers.ts";
 
 /** The units the page reports on. A deployment that names them differently sets
@@ -31,6 +32,8 @@ const DEFAULT_DISPLAY = ":99";
 
 export interface MyClawAppBrowserDeps {
   readonly browser?: BrowserConfig;
+  /** Test seam; the installed units are user units, so the default asks `systemctl --user`. */
+  readonly systemctl?: Systemctl;
   sendFrame(ws: ServerWebSocket<MyClawAppSessionData> | undefined, frame: MyClawAppServerFrame): void;
   refuse(
     ws: ServerWebSocket<MyClawAppSessionData>,
@@ -55,20 +58,15 @@ function vncHostFrom(webUrl?: string): string | undefined {
   }
 }
 
-async function unitActive(unit: string): Promise<boolean> {
-  try {
-    const proc = Bun.spawn(["systemctl", "is-active", unit], { stdout: "pipe", stderr: "ignore" });
-    const out = (await new Response(proc.stdout).text()).trim();
-    await proc.exited;
-    return out === "active";
-  } catch {
-    // No systemd, or systemctl is not on PATH: reported as down rather than crashing the page.
-    return false;
-  }
-}
-
-async function readServices(units: string[]): Promise<MyClawAppBrowserService[]> {
-  const states = await Promise.all(units.map(unitActive));
+// The same door as the on-demand units: asking the system manager about user units answered
+// "inactive" for every one of them, and the page said the browser was down while it ran.
+async function readServices(units: string[], systemctl: Systemctl): Promise<MyClawAppBrowserService[]> {
+  const active = (unit: string) =>
+    systemctl(["is-active", unit])
+      .then((r) => r.stdout === "active")
+      // No systemd, or systemctl is not on PATH: reported as down rather than crashing the page.
+      .catch(() => false);
+  const states = await Promise.all(units.map(active));
   return units.map((unit, i) => ({ unit, active: states[i] ?? false }));
 }
 
@@ -87,7 +85,7 @@ export async function handleBrowserInfo(
     const webUrl = browser?.novncUrl;
     const [password, services] = await Promise.all([
       readVncPassword(vncPasswordPath(browser)),
-      readServices(browser?.units ?? DEFAULT_UNITS),
+      readServices(browser?.units ?? DEFAULT_UNITS, d.systemctl ?? systemctlUser),
     ]);
 
     let tabs: MyClawAppBrowserTab[] = [];

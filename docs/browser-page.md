@@ -46,7 +46,7 @@ including a wrong one.
 | `vncHost` | the hostname of that same URL |
 | `vncPort` | 5900 |
 | `password` | the decoded file, absent when there is none |
-| `services` | `systemctl is-active` over `browser.units` |
+| `services` | `systemctl --user is-active` over `browser.units` (the installer's units are user units; before 0.7.82 the system manager was asked and every unit read down) |
 | `tabs` / `tabsError` | the browser's own list of tabs (no page is asked anything); the app shows the live listing instead |
 
 `vncHost` is derived from `webUrl` rather than configured separately, so the web client and the
