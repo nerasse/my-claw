@@ -12,7 +12,7 @@ import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
 import { commitCompaction, compactSession, planCompaction, retainedMessages } from "../src/sessions/compaction.ts";
 import { splitSummaryOutput } from "../src/sessions/compaction-prompts.ts";
-import { resetSpeculations } from "../src/sessions/compaction-speculative.ts";
+import { claimSpeculation, hasArmedCompaction, pendingSpeculation, resetSpeculations, startSpeculation } from "../src/sessions/compaction-speculative.ts";
 import { deleteSession, type LegacySessionData } from "../src/sessions/store.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
 import { mockFetch } from "./helpers/mock-fetch.ts";
@@ -253,5 +253,26 @@ test("a summary committed later keeps the turns that landed after it was planned
   const late = log.entries().find((e) => e.type === "user" && e.text === "Written while it was summarizing")!;
   assert.equal(boundary.firstKeptEntryId, late.id);
   assert.deepEqual(contextEntries(log.entries(), log.leaf()).map((e) => e.type), ["compaction", "user", "phase"]);
+  await log.flush();
+});
+
+test("a background summary that keeps nothing is still claimable, and keeps what was written meanwhile", async () => {
+  conversation(8);
+  await log.flush();
+  const mock = summarizer(() => blocks("## Goal\nThe background summary, long enough for the gate", "### Done early\n- archived in the background"));
+  try {
+    startSpeculation(config(), sess);
+    await pendingSpeculation(sess.id);
+    assert.equal(hasArmedCompaction(sess.id), true);
+  } finally {
+    mock.restore();
+  }
+  log.append<UserEntry>({ type: "user", prompt: true, text: "Written after the snapshot" });
+  await log.flush();
+
+  const claimed = await claimSpeculation(config(), sess);
+  assert.equal(claimed?.ok, true, "a plan naming no kept entry must not read as a rewound one");
+  assert.equal(claimed?.archive, "### Done early\n- archived in the background");
+  assert.equal(promptOf(log.entries(), log.leaf()).at(-1)!.content, "Written after the snapshot");
   await log.flush();
 });
