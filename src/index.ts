@@ -86,6 +86,7 @@ import { ModelPricing, setSharedPricing } from "./llm/pricing.ts";
 import { statsReport } from "./channels/stats-command.ts";
 import { startConfigWatcher, type ConfigWatcherHandle } from "./core/config-watcher.ts";
 import { managesUnits, scheduleReconcile } from "./services/on-demand.ts";
+import { createAccounts } from "./llm/subscription-accounts.ts";
 import { choicesOf, installKind, probeService, serviceStates } from "./services/catalog.ts";
 import { TRANSFORMERS_CACHE, diskBytes, freeEmbeddingModels, whisperRuntime } from "./services/local-engines.ts";
 import { createMyClawAppCommandHandler } from "./channels/my-claw-app/commands.ts";
@@ -931,6 +932,14 @@ async function main() {
         pairedDevices: Object.keys(config.channels["my-claw-app"]?.devices ?? {}).length,
       };
     };
+    // The subscriptions' sign-in from the app (docs/subscription-accounts.md): the same token stores
+    // and provider bootstrap as `/codex` and `/claude`.
+    myClawApp.onAccountsController(
+      createAccounts({
+        onAuthChanged,
+        onSettled: (state, error) => myClawApp.pushAccounts(state, error),
+      }),
+    );
     myClawApp.onServicesController({
       status: () => describeServices(config),
       set: async (choice) => {

@@ -116,6 +116,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppLogsTail,
   MyClawAppServerFrame,
   MyClawAppAgentsConfigResult,
+  MyClawAppAccountsResult,
   MyClawAppStatsGet,
   MyClawAppStatsFilter,
   MyClawAppStatsPeriod,
@@ -178,6 +179,7 @@ import type {
   MyClawAppUiPrefsController,
   MyClawAppVoiceController,
   MyClawAppServicesController,
+  MyClawAppAccountsController,
   MyClawAppWorkspacesController,
 } from "./controllers.ts";
 import {
@@ -234,6 +236,7 @@ import {
   handleUiPrefs,
   handleVoiceMode,
   handleServices,
+  handleAccounts,
   handleWorkspacesAdd,
   handleWorkspacesList,
   handleWorkspacesRemove,
@@ -335,6 +338,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private instructions?: MyClawAppInstructionsController;
   private uiPrefs?: MyClawAppUiPrefsController;
   private services?: MyClawAppServicesController;
+  private accounts?: MyClawAppAccountsController;
   private sessionInstructions?: MyClawAppSessionInstructionsProvider;
   private jobs?: MyClawAppJobsController;
   private notifications?: MyClawAppNotificationsController;
@@ -737,6 +741,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   onServicesController(controller: MyClawAppServicesController): void {
     this.services = controller;
+  }
+
+  onAccountsController(controller: MyClawAppAccountsController): void {
+    this.accounts = controller;
+  }
+
+  /** A ChatGPT sign-in ends minutes after the frame that started it: its outcome goes to everyone. */
+  pushAccounts(state: Omit<MyClawAppAccountsResult, "type" | "error">, error?: string): void {
+    for (const ws of this.sockets.all()) this.sendFrame(ws, { type: "accounts.result", ...state, ...(error ? { error } : {}) });
   }
 
   onUiPrefsController(controller: MyClawAppUiPrefsController): void {
@@ -1496,6 +1509,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       jobs: this.jobs,
       uiPrefs: this.uiPrefs,
       services: this.services,
+      accounts: this.accounts,
       configEditor: this.configEditor,
       workspacesCtrl: this.workspacesCtrl,
       commandHandler: this.commandHandler,
@@ -1617,6 +1631,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
       }
       case "services.free":
         this.detach(handleServices(this.settingsDeps(), ws, { free: frame.id }), "handleServices");
+        break;
+      case "accounts.get":
+      case "accounts.login":
+      case "accounts.cancel":
+      case "accounts.code":
+      case "accounts.token":
+      case "accounts.logout":
+        this.detach(handleAccounts(this.settingsDeps(), ws, frame), "handleAccounts");
         break;
       case "uiPrefs.get":
         this.detach(handleUiPrefs(this.settingsDeps(), ws, undefined), "handleUiPrefs");

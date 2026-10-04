@@ -421,3 +421,6 @@ export type MyClawAppUndoPromptHandler = (input: {
   diff: Array<{ root: string; files: number; additions: number; deletions: number }>;
   turnPreview: string;
 }) => Promise<"soft" | "hard" | null>;
+
+/** The subscriptions' sign-in (docs/subscription-accounts.md), built by the entry point. */
+export type { AccountsController as MyClawAppAccountsController } from "../../llm/subscription-accounts.ts";

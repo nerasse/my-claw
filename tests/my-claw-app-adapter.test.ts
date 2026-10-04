@@ -1723,6 +1723,43 @@ describe("MyClawAppAdapter", () => {
     assert.equal(frame.scope, "uiPrefs");
   });
 
+  test("accounts: a token that is not Claude's is refused before it is stored; a failure never echoes the secret", async () => {
+    const calls: string[] = [];
+    const state = { codex: { connected: false }, claude: { connected: false } };
+    adapter.onAccountsController({
+      status: async () => state,
+      login: async () => state,
+      cancel: async () => state,
+      code: async (code) => {
+        calls.push(`code ${code}`);
+        throw new Error("Claude OAuth request failed (400)");
+      },
+      token: async (token) => {
+        calls.push(`token ${token}`);
+        return { ...state, claude: { connected: true, source: "token" } };
+      },
+      logout: async () => state,
+    });
+
+    client.ws.send(JSON.stringify({ type: "accounts.token", token: "sk-proj-an-openai-api-key" }));
+    const refused = (await nextFrame(client)) as { type: string; scope: string; message: string };
+    assert.equal(refused.scope, "accounts");
+    assert.match(refused.message, /sk-ant-oat/);
+    assert.deepEqual(calls, []);
+
+    const token = `sk-ant-oat01-${"z".repeat(40)}`;
+    client.ws.send(JSON.stringify({ type: "accounts.token", token }));
+    const stored = (await nextFrame(client)) as { type: string; claude: { connected: boolean } };
+    assert.equal(stored.type, "accounts.result");
+    assert.equal(stored.claude.connected, true);
+
+    client.ws.send(JSON.stringify({ type: "accounts.code", code: "secret-code#state" }));
+    const failed = (await nextFrame(client)) as { type: string; scope: string; message: string };
+    assert.equal(failed.scope, "accounts");
+    assert.equal(failed.message, "Claude OAuth request failed (400)");
+    assert.ok(!JSON.stringify(failed).includes("secret-code"));
+  });
+
   test("services: a get describes them, a set answers with the state written, a refusal names why", async () => {
     const view = (source: string) => ({ id: "search", source, choices: ["off", "url"], missing: [], health: "no-endpoint" });
     const choices: unknown[] = [];

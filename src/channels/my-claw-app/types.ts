@@ -510,6 +510,19 @@ export interface MyClawAppServicesFree {
   id: "stt" | "embeddings";
 }
 
+/**
+ * The ChatGPT and Claude subscriptions, signed in from the app -- docs/subscription-accounts.md.
+ * `code` and `token` carry secrets: they are written to the token store and never sent back.
+ */
+export type MyClawAppAccountKind = "codex" | "claude";
+export type MyClawAppAccountsFrame =
+  | { type: "accounts.get" }
+  | { type: "accounts.login"; provider: MyClawAppAccountKind }
+  | { type: "accounts.cancel"; provider: MyClawAppAccountKind }
+  | { type: "accounts.code"; code: string }
+  | { type: "accounts.token"; token: string }
+  | { type: "accounts.logout"; provider: MyClawAppAccountKind };
+
 /** Picks a service's source. Keys go through `providers.env.set`, never here. */
 export interface MyClawAppServicesSet {
   type: "services.set";
@@ -1074,6 +1087,7 @@ export type MyClawAppClientFrame =
   | MyClawAppServicesGet
   | MyClawAppServicesSet
   | MyClawAppServicesFree
+  | MyClawAppAccountsFrame
   | MyClawAppUiPrefsGet
   | MyClawAppUiPrefsSet
   | MyClawAppUpdateRun
@@ -1904,6 +1918,7 @@ export type MyClawAppErrorScope =
   | "logs"
   | "voice"
   | "services"
+  | "accounts"
   | "uiPrefs"
   | "model"
   | "skills"
@@ -1989,6 +2004,23 @@ export interface MyClawAppServicesResult {
   pushDevices: string[];
   /** Paired devices, enabled or not. */
   pairedDevices: number;
+}
+
+export interface MyClawAppAccountView {
+  connected: boolean;
+  email?: string;
+  plan?: string;
+  source?: "oauth" | "token" | "env";
+  /** A sign-in in flight: the page to open, and for ChatGPT the code to enter there. */
+  login?: { url: string; code?: string; expiresAt: number };
+}
+
+export interface MyClawAppAccountsResult {
+  type: "accounts.result";
+  codex: MyClawAppAccountView;
+  claude: MyClawAppAccountView;
+  /** A ChatGPT sign-in that failed after its code was shown (denied, expired). */
+  error?: string;
 }
 
 export interface MyClawAppVoiceModeResult {
@@ -3925,6 +3957,7 @@ export type MyClawAppServerFrame =
   | MyClawAppSessionSyncResult
   | MyClawAppVoiceModeResult
   | MyClawAppServicesResult
+  | MyClawAppAccountsResult
   | MyClawAppUiPrefsResult
   | MyClawAppUpdateResult
   | MyClawAppModelListResult

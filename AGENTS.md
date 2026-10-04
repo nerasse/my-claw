@@ -187,7 +187,8 @@ src/
 │   ├── anthropic-models.ts # Versioned Claude models from /v1/models (families, per-model effort)
 │   ├── codex.ts           # Codex Responses transport for the home loop
 │   ├── codex-auth.ts      # ChatGPT subscription OAuth (device flow, token refresh)
-│   └── claude-auth.ts     # Claude subscription token store
+│   ├── claude-auth.ts     # Claude subscription token store
+│   └── subscription-accounts.ts # ChatGPT/Claude sign-in from the app's Accounts page -- docs/subscription-accounts.md
 ├── sessions/              # The log is the whole history -- docs/session-log.md
 │   ├── log.ts             # Append-only entries: the one source of truth for a conversation
 │   ├── log-access.ts      # How a run reaches its conversation's entries -- annexe D

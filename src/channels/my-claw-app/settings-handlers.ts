@@ -20,9 +20,11 @@ import type {
   MyClawAppUiPrefsController,
   MyClawAppVoiceController,
   MyClawAppServicesController,
+  MyClawAppAccountsController,
   MyClawAppWorkspacesController,
 } from "./controllers.ts";
 import type {
+  MyClawAppAccountsFrame,
   MyClawAppAgentFileCreate,
   MyClawAppAgentFileDelete,
   MyClawAppAgentFileGet,
@@ -87,6 +89,7 @@ export interface MyClawAppSettingsDeps {
   readonly jobs?: MyClawAppJobsController;
   readonly uiPrefs?: MyClawAppUiPrefsController;
   readonly services?: MyClawAppServicesController;
+  readonly accounts?: MyClawAppAccountsController;
   readonly configEditor?: MyClawAppConfigController;
   readonly workspacesCtrl?: MyClawAppWorkspacesController;
   readonly commandHandler?: MyClawAppCommandHandler;
@@ -195,6 +198,54 @@ export async function handleServices(
     d.broadcastFrame(ws.data.owner, { type: "services.result", ...outcome.state });
   } catch (err) {
     await d.refuse(ws, "services", "services failed", { error: String(err) });
+  }
+}
+
+// The token Claude Code's `setup-token` prints. Anything else pasted there is a mistake (an API key,
+// half a token) that would only fail at the first run, far from the page that caused it.
+const CLAUDE_TOKEN = /^sk-ant-oat[A-Za-z0-9._-]{20,}$/;
+
+/**
+ * The subscriptions' sign-in (docs/subscription-accounts.md). A get answers the asker; anything
+ * that changes an account answers every window of the owner, since the account is the machine's.
+ */
+export async function handleAccounts(
+  d: MyClawAppSettingsDeps,
+  ws: ServerWebSocket<MyClawAppSessionData>,
+  frame: MyClawAppAccountsFrame,
+): Promise<void> {
+  const accounts = d.accounts;
+  if (!accounts) {
+    await d.refuse(ws, "accounts", "accounts unavailable");
+    return;
+  }
+  if (frame.type === "accounts.get") {
+    d.sendFrame(ws, { type: "accounts.result", ...(await accounts.status()) });
+    return;
+  }
+  if (frame.type === "accounts.token" && !CLAUDE_TOKEN.test(frame.token.trim())) {
+    await d.refuse(ws, "accounts", "That is not a Claude token: it starts with sk-ant-oat (from claude setup-token).");
+    return;
+  }
+  if (frame.type === "accounts.code" && !frame.code.trim()) {
+    await d.refuse(ws, "accounts", "Paste the code Claude showed you.");
+    return;
+  }
+  try {
+    const state =
+      frame.type === "accounts.login"
+        ? await accounts.login(frame.provider)
+        : frame.type === "accounts.cancel"
+          ? await accounts.cancel(frame.provider)
+          : frame.type === "accounts.logout"
+            ? await accounts.logout(frame.provider)
+            : frame.type === "accounts.code"
+              ? await accounts.code(frame.code)
+              : await accounts.token(frame.token);
+    d.broadcastFrame(ws.data.owner, { type: "accounts.result", ...state });
+  } catch (err) {
+    // Never the frame itself: a code or a token rides in it.
+    await d.refuse(ws, "accounts", err instanceof Error ? err.message : String(err), { request: frame.type });
   }
 }
 
