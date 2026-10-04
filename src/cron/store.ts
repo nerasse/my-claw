@@ -197,6 +197,9 @@ export interface CreateJobParams {
   browser?: boolean;
   /** Suppresses the job's push notifications; delivery and output are untouched. */
   silent?: boolean;
+  /** The report becomes the target conversation's next turn (see CronJob.followUp). */
+  followUp?: boolean;
+  followUpPrompt?: string;
   /** The job's own wall-clock limit, in ms (see parseJobTimeout). */
   timeoutMs?: number;
 }
@@ -228,6 +231,8 @@ export function createJob(params: CreateJobParams): CronJob {
     ...(params.browser === false ? { browser: false } : {}),
     // Absent rather than false: notifying is the default, and an untouched job keeps a clean shape.
     ...(params.silent ? { silent: true } : {}),
+    ...(params.followUp ? { followUp: true as const } : {}),
+    ...(params.followUpPrompt?.trim() ? { followUpPrompt: params.followUpPrompt.trim() } : {}),
     ...(params.timeoutMs ? { timeoutMs: params.timeoutMs } : {}),
     nextRunAt: computeNextRun(schedule),
     lastRunAt: null,
@@ -255,6 +260,9 @@ export interface UpdateJobParams {
   browser?: boolean;
   /** Suppresses the job's push notifications; delivery and output are untouched. */
   silent?: boolean;
+  /** Absent means "don't touch"; an empty `followUpPrompt` clears it back to the default. */
+  followUp?: boolean;
+  followUpPrompt?: string;
   /** The job's own limit in ms; 0 clears it back to cron.timeoutMs. */
   timeoutMs?: number;
 }
@@ -288,6 +296,15 @@ export function updateJob(jobs: CronJob[], jobId: string, updates: UpdateJobPara
   if (updates.subagents !== undefined) job.subagents = updates.subagents === false ? false : undefined;
   if (updates.browser !== undefined) job.browser = updates.browser === false ? false : undefined;
   if (updates.silent !== undefined) job.silent = updates.silent || undefined;
+  if (updates.followUp !== undefined) {
+    if (updates.followUp) job.followUp = true;
+    else delete job.followUp;
+  }
+  if (updates.followUpPrompt !== undefined) {
+    const prompt = updates.followUpPrompt.trim();
+    if (prompt) job.followUpPrompt = prompt;
+    else delete job.followUpPrompt;
+  }
   if (updates.timeoutMs !== undefined) {
     if (updates.timeoutMs > 0) job.timeoutMs = updates.timeoutMs;
     else delete job.timeoutMs;

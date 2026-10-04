@@ -67,6 +67,18 @@ class CronInterruptedError extends Error {}
 /** Where a delivered result is written so the conversation keeps it: see `journal`. */
 export type CronDeliveryJournal = (target: CronDeliveryTarget, text: string) => Promise<void>;
 
+/** Hands a report to a conversation as its next turn; false when the channel could not take it. */
+export type CronHandOver = (target: CronDeliveryTarget, text: string) => Promise<boolean>;
+
+/** What a follow-up turn asks when its job says nothing of its own. */
+export const DEFAULT_FOLLOW_UP =
+  "Act on this report in this conversation's workspace: update what it calls for, and do what it says is ready to be done.";
+
+/** The turn a follow-up hands over: the report, then what to do with it. */
+export function followUpTurn(job: Pick<CronJob, "name" | "followUpPrompt">, result: string): string {
+  return `[Cron: ${job.name}]\n\n${result}\n\n---\n${job.followUpPrompt ?? DEFAULT_FOLLOW_UP}`;
+}
+
 interface RunningJob {
   sessionId: string;
   startedAt: number;
@@ -117,6 +129,8 @@ export class CronScheduler {
    * when the phone was asleep -- which is when a morning job delivers (docs/cron.md).
    */
   journal?: CronDeliveryJournal;
+  /** Opens a turn in the target conversation for a job with `followUp` (docs/cron.md). */
+  handOver?: CronHandOver;
 
   constructor(
     private router: MessageRouter,
@@ -604,6 +618,21 @@ export class CronScheduler {
       job.lastError = `No adapter for platform "${target.platform}"`;
       void log("warn", "cron delivery failed", { jobId: job.id, error: job.lastError });
       return null;
+    }
+
+    // The report as the conversation's next turn: one bubble, which its agent then answers. The
+    // turn is written to the log by the run it opens, so no note goes with it. Refused, it falls
+    // back to the note below rather than lose the report.
+    if (job.followUp && this.handOver) {
+      const handed = await this.handOver(target, followUpTurn(job, result)).catch((err) => {
+        void log("warn", "cron follow-up could not be handed over", { jobId: job.id, error: String(err) });
+        return false;
+      });
+      if (handed) {
+        // A turn carries text only: pictures the run produced still go out as before.
+        if (attachments.length > 0) await adapter.send(target.chatId, { text: `[Cron: ${job.name}]`, threadId: target.threadId, attachments });
+        return target;
+      }
     }
 
     const text = `[Cron: ${job.name}]\n\n${result}`;

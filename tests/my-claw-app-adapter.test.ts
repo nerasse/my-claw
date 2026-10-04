@@ -5089,6 +5089,8 @@ describe("scheduled jobs (jobs.*)", () => {
         ...(job.tools ? { tools: job.tools } : {}),
         subagents: job.subagents !== false,
         browser: job.browser !== false,
+        followUp: job.followUp === true,
+        ...(job.followUpPrompt ? { followUpPrompt: job.followUpPrompt } : {}),
         nextRunAt: job.nextRunAt,
         lastRunAt: job.lastRunAt,
         lastStatus: job.lastStatus === "interrupted" ? "error" : job.lastStatus,
@@ -5138,6 +5140,8 @@ describe("scheduled jobs (jobs.*)", () => {
           tools: fields.tools.mode === "inherit" ? undefined : fields.tools.mode === "all" ? ["*"] : (fields.tools.names ?? []),
           ...(fields.subagents === undefined ? {} : { subagents: fields.subagents === true }),
           ...(fields.browser === undefined ? {} : { browser: fields.browser === true }),
+          ...(fields.followUp === undefined ? {} : { followUp: fields.followUp === true }),
+          ...(fields.followUpPrompt === undefined ? {} : { followUpPrompt: fields.followUpPrompt }),
         };
         if (fields.id) {
           const target = jobs.find((j) => j.id === fields.id);
@@ -5342,6 +5346,29 @@ describe("scheduled jobs (jobs.*)", () => {
     assert.equal(granted["browser"], true);
     assert.equal(jobs[0]!["subagents"], undefined);
     assert.equal(jobs[0]!["browser"], undefined);
+  });
+
+  test("the follow-up and its instruction ride on jobs.save, and an older build's edit leaves them be", async () => {
+    const save = (extra: Record<string, unknown>) => JSON.stringify({
+      type: "jobs.save", name: "Veille", prompt: "watch it", schedule: "every 1h", enabled: true,
+      skills: { mode: "inherit" }, mcp: { mode: "inherit" }, tools: { mode: "inherit" }, ...extra,
+    });
+    client.ws.send(save({ followUp: true, followUpPrompt: "Mets à jour le workspace." }));
+    const on = (((await nextFrame(client))["jobs"]) as Array<Record<string, unknown>>)[0]!;
+    assert.equal(on["followUp"], true);
+    assert.equal(on["followUpPrompt"], "Mets à jour le workspace.");
+
+    // An app that predates the option sends neither field: the job keeps both.
+    client.ws.send(save({ id: jobs[0]!["id"] }));
+    const kept = (((await nextFrame(client))["jobs"]) as Array<Record<string, unknown>>)[0]!;
+    assert.equal(kept["followUp"], true);
+    assert.equal(kept["followUpPrompt"], "Mets à jour le workspace.");
+
+    client.ws.send(save({ id: jobs[0]!["id"], followUp: false, followUpPrompt: "" }));
+    const off = (((await nextFrame(client))["jobs"]) as Array<Record<string, unknown>>)[0]!;
+    assert.equal(off["followUp"], false);
+    assert.equal(off["followUpPrompt"], undefined);
+    assert.equal("followUp" in jobs[0]!, false);
   });
 
   test("jobs.save without prompt or schedule is refused before the store is touched", async () => {

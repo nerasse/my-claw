@@ -8,7 +8,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { CronScheduler, wrapUpLeadMs } from "../../src/cron/scheduler.ts";
+import { CronScheduler, DEFAULT_FOLLOW_UP, wrapUpLeadMs } from "../../src/cron/scheduler.ts";
 import {
   cleanupOrphanJobTemps,
   createJob,
@@ -17,6 +17,7 @@ import {
   parseJobTimeout,
   recoverInterruptedRuns,
   saveJobs,
+  updateJob,
 } from "../../src/cron/store.ts";
 import type { CronDeliveryTarget } from "../../src/cron/types.ts";
 import { createCronTool, type CronToolContext } from "../../src/tools/cron.ts";
@@ -457,6 +458,135 @@ describe("a long run is announced, not stopped", () => {
     const cleared = await tool.execute({ action: "update", job_id: job!.id, alert: "inherit" });
     expect(cleared.output).toContain("alert: 1 h |");
     expect((await loadJobs())[0]!.alertAfterMs).toBeUndefined();
+  });
+});
+
+describe("follow-up: the conversation handles the report", () => {
+  // Without it a report is a note the model never reads: the career jobs found offers and nobody
+  // acted on them until the owner said so (2026-10-04). With it the report is the conversation's
+  // next turn, so its agent runs on it -- or takes it in at the end of a run already going.
+  const origin = { platform: "my-claw-app" as const, chatId: "neras", threadId: "t1" };
+
+  function harness() {
+    const order: string[] = [];
+    const turns: Array<{ target: CronDeliveryTarget; text: string }> = [];
+    const frames: Array<{ text?: string; attachments?: unknown[] }> = [];
+    const ctl = controllableRouter();
+    const scheduler = new CronScheduler(ctl.router, sessions(), config(), () => ({}));
+    scheduler.adapters.set("my-claw-app", {
+      ...adapter,
+      send: async (_chat: string, message: { text?: string; attachments?: unknown[] }) => {
+        order.push("frame");
+        frames.push(message);
+      },
+    } as ChannelAdapter);
+    scheduler.journal = async () => {
+      order.push("journal");
+    };
+    return { order, turns, frames, ctl, scheduler };
+  }
+
+  async function runOnce(h: ReturnType<typeof harness>, job: ReturnType<typeof createJob>, text = "3 nouvelles offres") {
+    await saveJobs([due(job)]);
+    const run = h.scheduler.tick();
+    await until(() => h.ctl.started.length === 1);
+    h.ctl.finish(h.ctl.started[0]!, text);
+    await run;
+  }
+
+  test("the report becomes the conversation's turn, with the job's instruction, and nothing else is written", async () => {
+    const h = harness();
+    h.scheduler.handOver = async (target, text) => {
+      h.order.push("turn");
+      h.turns.push({ target, text });
+      return true;
+    };
+    await runOnce(h, createJob({ name: "veille", prompt: "p", schedule: "every 1h", origin, deliver: "origin", followUp: true, followUpPrompt: "Mets à jour le workspace." }));
+    expect(h.order).toEqual(["turn"]);
+    expect(h.turns[0]!.target.threadId).toBe("t1");
+    expect(h.turns[0]!.text).toStartWith("[Cron: veille]");
+    expect(h.turns[0]!.text).toContain("3 nouvelles offres");
+    expect(h.turns[0]!.text).toContain("Mets à jour le workspace.");
+  });
+
+  test("with no instruction of its own, the turn says what to do with the report", async () => {
+    const h = harness();
+    h.scheduler.handOver = async (target, text) => {
+      h.turns.push({ target, text });
+      return true;
+    };
+    await runOnce(h, createJob({ name: "veille", prompt: "p", schedule: "every 1h", origin, deliver: "origin", followUp: true }));
+    expect(h.turns[0]!.text).toContain(DEFAULT_FOLLOW_UP);
+  });
+
+  test("a job without the option keeps the note, and opens no run", async () => {
+    const h = harness();
+    h.scheduler.handOver = async (target, text) => {
+      h.turns.push({ target, text });
+      return true;
+    };
+    await runOnce(h, createJob({ name: "veille", prompt: "p", schedule: "every 1h", origin, deliver: "origin" }));
+    expect(h.turns).toEqual([]);
+    expect(h.order).toEqual(["journal", "frame"]);
+  });
+
+  test("a turn the channel refuses falls back to the note: the report is never lost", async () => {
+    const h = harness();
+    h.scheduler.handOver = async () => false;
+    await runOnce(h, createJob({ name: "veille", prompt: "p", schedule: "every 1h", origin, deliver: "origin", followUp: true }));
+    expect(h.order).toEqual(["journal", "frame"]);
+  });
+
+  test("a [SILENT] run hands nothing over", async () => {
+    const h = harness();
+    h.scheduler.handOver = async (target, text) => {
+      h.turns.push({ target, text });
+      return true;
+    };
+    await runOnce(h, createJob({ name: "veille", prompt: "p", schedule: "every 1h", origin, deliver: "origin", followUp: true }), "[SILENT] rien");
+    expect(h.turns).toEqual([]);
+    expect(h.order).toEqual([]);
+  });
+
+  test("a local job has no conversation to hand over to", async () => {
+    const h = harness();
+    h.scheduler.handOver = async (target, text) => {
+      h.turns.push({ target, text });
+      return true;
+    };
+    await runOnce(h, createJob({ name: "veille", prompt: "p", schedule: "every 1h", origin: null, deliver: "local", followUp: true }));
+    expect(h.turns).toEqual([]);
+  });
+
+  test("the cron tool sets it, rewords it, clears it, and list says which instruction applies", async () => {
+    const tool = createCronTool({ tick: async () => 0, runningOf: () => undefined } as unknown as CronScheduler, toolContext());
+    const created = await tool.execute({ action: "create", name: "veille", prompt: "p", schedule: "every 1h", deliver: "local", follow_up: true });
+    expect(created.output).toContain("follow-up: on (default instruction)");
+    const [job] = await loadJobs();
+    expect(job!.followUp).toBe(true);
+    const worded = await tool.execute({ action: "update", job_id: job!.id, follow_up_prompt: "Mets à jour le workspace." });
+    expect(worded.output).toContain("follow-up: on -- Mets à jour le workspace.");
+    const untouched = await tool.execute({ action: "update", job_id: job!.id, name: "veille 2" });
+    expect(untouched.output).toContain("follow-up: on -- Mets à jour le workspace.");
+    const off = await tool.execute({ action: "update", job_id: job!.id, follow_up: false, follow_up_prompt: "" });
+    expect(off.output).toContain("follow-up: off");
+    expect("followUp" in (await loadJobs())[0]!).toBe(false);
+    expect("followUpPrompt" in (await loadJobs())[0]!).toBe(false);
+  });
+
+  test("the option is stored only when on, and an update can set, reword and clear it", () => {
+    expect("followUp" in createJob({ prompt: "p", schedule: "every 1h", origin, deliver: "origin" })).toBe(false);
+    const jobs = [createJob({ prompt: "p", schedule: "every 1h", origin, deliver: "origin" })];
+    const id = jobs[0]!.id;
+    updateJob(jobs, id, { followUp: true, followUpPrompt: "  Traite.  " });
+    expect(jobs[0]!.followUp).toBe(true);
+    expect(jobs[0]!.followUpPrompt).toBe("Traite.");
+    updateJob(jobs, id, { followUpPrompt: "" });
+    expect(jobs[0]!.followUpPrompt).toBeUndefined();
+    updateJob(jobs, id, { followUp: false });
+    expect("followUp" in jobs[0]!).toBe(false);
+    updateJob(jobs, id, { name: "x" });
+    expect("followUp" in jobs[0]!).toBe(false);
   });
 });
 

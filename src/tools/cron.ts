@@ -113,6 +113,7 @@ function describeJob(job: CronJob, scheduler: CronScheduler, context: CronToolCo
     `  model: ${job.model ?? "default model"}${job.effort ? ` (effort ${job.effort})` : ""} | workspace: ${job.workspace ?? "default workspace"} | deliver: ${deliverDisplay(job.deliver)} | alert: ${alert} | timeout: ${timeout}`,
     `  skills: ${scopeDisplay(job.skills)} | mcp: ${scopeDisplay(job.mcp)} | tools: ${scopeDisplay(job.tools)}`,
     `  sub-agents: ${job.subagents === false ? "off" : "on"} | browser: ${job.browser === false ? "off" : "on"} | conversations: ${conversations ? "on" : "off"} | notify: ${job.silent ? "silent" : "on"}`,
+    `  follow-up: ${job.followUp ? `on${job.followUpPrompt ? ` -- ${job.followUpPrompt}` : " (default instruction)"}` : "off"}`,
   ];
   const running = scheduler.runningOf(job.id);
   if (running) {
@@ -179,6 +180,8 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
         subagents: { type: "boolean", description: "Sub-agents (create/update): the job may spawn and steer them (spawn, send, agents). Granted unless set to false; a job that cannot see the agents it started leaves orphans. 'list' reports it" },
         browser: { type: "boolean", description: "Browser (create/update): the job may open pages through delegate_browser_task, one task at a time on the shared browser. Granted unless set to false. 'list' reports it" },
         conversations: { type: "boolean", description: "Conversation archive (create/update): the job may use conversation_search to check what was already said or sent in other conversations (duplicate checks, follow-ups). Off unless set to true" },
+        follow_up: { type: "boolean", description: "Follow-up (create/update): the report becomes the delivery conversation's next turn, so that conversation's agent acts on it (a job that delivers 'local' has none). Off unless set to true" },
+        follow_up_prompt: { type: "string", description: "Follow-up (create/update): what that agent is told to do with the report; '' clears it back to the default" },
         reason: { type: "string", description: "Pause reason (pause)" },
         enabled: { type: "boolean", description: "Include disabled jobs in list (list)" },
       },
@@ -226,6 +229,8 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
               tools: parseScopeInput(strOpt(args, "tools")).scope,
               subagents: boolOpt(args, "subagents"),
               browser: boolOpt(args, "browser"),
+              followUp: boolOpt(args, "follow_up"),
+              followUpPrompt: strOpt(args, "follow_up_prompt"),
               ...(timeoutMs ? { timeoutMs } : {}),
             });
             if (conversations === true) job.conversations = true;
@@ -289,6 +294,8 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
             const subagents = boolOpt(args, "subagents");
             const browser = boolOpt(args, "browser");
             const conversations = boolOpt(args, "conversations");
+            const followUp = boolOpt(args, "follow_up");
+            const followUpPrompt = typeof args["follow_up_prompt"] === "string" ? args["follow_up_prompt"] : undefined;
             const timeoutMs = durationArg(args, "timeout");
             const alertAfterMs = durationArg(args, "alert");
             const workspaceArg = strOpt(args, "workspace");
@@ -330,6 +337,8 @@ export function createCronTool(scheduler: CronScheduler, context: CronToolContex
                 ...(tools.present && tools.scope !== undefined ? { tools: tools.scope } : {}),
                 ...(subagents === undefined ? {} : { subagents }),
                 ...(browser === undefined ? {} : { browser }),
+                ...(followUp === undefined ? {} : { followUp }),
+                ...(followUpPrompt === undefined ? {} : { followUpPrompt }),
                 ...(timeoutMs === undefined ? {} : { timeoutMs }),
               });
             });

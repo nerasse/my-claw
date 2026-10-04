@@ -69,6 +69,15 @@ export interface CronJob {
    */
   silent?: boolean;
   /**
+   * The report is handed to the conversation it is delivered to as its next turn, so that
+   * conversation's agent works on it: a run opens if none is going, a run in flight takes it in at
+   * its end. Without it a report is a note the model never reads. Only `true` is stored. A job that
+   * delivers nowhere (`local`) has nothing to hand over to. See docs/cron.md.
+   */
+  followUp?: true;
+  /** What that agent is told to do with the report; absent = `DEFAULT_FOLLOW_UP`. */
+  followUpPrompt?: string;
+  /**
    * This job's own wall-clock limit, above `cron.timeoutMs`. A weekly research that fans out to six
    * sub-agents needs hours; a mail check that takes that long is stuck. One global wall could not
    * say both (2026-09-27: the weekly job was killed at thirty minutes with six sub-agents mid-pass).

@@ -3401,6 +3401,9 @@ export interface MyClawAppJobEntry {
   /** Granted unless turned off: the job's own switches, resolved (see docs/cron.md). */
   subagents: boolean;
   browser: boolean;
+  /** The report becomes the delivery conversation's next turn; its instruction when it has one. */
+  followUp: boolean;
+  followUpPrompt?: string;
   nextRunAt: string | null;
   lastRunAt: string | null;
   /** `interrupted` (a timeout, a server stop) is folded into `error` here for the builds that read two values; `lastRunStatus` carries it. */
@@ -3598,6 +3601,9 @@ export interface MyClawAppJobSave {
   /** Sub-agents and browser: absent means "don't touch" (an older build does not send them). */
   subagents?: boolean;
   browser?: boolean;
+  /** The follow-up and its instruction: absent means "don't touch"; "" clears the instruction. */
+  followUp?: boolean;
+  followUpPrompt?: string;
 }
 
 export interface MyClawAppJobDelete {

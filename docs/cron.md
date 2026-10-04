@@ -29,6 +29,30 @@ now writes the result into the target conversation first (`journal`, wired in `i
 sub-agent's handoff note is filed: a quiet `command` entry, shown on every reload, never sent to a
 model. Then the frame goes out for the devices that are online.
 
+### Follow-up: the conversation acts on the report (`followUp`)
+
+A delivered report is a note the model never reads: the career jobs found offers and logged mail,
+and nothing happened until the owner opened the thread and asked (2026-10-04). With `followUp`, the
+report becomes that conversation's next turn instead, so its own agent -- the orchestrator, in the
+conversation's workspace, with everything that conversation has -- works on it.
+
+- **One bubble.** The turn is `[Cron: <name>]`, the report, then the instruction, and it replaces the
+  note: the run it opens writes it into the log, so nothing else is filed. Pictures the job produced
+  still go out in a frame of their own, a turn carrying text only.
+- **The same door as a sub-agent's hand-back** (`deliverOwnerTurn`): a conversation at rest opens a
+  run, one with a run in flight takes it into that run's mailbox, exactly like a message the owner
+  sends while it works. No second notion of a queued turn.
+- **The instruction is the job's** (`followUpPrompt`), so a mail check and an offer watch can ask for
+  different things. Absent, `DEFAULT_FOLLOW_UP` asks to act on the report in the conversation's
+  workspace. The rules of that workspace (its AGENTS.md) still decide what may be done: a turn from a
+  job is no more authority than one the owner typed.
+- **Never lost.** A channel that refuses the turn (no adapter, no such thread) falls back to the
+  note. A `[SILENT]` run hands nothing over, and a job delivering `local` has no conversation to hand
+  to.
+- **Off by default**, stored only when on (`true`), like `conversations`. The tool takes `follow_up`
+  and `follow_up_prompt`, `cron list` prints it, and the app's job editor has the switch and the
+  instruction.
+
 ### At-most-once execution
 
 `nextRunAt` is advanced before the job runs. If the process crashes mid-execution, the job will not re-fire on restart. This prevents duplicate deliveries and runaway jobs. One-shot jobs are excluded from pre-advancement to allow retry.

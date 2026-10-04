@@ -2093,6 +2093,8 @@ async function main() {
             ...(job.tools ? { tools: job.tools } : {}),
             subagents: job.subagents !== false,
             browser: job.browser !== false,
+            followUp: job.followUp === true,
+            ...(job.followUpPrompt ? { followUpPrompt: job.followUpPrompt } : {}),
             nextRunAt: job.nextRunAt,
             lastRunAt: job.lastRunAt,
             lastStatus: job.lastStatus === "interrupted" ? "error" : job.lastStatus,
@@ -2142,6 +2144,8 @@ async function main() {
           // edit from it must not silently grant or deny a capability.
           ...(fields.subagents === undefined ? {} : { subagents: fields.subagents === true }),
           ...(fields.browser === undefined ? {} : { browser: fields.browser === true }),
+          ...(fields.followUp === undefined ? {} : { followUp: fields.followUp === true }),
+          ...(fields.followUpPrompt === undefined ? {} : { followUpPrompt: fields.followUpPrompt }),
         };
         // In turn with the tool and the scheduler: an edit from the phone while a `cron` call
         // writes would otherwise erase one of the two -- docs/cron.md.
@@ -2745,6 +2749,11 @@ async function main() {
   };
   await startMyClawAppChannel();
   if (myClawAppRef) cronScheduler.adapters.set("my-claw-app", myClawAppRef);
+  // A job with `followUp` hands its report to the conversation as the owner's next turn, through
+  // the same door as a sub-agent's hand-back: a conversation at rest opens a run, one in flight
+  // parks it in its mailbox (docs/cron.md).
+  cronScheduler.handOver = async (target, text) =>
+    myClawAppRef ? myClawAppRef.deliverOwnerTurn(target.chatId, target.threadId ?? "default", text) : false;
   // A delivered result goes into the conversation's history, the way a sub-agent's handoff note
   // does: filed, never prompted, so it reads back on reload and reaches a phone that was asleep.
   cronScheduler.journal = async (target, text) => {
