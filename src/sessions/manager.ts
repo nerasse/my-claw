@@ -16,7 +16,7 @@ import { LruMap } from "../utils/lru-map.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { openSessionLog, sessionDir, type SessionLog } from "./log.ts";
-import { metaOf, readMeta, writeMeta } from "./meta.ts";
+import { listingFactsOf, metaOf, readMeta, writeMeta } from "./meta.ts";
 import { sweepOrphanToolOutput } from "./tool-output.ts";
 import { rm } from "node:fs/promises";
 
@@ -406,12 +406,7 @@ export class SessionManager {
     const leaf = openLog ? openLog.leaf() : stored?.leafId ?? null;
     // Mirrored on every write while the log is in hand, so a conversation list never has to open
     // one to know how long a conversation is or what to call it.
-    const fromLog = openLog
-      ? {
-          promptCount: openLog.promptCount(),
-          ...(openLog.firstUserText() === null ? {} : { firstUserText: openLog.firstUserText() as string }),
-        }
-      : undefined;
+    const fromLog = openLog ? listingFactsOf(openLog) : undefined;
     await writeMeta(sessionId, metaOf(session, leaf, stored, fromLog)).catch((err) => {
       void log("error", "session meta: write failed", { sessionId, error: String(err) });
     });

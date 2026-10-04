@@ -6,6 +6,7 @@ import {
   setDefaultModel,
   setVisionFallback,
   setProviderRetry,
+  setDefaultContextCap,
   clearAgentModel,
   setAgentScope,
   setAgentWorkspace,
@@ -20,7 +21,7 @@ import {
   renameWorkspace,
   setWorkspacePath,
 } from "../../src/core/config-edit.ts";
-import { CONFIG_PATH, parseConfig, resolveAgentLlm, MY_CLAW_DIR, type MyClawConfig } from "../../src/core/config.ts";
+import { CONFIG_PATH, DEFAULT_CONTEXT_CAP, parseConfig, resolveAgentLlm, resolveContextCap, MY_CLAW_DIR, type MyClawConfig } from "../../src/core/config.ts";
 import { join } from "node:path";
 
 const FILE = {
@@ -148,6 +149,34 @@ describe("setProviderRetry", () => {
     await setProviderRetry({ enabled: false, delaysMs: [5000] });
     await setProviderRetry({ enabled: true });
     expect((await readConfigFile()).llm.providerRetry).toEqual({ delaysMs: [5000] });
+  });
+});
+
+describe("setDefaultContextCap", () => {
+  test("a value is the ceiling every agent without its own falls back to", async () => {
+    await writeConfigFile({ ...FILE, context: { autoCompact: { enabled: true } } });
+    const result = await setDefaultContextCap(200_000);
+    expect(result.ok).toBe(true);
+    const file = await readConfigFile();
+    // The rest of the section is left as it was.
+    expect(file.context).toEqual({ autoCompact: { enabled: true }, cap: 200_000 });
+    expect(resolveContextCap(parseConfig(await readFile(CONFIG_PATH, "utf-8")), "general")).toBe(200_000);
+  });
+
+  test("0 is kept as written: it lifts the ceiling rather than restoring the default", async () => {
+    await writeConfigFile();
+    await setDefaultContextCap(0);
+    const file = await readConfigFile();
+    expect(file.context?.cap).toBe(0);
+    expect(resolveContextCap(parseConfig(await readFile(CONFIG_PATH, "utf-8")))).toBeUndefined();
+  });
+
+  test("clearing it puts the built-in default back and leaves no empty section", async () => {
+    await writeConfigFile({ ...FILE, context: { cap: 100_000 } });
+    await setDefaultContextCap(undefined);
+    const file = await readConfigFile();
+    expect(file.context).toBeUndefined();
+    expect(resolveContextCap(parseConfig(await readFile(CONFIG_PATH, "utf-8")))).toBe(DEFAULT_CONTEXT_CAP);
   });
 });
 

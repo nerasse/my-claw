@@ -194,10 +194,22 @@ Granting one agent more than the standing policy has to be expressible without e
 policy, and a `min()` would silently refuse exactly that. `0` lifts the ceiling for that agent
 alone.
 
+### Global
+
+The app edits `context.cap` itself: Settings > Models > Default > Context cap
+(`agents.defaultcap.set`). Clearing it removes the key, so the built-in 512 000 applies again;
+`0` is written as it is and lifts the ceiling. Nothing else in the config is written: an agent's
+own cap and a tag candidate's pin keep outranking it.
+
+That last point is what made the global value look ignored (2026-10-04): every candidate of every
+tag pinned `contextCap: 512000`, the default model is a tag, so lowering `context.cap` changed
+nothing a run could see. A candidate that repeats the global value is not a choice, it is a copy
+that stops following the policy. Leave the candidate's cap empty to follow the global one.
+
 ### Precedence
 
 ```
-session override  >  agent cap  >  capExempt  >  global cap
+session override  >  tag candidate cap  >  agent cap  >  capExempt  >  global cap
 ```
 
 A numeric session override wins in both directions, including over an exemption: the

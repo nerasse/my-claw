@@ -174,7 +174,7 @@ function approvalRequest(): ToolApprovalRequest {
 }
 
 class FakeSessionStore {
-  summaries: Array<{ threadId: string; title: string; messageCount: number; createdAt: string; lastActiveAt: string; archived?: boolean; folderId?: string }> = [];
+  summaries: Array<{ threadId: string; title: string; messageCount: number; createdAt: string; lastActiveAt: string; lastMessageAt: string; archived?: boolean; folderId?: string }> = [];
   historyMap = new Map<string, Array<{ id: string; role: "user" | "assistant"; text: string; ts: string }>>();
   archived: string[] = [];
   unarchived: string[] = [];
@@ -1554,7 +1554,7 @@ describe("MyClawAppAdapter", () => {
 
   test("session.list returns the store summaries", async () => {
     store.summaries = [
-      { threadId: "a", title: "salut l'agent", messageCount: 4, createdAt: "t1", lastActiveAt: "t2" },
+      { threadId: "a", title: "salut l'agent", messageCount: 4, createdAt: "t1", lastActiveAt: "t2", lastMessageAt: "t2" },
     ];
     client.ws.send(JSON.stringify({ type: "session.list" }));
     const frame = (await nextFrame(client)) as { type: string; sessions: Array<{ threadId: string }> };
@@ -1612,7 +1612,7 @@ describe("MyClawAppAdapter", () => {
 
   test("renaming a conversation answers with the list it produced", async () => {
     store.summaries = [
-      { threadId: "projet", title: "salut ca va", messageCount: 2, createdAt: "c", lastActiveAt: "l" },
+      { threadId: "projet", title: "salut ca va", messageCount: 2, createdAt: "c", lastActiveAt: "l", lastMessageAt: "l" },
     ];
 
     client.ws.send(JSON.stringify({ type: "session.rename", threadId: "projet", title: "Infra maison" }));
@@ -2146,7 +2146,7 @@ describe("MyClawAppAdapter", () => {
 
   test("session.archive files the thread away and replies with the refreshed listing", async () => {
     store.summaries = [
-      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l" },
+      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l", lastMessageAt: "l" },
     ];
     store.historyMap.set("a", [{ id: "h1", role: "user", text: "bonjour", ts: "t1" }]);
 
@@ -2161,7 +2161,7 @@ describe("MyClawAppAdapter", () => {
 
   test("session.unarchive brings the thread back to the main listing", async () => {
     store.summaries = [
-      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l", archived: true },
+      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l", lastMessageAt: "l", archived: true },
     ];
 
     client.ws.send(JSON.stringify({ type: "session.unarchive", threadId: "a" }));
@@ -2179,7 +2179,7 @@ describe("MyClawAppAdapter", () => {
 
   test("folder.create names a folder, and every device of the owner is told", async () => {
     store.summaries = [
-      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l" },
+      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l", lastMessageAt: "l" },
     ];
     // Two devices, one owner: a filing cabinet filed on one that the other cannot see is a cache.
     const other = await connectClient(adapter.port);
@@ -2213,7 +2213,7 @@ describe("MyClawAppAdapter", () => {
 
   test("session.folder files a conversation, and the listing says where it sits", async () => {
     store.summaries = [
-      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l" },
+      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l", lastMessageAt: "l" },
     ];
     client.ws.send(JSON.stringify({ type: "folder.create", name: "CubeFlow" }));
     const created = (await nextFrame(client)) as { folders: Array<{ id: string }> };
@@ -2232,7 +2232,7 @@ describe("MyClawAppAdapter", () => {
 
   test("filing into a folder that does not exist is refused, not stored", async () => {
     store.summaries = [
-      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l" },
+      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l", lastMessageAt: "l" },
     ];
 
     client.ws.send(JSON.stringify({ type: "session.folder", threadId: "a", folderId: "jamais-cree" }));
@@ -2245,8 +2245,8 @@ describe("MyClawAppAdapter", () => {
 
   test("folder.remove unfiles what it held instead of losing it", async () => {
     store.summaries = [
-      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l" },
-      { threadId: "b", title: "Courses", messageCount: 1, createdAt: "c", lastActiveAt: "l" },
+      { threadId: "a", title: "Infra", messageCount: 2, createdAt: "c", lastActiveAt: "l", lastMessageAt: "l" },
+      { threadId: "b", title: "Courses", messageCount: 1, createdAt: "c", lastActiveAt: "l", lastMessageAt: "l" },
     ];
     client.ws.send(JSON.stringify({ type: "folder.create", name: "CubeFlow" }));
     const created = (await nextFrame(client)) as { folders: Array<{ id: string }> };
@@ -2903,7 +2903,7 @@ describe("a mutation reaches every window of the owner", () => {
 
   beforeEach(async () => {
     store = new FakeSessionStore();
-    store.summaries = [{ threadId: "projet", title: "salut", messageCount: 2, createdAt: "c", lastActiveAt: "l" }];
+    store.summaries = [{ threadId: "projet", title: "salut", messageCount: 2, createdAt: "c", lastActiveAt: "l", lastMessageAt: "l" }];
     adapter = new MyClawAppAdapter(
       {
         port: 0,
@@ -3394,6 +3394,7 @@ describe("agents frames", () => {
     effortLevels: ["low", "medium", "high"],
     fallback: "fast-1",
     retry: { enabled: true, delaysMs: [30_000, 60_000, 120_000] },
+    contextCap: { default: 512_000 },
     providers: [{ key: "prov-a", type: "openai", discover: true, models: 2, keyEnv: "PROV_A_KEY", keyPresent: true }],
     agents: [
       { key: "orchestrator", label: "Orchestrator", description: "The agent you talk to", model: "fast-1", pinned: false, inheritsFrom: "global" },
@@ -3415,6 +3416,7 @@ describe("agents frames", () => {
       clearModel: async (agent) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => ({ ...a, pinned: false })) }),
       setFallback: async (model) => ({ ...SNAPSHOT, fallback: model }),
       setRetry: async (patch) => ({ ...SNAPSHOT, retry: { enabled: patch.enabled, delaysMs: patch.delaysMs ?? SNAPSHOT.retry.delaysMs } }),
+      setDefaultContextCap: async (value) => ({ ...SNAPSHOT, contextCap: { ...(value === null ? {} : { value }), default: 512_000 } }),
       setScope: async (agent, field, mode, names) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => (a.key === agent ? { ...a, [field]: mode === "inherit" ? null : mode === "all" ? ["*"] : names } : a)) }),
       setWorkspace: async (agent, workspace) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => (a.key === agent ? { ...a, workspace } : a)) }),
       setMaxIterations: async (agent, value) => ({ ...SNAPSHOT, agents: SNAPSHOT.agents.map((a) => (a.key === agent ? { ...a, maxIterations: value } : a)) }),
@@ -3446,6 +3448,31 @@ describe("agents frames", () => {
     assert.equal(frame["defaultModel"], "fast-1");
     assert.equal((frame["agents"] as unknown[]).length, 2);
     assert.equal((frame["providers"] as unknown[]).length, 1);
+  });
+
+  test("agents.defaultcap.set writes the global ceiling, and null hands it back to the default", async () => {
+    client.ws.send(JSON.stringify({ type: "agents.defaultcap.set", value: 256_000 }));
+    let frame = await nextFrame(client);
+    assert.equal(frame["type"], "agents.config.result");
+    assert.deepEqual(frame["contextCap"], { value: 256_000, default: 512_000 });
+
+    // 0 is a value, not an absence: it is how the ceiling is lifted.
+    client.ws.send(JSON.stringify({ type: "agents.defaultcap.set", value: 0 }));
+    frame = await nextFrame(client);
+    assert.deepEqual(frame["contextCap"], { value: 0, default: 512_000 });
+
+    client.ws.send(JSON.stringify({ type: "agents.defaultcap.set", value: null }));
+    frame = await nextFrame(client);
+    assert.deepEqual(frame["contextCap"], { default: 512_000 });
+  });
+
+  test("agents.defaultcap.set refuses what is not a token count, before anything is written", async () => {
+    for (const value of [-1, 1.5, "512000"]) {
+      client.ws.send(JSON.stringify({ type: "agents.defaultcap.set", value }));
+      const frame = await nextFrame(client);
+      assert.equal(frame["type"], "error");
+      assert.equal(frame["scope"], "agents");
+    }
   });
 
   test("agents.model.set forwards agent and model and answers with the stored state", async () => {
@@ -3543,6 +3570,7 @@ describe("agents frames", () => {
       clearModel: async () => SNAPSHOT,
       setFallback: async () => SNAPSHOT,
       setRetry: async () => SNAPSHOT,
+      setDefaultContextCap: async () => SNAPSHOT,
       setScope: async () => SNAPSHOT,
       setWorkspace: async () => SNAPSHOT,
       setMaxIterations: async () => SNAPSHOT,
@@ -3611,6 +3639,9 @@ describe("agents frames", () => {
         throw new Error("nope");
       },
       setRetry: async () => {
+        throw new Error("nope");
+      },
+      setDefaultContextCap: async () => {
         throw new Error("nope");
       },
       setScope: async () => {
@@ -4260,7 +4291,7 @@ describe("command frames", () => {
     session: {
       id: "my-claw-app/dm/test-device/t9",
       createdAt: "2026-08-08T10:00:00.000Z",
-      lastActiveAt: "2026-08-08T11:00:00.000Z",
+      lastActiveAt: "2026-08-08T11:00:00.000Z", lastMessageAt: "2026-08-08T11:00:00.000Z",
       turns: 2,
     },
     model: {

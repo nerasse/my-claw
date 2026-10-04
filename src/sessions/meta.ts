@@ -81,6 +81,8 @@ export interface SessionMeta {
    */
   promptCount?: number;
   firstUserText?: string;
+  /** When the last message was sent into the conversation (ISO): the order of a conversation list. */
+  lastUserAt?: string;
   archivedAt?: string;
   /**
    * The folder this conversation is filed in, absent when it is not filed. One field for the one
@@ -170,7 +172,26 @@ const META_KEYS: Record<keyof SessionMeta, "session" | "carried"> = {
   // open must leave what is on disk alone instead of erasing a count it cannot compute.
   promptCount: "carried",
   firstUserText: "carried",
+  lastUserAt: "carried",
 };
+
+/** What a conversation list reads off a log, mirrored into `meta.json` so the list never opens one. */
+export interface ListingFacts {
+  promptCount: number;
+  firstUserText?: string;
+  lastUserAt?: string;
+}
+
+/** The facts of an open log, in the shape `meta.json` stores them. */
+export function listingFactsOf(log: { promptCount(): number; firstUserText(): string | null; lastUserAt(): number | null }): ListingFacts {
+  const first = log.firstUserText();
+  const last = log.lastUserAt();
+  return {
+    promptCount: log.promptCount(),
+    ...(first === null ? {} : { firstUserText: first }),
+    ...(last === null ? {} : { lastUserAt: new Date(last).toISOString() }),
+  };
+}
 
 /** The keys of a stored meta that the session has no opinion about, taken from what is on disk. */
 function carriedOver(previous: SessionMeta | null | undefined): Partial<SessionMeta> {
@@ -195,7 +216,7 @@ export function metaOf(
   leafId: string | null,
   previous?: SessionMeta | null,
   /** Read off the open log, when there is one. Absent leaves whatever the file already held. */
-  fromLog?: { promptCount: number; firstUserText?: string },
+  fromLog?: ListingFacts,
 ): SessionMeta {
   return defined({
     ...carriedOver(previous),

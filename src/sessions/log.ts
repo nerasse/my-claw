@@ -544,6 +544,7 @@ export class SessionLog {
    */
   private prompts: number;
   private firstUser: string | null;
+  private lastUser: number | null;
   /**
    * Told after every append, leaf moved. The manager hangs the session's dirty flag on it, so the
    * autosave carries the new leaf to `meta.json` within its tick. Without it the flag moved only
@@ -564,6 +565,10 @@ export class SessionLog {
     this.leafId = leafId ?? entries[entries.length - 1]?.id ?? null;
     this.prompts = entries.reduce((count, entry) => (entry.prompt ? count + 1 : count), 0);
     this.firstUser = entries.find((entry): entry is UserEntry => entry.type === "user")?.text ?? null;
+    this.lastUser = null;
+    for (const entry of entries) {
+      if (entry.type === "user" && entry.ts > (this.lastUser ?? -Infinity)) this.lastUser = entry.ts;
+    }
   }
 
   /** Entries a prompt would carry: the message count a conversation list shows. */
@@ -574,6 +579,11 @@ export class SessionLog {
   /** Raw text of the first thing the owner said, which is what an untitled conversation is named after. */
   firstUserText(): string | null {
     return this.firstUser;
+  }
+
+  /** When the last message was sent into this conversation, whatever branch it is on: what a conversation list sorts on. */
+  lastUserAt(): number | null {
+    return this.lastUser;
   }
 
   entries(): readonly Entry[] {
@@ -622,7 +632,10 @@ export class SessionLog {
     this.list.push(entry);
     this.leafId = entry.id;
     if (entry.prompt) this.prompts += 1;
-    if (this.firstUser === null && entry.type === "user") this.firstUser = entry.text;
+    if (entry.type === "user") {
+      if (this.firstUser === null) this.firstUser = entry.text;
+      this.lastUser = now;
+    }
     this.write(`${JSON.stringify(entry)}\n`, 1);
     this.onAppend?.();
     return entry;
@@ -678,7 +691,10 @@ export class SessionLog {
       parentId = entry.id;
     }
     patch?.(entries);
-    for (const entry of entries) this.list.push(entry);
+    for (const entry of entries) {
+      this.list.push(entry);
+      if (entry.type === "user" && entry.ts > (this.lastUser ?? -Infinity)) this.lastUser = entry.ts;
+    }
     this.leafId = parentId;
     const lines = entries.map((entry) => `${JSON.stringify(entry)}\n`).join("");
     if (lines.length > 0) this.write(lines, entries.length);

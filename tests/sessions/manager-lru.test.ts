@@ -105,6 +105,34 @@ test("SessionManager: a listing's counts are mirrored into the meta, so nothing 
   assert.equal(meta?.firstUserText, "bonjour");
 });
 
+test("SessionManager: the meta keeps when the last message was sent, not when the last answer landed", async () => {
+  const manager = new SessionManager();
+  const id = "test/counts/last-user";
+  await manager.getOrCreateWithMeta(id, "telegram", "dm");
+  const log = await manager.logOf(id);
+  log.appendAll([
+    { type: "user", prompt: true, text: "premier", ts: 1_000 },
+    { type: "phase", prompt: true, text: "reponse", runId: "r1", ts: 2_000 },
+    { type: "user", prompt: true, text: "second", ts: 3_000 },
+    { type: "phase", prompt: true, text: "reponse", runId: "r2", ts: 9_000 },
+  ]);
+
+  await manager.persist(id);
+
+  assert.equal((await readMeta(id))?.lastUserAt, new Date(3_000).toISOString());
+  // The same answer from a log reopened off the disk, which is what a listing does after a restart.
+  await log.flush();
+  assert.equal((await new SessionManager().logOf(id)).lastUserAt(), 3_000);
+
+  const before = Date.now();
+  log.append({ type: "user", prompt: true, text: "troisieme" });
+  assert.ok((log.lastUserAt() ?? 0) >= before, "a live append moves it too");
+  log.append({ type: "phase", prompt: true, text: "reponse", runId: "r3" });
+  const afterAnswer = log.lastUserAt();
+  log.append({ type: "failure", prompt: false, error: "boom" });
+  assert.equal(log.lastUserAt(), afterAnswer, "an answer or a failure does not");
+});
+
 test("SessionManager: a log a run still holds is the one handed out after its eviction, never a second instance", async () => {
   // Reported: reload a page during a run and the thread comes back as it stood before the
   // question. The run holds the log it opened and appends through that reference; the reload

@@ -770,6 +770,12 @@ export interface MyClawAppAgentsContextCapSet {
   value: number | null;
 }
 
+/** The global context ceiling, `context.cap`: `null` puts the built-in default back, `0` lifts it. */
+export interface MyClawAppAgentsDefaultCapSet {
+  type: "agents.defaultcap.set";
+  value: number | null;
+}
+
 /**
  * The provider-failure retry switch, and its schedule when the app sends one: `llm.providerRetry`.
  * The section is `llm`-level and not per-agent -- the schedule is a property of waiting on a broken
@@ -1130,6 +1136,7 @@ export type MyClawAppClientFrame =
   | MyClawAppAgentsIterationsSet
   | MyClawAppAgentsContextCapSet
   | MyClawAppAgentsRetrySet
+  | MyClawAppAgentsDefaultCapSet
   | MyClawAppAgentFileGet
   | MyClawAppAgentFileSet
   | MyClawAppAgentFileCreate
@@ -1421,6 +1428,8 @@ export interface MyClawAppSessionSummary {
   messageCount: number;
   createdAt: string;
   lastActiveAt: string;
+  /** When the last message was sent into it: the listing is sorted on it, newest first. */
+  lastMessageAt: string;
   /**
    * Filed away by the owner. The listing carries both states so the app can split them into
    * its two lists from one round-trip, and show the archived count without asking again.
@@ -2523,6 +2532,11 @@ export interface MyClawAppAgentsConfigResult {
    * know the default (docs/provider-failures.md).
    */
   retry: { enabled: boolean; delaysMs: number[] };
+  /**
+   * The ceiling every agent, tag and conversation falls back to. `value` is what the config says,
+   * absent when it says nothing and `default` applies; `0` means no ceiling.
+   */
+  contextCap: { value?: number; default: number };
   providers: MyClawAppProviderInfo[];
   agents: MyClawAppAgentInfo[];
 }

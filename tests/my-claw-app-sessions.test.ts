@@ -13,10 +13,10 @@ import { tmpdir } from "node:os";
 import { DraftStore } from "../src/channels/my-claw-app/drafts.ts";
 import { FolderStore } from "../src/channels/my-claw-app/folders.ts";
 import { join } from "node:path";
-import { saveSessionWithLog, type SessionLogSetup, writeLegacySessionFile } from "./helpers/session-log.ts";
+import { saveSessionWithLog, setupSessionLog, type SessionLogSetup, writeLegacySessionFile } from "./helpers/session-log.ts";
 import type { FailureEntry, CommandEntry, ToolEntry } from "../src/sessions/log.ts";
 import { resetSessionLogResolver } from "../src/sessions/log-access.ts";
-import { readMeta, writeMeta } from "../src/sessions/meta.ts";
+import { listingFactsOf, metaOf, readMeta, writeMeta } from "../src/sessions/meta.ts";
 import { appendSpawnState } from "../src/sessions/spawn-state.ts";
 
 const DEVICE = "dev-test";
@@ -2055,5 +2055,72 @@ describe("MyClawAppSessionStoreImpl.sync", () => {
     const result = await store.sync(DEVICE, THREAD, null, undefined, 1000);
     assert.equal(result.entries.length, 5);
     assert.equal(result.truncated, undefined);
+  });
+});
+
+describe("MyClawAppSessionStoreImpl listing order", () => {
+  // An owner of its own: the sessions directory is shared by the whole run.
+  const OWNER = "order-test";
+  let store: MyClawAppSessionStoreImpl;
+  const setups: SessionLogSetup[] = [];
+
+  beforeEach(() => {
+    store = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore());
+  });
+
+  afterEach(async () => {
+    for (const setup of setups.splice(0)) {
+      await setup.log.flush();
+      setup.cleanup();
+    }
+    resetSessionLogResolver();
+  });
+
+  /** A conversation whose entries carry the given times, its meta written the way a persist writes it. */
+  async function conversation(threadId: string, turns: Array<{ type: "user" | "phase"; ts: number }>, mirrored = true): Promise<void> {
+    const sessionId = store.resolveSessionId(OWNER, threadId);
+    const setup = await setupSessionLog(sessionId);
+    setups.push(setup);
+    setup.log.appendAll(turns.map((turn) => (turn.type === "user"
+      ? { type: "user" as const, prompt: true as const, text: threadId, ts: turn.ts }
+      : { type: "phase" as const, prompt: true as const, text: "reponse", runId: `r${turn.ts}`, ts: turn.ts })));
+    await setup.log.flush();
+    const facts = listingFactsOf(setup.log);
+    const { lastUserAt: _dropped, ...withoutLast } = facts;
+    await writeMeta(sessionId, metaOf(session(sessionId, []), setup.log.leaf(), undefined, mirrored ? facts : withoutLast));
+  }
+
+  test("the conversation last written in comes first, whatever was answered since", async () => {
+    // "aller" is written last on disk and answered last: the log's clock puts it first, and that
+    // is what made a run finishing elsewhere lift its conversation over the one just written in.
+    await conversation("retour", [{ type: "user", ts: Date.parse("2026-03-01T10:00:00Z") }]);
+    await conversation("aller", [
+      { type: "user", ts: Date.parse("2026-03-01T09:00:00Z") },
+      { type: "phase", ts: Date.parse("2026-03-01T11:00:00Z") },
+    ]);
+
+    const listed = await store.list(OWNER);
+    assert.deepEqual(listed.map((entry) => entry.threadId), ["retour", "aller"]);
+    assert.equal(listed[0]!.lastMessageAt, "2026-03-01T10:00:00.000Z");
+  });
+
+  test("a settings write with no log open keeps the time it cannot compute", async () => {
+    await conversation("renommee", [{ type: "user", ts: Date.parse("2026-03-01T10:00:00Z") }]);
+
+    await store.rename(OWNER, "renommee", "Infra");
+
+    const listed = await store.list(OWNER);
+    assert.equal(listed[0]!.title, "Infra");
+    assert.equal(listed[0]!.lastMessageAt, "2026-03-01T10:00:00.000Z");
+  });
+
+  test("a meta written before the field existed falls back to the session's own clock", async () => {
+    await conversation("ancienne", [{ type: "user", ts: Date.parse("2026-05-01T10:00:00Z") }], false);
+    await conversation("recente", [{ type: "user", ts: Date.parse("2026-04-01T10:00:00Z") }]);
+
+    const listed = await store.list(OWNER);
+    // session() stamps lastActiveAt at 2026-01-01, older than the mirrored April message.
+    assert.deepEqual(listed.map((entry) => entry.threadId), ["recente", "ancienne"]);
+    assert.equal(listed[1]!.lastMessageAt, "2026-01-01T00:01:00.000Z");
   });
 });

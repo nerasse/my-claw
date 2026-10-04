@@ -33,6 +33,7 @@ import type {
   MyClawAppAgentsContextCapSet,
   MyClawAppAgentsFallbackSet,
   MyClawAppAgentsRetrySet,
+  MyClawAppAgentsDefaultCapSet,
   MyClawAppAgentsIterationsSet,
   MyClawAppAgentsModelClear,
   MyClawAppAgentsModelSet,
@@ -688,6 +689,26 @@ export async function handleAgentsRetrySet(
     }));
   } catch (err) {
     await d.refuse(ws, "agents", "agents.retry.set failed", { enabled: frame.enabled, error: String(err) });
+  }
+}
+
+export async function handleAgentsDefaultCapSet(
+  d: MyClawAppSettingsDeps,
+  ws: ServerWebSocket<MyClawAppSessionData>,
+  frame: MyClawAppAgentsDefaultCapSet,
+): Promise<void> {
+  if (!d.agents) {
+    await d.refuse(ws, "agents", "agent defaults unavailable");
+    return;
+  }
+  if (frame.value !== null && !(Number.isInteger(frame.value) && frame.value >= 0)) {
+    await d.refuse(ws, "agents", "invalid context cap", { value: frame.value });
+    return;
+  }
+  try {
+    d.broadcastFrame(ws.data.owner, await d.agents.setDefaultContextCap(frame.value));
+  } catch (err) {
+    await d.refuse(ws, "agents", "agents.defaultcap.set failed", { value: frame.value, error: String(err) });
   }
 }
 

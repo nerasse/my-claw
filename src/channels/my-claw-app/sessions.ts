@@ -6,7 +6,7 @@ import { FAILURE_TEXT_LIMIT, attributionParent } from "../../sessions/store.ts";
 import { summaryBodyOf } from "../../sessions/compaction.ts";
 import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
-import { readMeta } from "../../sessions/meta.ts";
+import { listingFactsOf, readMeta, type ListingFacts } from "../../sessions/meta.ts";
 import { pathOf, UnknownCursorError, type Provisioned, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
 import { pageOf, pageBefore, displayOf, mediaRefsOf, runFold, runFoldPlan, withSpawnCards, windowNeedsFiles, type DisplayResolvers, type MediaRef } from "./display.ts";
 import { spawnStates, spawnView } from "../../sessions/spawn-state.ts";
@@ -398,23 +398,19 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
    * carried these is backfilled by opening its log that once; the write that follows means the
    * next listing does not.
    */
-  private async listingCounts(sessionId: string): Promise<{ promptCount: number; firstUserText?: string }> {
+  private async listingCounts(sessionId: string): Promise<ListingFacts> {
     // An open log outranks the file: a run in flight has appended entries the meta has not seen.
     const open = this.sessionManager.peekLog(sessionId);
-    if (open) {
-      const first = open.firstUserText();
-      return { promptCount: open.promptCount(), ...(first === null ? {} : { firstUserText: first }) };
-    }
+    if (open) return listingFactsOf(open);
     const meta = await readMeta(sessionId).catch(() => null);
     if (meta?.promptCount !== undefined) {
       return {
         promptCount: meta.promptCount,
         ...(meta.firstUserText === undefined ? {} : { firstUserText: meta.firstUserText }),
+        ...(meta.lastUserAt === undefined ? {} : { lastUserAt: meta.lastUserAt }),
       };
     }
-    const log = await sessionLogOf(sessionId);
-    const first = log.firstUserText();
-    return { promptCount: log.promptCount(), ...(first === null ? {} : { firstUserText: first }) };
+    return listingFactsOf(await sessionLogOf(sessionId));
   }
 
   /** Every conversation of this owner. A cap here made the oldest ones unreachable and unsearchable. */
@@ -444,13 +440,17 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         messageCount: counts.promptCount,
         createdAt: session.createdAt,
         lastActiveAt: session.lastActiveAt,
+        // A meta written before the field existed has only the session's own clock to offer.
+        lastMessageAt: counts.lastUserAt ?? session.lastActiveAt,
         ...(session.archivedAt ? { archived: true } : {}),
         ...(session.folderId ? { folderId: session.folderId } : {}),
         workspace: session.workspace ?? "default",
         ...(drafted.has(sessionId) ? { hasDraft: true } : {}),
       });
     }
-    return summaries;
+    // The last message sent orders the list, not the log's clock: a run answering in another
+    // conversation would otherwise lift it above the one the owner just wrote in.
+    return summaries.sort((left, right) => (left.lastMessageAt < right.lastMessageAt ? 1 : left.lastMessageAt > right.lastMessageAt ? -1 : 0));
   }
 
   /**

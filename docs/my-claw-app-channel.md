@@ -376,6 +376,7 @@ the first answer wins.
 { "type": "agents.workspace.set", "agent": "cron", "workspace": "sofa" }
 { "type": "agents.iterations.set", "agent": "cron", "value": 12 }
 { "type": "agents.contextcap.set", "agent": "cron", "value": 200000 }
+{ "type": "agents.defaultcap.set", "value": 256000 }
 { "type": "agents.file.get", "agent": "reviewer" }
 { "type": "agents.file.set", "agent": "reviewer", "sha": "9f2b1c4d5e6a", "description": "...", "base": "general|research", "tools": ["read"], "skillsMode": "absent|all|list", "skills": [...], "mcpMode": "absent|all|list", "mcp": [...], "model": "opus", "workspace": "sofa", "maxIterations": 10, "contextCap": 0, "instructions": ["CORE"], "prompt": "..." }
 { "type": "agents.file.create", "name": "reviewer", "description": "Reviews a diff" }
@@ -550,7 +551,9 @@ provider request URLs.
   a stale name is flagged red, not refused. `agents.workspace.set` pins or removes (null)
   `agents.<key>.workspace` and refuses a key that is not in `config.workspaces`. `agents.iterations.set`
   writes `maxIterations` (positive integer, null removes it); `agents.contextcap.set` writes
-  `context.cap` (0 lifts the ceiling, null falls back on the global cap). Every mutation answers
+  `context.cap` (0 lifts the ceiling, null falls back on the global cap). `agents.defaultcap.set`
+  writes the global `context.cap` (non-negative integer, 0 lifts it, null restores the built-in
+  default); the result carries it as `contextCap: { value?, default }`. Every mutation answers
   with a fresh `agents.config.result`.
 - `agents.file.get` opens a file-defined agent as structured fields (`agents.file.result`):
   the frontmatter the loader reads (`description`, `base`, `tools`, `skills`, `mcp`, `model`,
@@ -702,7 +705,7 @@ runs fresh like any other message.
 { "type": "chat.stream.abort", "id": "uuid", "threadId": "projet", "error": "..." }
 { "type": "chat.tool", "id": "uuid:tool:1", "threadId": "projet", "turnId": "uuid", "name": "bash", "args": {...}, "durationMs": 4, "ok": true, "output": "...", "truncated": false, "ts": "iso" }
 { "type": "chat.history", "threadId": "projet", "before": 50, "hasMore": true, "nextBefore": 100, "messages": [{ "id": "h-...", "role": "user|assistant", "text": "...", "ts": "iso", "transcript": "...", "run": { "id": "r-...", "status": "running|done|aborted|error", "startTs": "iso", "endTs": "iso" }, "attachments": [{ "id": "uuid", "type": "image", "filename": "photo.png", "mimeType": "image/png", "sizeBytes": 5120, "durationMs": 3100, "deleted": false }] }] }
-{ "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "...", "archived": true, "folderId": "uuid", "activeRun": true, "workspace": "default", "hasDraft": true }], "folders": [{ "id": "uuid", "name": "CubeFlow", "rank": 0, "workspace": "cf" }] }
+{ "type": "session.list.result", "sessions": [{ "threadId": "...", "title": "...", "messageCount": 4, "createdAt": "...", "lastActiveAt": "...", "lastMessageAt": "...", "archived": true, "folderId": "uuid", "activeRun": true, "workspace": "default", "hasDraft": true }], "folders": [{ "id": "uuid", "name": "CubeFlow", "rank": 0, "workspace": "cf" }] }
 { "type": "draft.changed", "threadId": "projet", "text": "ce qui est tape ailleurs", "ts": 1755690000000 }
 { "type": "session.workspace.set.result", "threadId": "projet", "workspace": "sofa" }
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
@@ -1034,7 +1037,12 @@ mid-flight instead of dragging the whole session into one reply. Pages stay disj
 cursor is the grown start, so the page above ends exactly where this one begins.
 `session.list.result` carries both halves in one round-trip: archived threads are
 flagged `archived: true` rather than left out, so the app can fill its two lists and
-show the archived count without asking twice. Most recently active first, capped at 50.
+show the archived count without asking twice. Uncapped, sorted on `lastMessageAt`, newest first:
+when a message was last sent into the conversation (the log's last `user` entry, mirrored into
+`meta.json` as `lastUserAt`). The log's own clock moved with every answer, so a run finishing in
+one conversation lifted it over the one the owner had just written in. A meta written before the
+field existed falls back on `lastActiveAt`. The app moves a conversation to the top itself the
+moment a message is sent from it, or mirrored to it from another window.
 
 App conversations are never swept: `pruneOldSessions` drops stale sessions on the chat
 platforms only. A thread the owner can see listed, named and archived must still be there

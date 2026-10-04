@@ -119,6 +119,27 @@ export async function setAgentContextCap(agent: string, cap: number | undefined)
 }
 
 /**
+ * The global context ceiling (`context.cap`). `undefined` removes the key, which puts the built-in
+ * default back in force; `0` is written as it is, because it is how the owner lifts the ceiling.
+ */
+export async function setDefaultContextCap(cap: number | undefined): Promise<ConfigEditResult> {
+  const read = await readConfigFile();
+  if (!read.ok) return read;
+
+  const context = objectAt(read.data, "context");
+  const previous = { model: undefined, provider: undefined };
+
+  if (cap === undefined) delete context["cap"];
+  else context["cap"] = cap;
+  if (Object.keys(context).length === 0) delete read.data["context"];
+
+  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant context cap global ${cap ?? "defaut"}` });
+  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+  await journal("edit", artifactId(CONFIG_PATH), { contextCap: cap ?? null });
+  return { ok: true, previous };
+}
+
+/**
  * Creates or replaces a tag route that configs reference as `tag:<name>` (docs/tags.md). The
  * reserved name `Default` is virtual and must not be written. New routes contain concrete models
  * only; an emptied tags section is removed so the file does not carry a meaningless setting.

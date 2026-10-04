@@ -164,6 +164,8 @@ export interface MyClawAppAgentsController {
   setWorkspace(agent: string, workspace: string | null): Promise<MyClawAppAgentsConfigResult>;
   /** Writes `agents.<agent>.maxIterations`; null removes it. */
   setMaxIterations(agent: string, value: number | null): Promise<MyClawAppAgentsConfigResult>;
+  /** Writes the global `context.cap`; null removes it so the built-in default applies. */
+  setDefaultContextCap(value: number | null): Promise<MyClawAppAgentsConfigResult>;
   /** Writes `agents.<agent>.context.cap`; null removes it. */
   setContextCap(agent: string, value: number | null): Promise<MyClawAppAgentsConfigResult>;
   /** The structured file of a file-defined agent, or null for a reserved role. */

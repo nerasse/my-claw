@@ -30,6 +30,7 @@ import {
   parseConfig,
   providerRetryDelays,
   resolveContextCap,
+  DEFAULT_CONTEXT_CAP,
   resolveWorkspaceDir,
   resolveWorkspaceKey,
   tagNameOf,
@@ -198,6 +199,7 @@ import {
   setAgentWorkspace,
   setAgentMaxIterations,
   setAgentContextCap,
+  setDefaultContextCap,
   setToolDisabled,
   setToolConfirm,
   addMcpServer,
@@ -1358,6 +1360,10 @@ async function main() {
           enabled: config.llm.providerRetry?.enabled !== false,
           delaysMs: providerRetryDelays(config.llm),
         },
+        contextCap: {
+          ...(config.context?.cap === undefined ? {} : { value: config.context.cap }),
+          default: DEFAULT_CONTEXT_CAP,
+        },
         providers: [
           // The virtual "Tags" provider rows at the top of the app's provider list: one entry
           // for the reserved `Default` tag plus one per configured tag (docs/tags.md). The app
@@ -1535,6 +1541,11 @@ async function main() {
         const result = await setAgentMaxIterations(agent, value);
         if (!result.ok) throw new Error(result.error);
         return writeAgentsConfig(`itérations ${agent}`);
+      },
+      setDefaultContextCap: async (value) => {
+        const result = await setDefaultContextCap(value ?? undefined);
+        if (!result.ok) throw new Error(result.error);
+        return writeAgentsConfig(`context cap ${value ?? "default"}`);
       },
       setContextCap: async (agent, value) => {
         if (!writableAgent(agent)) throw new Error(`unknown agent: ${agent}`);
