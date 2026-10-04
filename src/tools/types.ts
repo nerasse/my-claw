@@ -6,10 +6,12 @@ export interface ToolResult {
   error?: string;
   attachments?: Attachment[];
   /**
-   * The attachments are for the model's eyes only: it sees them, the conversation does not get
-   * them. `read` of an image is the agent looking at a file, not sending it (docs/tool-images.md).
+   * The attachments do not go into the reply by themselves: the answer sends what it means to send
+   * (`MEDIA:`). `read` of an image is the agent looking at a file (the model still sees it);
+   * `tts` is a draft the agent may listen to, redo, then send. One way to deliver a file, so a
+   * regenerated one is never sent twice (docs/tool-images.md).
    */
-  modelOnly?: boolean;
+  keepFromReply?: boolean;
 }
 
 export interface Tool {

@@ -20,7 +20,9 @@ that is simply wrong.
 ## Manual TTS (outbound)
 
 TTS is **never automatic**. The agent must call the `tts` tool
-when the user asks for audio.
+when the user asks for audio. The file it makes is **not sent by itself**: put
+`MEDIA:<path>` in the answer to send it. Listening to it (`stt`) and making it again is fine;
+only the take the answer names is delivered.
 
 ```tool
 tts(text="Hello")                     # Effective mode

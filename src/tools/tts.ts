@@ -4,7 +4,7 @@ import type { TtsPipeline } from "../voice/tts.ts";
 export function createTtsTool(pipeline: TtsPipeline): Tool {
   return {
     name: "tts",
-    description: "Generate audio from text using the configured voice engine (cloud: Edge TTS, local: Piper). Returns the path to the generated audio file.",
+    description: "Generate audio from text using the configured voice engine (cloud: Edge TTS, local: Piper). Returns the path to the generated audio file; it is not sent until your answer includes MEDIA:<path>.",
     parameters: {
       type: "object",
       properties: {
@@ -41,7 +41,9 @@ export function createTtsTool(pipeline: TtsPipeline): Tool {
         });
         return {
           success: true,
-          output: result.path,
+          // Not sent by itself: the answer sends it, once, the version the agent keeps.
+          output: `Audio generated: ${result.path}\nNot sent yet. To send it, put MEDIA:${result.path} in your answer.`,
+          keepFromReply: true,
           attachments: [
             {
               type: "audio",

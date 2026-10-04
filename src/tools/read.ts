@@ -55,7 +55,7 @@ export const readTool: Tool = {
           success: true,
           output: `Image read successfully: ${resolved} (${mime}, ${kb} KB). The image itself follows this result and is now in your context.`,
           attachments: [{ type: "image", path: resolved, mimeType: mime }],
-          modelOnly: true,
+          keepFromReply: true,
         };
       }
       if (sample.includes(0)) {

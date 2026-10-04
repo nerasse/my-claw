@@ -82,10 +82,15 @@ rebuild agree on what the tool showed the model.
 *2026-10-04. The owner saw six `(deleted)` attachments under a reply: the agent had read its own
 screenshots to check a layout, then deleted their folder before answering.*
 
-- **The model sees, the conversation does not** (`ToolResult.modelOnly`): `read` of an image is
-  the agent looking at a file, so its picture rides the tool message to the model and is not
-  attached to the reply. A tool that *produces* a picture for the owner (a browser screenshot)
-  still attaches it. To send a file, the agent says so (`MEDIA:` in its answer).
+- **Kept from the reply** (`ToolResult.keepFromReply`): `read` of an image is the agent looking at
+  a file, so its picture rides the tool message to the model and is not attached to the reply.
+  `tts` makes a draft: the agent may listen to it (`stt`) and make it again, and only the take its
+  answer names with `MEDIA:` is delivered. A browser screenshot still attaches by itself.
+
+  Why not dedup: a regenerated voice note is the same text and not the same bytes (two Edge
+  renderings differ), so the content dedup of 2026-09-23 had nothing to match and the reply
+  carried two players (thread 5b626af1, 2026-10-04). Two ways to deliver one file is the fault; a
+  tool whose output the answer sends is delivered by the answer alone.
 - **Copied when the tool returns, not at the end of the run** (`bridge.ts`, through the channel's
   media store): a file deleted or overwritten later in the run no longer leaves a hole. The id
   rides back onto the attachment, so the end marker and the outgoing frame reuse that copy

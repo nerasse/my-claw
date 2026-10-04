@@ -31,7 +31,7 @@ describe("tts tool", () => {
   // timed out under load. It also asserted a tautology ("success or error"), which every
   // ToolResult satisfies. A stub pipeline asserts what the tool actually owns: forwarding the
   // arguments, and mapping a generated file to output + an audio attachment.
-  test("forwards the arguments and returns the generated file as an audio attachment", async () => {
+  test("forwards the arguments and returns the generated file as a draft the answer sends", async () => {
     const calls: Array<{ text: string; voice?: string; forceCloud?: boolean }> = [];
     const pipeline = {
       generate: async (text: string, opts?: { voice?: string; forceCloud?: boolean }) => {
@@ -44,8 +44,11 @@ describe("tts tool", () => {
 
     expect(calls).toEqual([{ text: "hello world", voice: "fr-FR-RemyMultilingualNeural", forceCloud: true }]);
     expect(result.success).toBe(true);
-    expect(result.output).toBe("/tmp/generated.mp3");
+    // The path, and how to send it: the reply carries only what the answer names (docs/tool-images.md).
+    expect(result.output).toContain("/tmp/generated.mp3");
+    expect(result.output).toContain("MEDIA:/tmp/generated.mp3");
     expect(result.attachments).toEqual([{ type: "audio", path: "/tmp/generated.mp3", mimeType: "audio/mpeg" }]);
+    expect(result.keepFromReply).toBe(true);
   });
 
   test("a pipeline failure becomes a tool error, not a throw", async () => {

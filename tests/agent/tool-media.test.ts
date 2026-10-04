@@ -21,6 +21,8 @@ import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
+import { createTtsTool } from "../../src/tools/tts.ts";
+import type { TtsPipeline } from "../../src/voice/tts.ts";
 
 const config: MyClawConfig = {
   whitelist: ["u1"],
@@ -58,7 +60,7 @@ function tools(path: string): ToolRegistry {
   reg.register({
     name: "look", description: "look", parameters: {},
     async execute() {
-      return { success: true, output: "looked", attachments: [{ type: "image", path, mimeType: "image/png" }], modelOnly: true };
+      return { success: true, output: "looked", attachments: [{ type: "image", path, mimeType: "image/png" }], keepFromReply: true };
     },
   });
   reg.register({
@@ -109,6 +111,50 @@ async function run(steps: string[]): Promise<{ out: Awaited<ReturnType<MessageRo
     setup.cleanup();
   }
 }
+
+describe("a voice note the agent makes twice", () => {
+  // 2026-10-04, thread 5b626af1: tts, stt to listen to it, tts again, then an answer that sends the
+  // second with MEDIA:. The reply carried two players: the first draft rode in as the tool's own
+  // attachment, and two Edge renderings of one text are not the same bytes, so the content dedup
+  // of 2026-09-23 had nothing to match.
+  test("only what the answer sends reaches the reply: a draft is not delivered", async () => {
+    runRegistry.clear();
+    const setup = await setupSessionLog(SESSION_ID);
+    const dir = await mkdtemp(join(tmpdir(), "tts-twice-"));
+    let made = 0;
+    const pipeline = {
+      async generate() {
+        const path = join(dir, `take-${++made}.mp3`);
+        await writeFile(path, Buffer.from(`ID3 take ${made}`));
+        return { path, mimeType: "audio/mpeg" };
+      },
+    } as unknown as TtsPipeline;
+    const reg = new ToolRegistry();
+    reg.register(createTtsTool(pipeline));
+    const router = new MessageRouter(new SessionManager(), new AgentBridge(config, reg, new SkillRegistry()), config);
+    const media = store();
+    router.setMediaStore(media.hook);
+    let n = 0;
+    const tts = (id: string) => ({ content: "", tool_calls: [{ id, function: { name: "tts", arguments: JSON.stringify({ text: "Bonjour" }) } }] });
+    const mock = mockFetch(async () => {
+      n++;
+      if (n <= 2) return llm(tts(`tc${n}`));
+      return llm({ content: `Voici.\nMEDIA:${join(dir, "take-2.mp3")}` });
+    });
+    try {
+      const out = await router.route(message("m1", "dis-le moi"));
+      expect(made).toBe(2);
+      // No draft stored, nothing attached by the tool: the answer's ref is the one delivery.
+      expect(media.copied).toEqual([]);
+      expect(out?.attachments ?? []).toEqual([]);
+      expect(out?.text).toContain(`MEDIA:${join(dir, "take-2.mp3")}`);
+    } finally {
+      mock.restore();
+      runRegistry.clear();
+      setup.cleanup();
+    }
+  });
+});
 
 describe("a tool's images in the conversation", () => {
   test("a picture is copied when the tool makes it: deleting the file later in the run loses nothing", async () => {
