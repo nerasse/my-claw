@@ -76,3 +76,19 @@ returning mojibake from a utf-8 read.
 `ToolEntry.attachments` (`SessionAttachment`: image + path + mime) is written at settle by the
 same `RunRecorder.tool` that writes the clipped output, so the entry, the card and every later
 rebuild agree on what the tool showed the model.
+
+## What the conversation gets
+
+*2026-10-04. The owner saw six `(deleted)` attachments under a reply: the agent had read its own
+screenshots to check a layout, then deleted their folder before answering.*
+
+- **The model sees, the conversation does not** (`ToolResult.modelOnly`): `read` of an image is
+  the agent looking at a file, so its picture rides the tool message to the model and is not
+  attached to the reply. A tool that *produces* a picture for the owner (a browser screenshot)
+  still attaches it. To send a file, the agent says so (`MEDIA:` in its answer).
+- **Copied when the tool returns, not at the end of the run** (`bridge.ts`, through the channel's
+  media store): a file deleted or overwritten later in the run no longer leaves a hole. The id
+  rides back onto the attachment, so the end marker and the outgoing frame reuse that copy
+  (`storeRunMedia` skips an attachment that has one).
+
+`tests/agent/tool-media.test.ts`.

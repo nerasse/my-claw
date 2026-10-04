@@ -1674,8 +1674,15 @@ export class AgentBridge implements AgentBackend {
         hooks.emit("tool:execute:progress", { toolCallId: params.toolCallId, sessionId: params.session.id, chunk });
       });
       if (params.signal?.aborted) throw new AbortedError();
-      if (result.attachments?.length) {
+      if (result.attachments?.length && !result.modelOnly) {
         for (const att of result.attachments) {
+          // Copied into the conversation now, not at the end of the run: by then the tool's file
+          // may be gone or overwritten, and the reply showed "(deleted)" (2026-10-04). The end
+          // marker and the outgoing frame reuse this id instead of copying again.
+          if (att.path && !att.id && this.mediaStore) {
+            const id = await this.mediaStore(params.session.id, att.path).catch(() => undefined);
+            if (id) att.id = id;
+          }
           this.preprocessor.addResponseAttachment(params.message.id, att);
         }
       }

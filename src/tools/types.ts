@@ -5,6 +5,11 @@ export interface ToolResult {
   output: string;
   error?: string;
   attachments?: Attachment[];
+  /**
+   * The attachments are for the model's eyes only: it sees them, the conversation does not get
+   * them. `read` of an image is the agent looking at a file, not sending it (docs/tool-images.md).
+   */
+  modelOnly?: boolean;
 }
 
 export interface Tool {
