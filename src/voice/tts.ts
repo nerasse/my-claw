@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, unlink, rmdir, writeFile } from "node:fs/promises";
+import { mkdtemp, unlink, rmdir, writeFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname as pathDirname } from "node:path";
 import type { VoiceManager } from "./manager.ts";
@@ -7,7 +7,12 @@ import type { TTSResult } from "./types.ts";
 import { piperEndpoint } from "../services/catalog.ts";
 import { AbortedError, isAbort, rethrowIfAborted } from "../core/aborted.ts";
 
-export const EDGE_TTS_TIMEOUT_MS = 90_000;
+/**
+ * Edge is watched for progress, not timed: a 4 950-character text (the 5 000 ceiling) took 83.6 s
+ * on 2026-10-04, so any total deadline either cuts a legitimate reading or waits out a dead socket.
+ * The hang it answers wrote 55 s of audio, then nothing: the file stopped growing.
+ */
+export const EDGE_TTS_STALL_MS = 20_000;
 const BINARY_PROBE_TIMEOUT_MS = 5_000;
 const PIPER_TIMEOUT_MS = 30_000;
 const MAX_PROBE_OUTPUT_BYTES = 64 * 1024;
@@ -18,7 +23,7 @@ export interface TtsPipelineOptions {
   resolveBinary?: (name: string, signal?: AbortSignal) => Promise<string>;
   execFile?: ExecFile;
   spawn?: typeof spawn;
-  edgeTimeoutMs?: number;
+  edgeStallMs?: number;
   piperTimeoutMs?: number;
   probeTimeoutMs?: number;
 }
@@ -32,6 +37,30 @@ class ProcessDeadlineError extends Error {
   }
 }
 
+class ProcessStallError extends Error {
+  constructor(readonly stallMs: number) {
+    super("process stopped making progress");
+    this.name = "ProcessStallError";
+  }
+}
+
+/** Calls `onStall` once `path` has not grown for `stallMs`; a file not yet created counts as empty. */
+function watchGrowth(path: string, stallMs: number, onStall: () => void): () => void {
+  let size = -1;
+  let since = Date.now();
+  const timer = setInterval(() => {
+    void stat(path).then((s) => s.size, () => 0).then((current) => {
+      if (current !== size) {
+        size = current;
+        since = Date.now();
+      } else if (Date.now() - since >= stallMs) {
+        onStall();
+      }
+    });
+  }, Math.max(1, Math.min(1_000, Math.floor(stallMs / 4))));
+  return () => clearInterval(timer);
+}
+
 function timeoutLabel(timeoutMs: number): string {
   return `${Number((timeoutMs / 1000).toFixed(2))}s`;
 }
@@ -40,7 +69,7 @@ function runExecFile(
   execute: ExecFile,
   file: string,
   args: readonly string[],
-  timeoutMs: number,
+  limit: { timeoutMs: number } | { stall: { path: string; afterMs: number } },
   signal?: AbortSignal,
 ): Promise<string> {
   rethrowIfAborted(undefined, signal);
@@ -48,10 +77,13 @@ function runExecFile(
     let child: ChildProcess | undefined;
     let finished = false;
     let timedOut = false;
-    const timer = setTimeout(() => {
+    const expire = (): void => {
       timedOut = true;
       try { child?.kill("SIGKILL"); } catch {}
-    }, timeoutMs);
+    };
+    const stopWatch = "timeoutMs" in limit
+      ? ((t) => () => clearTimeout(t))(setTimeout(expire, limit.timeoutMs))
+      : watchGrowth(limit.stall.path, limit.stall.afterMs, expire);
 
     const onAbort = (): void => {
       try { child?.kill("SIGKILL"); } catch {}
@@ -59,12 +91,12 @@ function runExecFile(
     const finish = (error: unknown, stdout: string): void => {
       if (finished) return;
       finished = true;
-      clearTimeout(timer);
+      stopWatch();
       signal?.removeEventListener("abort", onAbort);
       if (signal?.aborted) {
         reject(new AbortedError());
       } else if (timedOut) {
-        reject(new ProcessDeadlineError(timeoutMs));
+        reject("timeoutMs" in limit ? new ProcessDeadlineError(limit.timeoutMs) : new ProcessStallError(limit.stall.afterMs));
       } else if (error) {
         reject(error);
       } else {
@@ -77,7 +109,7 @@ function runExecFile(
       child = execute(
         file,
         args,
-        { timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: MAX_PROBE_OUTPUT_BYTES },
+        { timeout: "timeoutMs" in limit ? limit.timeoutMs : 0, killSignal: "SIGKILL", maxBuffer: MAX_PROBE_OUTPUT_BYTES },
         (error, stdout) => finish(error, typeof stdout === "string" ? stdout : ""),
       );
       if (signal?.aborted) onAbort();
@@ -100,7 +132,7 @@ async function resolveBinary(
   if (cached) return cached;
 
   try {
-    const stdout = await runExecFile(execute, "which", [name], probeTimeoutMs, signal);
+    const stdout = await runExecFile(execute, "which", [name], { timeoutMs: probeTimeoutMs }, signal);
     if (stdout.trim()) return cacheAndReturn(name, stdout.trim());
   } catch (error) {
     if (signal?.aborted) throw error;
@@ -115,7 +147,7 @@ async function resolveBinary(
 
   for (const candidate of candidates) {
     try {
-      await runExecFile(execute, candidate, ["--version"], probeTimeoutMs, signal);
+      await runExecFile(execute, candidate, ["--version"], { timeoutMs: probeTimeoutMs }, signal);
       return cacheAndReturn(name, candidate);
     } catch (error) {
       if (signal?.aborted) throw error;
@@ -139,7 +171,7 @@ export function resetBinaryCache(): void {
 export class TtsPipeline {
   private readonly execFileImpl: ExecFile;
   private readonly resolveBinaryImpl: (name: string, signal?: AbortSignal) => Promise<string>;
-  private readonly edgeTimeoutMs: number;
+  private readonly edgeStallMs: number;
   private readonly piperTimeoutMs: number;
   private readonly spawnImpl: typeof spawn;
 
@@ -151,7 +183,7 @@ export class TtsPipeline {
       options.probeTimeoutMs ?? BINARY_PROBE_TIMEOUT_MS,
       signal,
     ));
-    this.edgeTimeoutMs = options.edgeTimeoutMs ?? EDGE_TTS_TIMEOUT_MS;
+    this.edgeStallMs = options.edgeStallMs ?? EDGE_TTS_STALL_MS;
     this.piperTimeoutMs = options.piperTimeoutMs ?? PIPER_TIMEOUT_MS;
     this.spawnImpl = options.spawn ?? spawn;
   }
@@ -174,6 +206,9 @@ export class TtsPipeline {
         : await this.generatePiper(text, overrides?.voice, signal);
     } catch (err) {
       if (isAbort(err, signal)) throw new AbortedError();
+      if (err instanceof ProcessStallError) {
+        throw new Error(`TTS ${mode} stalled: no audio for ${timeoutLabel(err.stallMs)}.`);
+      }
       if (err instanceof ProcessDeadlineError) {
         throw new Error(`TTS ${mode} timed out after ${timeoutLabel(err.timeoutMs)}.`);
       }
@@ -199,7 +234,7 @@ export class TtsPipeline {
         "--text", text,
         "--voice", voiceId,
         "--write-media", outputPath,
-      ], this.edgeTimeoutMs, signal);
+      ], { stall: { path: outputPath, afterMs: this.edgeStallMs } }, signal);
 
       return {
         path: outputPath,

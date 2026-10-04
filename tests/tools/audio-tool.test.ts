@@ -76,15 +76,15 @@ describe("audio: speak", () => {
       .rejects.toBeInstanceOf(AbortedError);
   });
 
-  test("an audio deadline becomes a single failure with no attachment or retry", async () => {
+  test("a stalled generation becomes a single failure with no attachment or retry", async () => {
     let calls = 0;
     const tts = { generate: async () => {
       calls++;
-      throw new Error("TTS cloud timed out after 90s.");
+      throw new Error("TTS cloud stalled: no audio for 20s.");
     } };
     const result = await tool({ tts }).execute({ action: "speak", text: "hello" });
     expect(result.success).toBe(false);
-    expect(result.error).toContain("timed out after 90s");
+    expect(result.error).toContain("stalled: no audio for 20s");
     expect(result.attachments).toBeUndefined();
     expect(calls).toBe(1);
   });

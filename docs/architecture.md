@@ -74,8 +74,10 @@
   - Local: Piper (fr_FR-siwis-medium)
   - No automatic TTS post-response
   - Written answer streamed before generation; a short spoken summary by default, full reading only on request.
-  - Edge generation has a 90s deadline and binary discovery probes have 5s each. Timeout or the existing
-    run `__signal` kills the subprocess with SIGKILL; partial files are removed before failure returns.
+  - Edge generation has no total deadline but a stall watch: killed once the output file has not grown
+    for 20s (a 4 950-character reading took 83.6s, measured 2026-10-04). Binary discovery probes have 5s
+    each. A stall, a probe timeout or the existing run `__signal` kills the subprocess with SIGKILL;
+    partial files are removed before failure returns.
     Errors never echo Edge command arguments or the spoken text. No automatic retries or engine fallback.
   - Piper keeps its 30s deadline and now honours the same run signal (CLI and HTTP).
   - Uses the existing commentary stream and cancellation plumbing, not a background job or new tool API.

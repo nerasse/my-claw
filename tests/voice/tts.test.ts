@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { ChildProcess, execFile, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { TtsPipeline, EDGE_TTS_TIMEOUT_MS, type TtsPipelineOptions } from "../../src/voice/tts.ts";
+import { TtsPipeline, EDGE_TTS_STALL_MS, type TtsPipelineOptions } from "../../src/voice/tts.ts";
 import { VoiceManager } from "../../src/voice/manager.ts";
 import { AbortedError } from "../../src/core/aborted.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
@@ -58,11 +58,11 @@ function expectCleaned(call: ProcessCall): void {
 }
 
 describe("Edge TTS deadlines and cancellation", () => {
-  test("success keeps the audio and configures a hard 90s kill deadline", async () => {
+  test("success keeps the audio, and the process has no total deadline, only a stall watch", async () => {
     const fake = fakeExec((call) => queueMicrotask(() => call.complete(null, "")));
     const result = await pipeline({ execFile: fake.execute }).generate("hello");
-    expect(EDGE_TTS_TIMEOUT_MS).toBe(90_000);
-    expect(fake.calls[0]!.options).toMatchObject({ timeout: 90_000, killSignal: "SIGKILL" });
+    expect(EDGE_TTS_STALL_MS).toBe(20_000);
+    expect(fake.calls[0]!.options).toMatchObject({ timeout: 0, killSignal: "SIGKILL" });
     expect(result).toEqual({ path: outputPath(fake.calls[0]!), mimeType: "audio/mpeg" });
     expect(existsSync(result.path)).toBe(true);
     expect(fake.kills).toEqual([]);
@@ -70,11 +70,29 @@ describe("Edge TTS deadlines and cancellation", () => {
 
   test("a stalled process is killed, partial audio is removed, text is not leaked", async () => {
     const fake = fakeExec();
-    await expect(pipeline({ execFile: fake.execute, edgeTimeoutMs: 10 }).generate("private spoken text"))
-      .rejects.toMatchObject({ message: "TTS cloud timed out after 0.01s." });
+    await expect(pipeline({ execFile: fake.execute, edgeStallMs: 20 }).generate("private spoken text"))
+      .rejects.toMatchObject({ message: "TTS cloud stalled: no audio for 0.02s." });
     expect(fake.kills).toEqual(["SIGKILL"]);
     expect(fake.calls).toHaveLength(1);
     expectCleaned(fake.calls[0]!);
+  });
+
+  test("a long reading whose audio keeps growing outlives the stall window", async () => {
+    // 83.6 s for 4 950 characters on 2026-10-04: a total deadline would have to be guessed.
+    const fake = fakeExec((call) => {
+      const path = outputPath(call);
+      let ticks = 0;
+      const timer = setInterval(() => {
+        appendFileSync(path, "more audio");
+        if (++ticks === 20) {
+          clearInterval(timer);
+          call.complete(null, "");
+        }
+      }, 10);
+    });
+    const result = await pipeline({ execFile: fake.execute, edgeStallMs: 60 }).generate("a long reading");
+    expect(fake.kills).toEqual([]);
+    expect(existsSync(result.path)).toBe(true);
   });
 
   test("run stop kills the active process and remains an abort, not an audio error", async () => {
