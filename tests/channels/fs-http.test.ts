@@ -89,10 +89,19 @@ test("a download streams the file with an attachment disposition that survives a
   expect(await response.text()).toBe("%PDF-1.4 fake");
 });
 
-test("a missing path, a missing file and a directory are all refused", async () => {
+test("a missing path and a missing file are refused", async () => {
   expect((await fsDownload(null)).status).toBe(400);
   expect((await fsDownload(join(temp(), "nope"))).status).toBe(404);
+});
+
+test("a folder goes down as a ZIP named after it", async () => {
   const dir = temp();
-  mkdirSync(join(dir, "sub"));
-  expect((await fsDownload(join(dir, "sub"))).status).toBe(404);
+  mkdirSync(join(dir, "été"));
+  writeFileSync(join(dir, "été", "a.txt"), "a");
+  const response = await fsDownload(join(dir, "été"));
+  expect(response.status).toBe(200);
+  expect(response.headers.get("content-type")).toBe("application/zip");
+  expect(response.headers.get("content-disposition")).toContain("filename*=UTF-8''%C3%A9t%C3%A9.zip");
+  const zip = Buffer.from(await response.arrayBuffer());
+  expect(zip.subarray(0, 4).toString("hex")).toBe("504b0304");
 });

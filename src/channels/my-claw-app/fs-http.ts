@@ -4,6 +4,7 @@ import { briefError } from "../../utils/errors.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import { mimeTypeForName } from "../../utils/file-kind.ts";
 import { writeStreamAtomically } from "./fs-ops.ts";
+import { zipPlan, zipStream } from "../../utils/zip-stream.ts";
 
 /**
  * The two HTTP halves of the files page -- docs/files-page.md.
@@ -55,6 +56,7 @@ export async function fsDownload(raw: string | null): Promise<Response> {
   if (!raw) return new Response("Bad Request", { status: 400 });
   const path = resolve(raw);
   const st = await stat(path).catch(() => null);
+  if (st?.isDirectory()) return folderDownload(path);
   if (!st?.isFile()) return new Response("Not Found", { status: 404 });
   const name = basename(path);
   return new Response(Bun.file(path), {
@@ -62,6 +64,22 @@ export async function fsDownload(raw: string | null): Promise<Response> {
       "Content-Type": mimeTypeForName(name),
       "Content-Length": String(st.size),
       "Content-Disposition": contentDisposition(name),
+      "Cache-Control": "no-store",
+    },
+  });
+}
+
+/** A folder goes down as one ZIP, written while it is sent (owner, 2026-10-05). */
+async function folderDownload(path: string): Promise<Response> {
+  const plan = await zipPlan(path).catch((err: unknown) => ({ refused: briefError(err) }));
+  if ("refused" in plan) {
+    await myClawAppLog("warn", "fs.download folder refused", { path, reason: plan.refused });
+    return new Response(`this folder cannot be downloaded as a ZIP: ${plan.refused}`, { status: 413 });
+  }
+  return new Response(zipStream(plan.items), {
+    headers: {
+      "Content-Type": "application/zip",
+      "Content-Disposition": contentDisposition(`${basename(path) || "folder"}.zip`),
       "Cache-Control": "no-store",
     },
   });

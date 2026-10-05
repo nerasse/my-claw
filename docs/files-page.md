@@ -149,6 +149,14 @@ away from a corrupt file.
 **Download** is the mirror: `GET /fs/download?path=<file>` streams the file with
 `Content-Disposition: attachment`, and the app saves it the way it already saves an APK.
 
+A **folder** goes down as one ZIP (owner, 2026-10-05), same route: `<folder>.zip`, written while it
+is sent (`src/utils/zip-stream.ts`). No dependency and no `zip` binary, which a compose image may
+not have. Each file is deflated behind a data descriptor, so nothing is staged on disk and no file
+is held in memory whole (150 MB of random bytes: 87 MB peak RSS, measured). Symlinks are left out,
+not followed: a link to `/` would otherwise turn one tap into the whole disk. It is plain ZIP, not
+ZIP64, so a folder past 65 535 entries or 3.5 GB is refused with a 413 that says which, before a
+byte is sent, rather than streamed into an archive that opens corrupt.
+
 ## What the app draws
 
 - One page, three modes: **list**, **read**, **edit**. The breadcrumb is built from the normalised
