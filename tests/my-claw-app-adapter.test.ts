@@ -205,16 +205,17 @@ class FakeSessionStore {
     return this.summaries;
   }
 
-  historyCalls: Array<{ limit?: number; before?: number }> = [];
+  historyCalls: Array<{ limit?: number; before?: number; lazyReasoning?: boolean }> = [];
   /** Card id -> the output the session would hand back in full. Absent means "not found". */
   toolOutputs = new Map<string, string>();
+  reasonings = new Map<string, string>();
 
   /** `<fromId>..<untilId>` -> the items a folded row stands for. Absent means "not found". */
   runRanges = new Map<string, Array<{ id: string; role: "user" | "assistant"; text: string; ts: string }>>();
-  runItemsCalls: Array<{ fromId: string; untilId: string }> = [];
+  runItemsCalls: Array<{ fromId: string; untilId: string; lazyReasoning?: boolean }> = [];
 
-  async runItems(_deviceId: string, _threadId: string, fromId: string, untilId: string) {
-    this.runItemsCalls.push({ fromId, untilId });
+  async runItems(_deviceId: string, _threadId: string, fromId: string, untilId: string, lazyReasoning?: boolean) {
+    this.runItemsCalls.push({ fromId, untilId, ...(lazyReasoning ? { lazyReasoning } : {}) });
     const entries = this.runRanges.get(`${fromId}..${untilId}`);
     return entries ? { entries, found: true } : { entries: [], found: false };
   }
@@ -223,24 +224,31 @@ class FakeSessionStore {
     return this.toolOutputs.get(cardId) ?? null;
   }
 
+  async reasoningOf(_deviceId: string, _threadId: string, bubbleId: string): Promise<string | null> {
+    return this.reasonings.get(bubbleId) ?? null;
+  }
+
   async history(
     deviceId: string,
     threadId: string,
     limit?: number,
     before?: number,
+    _beforeId?: string,
+    _fold?: boolean,
+    lazyReasoning?: boolean,
   ): Promise<{
     entries: Array<{ id: string; role: "user" | "assistant"; text: string; ts: string }>;
     hasMore: boolean;
     nextBefore: number;
   }> {
-    this.historyCalls.push({ limit, before });
+    this.historyCalls.push({ limit, before, ...(lazyReasoning ? { lazyReasoning } : {}) });
     const all = this.historyMap.get(threadId) ?? [];
     const end = Math.max(all.length - (before ?? 0), 0);
     const start = Math.max(end - (limit ?? all.length), 0);
     return { entries: all.slice(start, end), hasMore: start > 0, nextBefore: all.length - start };
   }
 
-  syncCalls: Array<{ since?: string | null; leaf?: string; limit?: number }> = [];
+  syncCalls: Array<{ since?: string | null; leaf?: string; limit?: number; lazyReasoning?: boolean }> = [];
 
   async sync(
     deviceId: string,
@@ -248,6 +256,8 @@ class FakeSessionStore {
     since?: string | null,
     leaf?: string,
     limit?: number,
+    _fold?: boolean,
+    lazyReasoning?: boolean,
   ): Promise<{
     entries: Array<{ id: string; role: "user" | "assistant"; text: string; ts: string }>;
     leaf: string | null;
@@ -255,7 +265,7 @@ class FakeSessionStore {
     reset?: "unknown-cursor" | "branch-switch";
     truncated?: boolean;
   }> {
-    this.syncCalls.push({ since, leaf, limit });
+    this.syncCalls.push({ since, leaf, limit, ...(lazyReasoning ? { lazyReasoning } : {}) });
     const all = this.historyMap.get(threadId) ?? [];
     const head = all.length > 0 ? all[all.length - 1]!.id : null;
     return { entries: all, leaf: head, head, ...(this.lastRun ? { lastRun: this.lastRun } : {}) };
@@ -2069,6 +2079,29 @@ describe("MyClawAppAdapter", () => {
     assert.equal(frame.type, "chat.tool.full.result");
     assert.equal(frame.found, false);
     assert.equal(frame.output, "");
+  });
+
+  test("a client that asks for lazy reasoning has it passed on, on every read that draws bubbles", async () => {
+    client.ws.send(JSON.stringify({ type: "session.history", threadId: "a", lazyReasoning: true }));
+    await nextFrame(client);
+    client.ws.send(JSON.stringify({ type: "session.sync", threadId: "a", lazyReasoning: true }));
+    await nextFrame(client);
+    client.ws.send(JSON.stringify({ type: "session.run.items", threadId: "a", fromId: "run-e1", untilId: "e9", lazyReasoning: true }));
+    await nextFrame(client);
+    assert.equal(store.historyCalls.at(-1)?.lazyReasoning, true);
+    assert.equal(store.syncCalls.at(-1)?.lazyReasoning, true);
+    assert.equal(store.runItemsCalls.at(-1)?.lazyReasoning, true);
+  });
+
+  test("chat.reasoning hands back what a bubble was sent without, and says so when it is gone", async () => {
+    store.reasonings.set("p-1", "r".repeat(5000));
+    client.ws.send(JSON.stringify({ type: "chat.reasoning", threadId: "a", id: "p-1" }));
+    const frame = (await nextFrame(client)) as { type: string; threadId: string; id: string; reasoning: string; found: boolean };
+    assert.deepEqual([frame.type, frame.threadId, frame.id, frame.found, frame.reasoning.length], ["chat.reasoning.result", "a", "p-1", true, 5000]);
+
+    client.ws.send(JSON.stringify({ type: "chat.reasoning", threadId: "a", id: "p-gone" }));
+    const gone = (await nextFrame(client)) as { type: string; found: boolean; reasoning: string };
+    assert.deepEqual([gone.type, gone.found, gone.reasoning], ["chat.reasoning.result", false, ""]);
   });
 
   test("session.run.items hands back the work a folded row stood for", async () => {

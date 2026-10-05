@@ -134,6 +134,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppSessionSync,
   MyClawAppSessionSyncResult,
   MyClawAppToolFull,
+  MyClawAppChatReasoning,
   MyClawAppSessionRunItems,
   MyClawAppSessionList,
   MyClawAppSessionListResult,
@@ -1964,6 +1965,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "chat.tool.full":
         this.detach(this.handleToolFull(ws, frame), "handleToolFull");
         break;
+      case "chat.reasoning":
+        this.detach(this.handleReasoning(ws, frame), "handleReasoning");
+        break;
       case "session.archive":
       case "session.unarchive":
         this.detach(this.handleSessionArchive(ws, frame), "handleSessionArchive");
@@ -2921,7 +2925,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     try {
-      const page = await this.store.history(ws.data.owner, threadId, frame.limit, frame.before, frame.beforeId, frame.fold);
+      const page = await this.store.history(ws.data.owner, threadId, frame.limit, frame.before, frame.beforeId, frame.fold, frame.lazyReasoning);
       const result: MyClawAppChatHistory = {
         type: "chat.history",
         threadId,
@@ -2956,7 +2960,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     try {
-      const page = await this.store.sync(ws.data.owner, threadId, frame.since, frame.leaf, frame.limit, frame.fold);
+      const page = await this.store.sync(ws.data.owner, threadId, frame.since, frame.leaf, frame.limit, frame.fold, frame.lazyReasoning);
       const compacting = this.live.compactionState(ws.data.owner, threadId);
       const result: MyClawAppSessionSyncResult = {
         type: "session.sync.result",
@@ -3007,7 +3011,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     try {
-      const page = await this.store.runItems(ws.data.owner, threadId, frame.fromId, frame.untilId);
+      const page = await this.store.runItems(ws.data.owner, threadId, frame.fromId, frame.untilId, frame.lazyReasoning);
       this.sendFrame(ws, {
         type: "chat.run.items",
         threadId,
@@ -3019,6 +3023,20 @@ export class MyClawAppAdapter implements ChannelAdapter {
       });
     } catch (err) {
       await this.refuse(ws, "session", "run items failed", { threadId, fromId: frame.fromId, error: String(err) });
+    }
+  }
+
+  private async handleReasoning(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppChatReasoning): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId);
+    if (!threadId || !frame.id) {
+      await this.refuse(ws, "session", "invalid reasoning bubble", { threadId: frame.threadId, id: frame.id });
+      return;
+    }
+    try {
+      const reasoning = await this.store.reasoningOf(ws.data.owner, threadId, frame.id);
+      this.sendFrame(ws, { type: "chat.reasoning.result", threadId, id: frame.id, reasoning: reasoning ?? "", found: reasoning !== null });
+    } catch (err) {
+      await this.refuse(ws, "session", "reasoning failed", { threadId, id: frame.id, error: String(err) });
     }
   }
 

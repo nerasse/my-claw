@@ -115,6 +115,12 @@ export interface MyClawAppSessionHistory {
    * got, and there is no hello to race with the first page.
    */
   fold?: boolean;
+  /**
+   * Whether a long reasoning may stay on the server, sent as its length (`reasoningChars`) and
+   * asked with `chat.reasoning` when the reader opens it -- docs/run-hydration.md. Per request like
+   * `fold`: an older client never sets it and keeps getting the text.
+   */
+  lazyReasoning?: boolean;
 }
 
 /**
@@ -141,6 +147,12 @@ export interface MyClawAppSessionSync {
    * arrive, item by item.
    */
   fold?: boolean;
+  /**
+   * Whether a long reasoning may stay on the server, sent as its length (`reasoningChars`) and
+   * asked with `chat.reasoning` when the reader opens it -- docs/run-hydration.md. Per request like
+   * `fold`: an older client never sets it and keeps getting the text.
+   */
+  lazyReasoning?: boolean;
 }
 
 /**
@@ -171,6 +183,23 @@ export interface MyClawAppSessionRunItems {
   fromId: string;
   /** The row's `lastId`: the final item it stands for, included. */
   untilId: string;
+  /**
+   * Whether a long reasoning may stay on the server, sent as its length (`reasoningChars`) and
+   * asked with `chat.reasoning` when the reader opens it -- docs/run-hydration.md. Per request like
+   * `fold`: an older client never sets it and keeps getting the text.
+   */
+  lazyReasoning?: boolean;
+}
+
+/**
+ * Asks for the reasoning a history bubble was sent without (`reasoningChars`), by bubble id: the
+ * same trade as `chat.tool.full`, for the other heavy half of a page.
+ */
+export interface MyClawAppChatReasoning {
+  type: "chat.reasoning";
+  threadId: string;
+  /** The bubble id, which is the phase entry's id. */
+  id: string;
 }
 
 export interface MyClawAppSessionArchive {
@@ -1080,6 +1109,7 @@ export type MyClawAppClientFrame =
   | MyClawAppSessionSync
   | MyClawAppToolFull
   | MyClawAppSessionRunItems
+  | MyClawAppChatReasoning
   | MyClawAppSessionArchive
   | MyClawAppSessionUnarchive
   | MyClawAppSessionDelete
@@ -1363,8 +1393,14 @@ export type MyClawAppHistoryEntry =
       location?: ChatLocation;
       /** What was heard, per recording id, so each replayed bubble carries its own words. */
       transcripts?: Record<string, string>;
-      /** What the model thought before this reply, replayed collapsed -- docs/reasoning-visibility.md. */
+      /**
+       * What the model thought before this reply, replayed collapsed -- docs/reasoning-visibility.md.
+       * For a client that asked `lazyReasoning`, past `REASONING_INLINE_LIMIT` it stays on the
+       * server and `reasoningChars` says how long it is: the reader who opens it asks with
+       * `chat.reasoning` -- docs/run-hydration.md.
+       */
       reasoning?: string;
+      reasoningChars?: number;
       /** How much it thought, when the engine redacts the text and only counts it. */
       reasoningTokens?: number;
       /** How long that thinking lasted, so a reopened thread shows the span it took. */
@@ -1903,6 +1939,15 @@ export interface MyClawAppSessionSyncResult {
  * or the thread was rewritten). The app then keeps what it already has rather than blanking a
  * block the reader was looking at.
  */
+export interface MyClawAppChatReasoningResult {
+  type: "chat.reasoning.result";
+  threadId: string;
+  id: string;
+  reasoning: string;
+  /** False when the branch no longer holds that bubble: the app keeps its closed line as it is. */
+  found: boolean;
+}
+
 export interface MyClawAppChatToolFull {
   type: "chat.tool.full.result";
   threadId: string;
@@ -4038,6 +4083,7 @@ export type MyClawAppServerFrame =
   | MyClawAppToolDelta
   | MyClawAppChatToolFull
   | MyClawAppChatRunItems
+  | MyClawAppChatReasoningResult
   | MyClawAppSpawnStart
   | MyClawAppSpawnEnd
   | MyClawAppApprovalRequest

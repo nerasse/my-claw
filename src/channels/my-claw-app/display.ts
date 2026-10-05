@@ -438,10 +438,25 @@ function isHoisted(entry: Entry): boolean {
 
 
 /**
- * Where folding starts paying. Under it the header costs more than the work it hides, and a reader
- * who opens a three-item run should not wait on a round trip to see three lines.
+ * The longest reasoning a page carries inline. Past it a bubble says how long its reasoning is
+ * and the app asks for it when the reader opens the line (`chat.reasoning`): reasoning is most of
+ * what a message weighs on a page (4.7 KB on average against ~380 bytes of prose), and it is
+ * folded on screen. Under it, the round trip would cost more than the bytes.
  */
-export const RUN_FOLD_MIN_ITEMS = 8;
+export const REASONING_INLINE_LIMIT = 600;
+
+function reasoningOf(reasoning: string | undefined, lazy: boolean): { reasoning?: string; reasoningChars?: number } {
+  if (!reasoning) return {};
+  return lazy && reasoning.length > REASONING_INLINE_LIMIT ? { reasoningChars: reasoning.length } : { reasoning };
+}
+
+/**
+ * Where a finished run starts to travel as its header. Under it the run stays whole: one or two
+ * lines are not worth a header and a round trip. The owner chose 3 (2026-10-05), so the thread
+ * reads as its messages with the work between them folded, which was 8 before -- the threshold
+ * measured for bytes alone (docs/run-hydration.md).
+ */
+export const RUN_FOLD_MIN_ITEMS = 3;
 
 /**
  * How many bubbles this entry becomes -- the same arithmetic `displayOf` does, so the placeholder
@@ -570,6 +585,7 @@ export function displayOf(
   files: SessionFile[] = [],
   runs?: ReadonlyMap<string, MyClawAppRunMeta>,
   fold?: RunFoldPlan,
+  lazyReasoning = false,
 ): MyClawAppHistoryEntry[] {
   const out: MyClawAppHistoryEntry[] = [];
   // The cards this window drew from a state entry, so several states of one child draw one card.
@@ -665,7 +681,7 @@ export function displayOf(
         text,
         ts,
         ...(media.length > 0 ? { attachments: media } : {}),
-        ...(entry.reasoning ? { reasoning: entry.reasoning } : {}),
+        ...reasoningOf(entry.reasoning, lazyReasoning),
         ...(entry.reasoningTokens ? { reasoningTokens: entry.reasoningTokens } : {}),
         ...(entry.reasoningMs !== undefined ? { reasoningMs: entry.reasoningMs } : {}),
       }));

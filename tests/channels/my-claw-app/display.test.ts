@@ -1,5 +1,5 @@
 import { describe, test, expect } from "bun:test";
-import { displayOf, lastRunOf, mediaRefsOf, pageOf, pageBefore, runFold, runFoldPlan, windowNeedsFiles, withSpawnCards, type DisplayResolvers } from "../../../src/channels/my-claw-app/display.ts";
+import { REASONING_INLINE_LIMIT, RUN_FOLD_MIN_ITEMS, displayOf, lastRunOf, mediaRefsOf, pageOf, pageBefore, runFold, runFoldPlan, windowNeedsFiles, withSpawnCards, type DisplayResolvers } from "../../../src/channels/my-claw-app/display.ts";
 import { spawnView } from "../../../src/sessions/spawn-state.ts";
 import type { Entry, Provisioned } from "../../../src/sessions/log.ts";
 import type { SessionFile } from "../../../src/channels/my-claw-app/files.ts";
@@ -100,6 +100,22 @@ describe("displayOf: what the model said", () => {
     const entries = chain([phase("la reponse", { reasoning: "je reflechis" })]);
     const drawn = show(entries).at(0) as { reasoningMs?: number };
     expect(drawn.reasoningMs).toBeUndefined();
+  });
+
+  test("for a client that asked, a long thought stays on the server and the bubble says how long it is", () => {
+    const lazy = (entries: Entry[]) => displayOf(entries, resolvers, 1000, undefined, [], undefined, undefined, true);
+    const long = "r".repeat(REASONING_INLINE_LIMIT + 1);
+    const drawn = lazy(chain([phase("la reponse", { reasoning: long, reasoningMs: 4200 })])).at(0) as { reasoning?: string; reasoningChars?: number; reasoningMs?: number };
+    expect(drawn.reasoning).toBeUndefined();
+    expect(drawn.reasoningChars).toBe(long.length);
+    expect(drawn.reasoningMs).toBe(4200);
+    // Only reasoning, and too long to travel: still a bubble, with its line to open.
+    expect(lazy(chain([phase("", { reasoning: long })]))).toHaveLength(1);
+    // A short one travels: the round trip would cost more than the bytes.
+    const short = "r".repeat(REASONING_INLINE_LIMIT);
+    expect(lazy(chain([phase("la reponse", { reasoning: short })])).at(0)).toMatchObject({ reasoning: short });
+    // A client that did not ask (an older app) gets the text, whatever its length.
+    expect(show(chain([phase("la reponse", { reasoning: long })])).at(0)).toMatchObject({ reasoning: long });
   });
 
   test("a counted-but-hidden thought still earns its bubble", () => {
@@ -754,11 +770,10 @@ describe("runFoldPlan: a finished run travels as its header", () => {
     ]);
   });
 
-  test("a small run stays whole", () => {
-    // Under the threshold the header costs more than the work it hides, and opening it would
-    // buy a round trip to see three lines.
-    const path = withRun(3);
-    expect(foldedShow(path).map((e) => e.role)).toEqual(["user", "tool", "tool", "tool"]);
+  test("a small run stays whole, and three items are already worth a header", () => {
+    // One or two lines are not worth a header and a round trip; three fold (owner, 2026-10-05).
+    expect(foldedShow(withRun(2)).map((e) => e.role)).toEqual(["user", "tool", "tool"]);
+    expect(foldedShow(withRun(RUN_FOLD_MIN_ITEMS)).map((e) => e.role)).toEqual(["user", "run"]);
   });
 
   test("a run still going is never folded", () => {

@@ -62,19 +62,20 @@ export interface MyClawAppSessionStore {
    */
   ownerThreadOf(sessionId: string): Promise<{ owner: string; threadId: string } | undefined>;
   list(owner: string, limit?: number): Promise<MyClawAppSessionSummary[]>;
-  history(owner: string, threadId: string, limit?: number, before?: number, beforeId?: string, fold?: boolean): Promise<MyClawAppHistoryPage>;
+  history(owner: string, threadId: string, limit?: number, before?: number, beforeId?: string, fold?: boolean, lazyReasoning?: boolean): Promise<MyClawAppHistoryPage>;
   /**
    * Returns entries since the client's cursor, plus the current leaf and head.
    * When the cursor is unknown or the branch diverges, returns a fresh page with `reset` set.
    */
-  sync(owner: string, threadId: string, since?: string | null, clientLeaf?: string, limit?: number, fold?: boolean): Promise<MyClawAppSyncPage>;
+  sync(owner: string, threadId: string, since?: string | null, clientLeaf?: string, limit?: number, fold?: boolean, lazyReasoning?: boolean): Promise<MyClawAppSyncPage>;
   /**
    * The items a folded run row stands for -- docs/run-hydration.md. `found` false is a range the
    * current branch no longer holds.
    */
-  runItems(owner: string, threadId: string, fromId: string, untilId: string): Promise<MyClawAppRunItemsPage>;
+  runItems(owner: string, threadId: string, fromId: string, untilId: string, lazyReasoning?: boolean): Promise<MyClawAppRunItemsPage>;
   /** One tool card's output in full; null when the session no longer holds the call. */
   toolOutput(owner: string, threadId: string, cardId: string): Promise<string | null>;
+  reasoningOf(owner: string, threadId: string, bubbleId: string): Promise<string | null>;
   /**
    * Journals a slash command and the bubble it produced, so a reopened thread still shows it.
    * No-op on a thread that has no session yet: there is no history to put it in.
@@ -530,6 +531,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     before = 0,
     beforeId?: string,
     fold = false,
+    lazyReasoning = false,
   ): Promise<MyClawAppHistoryPage> {
     // Reading the file here would replay a thread as it stood before the current turn started,
     // and the app replaces what is on screen with what this returns: the question just sent and
@@ -568,7 +570,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // The plan reads the page alone: what folds is the work between two messages, and a message
     // is a message wherever the page boundary fell.
     const plan = fold ? runFoldPlan(window, runs) : undefined;
-    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnView(log.entries(), this.runActive), files, runs, plan);
+    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnView(log.entries(), this.runActive), files, runs, plan, lazyReasoning);
     return { entries, hasMore, nextBefore, ...(draft ? { draft } : {}) };
   }
 
@@ -583,6 +585,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     clientLeaf?: string,
     limit = SYNC_LIMIT,
     fold = false,
+    lazyReasoning = false,
   ): Promise<MyClawAppSyncPage> {
     const sessionId = this.resolveSessionId(owner, threadId);
     const session = await this.sessionManager.read(sessionId);
@@ -664,7 +667,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // never fold anyway. Folding a delta would also have to reason about what the client already
     // holds, since the run it continues is half on screen.
     const plan = fold && freshWindow ? runFoldPlan(foldWindow, runs) : undefined;
-    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnView(allEntries, this.runActive), files, runs, plan);
+    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnView(allEntries, this.runActive), files, runs, plan, lazyReasoning);
     const lastRun = lastRunOf(path, runs);
 
     const branchLength = path.length;
@@ -697,7 +700,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
    * turn, a rewind moved to another branch): the group then says so and stays collapsed, which is
    * recoverable. Silently emptying itself is not.
    */
-  async runItems(owner: string, threadId: string, fromId: string, untilId: string): Promise<MyClawAppRunItemsPage> {
+  async runItems(owner: string, threadId: string, fromId: string, untilId: string, lazyReasoning = false): Promise<MyClawAppRunItemsPage> {
     const sessionId = this.resolveSessionId(owner, threadId);
     const session = await this.sessionManager.read(sessionId);
     if (!session) return { entries: [], found: false };
@@ -721,7 +724,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // Folded over the whole branch for the same reasons a page is: a child spawned inside this run
     // may have settled long after it, and the run meta must be the one the header already shows.
     const runs = runFold(path, this.runActive(sessionId));
-    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnView(log.entries(), this.runActive), files, runs);
+    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnView(log.entries(), this.runActive), files, runs, undefined, lazyReasoning);
     return { entries, found: true };
   }
 
@@ -759,6 +762,16 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       return spawn?.status === "error" || spawn?.status === "aborted" ? (spawn.error ?? "") : "";
     }
     return null;
+  }
+
+  /** The reasoning of one bubble, which a page leaves out past `REASONING_INLINE_LIMIT`. */
+  async reasoningOf(owner: string, threadId: string, bubbleId: string): Promise<string | null> {
+    const sessionId = this.resolveSessionId(owner, threadId);
+    const session = await this.sessionManager.read(sessionId);
+    if (!session) return null;
+    const log = await sessionLogOf(sessionId);
+    const entry = log.entries().find((e) => e.id === bubbleId);
+    return entry?.type === "phase" && entry.reasoning ? entry.reasoning : null;
   }
 
   /**

@@ -110,6 +110,29 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.equal(ordinary.text, "la suite");
   });
 
+  test("a long reasoning is left out of the page for a client that asked, and handed back whole by its bubble id", async () => {
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "question", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    const thought = "je reflechis. ".repeat(200);
+    const phase = logSetup.log.append({ type: "phase", prompt: true, text: "reponse", runId: "r1", reasoning: thought });
+    await logSetup.log.flush();
+
+    const bubbleOf = (entries: MyClawAppHistoryEntry[]) => entries.find((e) => e.id === phase.id) as { reasoning?: string; reasoningChars?: number };
+    const lazy = bubbleOf((await store.history(DEVICE, THREAD, undefined, undefined, undefined, false, true)).entries);
+    assert.equal(lazy.reasoning, undefined);
+    assert.equal(lazy.reasoningChars, thought.length);
+    assert.equal(bubbleOf((await store.sync(DEVICE, THREAD, null, undefined, undefined, false, true)).entries).reasoningChars, thought.length);
+    // An app that never asked keeps getting the text.
+    assert.equal(bubbleOf((await store.history(DEVICE, THREAD)).entries).reasoning, thought);
+    assert.equal(await store.reasoningOf(DEVICE, THREAD, phase.id), thought);
+    assert.equal(await store.reasoningOf(DEVICE, THREAD, "nope"), null);
+    // A bubble that never thought has nothing to hand back, not an empty reasoning.
+    const plain = logSetup.log.append({ type: "phase", prompt: true, text: "sans reflexion", runId: "r2" });
+    await logSetup.log.flush();
+    assert.equal(await store.reasoningOf(DEVICE, THREAD, plain.id), null);
+  });
+
   test("replays tool calls as structured cards with output and duration", async () => {
     logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       { role: "user", content: "check le site", timestamp: "2026-01-01T00:00:01.000Z" },

@@ -97,6 +97,24 @@ d'octets et coûte un aller-retour au premier clic : perdant. Le seuil est donc
 `RUN_FOLD_MIN_ITEMS = 8` — en dessous, le run voyage entier. Ça laisse 68 % des runs
 intacts pour 4,7 % des octets, et replie les 111 runs qui portent 95,3 % du poids.
 
+**Depuis le 2026-10-05, le seuil est 3** (choix de l'owner). Le seuil de 8 était mesuré
+sur les octets seuls ; à l'écran, un run de 4 à 8 lignes coupait le fil entre deux messages
+sans rien apporter. À 3, le fil se lit comme ses messages, avec le travail plié entre eux.
+Un run de 1 ou 2 lignes reste entier : ça ne vaut ni un en-tête ni un aller-retour.
+
+## Le reasoning voyage à la demande
+
+Ce qui reste lourd après le pli, ce sont les messages eux-mêmes : ils remontent avec leur
+`reasoning` (4,7 KB en moyenne, contre ~380 o de prose), alors qu'il est replié à l'écran.
+Même échange que `chat.tool.full` : au-delà de `REASONING_INLINE_LIMIT` (600 caractères),
+la bulle porte `reasoningChars` au lieu du texte, et l'app le demande à l'ouverture de la
+ligne (`chat.reasoning` → `chat.reasoning.result`, par id de bulle). Comme `fold`, c'est
+demandé par requête (`lazyReasoning` sur `session.history`, `session.sync` et
+`session.run.items`) : une app plus ancienne ne le demande pas et reçoit le texte. En dessous, il voyage :
+l'aller-retour coûterait plus que les octets. Le stream en direct n'est pas touché : un
+run en cours envoie son reasoning comme avant. `found: false` (la branche ne tient plus la
+bulle) laisse la ligne fermée telle quelle.
+
 ## Qui décide du pli : le serveur
 
 Aujourd'hui la règle de hoisting vit dans l'app (`runRows.ts`). Elle doit passer côté
