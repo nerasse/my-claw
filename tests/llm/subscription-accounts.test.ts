@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { MY_CLAW_DIR, type LlmProviderConfig } from "../../src/core/config.ts";
 import { resetClaudeAuthState, loadClaudeToken } from "../../src/llm/claude-auth.ts";
 import { accountKeyFor, createAccounts, type AccountKind, type AccountsState } from "../../src/llm/subscription-accounts.ts";
-import { adoptLegacyAccounts } from "../../src/llm/accounts-store.ts";
+import { adoptLegacyAccounts, watchAccounts, writeAccount } from "../../src/llm/accounts-store.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
 const ENV = "CLAUDE_CODE_OAUTH_TOKEN";
@@ -72,6 +72,11 @@ function harness(initial: Record<string, LlmProviderConfig> = { chatgpt: { type:
 }
 
 const view = (state: AccountsState, provider: string) => state.accounts.find((a) => a.provider === provider);
+
+/** For an adoption that has a plan to give each sign-in to: declaring one would be the bug. */
+const noDeclare = async (kind: AccountKind): Promise<string> => {
+  throw new Error(`declared a ${kind} plan with one already there`);
+};
 
 test("ChatGPT: the code to enter survives a second tap, and the approval lands as a pushed outcome", async () => {
   const server = openAi();
@@ -164,7 +169,7 @@ test("the Claude token of .env is adopted by the first Claude plan, then gone fr
   writeFileSync(join(MY_CLAW_DIR, ".env"), `GROQ_API_KEY=g\n${ENV}=${token}\n`);
   process.env[ENV] = token;
   const providers = { openrouter: { baseUrl: "https://x" }, anthropic: { type: "anthropic" as const }, "claude-2": { type: "anthropic" as const } };
-  await adoptLegacyAccounts(providers);
+  await adoptLegacyAccounts(providers, noDeclare);
   assert.equal(await loadClaudeToken("anthropic"), token);
   assert.equal(await loadClaudeToken("claude-2"), null);
   assert.equal(process.env[ENV], undefined);
@@ -178,7 +183,7 @@ test("an account already signed in keeps its sign-in; the .env line goes all the
   writeFileSync(join(MY_CLAW_DIR, "accounts", "anthropic.json"), JSON.stringify({ token: "sk-ant-oat01-kept" }));
   writeFileSync(join(MY_CLAW_DIR, ".env"), `${ENV}=sk-ant-oat01-other\n`);
   process.env[ENV] = "sk-ant-oat01-other";
-  await adoptLegacyAccounts({ anthropic: { type: "anthropic" } });
+  await adoptLegacyAccounts({ anthropic: { type: "anthropic" } }, noDeclare);
   assert.equal(await loadClaudeToken("anthropic"), "sk-ant-oat01-kept");
   assert.ok(!readFileSync(join(MY_CLAW_DIR, ".env"), "utf-8").includes(ENV));
 });
@@ -190,11 +195,53 @@ test("the one-per-server sign-ins of before go to the first provider of their ki
   writeFileSync(join(MY_CLAW_DIR, "codex", "auth.json"), JSON.stringify(cred));
   writeFileSync(join(MY_CLAW_DIR, "claude", "auth.json"), JSON.stringify({ token: "sk-ant-oat01-legacy" }));
   delete process.env[ENV];
-  await adoptLegacyAccounts({ keyed: { type: "anthropic", apiKeyEnv: "ANTHROPIC_API_KEY" }, chatgpt: { type: "codex" }, anthropic: { type: "anthropic" } });
+  await adoptLegacyAccounts({ keyed: { type: "anthropic", apiKeyEnv: "ANTHROPIC_API_KEY" }, chatgpt: { type: "codex" }, anthropic: { type: "anthropic" } }, noDeclare);
   assert.deepEqual(JSON.parse(readFileSync(join(MY_CLAW_DIR, "accounts", "chatgpt.json"), "utf-8")), cred);
   // The keyed Anthropic provider is not a plan: the subscription went to the one that is.
   assert.equal(await loadClaudeToken("anthropic"), "sk-ant-oat01-legacy");
   assert.equal(existsSync(join(MY_CLAW_DIR, "accounts", "keyed.json")), false);
   assert.equal(existsSync(join(MY_CLAW_DIR, "codex", "auth.json")), false);
   assert.equal(existsSync(join(MY_CLAW_DIR, "claude", "auth.json")), false);
+});
+
+test("a fresh install: the Claude token of .env declares a Claude plan, which takes it", async () => {
+  const token = `sk-ant-oat01-${"f".repeat(40)}`;
+  writeFileSync(join(MY_CLAW_DIR, ".env"), `${ENV}=${token}\n`);
+  process.env[ENV] = token;
+  const declared: AccountKind[] = [];
+  // A keyed Anthropic provider is not a plan: it does not take the token, and does not stop the declaration.
+  await adoptLegacyAccounts({ keyed: { type: "anthropic", apiKeyEnv: "ANTHROPIC_API_KEY" } }, async (kind) => {
+    declared.push(kind);
+    return "claude";
+  });
+  assert.deepEqual(declared, ["claude"]);
+  assert.equal(await loadClaudeToken("claude"), token);
+  assert.equal(await loadClaudeToken("keyed"), null);
+  assert.ok(!readFileSync(join(MY_CLAW_DIR, ".env"), "utf-8").includes(ENV));
+});
+
+test("no token and no plan: nothing is declared", async () => {
+  delete process.env[ENV];
+  await adoptLegacyAccounts({ openrouter: { baseUrl: "https://x" } }, noDeclare);
+  assert.equal(existsSync(join(MY_CLAW_DIR, "accounts", "claude.json")), false);
+});
+
+test("a sign-in written to the accounts directory is heard, whoever wrote it", async () => {
+  let heard = 0;
+  let hear: () => void = () => {};
+  const once = new Promise<void>((resolve) => (hear = resolve));
+  const stop = watchAccounts(() => {
+    heard++;
+    hear();
+  }, 20);
+  try {
+    // fs.watch may not be listening yet when it returns: write again until it hears one.
+    let n = 0;
+    const poke = setInterval(() => void writeAccount("chatgpt", { n: n++ }), 50);
+    await once;
+    clearInterval(poke);
+    assert.ok(heard >= 1);
+  } finally {
+    stop();
+  }
 });

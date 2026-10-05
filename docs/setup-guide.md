@@ -171,7 +171,12 @@ FORGEJO_TOKEN=ton_token_forgejo
 ```
 
 Optionnel : `GROQ_API_KEY` (STT cloud), `GEOAPIFY_API_KEY` (localisation),
-`CLAUDE_CODE_OAUTH_TOKEN` (backend Claude abonnement), `MY_CLAW_WEB_SEARCH_TOKEN` (SearXNG protégé).
+`MY_CLAW_WEB_SEARCH_TOKEN` (SearXNG protégé).
+
+Abonnements ChatGPT et Claude : ils se connectent depuis l'app (Réglages → Models → Providers → `+`),
+pas par le `.env`. Sans app : `myclaw codex login` ou `myclaw claude login`, qui ajoutent le provider
+s'il manque. Un `CLAUDE_CODE_OAUTH_TOKEN` collé dans le `.env` reste accepté : au démarrage suivant,
+un provider Claude le prend (créé s'il n'y en a pas) et la ligne est retirée du `.env`.
 
 Le daemon, `myclaw` et l'updater lisent tous le même fichier, `~/.my-claw/.env`. Une install
 plus ancienne avait un second exemplaire dans `/etc/my-claw/.env` : sa migration l'a fusionné ici

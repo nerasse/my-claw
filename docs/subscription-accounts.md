@@ -38,6 +38,13 @@ Claude line of `.env` is dropped (snapshotted first, like every `.env` write), e
 already had a sign-in, so there is one source per account and Sign out is a sign out. The env token
 is not read anywhere else any more.
 
+No sign-in is ever left on a provider that does not exist, or it would never be offered. On a fresh
+install the Claude token of `.env` finds no plan: it declares one (`PLAN_PROVIDER`, key `claude`,
+numbered if taken), as `/claude` would, then is adopted by it. The CLI does the same once a sign-in
+is stored (`myclaw claude set-token`, `myclaw codex login`), and the running server hears the files
+of `~/.my-claw/accounts/` change (`watchAccounts`), so a sign-in made from a terminal reaches the
+picker without a restart.
+
 ## Frames
 
 | client | effect |

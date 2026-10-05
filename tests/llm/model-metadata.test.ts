@@ -355,3 +355,22 @@ test("the vendor rung stays below every table that knows the id itself", async (
   const [enriched] = applyModelMetadata([model({ id: "deepseek-v4-flash" })], PROVIDERS, pricing);
   expect(enriched?.label).toBe("DeepSeek V4 Flash (2x usage)");
 });
+
+test("two providers on one host each answer for their own address", async () => {
+  // OpenCode Zen declared before Go: the name rung used to take the first provider on the host,
+  // and the Go gateway was billed at Zen's price.
+  const pricing = await withApi({
+    opencode: { baseUrl: "https://opencode.ai/zen/v1" },
+    opencode_go: { baseUrl: GO_URL },
+  });
+  expect(pricing.costOf({ ...CALL, baseUrl: GO_URL })?.usd).toBeCloseTo(0.07, 6);
+  expect(pricing.costOf({ ...CALL, baseUrl: "https://opencode.ai/zen/v1" })?.usd).toBeCloseTo(0.14, 6);
+});
+
+test("a provider named freely is matched by its address before its host", async () => {
+  // "work" names no models.dev provider; the Go gateway's address does, whatever the file's order.
+  const pricing = await withApi({ work: { baseUrl: `${GO_URL}/` } }, "go-last");
+  const cost = pricing.costOf({ ...CALL, baseUrl: GO_URL });
+  expect(cost?.usd).toBeCloseTo(0.07, 6);
+  expect(cost?.source).toContain("api opencode-go");
+});

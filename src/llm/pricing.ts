@@ -225,6 +225,10 @@ function compareVersions(a: number[], b: number[]): number {
   return 0;
 }
 
+function trimSlash(url: string): string {
+  return url.replace(/\/+$/, "").toLowerCase();
+}
+
 function hostOf(url: string): string {
   try {
     return new URL(url).host;
@@ -268,6 +272,7 @@ function isFree(cost: ModelCost): boolean {
 export class ModelPricing {
   private cache: PricingCache | null = null;
   private hostToProvider = new Map<string, string>();
+  private apiToProvider = new Map<string, string>();
   /** Normalized models.dev provider id -> id, so a local key spelt differently still matches. */
   private keyToProvider = new Map<string, string>();
   private refreshing: Promise<void> | null = null;
@@ -571,18 +576,32 @@ export class ModelPricing {
    * prices for the same id, so the host says nothing about which of the two is being called while
    * the local provider key does. See docs/model-metadata.md R6.
    */
-  private resolveProvider(url: string): { provider: string; how: "declared" | "key" | "host" } | undefined {
+  private resolveProvider(url: string): { provider: string; how: "declared" | "key" | "api" | "host" } | undefined {
     const declared = this.declaredPricingProvider(url);
     if (declared) return { provider: declared, how: "declared" };
     const host = hostOf(url);
     if (!host) return undefined;
-    for (const [key, provider] of Object.entries(this.declaredProviders())) {
-      if (!provider.baseUrl || hostOf(provider.baseUrl) !== host) continue;
+    for (const [key] of this.declaredAt(url)) {
       const match = this.keyToProvider.get(normalizeProviderKey(key));
       if (match) return { provider: match, how: "key" };
     }
+    // The address itself, path included, before the host: a provider keyed "work" on opencode.ai's
+    // Go gateway is opencode-go, whichever of the two the upstream file lists first.
+    const byApi = this.apiToProvider.get(trimSlash(url));
+    if (byApi) return { provider: byApi, how: "api" };
     const byHost = this.hostToProvider.get(host);
     return byHost ? { provider: byHost, how: "host" } : undefined;
+  }
+
+  /**
+   * The declared providers that may describe a URL: those on its exact address if there are any,
+   * else those on its host. Two providers on one host (OpenCode Zen and Go) each answer for their own.
+   */
+  private declaredAt(url: string): Array<[string, { baseUrl?: string; pricingProvider?: string }]> {
+    const host = hostOf(url);
+    const onHost = Object.entries(this.declaredProviders()).filter(([, p]) => p.baseUrl && hostOf(p.baseUrl) === host);
+    const exact = onHost.filter(([, p]) => trimSlash(p.baseUrl!) === trimSlash(url));
+    return exact.length > 0 ? exact : onHost;
   }
 
   private lookup<T>(provider: string, model: string, pick: (entry: TableEntry) => T | undefined): { value: T; approximate: boolean } | undefined {
@@ -669,20 +688,17 @@ export class ModelPricing {
   }
 
   private declaredPricingProvider(baseUrl: string): string | undefined {
-    for (const provider of Object.values(this.declaredProviders())) {
-      if (provider.pricingProvider && provider.baseUrl && hostOf(provider.baseUrl) === hostOf(baseUrl)) {
-        return provider.pricingProvider;
-      }
-    }
-    return undefined;
+    return this.declaredAt(baseUrl).find(([, p]) => p.pricingProvider)?.[1].pricingProvider;
   }
 
   private index(): void {
     this.hostToProvider.clear();
+    this.apiToProvider.clear();
     this.keyToProvider.clear();
     for (const [provider, api] of Object.entries(this.cache?.hosts ?? {})) {
       const host = hostOf(api);
       if (host && !this.hostToProvider.has(host)) this.hostToProvider.set(host, provider);
+      if (host && !this.apiToProvider.has(trimSlash(api))) this.apiToProvider.set(trimSlash(api), provider);
     }
     // Indexed off the tables rather than the hosts: a provider can describe models without
     // publishing an api url. Measured on the live file: 183 providers, no two normalize alike.

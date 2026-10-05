@@ -335,8 +335,9 @@ test("a priceless entry does not shadow a looser key that carries the price", ()
   });
   expect(cost?.usd).toBeCloseTo(1, 6);
   // The amount alone does not discriminate: without the fallthrough the median rung finds the same
-  // figure by another route. The rung that answered is what proves the shadowing did not happen.
-  expect(cost?.source).toBe("host acme");
+  // figure by another route. The rung that answered is what proves the shadowing did not happen:
+  // acme's own table, reached by its exact address.
+  expect(cost?.source).toBe("api acme");
   expect(cost?.billed).toBe(true);
 });
 

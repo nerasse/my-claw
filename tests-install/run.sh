@@ -60,6 +60,22 @@ refused="$(probe '{"type":"services.set","id":"search","source":"url","url":"ftp
 [ "$(echo "$refused" | jq -r .scope)" = services ] || fail "a bad URL was not refused: $refused"
 ok "services.set refuses a URL that is not http(s)"
 
+# 5b. A Claude token pasted into .env on a fresh install: no Claude provider exists yet, so one is
+# declared to take it, and the line leaves .env (one source per account).
+token="sk-ant-oat01-$(head -c 30 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+as_claw "echo 'CLAUDE_CODE_OAUTH_TOKEN=${token}' >> ~/.my-claw/.env"
+# The account file is written before the line leaves .env: wait for both.
+for _ in $(seq 1 60); do
+  as_claw 'test -s ~/.my-claw/accounts/claude.json && ! grep -q ^CLAUDE_CODE_OAUTH_TOKEN= ~/.my-claw/.env' && break
+  sleep 1
+done
+[ "$(as_claw 'jq -r .llm.providers.claude.type ~/.my-claw/config.json')" = anthropic ] || fail "no Claude provider declared for the .env token"
+as_claw "grep -q '${token}' ~/.my-claw/accounts/claude.json" || fail "the .env token did not reach accounts/claude.json"
+as_claw 'grep -q ^CLAUDE_CODE_OAUTH_TOKEN= ~/.my-claw/.env' && fail "the token line is still in .env"
+a="$(probe '{"type":"accounts.get"}' accounts.result)" || fail "accounts.get: $a"
+[ "$(echo "$a" | jq -r '.accounts[] | select(.provider == "claude") | .connected')" = true ] || fail "the Claude plan does not read connected: $a"
+ok "a Claude token in .env: provider declared, token adopted, line removed, account connected"
+
 # 6. Local speech-to-text from the app: installs faster-whisper, then starts Whisper.
 s="$(probe '{"type":"services.set","id":"stt","source":"self-hosted"}' services.result)" || fail "services.set stt: $s"
 [ "$(service "$s" stt .source)" = self-hosted ] || fail "stt not self-hosted after the set"

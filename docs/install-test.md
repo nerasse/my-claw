@@ -64,3 +64,10 @@ from the app and answering; the app's update button answering with the host comm
 - (2026-10-03, second pass) VNC answered with no password on every interface: the unit had `-nopw`.
   `run.sh` now does the RFB handshake and requires password-only (security type 2); `upgrade.sh`
   checks an old install gets its password on update.
+- (2026-10-05) A Claude token pasted into `.env` on a fresh install found no Claude provider and was
+  never offered. `run.sh` pastes one and requires the provider declared, the token in
+  `accounts/claude.json`, the line gone from `.env` (`^CLAUDE_CODE_OAUTH_TOKEN=`: the template keeps
+  a commented one) and the account connected. Compose VNC had `-nopw`: the browser container now
+  makes a password in the shared home and `compose-run.sh` requires password-only. SearXNG's
+  engines suspend a machine that searched too often, so `compose-run.sh` requires a JSON answer
+  from our SearXNG and only notes an empty result list.

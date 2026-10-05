@@ -1,9 +1,11 @@
+import { mkdirSync } from "node:fs";
 import { readFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { MY_CLAW_DIR, type LlmProviderConfig } from "../core/config.ts";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
 import { removeEnvKey } from "../core/env-edit.ts";
 import { log } from "../utils/logger.ts";
+import { watchQuiet } from "../utils/watch.ts";
 
 /**
  * A subscription is a provider like any other, and each one holds its own sign-in: two ChatGPT
@@ -48,6 +50,22 @@ export function subscriptionProviders(
   return out;
 }
 
+/**
+ * The provider a sign-in lands on when none of its kind is declared yet: `/codex`, `/claude`, the
+ * CLI and the Claude token of `.env` all declare this one, so no sign-in is ever left on a provider
+ * that does not exist.
+ */
+export const PLAN_PROVIDER: Record<AccountKind, { key: string; type: "codex" | "anthropic"; group: string }> = {
+  codex: { key: "chatgpt", type: "codex", group: "ChatGPT" },
+  claude: { key: "claude", type: "anthropic", group: "Claude" },
+};
+
+/** The preferred key, numbered when it is taken, so a declaration never clobbers a provider. */
+export function freeProviderKey(providers: Record<string, unknown>, preferred: string): string {
+  if (!(preferred in providers)) return preferred;
+  for (let i = 2; ; i++) if (!(`${preferred}${i}` in providers)) return `${preferred}${i}`;
+}
+
 export async function readAccount<T>(provider: string): Promise<T | null> {
   try {
     const parsed = JSON.parse(await readFile(accountPath(provider), "utf-8")) as unknown;
@@ -65,6 +83,25 @@ export async function removeAccount(provider: string): Promise<void> {
   await rm(accountPath(provider), { force: true });
 }
 
+/**
+ * Called once a burst of writes to the sign-in files settles, whichever process wrote them: the
+ * server's own sign-ins and refreshes, or the CLI's. A write is a temp file renamed onto
+ * `<key>.json`, so only that name counts.
+ */
+export function watchAccounts(onChange: () => void, debounceMs = 300): () => void {
+  mkdirSync(ACCOUNTS_DIR, { recursive: true, mode: 0o700 });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const watcher = watchQuiet(ACCOUNTS_DIR, "accounts", (_event, name) => {
+    if (!name?.endsWith(".json")) return;
+    clearTimeout(timer);
+    timer = setTimeout(onChange, debounceMs);
+  });
+  return () => {
+    clearTimeout(timer);
+    watcher.close();
+  };
+}
+
 /** A provider renamed keeps its sign-in: the file follows the key. */
 export async function moveAccount(from: string, to: string): Promise<void> {
   await rename(accountPath(from), accountPath(to)).catch((err: NodeJS.ErrnoException) => {
@@ -80,9 +117,12 @@ async function exists(path: string): Promise<boolean> {
  * The sign-ins of before, each given to the first provider of its kind that has none yet, then
  * gone from where they were: one source per account. The Claude token of `.env` is adopted the same
  * way and its line removed, so a Sign out is a sign out (owner, 2026-10-04). Run at boot and when
- * `.env` changes: a token pasted there later is adopted then.
+ * `.env` changes: a token pasted there later is adopted then, by a plan declared for it if needed.
  */
-export async function adoptLegacyAccounts(providers: Record<string, LlmProviderConfig> | undefined): Promise<void> {
+export async function adoptLegacyAccounts(
+  providers: Record<string, LlmProviderConfig> | undefined,
+  declare: (kind: AccountKind) => Promise<string>,
+): Promise<void> {
   const subs = subscriptionProviders(providers);
   const firstOf = (kind: AccountKind): string | undefined => subs.find((s) => s.kind === kind)?.key;
 
@@ -95,7 +135,8 @@ export async function adoptLegacyAccounts(providers: Record<string, LlmProviderC
     void log("info", "chatgpt sign-in adopted by its provider", { provider: codex });
   }
 
-  const claude = firstOf("claude");
+  // A token in .env with no Claude plan to take it (a fresh install) declares one, as a sign-in does.
+  const claude = firstOf("claude") ?? (process.env[CLAUDE_TOKEN_ENV] ? await declare("claude") : undefined);
   if (!claude) return;
   if (!(await readAccount(claude)) && (await exists(LEGACY_CLAUDE))) {
     const legacy = JSON.parse(await readFile(LEGACY_CLAUDE, "utf-8").catch(() => "{}")) as object;

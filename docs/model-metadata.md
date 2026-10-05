@@ -148,6 +148,12 @@ compared with separators and case folded away (`opencode_go`, `opencodego`, `Ope
 `opencode-go`), then the host, then nothing. Metadata and price read the same ladder: they are the
 same question about the same provider.
 
+Two refinements (2026-10-05), for an owner with several providers. The declared and name rungs only
+look at the providers on the URL's exact address when there are any, so OpenCode Zen and Go declared
+side by side each answer for their own gateway (before, the first provider on the host answered for
+both). And between the name and the host comes the models.dev `api` address, path included: a
+provider keyed freely ("work") on `opencode.ai/zen/go/v1` is `opencode-go`, source `api opencode-go`.
+
 ### R7 — Enrichment fills gaps, it never overwrites
 
 A model already carrying a field keeps it: a config entry is a statement by the owner, and
