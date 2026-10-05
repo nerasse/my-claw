@@ -1617,6 +1617,8 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
     for (let i = 0; i < 205; i++) {
       await store.recordCommand(DEVICE, THREAD, `/status ${i}`, "ok");
     }
+    // The same race as below: the last appends are still on their way to the file.
+    await logSetup.log.flush();
     // Re-read log to verify
     const { openSessionLog } = await import("../src/sessions/log.ts");
     const log = await openSessionLog(sessionId);
@@ -1734,6 +1736,9 @@ describe("MyClawAppSessionStoreImpl failure journal", () => {
     await logSetup.log.flush();
     await store.recordFailure(DEVICE, THREAD, "   ");
     await store.recordFailure(DEVICE, THREAD, "x".repeat(FAILURE_TEXT_LIMIT + 50));
+    // An append is written behind the call that made it: read back before the bytes landed, the
+    // file held no failure at all (seed 1618, 2026-10-05).
+    await logSetup.log.flush();
 
     // Re-read log to check failures
     const { openSessionLog } = await import("../src/sessions/log.ts");
