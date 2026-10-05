@@ -26,6 +26,19 @@ export type ConfigEditResult =
 const INDENT = 2;
 
 /** Reads and parses config.json, refusing to touch a file it cannot parse. */
+/**
+ * Every edit reads the file, changes it and writes it back, so two at once lose one of them: the
+ * last-seen stamp a device writes on its first frame overwrote a service the same frame had just
+ * set (compose test, 2026-10-05). One at a time, in the order they were asked.
+ */
+let editTail: Promise<unknown> = Promise.resolve();
+
+export function oneEditAtATime<T>(edit: () => Promise<T>): Promise<T> {
+  const run = editTail.then(edit, edit);
+  editTail = run.catch(() => {});
+  return run;
+}
+
 async function readConfigFile(): Promise<{ ok: true; data: Record<string, unknown>; mode: number } | { ok: false; error: string }> {
   let raw: string;
   try {
@@ -71,72 +84,78 @@ function objectAt(parent: Record<string, unknown>, key: string): Record<string, 
  * `"clear"` removes it so the agent falls back on the global default. An emptied `llm` or
  * agent entry is dropped, exactly like `clearAgentModel` does.
  */
-export async function setAgentEffort(agent: string, effort: EffortLevel | "clear"): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function setAgentEffort(agent: string, effort: EffortLevel | "clear"): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const agents = objectAt(read.data, "agents");
-  const entry = objectAt(agents, agent);
-  const llm = objectAt(entry, "llm");
-  const previous = {
-    effort: typeof llm["effort"] === "string" ? (llm["effort"] as EffortLevel) : undefined,
-  };
+    const agents = objectAt(read.data, "agents");
+    const entry = objectAt(agents, agent);
+    const llm = objectAt(entry, "llm");
+    const previous = {
+      effort: typeof llm["effort"] === "string" ? (llm["effort"] as EffortLevel) : undefined,
+    };
 
-  if (effort === "clear") delete llm["effort"];
-  else llm["effort"] = effort;
-  // An emptied object left behind would read as a deliberate, meaningless setting.
-  if (Object.keys(llm).length === 0) delete entry["llm"];
-  if (Object.keys(entry).length === 0) delete agents[agent];
+    if (effort === "clear") delete llm["effort"];
+    else llm["effort"] = effort;
+    // An emptied object left behind would read as a deliberate, meaningless setting.
+    if (Object.keys(llm).length === 0) delete entry["llm"];
+    if (Object.keys(entry).length === 0) delete agents[agent];
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant effort agent ${agent} ${effort === "clear" ? "défaut" : effort}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { agent, effort: effort === "clear" ? null : effort });
-  return { ok: true, previous };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant effort agent ${agent} ${effort === "clear" ? "défaut" : effort}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { agent, effort: effort === "clear" ? null : effort });
+    return { ok: true, previous };
+  });
 }
 
 /**
  * Per-agent context ceiling. `undefined` removes the key so the agent falls back on the global
  * `context.cap`, which is how a menu offers a way back to the standing policy.
  */
-export async function setAgentContextCap(agent: string, cap: number | undefined): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function setAgentContextCap(agent: string, cap: number | undefined): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const agents = objectAt(read.data, "agents");
-  const entry = objectAt(agents, agent);
-  const context = objectAt(entry, "context");
-  const previous = { model: undefined, provider: undefined };
+    const agents = objectAt(read.data, "agents");
+    const entry = objectAt(agents, agent);
+    const context = objectAt(entry, "context");
+    const previous = { model: undefined, provider: undefined };
 
-  if (cap === undefined) delete context["cap"];
-  else context["cap"] = cap;
-  // An emptied object left behind would read as a deliberate, meaningless setting.
-  if (Object.keys(context).length === 0) delete (entry as Record<string, unknown>)["context"];
+    if (cap === undefined) delete context["cap"];
+    else context["cap"] = cap;
+    // An emptied object left behind would read as a deliberate, meaningless setting.
+    if (Object.keys(context).length === 0) delete (entry as Record<string, unknown>)["context"];
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant /model ${agent} context ${cap ?? "defaut"}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { agent, contextCap: cap ?? null });
-  return { ok: true, previous };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant /model ${agent} context ${cap ?? "defaut"}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { agent, contextCap: cap ?? null });
+    return { ok: true, previous };
+  });
 }
 
 /**
  * The global context ceiling (`context.cap`). `undefined` removes the key, which puts the built-in
  * default back in force; `0` is written as it is, because it is how the owner lifts the ceiling.
  */
-export async function setDefaultContextCap(cap: number | undefined): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function setDefaultContextCap(cap: number | undefined): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const context = objectAt(read.data, "context");
-  const previous = { model: undefined, provider: undefined };
+    const context = objectAt(read.data, "context");
+    const previous = { model: undefined, provider: undefined };
 
-  if (cap === undefined) delete context["cap"];
-  else context["cap"] = cap;
-  if (Object.keys(context).length === 0) delete read.data["context"];
+    if (cap === undefined) delete context["cap"];
+    else context["cap"] = cap;
+    if (Object.keys(context).length === 0) delete read.data["context"];
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant context cap global ${cap ?? "defaut"}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { contextCap: cap ?? null });
-  return { ok: true, previous };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant context cap global ${cap ?? "defaut"}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { contextCap: cap ?? null });
+    return { ok: true, previous };
+  });
 }
 
 /**
@@ -144,7 +163,7 @@ export async function setDefaultContextCap(cap: number | undefined): Promise<Con
  * reserved name `Default` is virtual and must not be written. New routes contain concrete models
  * only; an emptied tags section is removed so the file does not carry a meaningless setting.
  */
-export async function setTag(
+export function setTag(
   name: string,
   value: {
     model?: string;
@@ -154,31 +173,33 @@ export async function setTag(
     fallbackToGlobalDefault?: boolean;
   },
 ): Promise<ConfigEditResult> {
-  if (name === "Default") return { ok: false, error: "Le nom de tag « Default » est réservé." };
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+  return oneEditAtATime(async () => {
+    if (name === "Default") return { ok: false, error: "Le nom de tag « Default » est réservé." };
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const route = value.route ?? (value.model ? [{ model: value.model, ...(value.effort ? { effort: value.effort as EffortLevel } : {}), ...(value.contextCap !== undefined ? { contextCap: value.contextCap } : {}) }] : []);
-  if (
-    route.length === 0 ||
-    (value.route && route.some((candidate) => !candidate.model || tagNameOf(candidate.model) !== undefined)) ||
-    route.some((candidate) => candidate.contextCap !== undefined && (!Number.isFinite(candidate.contextCap) || candidate.contextCap <= 0))
-  ) {
-    return { ok: false, error: "Une route doit contenir au moins un modèle concret, sans tag imbriqué, avec des caps positifs." };
-  }
-  if (!value.route && value.model && tagReferenceWouldCycle(read.data, name, value.model)) {
-    return { ok: false, error: `Le modèle « ${value.model} » refermerait une boucle de tags (le résolveur ne peut pas l'étendre).` };
-  }
+    const route = value.route ?? (value.model ? [{ model: value.model, ...(value.effort ? { effort: value.effort as EffortLevel } : {}), ...(value.contextCap !== undefined ? { contextCap: value.contextCap } : {}) }] : []);
+    if (
+      route.length === 0 ||
+      (value.route && route.some((candidate) => !candidate.model || tagNameOf(candidate.model) !== undefined)) ||
+      route.some((candidate) => candidate.contextCap !== undefined && (!Number.isFinite(candidate.contextCap) || candidate.contextCap <= 0))
+    ) {
+      return { ok: false, error: "Une route doit contenir au moins un modèle concret, sans tag imbriqué, avec des caps positifs." };
+    }
+    if (!value.route && value.model && tagReferenceWouldCycle(read.data, name, value.model)) {
+      return { ok: false, error: `Le modèle « ${value.model} » refermerait une boucle de tags (le résolveur ne peut pas l'étendre).` };
+    }
 
-  const tags = objectAt(read.data, "tags");
-  tags[name] = value.route
-    ? { route, ...(value.fallbackToGlobalDefault ? { fallbackToGlobalDefault: true } : {}) }
-    : { model: route[0]!.model, ...(route[0]!.effort ? { effort: route[0]!.effort } : {}), ...(route[0]!.contextCap !== undefined ? { contextCap: route[0]!.contextCap } : {}) };
+    const tags = objectAt(read.data, "tags");
+    tags[name] = value.route
+      ? { route, ...(value.fallbackToGlobalDefault ? { fallbackToGlobalDefault: true } : {}) }
+      : { model: route[0]!.model, ...(route[0]!.effort ? { effort: route[0]!.effort } : {}), ...(route[0]!.contextCap !== undefined ? { contextCap: route[0]!.contextCap } : {}) };
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant tag ${name}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { tag: name, model: value.model });
-  return { ok: true, previous: { model: value.model } };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant tag ${name}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { tag: name, model: value.model });
+    return { ok: true, previous: { model: value.model } };
+  });
 }
 
 /** Whether `name -> model` would close a tag reference loop in the config on disk. */
@@ -202,19 +223,21 @@ function tagReferenceWouldCycle(data: Record<string, unknown>, name: string, mod
   }
 }
 
-export async function deleteTag(name: string): Promise<ConfigEditResult> {
-  if (name === "Default") return { ok: false, error: "Le nom de tag « Default » est réservé." };
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function deleteTag(name: string): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    if (name === "Default") return { ok: false, error: "Le nom de tag « Default » est réservé." };
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const tags = objectAt(read.data, "tags");
-  delete tags[name];
-  if (Object.keys(tags).length === 0) delete (read.data as Record<string, unknown>)["tags"];
+    const tags = objectAt(read.data, "tags");
+    delete tags[name];
+    if (Object.keys(tags).length === 0) delete (read.data as Record<string, unknown>)["tags"];
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant suppression tag ${name}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { tag: name, removed: true });
-  return { ok: true, previous: { model: undefined } };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant suppression tag ${name}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { tag: name, removed: true });
+    return { ok: true, previous: { model: undefined } };
+  });
 }
 
 /**
@@ -225,18 +248,20 @@ export async function deleteTag(name: string): Promise<ConfigEditResult> {
  * so it is written to the file. `voice` is hot-reloaded and read per call, so the next voice note
  * uses the new engine without a restart.
  */
-export async function setVoiceSttMode(mode: "cloud" | "local" | "auto"): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function setVoiceSttMode(mode: "cloud" | "local" | "auto"): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const voice = objectAt(read.data, "voice");
-  const stt = objectAt(voice, "stt");
-  stt["mode"] = mode;
+    const voice = objectAt(read.data, "voice");
+    const stt = objectAt(voice, "stt");
+    stt["mode"] = mode;
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant bascule stt ${mode}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { voiceSttMode: mode });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant bascule stt ${mode}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { voiceSttMode: mode });
+    return { ok: true, previous: {} };
+  });
 }
 
 /**
@@ -245,22 +270,24 @@ export async function setVoiceSttMode(mode: "cloud" | "local" | "auto"): Promise
  * hot-reloaded. `uiPrefs` is read per frame, so the next render of a card honours the new value
  * without a restart.
  */
-export async function setUiPrefs(prefs: { expandTools?: boolean; expandReasoning?: boolean }): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function setUiPrefs(prefs: { expandTools?: boolean; expandReasoning?: boolean }): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const uiPrefs = objectAt(read.data, "uiPrefs");
-  const patch: Record<string, unknown> = {};
-  if (typeof prefs.expandTools === "boolean") { uiPrefs["expandTools"] = prefs.expandTools; patch.expandTools = prefs.expandTools; }
-  if (typeof prefs.expandReasoning === "boolean") { uiPrefs["expandReasoning"] = prefs.expandReasoning; patch.expandReasoning = prefs.expandReasoning; }
+    const uiPrefs = objectAt(read.data, "uiPrefs");
+    const patch: Record<string, unknown> = {};
+    if (typeof prefs.expandTools === "boolean") { uiPrefs["expandTools"] = prefs.expandTools; patch.expandTools = prefs.expandTools; }
+    if (typeof prefs.expandReasoning === "boolean") { uiPrefs["expandReasoning"] = prefs.expandReasoning; patch.expandReasoning = prefs.expandReasoning; }
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant uiPrefs ${JSON.stringify(patch)}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { uiPrefs: patch });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant uiPrefs ${JSON.stringify(patch)}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { uiPrefs: patch });
+    return { ok: true, previous: {} };
+  });
 }
 
-export async function setAgentModel(
+export function setAgentModel(
   /** Any agent name, not just a reserved role: config is the override layer for file agents too. */
   agent: string,
   modelId: string,
@@ -271,34 +298,36 @@ export async function setAgentModel(
    */
   effort?: EffortLevel | "clear",
 ): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const agents = objectAt(read.data, "agents");
-  const entry = objectAt(agents, agent);
-  const llm = objectAt(entry, "llm");
+    const agents = objectAt(read.data, "agents");
+    const entry = objectAt(agents, agent);
+    const llm = objectAt(entry, "llm");
 
-  const previous = {
-    model: typeof llm["defaultModel"] === "string" ? (llm["defaultModel"] as string) : undefined,
-    provider: typeof llm["defaultProvider"] === "string" ? (llm["defaultProvider"] as string) : undefined,
-    effort: typeof llm["effort"] === "string" ? (llm["effort"] as EffortLevel) : undefined,
-  };
+    const previous = {
+      model: typeof llm["defaultModel"] === "string" ? (llm["defaultModel"] as string) : undefined,
+      provider: typeof llm["defaultProvider"] === "string" ? (llm["defaultProvider"] as string) : undefined,
+      effort: typeof llm["effort"] === "string" ? (llm["effort"] as EffortLevel) : undefined,
+    };
 
-  llm["defaultModel"] = modelId;
-  if (provider) {
-    llm["defaultProvider"] = provider;
-  } else {
-    // A model with no provider of its own follows the global default; leaving a stale provider
-    // behind would pin it to the wrong endpoint.
-    delete llm["defaultProvider"];
-  }
-  if (effort === "clear") delete llm["effort"];
-  else if (effort !== undefined) llm["effort"] = effort;
+    llm["defaultModel"] = modelId;
+    if (provider) {
+      llm["defaultProvider"] = provider;
+    } else {
+      // A model with no provider of its own follows the global default; leaving a stale provider
+      // behind would pin it to the wrong endpoint.
+      delete llm["defaultProvider"];
+    }
+    if (effort === "clear") delete llm["effort"];
+    else if (effort !== undefined) llm["effort"] = effort;
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant /model ${agent} ${modelId}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { agent, model: modelId, provider: provider ?? null, effort: effort === "clear" ? null : (effort ?? null) });
-  return { ok: true, previous };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant /model ${agent} ${modelId}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { agent, model: modelId, provider: provider ?? null, effort: effort === "clear" ? null : (effort ?? null) });
+    return { ok: true, previous };
+  });
 }
 
 /**
@@ -307,36 +336,38 @@ export async function setAgentModel(
  * `llm.model` key is deliberately left alone (deleting it can flip the file into the legacy
  * migration path; `defaultModel` wins over it anyway).
  */
-export async function setDefaultModel(
+export function setDefaultModel(
   modelId: string,
   provider: string | undefined,
   effort?: EffortLevel | "clear",
 ): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const llm = objectAt(read.data, "llm");
+    const llm = objectAt(read.data, "llm");
 
-  const previous = {
-    model: typeof llm["defaultModel"] === "string" ? (llm["defaultModel"] as string) : undefined,
-    provider: typeof llm["defaultProvider"] === "string" ? (llm["defaultProvider"] as string) : undefined,
-    effort: typeof llm["effort"] === "string" ? (llm["effort"] as EffortLevel) : undefined,
-  };
+    const previous = {
+      model: typeof llm["defaultModel"] === "string" ? (llm["defaultModel"] as string) : undefined,
+      provider: typeof llm["defaultProvider"] === "string" ? (llm["defaultProvider"] as string) : undefined,
+      effort: typeof llm["effort"] === "string" ? (llm["effort"] as EffortLevel) : undefined,
+    };
 
-  llm["defaultModel"] = modelId;
-  if (provider) {
-    llm["defaultProvider"] = provider;
-  } else {
-    // Same rule as the agent pin: a stale provider would send the model to the wrong endpoint.
-    delete llm["defaultProvider"];
-  }
-  if (effort === "clear") delete llm["effort"];
-  else if (effort !== undefined) llm["effort"] = effort;
+    llm["defaultModel"] = modelId;
+    if (provider) {
+      llm["defaultProvider"] = provider;
+    } else {
+      // Same rule as the agent pin: a stale provider would send the model to the wrong endpoint.
+      delete llm["defaultProvider"];
+    }
+    if (effort === "clear") delete llm["effort"];
+    else if (effort !== undefined) llm["effort"] = effort;
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant défaut global ${modelId}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { defaultModel: modelId, provider: provider ?? null, effort: effort === "clear" ? null : (effort ?? null) });
-  return { ok: true, previous };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant défaut global ${modelId}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { defaultModel: modelId, provider: provider ?? null, effort: effort === "clear" ? null : (effort ?? null) });
+    return { ok: true, previous };
+  });
 }
 
 /**
@@ -347,31 +378,33 @@ export async function setDefaultModel(
  * On is written by removing the key, which keeps a config that runs the default free of a section
  * that only restates it.
  */
-export async function setProviderRetry(patch: { enabled?: boolean; delaysMs?: number[] }): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function setProviderRetry(patch: { enabled?: boolean; delaysMs?: number[] }): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const llm = objectAt(read.data, "llm");
-  const current = (llm["providerRetry"] ?? {}) as { enabled?: boolean; delaysMs?: number[] };
-  const previous = {
-    retry: {
-      enabled: current.enabled !== false,
-      delaysMs: Array.isArray(current.delaysMs) ? [...current.delaysMs] : [...DEFAULT_PROVIDER_RETRY_DELAYS_MS],
-    },
-  };
+    const llm = objectAt(read.data, "llm");
+    const current = (llm["providerRetry"] ?? {}) as { enabled?: boolean; delaysMs?: number[] };
+    const previous = {
+      retry: {
+        enabled: current.enabled !== false,
+        delaysMs: Array.isArray(current.delaysMs) ? [...current.delaysMs] : [...DEFAULT_PROVIDER_RETRY_DELAYS_MS],
+      },
+    };
 
-  const enabled = patch.enabled ?? current.enabled !== false;
-  const delaysMs = patch.delaysMs ?? current.delaysMs;
-  const next: Record<string, unknown> = {};
-  if (!enabled) next["enabled"] = false;
-  if (Array.isArray(delaysMs) && delaysMs.length > 0) next["delaysMs"] = delaysMs;
-  if (Object.keys(next).length === 0) delete llm["providerRetry"];
-  else llm["providerRetry"] = next;
+    const enabled = patch.enabled ?? current.enabled !== false;
+    const delaysMs = patch.delaysMs ?? current.delaysMs;
+    const next: Record<string, unknown> = {};
+    if (!enabled) next["enabled"] = false;
+    if (Array.isArray(delaysMs) && delaysMs.length > 0) next["delaysMs"] = delaysMs;
+    if (Object.keys(next).length === 0) delete llm["providerRetry"];
+    else llm["providerRetry"] = next;
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant retry provider ${enabled ? "on" : "off"}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { providerRetry: next });
-  return { ok: true, previous };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant retry provider ${enabled ? "on" : "off"}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { providerRetry: next });
+    return { ok: true, previous };
+  });
 }
 
 /**
@@ -380,64 +413,68 @@ export async function setProviderRetry(patch: { enabled?: boolean; delaysMs?: nu
  * resolved model. Validation that the target is a declared, vision-capable model happens at the
  * call site, mirroring the run-time guard in the resolver.
  */
-export async function setVisionFallback(modelId: string): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function setVisionFallback(modelId: string): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const llm = objectAt(read.data, "llm");
-  const previous = {
-    fallback: typeof llm["visionFallback"] === "string" ? (llm["visionFallback"] as string) : undefined,
-  };
+    const llm = objectAt(read.data, "llm");
+    const previous = {
+      fallback: typeof llm["visionFallback"] === "string" ? (llm["visionFallback"] as string) : undefined,
+    };
 
-  if (modelId === "") delete llm["visionFallback"];
-  else llm["visionFallback"] = modelId;
+    if (modelId === "") delete llm["visionFallback"];
+    else llm["visionFallback"] = modelId;
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant fallback image ${modelId || "aucun"}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { visionFallback: modelId === "" ? null : modelId });
-  return { ok: true, previous };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant fallback image ${modelId || "aucun"}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { visionFallback: modelId === "" ? null : modelId });
+    return { ok: true, previous };
+  });
 }
 
 /**
  * Removes an agent's model pin so it falls back on the inherited default again. The emptied `llm`
  * object is dropped with it, so an unpinned agent leaves no meaningless `llm: {}` behind.
  */
-export async function clearAgentModel(agent: string): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function clearAgentModel(agent: string): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const agents = objectAt(read.data, "agents");
-  const entry = agents[agent];
-  // An agent with no entry at all has no pin: nothing to remove, and nothing to create either,
-  // or an unpinned agent would leave an empty `agents.<key>: {}` behind.
-  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
-    return { ok: true, previous: {} };
-  }
-  const cast = entry as Record<string, unknown>;
-  const raw = cast["llm"];
-  const llm = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : undefined;
-  const previous = {
-    model: typeof llm?.["defaultModel"] === "string" ? (llm["defaultModel"] as string) : undefined,
-    provider: typeof llm?.["defaultProvider"] === "string" ? (llm["defaultProvider"] as string) : undefined,
-    effort: typeof llm?.["effort"] === "string" ? (llm["effort"] as EffortLevel) : undefined,
-  };
+    const agents = objectAt(read.data, "agents");
+    const entry = agents[agent];
+    // An agent with no entry at all has no pin: nothing to remove, and nothing to create either,
+    // or an unpinned agent would leave an empty `agents.<key>: {}` behind.
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+      return { ok: true, previous: {} };
+    }
+    const cast = entry as Record<string, unknown>;
+    const raw = cast["llm"];
+    const llm = raw !== null && typeof raw === "object" && !Array.isArray(raw) ? (raw as Record<string, unknown>) : undefined;
+    const previous = {
+      model: typeof llm?.["defaultModel"] === "string" ? (llm["defaultModel"] as string) : undefined,
+      provider: typeof llm?.["defaultProvider"] === "string" ? (llm["defaultProvider"] as string) : undefined,
+      effort: typeof llm?.["effort"] === "string" ? (llm["effort"] as EffortLevel) : undefined,
+    };
 
-  if (llm) {
-    delete llm["defaultModel"];
-    delete llm["defaultProvider"];
-    // The effort is the model's sibling: a cleared model pin must not leave an orphaned effort
-    // behind, or the agent would silently keep the effort of a model it no longer runs.
-    delete llm["effort"];
-    // An emptied object left behind would read as a deliberate, meaningless setting.
-    if (Object.keys(llm).length === 0) delete cast["llm"];
-  }
-  // Same for the agent entry: `agents.<key>: {}` means nothing but looks like a setting.
-  if (Object.keys(cast).length === 0) delete agents[agent];
+    if (llm) {
+      delete llm["defaultModel"];
+      delete llm["defaultProvider"];
+      // The effort is the model's sibling: a cleared model pin must not leave an orphaned effort
+      // behind, or the agent would silently keep the effort of a model it no longer runs.
+      delete llm["effort"];
+      // An emptied object left behind would read as a deliberate, meaningless setting.
+      if (Object.keys(llm).length === 0) delete cast["llm"];
+    }
+    // Same for the agent entry: `agents.<key>: {}` means nothing but looks like a setting.
+    if (Object.keys(cast).length === 0) delete agents[agent];
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant clear modèle ${agent}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { agent, model: null });
-  return { ok: true, previous };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant clear modèle ${agent}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { agent, model: null });
+    return { ok: true, previous };
+  });
 }
 
 /**
@@ -450,31 +487,33 @@ export async function clearAgentModel(agent: string): Promise<ConfigEditResult> 
  * the config is the truth and the app's red highlighting is what flags a name that no longer
  * exists, so saving an entry that will come back is allowed.
  */
-export async function setAgentScope(
+export function setAgentScope(
   agent: string,
   field: "skills" | "mcp",
   mode: "inherit" | "all" | "list",
   names: string[] = [],
 ): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const agents = objectAt(read.data, "agents");
-  const entry = objectAt(agents, agent);
-  // A config entry reduced to nothing is a meaningless setting, so it is dropped with it.
-  if (mode === "inherit") {
-    delete entry[field];
-  } else if (mode === "all") {
-    entry[field] = ["*"];
-  } else {
-    entry[field] = [...new Set(names)].filter((n) => n.length > 0);
-  }
-  if (Object.keys(entry).length === 0) delete agents[agent];
+    const agents = objectAt(read.data, "agents");
+    const entry = objectAt(agents, agent);
+    // A config entry reduced to nothing is a meaningless setting, so it is dropped with it.
+    if (mode === "inherit") {
+      delete entry[field];
+    } else if (mode === "all") {
+      entry[field] = ["*"];
+    } else {
+      entry[field] = [...new Set(names)].filter((n) => n.length > 0);
+    }
+    if (Object.keys(entry).length === 0) delete agents[agent];
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant scope ${agent}.${field}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { agent, [field]: mode });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant scope ${agent}.${field}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { agent, [field]: mode });
+    return { ok: true, previous: {} };
+  });
 }
 
 /**
@@ -483,70 +522,76 @@ export async function setAgentScope(
  * key, so saving a pin that does not exist would silently point the agent at the wrong directory
  * without any error to explain it.
  */
-export async function setAgentWorkspace(agent: string, workspace: string | null): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function setAgentWorkspace(agent: string, workspace: string | null): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  if (workspace && workspace !== "default") {
-    const workspaces = read.data["workspaces"];
-    if (workspaces === null || typeof workspaces !== "object" || Array.isArray(workspaces) || !(workspace in (workspaces as Record<string, unknown>))) {
-      return { ok: false, error: `Unknown workspace key: ${workspace}` };
+    if (workspace && workspace !== "default") {
+      const workspaces = read.data["workspaces"];
+      if (workspaces === null || typeof workspaces !== "object" || Array.isArray(workspaces) || !(workspace in (workspaces as Record<string, unknown>))) {
+        return { ok: false, error: `Unknown workspace key: ${workspace}` };
+      }
     }
-  }
 
-  const agents = objectAt(read.data, "agents");
-  const entry = objectAt(agents, agent);
-  if (!workspace || workspace === "default") delete entry["workspace"];
-  else entry["workspace"] = workspace;
-  if (Object.keys(entry).length === 0) delete agents[agent];
+    const agents = objectAt(read.data, "agents");
+    const entry = objectAt(agents, agent);
+    if (!workspace || workspace === "default") delete entry["workspace"];
+    else entry["workspace"] = workspace;
+    if (Object.keys(entry).length === 0) delete agents[agent];
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant workspace ${agent}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { agent, workspace: workspace ?? null });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant workspace ${agent}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { agent, workspace: workspace ?? null });
+    return { ok: true, previous: {} };
+  });
 }
 
 /** Sets an agent's per-agent iteration budget, or removes it (`null`) so the default applies. */
-export async function setAgentMaxIterations(agent: string, value: number | null): Promise<ConfigEditResult> {
-  if (value !== null && (!Number.isInteger(value) || value <= 0)) {
-    return { ok: false, error: "maxIterations must be a positive integer" };
-  }
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function setAgentMaxIterations(agent: string, value: number | null): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    if (value !== null && (!Number.isInteger(value) || value <= 0)) {
+      return { ok: false, error: "maxIterations must be a positive integer" };
+    }
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const agents = objectAt(read.data, "agents");
-  const entry = objectAt(agents, agent);
-  if (value === null) delete entry["maxIterations"];
-  else entry["maxIterations"] = value;
-  if (Object.keys(entry).length === 0) delete agents[agent];
+    const agents = objectAt(read.data, "agents");
+    const entry = objectAt(agents, agent);
+    if (value === null) delete entry["maxIterations"];
+    else entry["maxIterations"] = value;
+    if (Object.keys(entry).length === 0) delete agents[agent];
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant itérations ${agent}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { agent, maxIterations: value ?? null });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant itérations ${agent}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { agent, maxIterations: value ?? null });
+    return { ok: true, previous: {} };
+  });
 }
 
 /** Adds or removes one name in the global `tools.disabled` denylist. Absent list = nothing off. */
-export async function setToolDisabled(name: string, disabled: boolean): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function setToolDisabled(name: string, disabled: boolean): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const tools = objectAt(read.data, "tools");
-  const list = Array.isArray(tools["disabled"]) ? (tools["disabled"] as unknown[]) : [];
-  if (disabled) {
-    if (!list.includes(name)) list.push(name);
-    tools["disabled"] = list;
-  } else {
-    const next = list.filter((n) => n !== name);
-    if (next.length > 0) tools["disabled"] = next;
-    else delete tools["disabled"];
-  }
-  if (Object.keys(tools).length === 0) delete read.data["tools"];
+    const tools = objectAt(read.data, "tools");
+    const list = Array.isArray(tools["disabled"]) ? (tools["disabled"] as unknown[]) : [];
+    if (disabled) {
+      if (!list.includes(name)) list.push(name);
+      tools["disabled"] = list;
+    } else {
+      const next = list.filter((n) => n !== name);
+      if (next.length > 0) tools["disabled"] = next;
+      else delete tools["disabled"];
+    }
+    if (Object.keys(tools).length === 0) delete read.data["tools"];
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant toggle tool ${name}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { tool: name, disabled });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant toggle tool ${name}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { tool: name, disabled });
+    return { ok: true, previous: {} };
+  });
 }
 
 /**
@@ -554,22 +599,24 @@ export async function setToolDisabled(name: string, disabled: boolean): Promise<
  * also turns the app's approvals on: with them off, a listed tool is refused, not asked, and the
  * switch the owner just flipped would read as "never run it" (docs/tool-approvals.md).
  */
-export async function setToolConfirm(name: string, confirm: boolean): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function setToolConfirm(name: string, confirm: boolean): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const list = Array.isArray(read.data["blacklist"]) ? (read.data["blacklist"] as unknown[]) : [];
-  read.data["blacklist"] = confirm ? (list.includes(name) ? list : [...list, name]) : list.filter((n) => n !== name);
-  if (confirm) {
-    const channels = objectAt(read.data, "channels");
-    const app = objectAt(channels, "my-claw-app");
-    app["approvals"] = true;
-  }
+    const list = Array.isArray(read.data["blacklist"]) ? (read.data["blacklist"] as unknown[]) : [];
+    read.data["blacklist"] = confirm ? (list.includes(name) ? list : [...list, name]) : list.filter((n) => n !== name);
+    if (confirm) {
+      const channels = objectAt(read.data, "channels");
+      const app = objectAt(channels, "my-claw-app");
+      app["approvals"] = true;
+    }
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant confirmation tool ${name}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { tool: name, confirm });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant confirmation tool ${name}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { tool: name, confirm });
+    return { ok: true, previous: {} };
+  });
 }
 
 export interface McpAddSpec {
@@ -587,73 +634,79 @@ const MCP_NAME_RE = /^[a-z0-9][a-z0-9_-]*$/;
  * (`env`, `headers`) are deliberately not in the spec: they belong to a config the app only
  * reads, never writes.
  */
-export async function addMcpServer(name: string, spec: McpAddSpec): Promise<ConfigEditResult> {
-  if (!MCP_NAME_RE.test(name)) {
-    return { ok: false, error: `Invalid MCP server name: "${name}" (letters, digits, "-", "_")` };
-  }
-  if (spec.transport === "stdio" && !spec.command?.trim()) {
-    return { ok: false, error: "stdio servers need a command" };
-  }
-  if (spec.transport !== "stdio" && !spec.url?.trim()) {
-    return { ok: false, error: `${spec.transport} servers need a url` };
-  }
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function addMcpServer(name: string, spec: McpAddSpec): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    if (!MCP_NAME_RE.test(name)) {
+      return { ok: false, error: `Invalid MCP server name: "${name}" (letters, digits, "-", "_")` };
+    }
+    if (spec.transport === "stdio" && !spec.command?.trim()) {
+      return { ok: false, error: "stdio servers need a command" };
+    }
+    if (spec.transport !== "stdio" && !spec.url?.trim()) {
+      return { ok: false, error: `${spec.transport} servers need a url` };
+    }
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const mcp = objectAt(read.data, "mcp");
-  if (mcp[name] !== undefined) {
-    return { ok: false, error: `MCP server already exists: ${name}` };
-  }
-  mcp[name] = {
-    transport: spec.transport,
-    ...(spec.command ? { command: spec.command } : {}),
-    ...(spec.args && spec.args.length > 0 ? { args: spec.args } : {}),
-    ...(spec.url ? { url: spec.url } : {}),
-  };
+    const mcp = objectAt(read.data, "mcp");
+    if (mcp[name] !== undefined) {
+      return { ok: false, error: `MCP server already exists: ${name}` };
+    }
+    mcp[name] = {
+      transport: spec.transport,
+      ...(spec.command ? { command: spec.command } : {}),
+      ...(spec.args && spec.args.length > 0 ? { args: spec.args } : {}),
+      ...(spec.url ? { url: spec.url } : {}),
+    };
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant ajout mcp ${name}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { mcpAdded: name, transport: spec.transport });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant ajout mcp ${name}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { mcpAdded: name, transport: spec.transport });
+    return { ok: true, previous: {} };
+  });
 }
 
 /** Removes a declared MCP server. Agent scopes referencing it are left alone: they show up red
  *  in the app until the owner cleans them, which is exactly what the flag exists for. */
-export async function removeMcpServer(name: string): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function removeMcpServer(name: string): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const mcp = objectAt(read.data, "mcp");
-  if (mcp[name] === undefined) {
-    return { ok: false, error: `MCP server not declared: ${name}` };
-  }
-  delete mcp[name];
-  if (Object.keys(mcp).length === 0) delete read.data["mcp"];
+    const mcp = objectAt(read.data, "mcp");
+    if (mcp[name] === undefined) {
+      return { ok: false, error: `MCP server not declared: ${name}` };
+    }
+    delete mcp[name];
+    if (Object.keys(mcp).length === 0) delete read.data["mcp"];
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant retrait mcp ${name}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { mcpRemoved: name });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant retrait mcp ${name}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { mcpRemoved: name });
+    return { ok: true, previous: {} };
+  });
 }
 
 /** Enables or disables a declared MCP server. Enabling removes the key: absent is enabled. */
-export async function setMcpEnabled(name: string, enabled: boolean): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function setMcpEnabled(name: string, enabled: boolean): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const mcp = objectAt(read.data, "mcp");
-  const server = mcp[name];
-  if (server === null || typeof server !== "object" || Array.isArray(server)) {
-    return { ok: false, error: `MCP server not declared: ${name}` };
-  }
-  const cast = server as Record<string, unknown>;
-  if (enabled) delete cast["enabled"];
-  else cast["enabled"] = false;
+    const mcp = objectAt(read.data, "mcp");
+    const server = mcp[name];
+    if (server === null || typeof server !== "object" || Array.isArray(server)) {
+      return { ok: false, error: `MCP server not declared: ${name}` };
+    }
+    const cast = server as Record<string, unknown>;
+    if (enabled) delete cast["enabled"];
+    else cast["enabled"] = false;
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant bascule mcp ${name}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { mcpEnabled: name, enabled });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant bascule mcp ${name}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { mcpEnabled: name, enabled });
+    return { ok: true, previous: {} };
+  });
 }
 
 const WORKSPACE_KEY_RE = /^[a-z0-9][a-z0-9_-]*$/;
@@ -679,43 +732,47 @@ function workspaceErrorOf(key: string, path: string | undefined): string | null 
  * the path is the only thing the key stands for. The directory is created so the skills and
  * agents watchers can open their tiers under it, exactly as boot does for the named workspaces.
  */
-export async function addWorkspace(key: string, path: string): Promise<ConfigEditResult> {
-  const invalid = workspaceErrorOf(key, path);
-  if (invalid) return { ok: false, error: invalid };
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function addWorkspace(key: string, path: string): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const invalid = workspaceErrorOf(key, path);
+    if (invalid) return { ok: false, error: invalid };
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const workspaces = objectAt(read.data, "workspaces");
-  if (workspaces[key] !== undefined) {
-    return { ok: false, error: `Workspace already exists: ${key}` };
-  }
-  workspaces[key] = path;
-  await mkdir(path, { recursive: true });
+    const workspaces = objectAt(read.data, "workspaces");
+    if (workspaces[key] !== undefined) {
+      return { ok: false, error: `Workspace already exists: ${key}` };
+    }
+    workspaces[key] = path;
+    await mkdir(path, { recursive: true });
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant ajout workspace ${key}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { workspaceAdded: key, path });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant ajout workspace ${key}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { workspaceAdded: key, path });
+    return { ok: true, previous: {} };
+  });
 }
 
 /** Removes a named workspace. Agent pins and file fields pointing at it stay: they are exactly
  *  what the app's red highlight exists to surface, so they are flagged rather than silently
  *  rewritten. */
-export async function removeWorkspace(key: string): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function removeWorkspace(key: string): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const workspaces = read.data["workspaces"];
-  if (workspaces === null || typeof workspaces !== "object" || Array.isArray(workspaces) || (workspaces as Record<string, unknown>)[key] === undefined) {
-    return { ok: false, error: `Workspace not declared: ${key}` };
-  }
-  delete (workspaces as Record<string, unknown>)[key];
-  if (Object.keys(workspaces as Record<string, unknown>).length === 0) delete read.data["workspaces"];
+    const workspaces = read.data["workspaces"];
+    if (workspaces === null || typeof workspaces !== "object" || Array.isArray(workspaces) || (workspaces as Record<string, unknown>)[key] === undefined) {
+      return { ok: false, error: `Workspace not declared: ${key}` };
+    }
+    delete (workspaces as Record<string, unknown>)[key];
+    if (Object.keys(workspaces as Record<string, unknown>).length === 0) delete read.data["workspaces"];
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant retrait workspace ${key}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { workspaceRemoved: key });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant retrait workspace ${key}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { workspaceRemoved: key });
+    return { ok: true, previous: {} };
+  });
 }
 
 /**
@@ -724,55 +781,59 @@ export async function removeWorkspace(key: string): Promise<ConfigEditResult> {
  * scopes would be a trap nobody asked for. Agent *files* with a `workspace:` field are not
  * touched -- they live outside config.json and surface through the red flag instead.
  */
-export async function renameWorkspace(from: string, to: string): Promise<ConfigEditResult> {
-  const invalid = workspaceErrorOf(to, undefined);
-  if (invalid) return { ok: false, error: invalid };
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function renameWorkspace(from: string, to: string): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const invalid = workspaceErrorOf(to, undefined);
+    if (invalid) return { ok: false, error: invalid };
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const workspaces = read.data["workspaces"];
-  if (workspaces === null || typeof workspaces !== "object" || Array.isArray(workspaces) || (workspaces as Record<string, unknown>)[from] === undefined) {
-    return { ok: false, error: `Workspace not declared: ${from}` };
-  }
-  if ((workspaces as Record<string, unknown>)[to] !== undefined) {
-    return { ok: false, error: `Workspace already exists: ${to}` };
-  }
-  (workspaces as Record<string, unknown>)[to] = (workspaces as Record<string, unknown>)[from];
-  delete (workspaces as Record<string, unknown>)[from];
-
-  const agents = read.data["agents"];
-  if (agents !== null && typeof agents === "object" && !Array.isArray(agents)) {
-    for (const entry of Object.values(agents as Record<string, unknown>)) {
-      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
-      const cast = entry as Record<string, unknown>;
-      if (cast["workspace"] === from) cast["workspace"] = to;
+    const workspaces = read.data["workspaces"];
+    if (workspaces === null || typeof workspaces !== "object" || Array.isArray(workspaces) || (workspaces as Record<string, unknown>)[from] === undefined) {
+      return { ok: false, error: `Workspace not declared: ${from}` };
     }
-  }
+    if ((workspaces as Record<string, unknown>)[to] !== undefined) {
+      return { ok: false, error: `Workspace already exists: ${to}` };
+    }
+    (workspaces as Record<string, unknown>)[to] = (workspaces as Record<string, unknown>)[from];
+    delete (workspaces as Record<string, unknown>)[from];
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant renommage workspace ${from}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { workspaceRenamed: { from, to } });
-  return { ok: true, previous: {} };
+    const agents = read.data["agents"];
+    if (agents !== null && typeof agents === "object" && !Array.isArray(agents)) {
+      for (const entry of Object.values(agents as Record<string, unknown>)) {
+        if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+        const cast = entry as Record<string, unknown>;
+        if (cast["workspace"] === from) cast["workspace"] = to;
+      }
+    }
+
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant renommage workspace ${from}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { workspaceRenamed: { from, to } });
+    return { ok: true, previous: {} };
+  });
 }
 
 /** Repoints a workspace key at a different directory. Same validation as the boot path check. */
-export async function setWorkspacePath(key: string, path: string): Promise<ConfigEditResult> {
-  const invalid = workspaceErrorOf(key, path);
-  if (invalid) return { ok: false, error: invalid };
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function setWorkspacePath(key: string, path: string): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const invalid = workspaceErrorOf(key, path);
+    if (invalid) return { ok: false, error: invalid };
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const workspaces = read.data["workspaces"];
-  if (workspaces === null || typeof workspaces !== "object" || Array.isArray(workspaces) || (workspaces as Record<string, unknown>)[key] === undefined) {
-    return { ok: false, error: `Workspace not declared: ${key}` };
-  }
-  (workspaces as Record<string, unknown>)[key] = path;
-  await mkdir(path, { recursive: true });
+    const workspaces = read.data["workspaces"];
+    if (workspaces === null || typeof workspaces !== "object" || Array.isArray(workspaces) || (workspaces as Record<string, unknown>)[key] === undefined) {
+      return { ok: false, error: `Workspace not declared: ${key}` };
+    }
+    (workspaces as Record<string, unknown>)[key] = path;
+    await mkdir(path, { recursive: true });
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant changement de chemin ${key}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { workspacePath: { key, path } });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant changement de chemin ${key}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { workspacePath: { key, path } });
+    return { ok: true, previous: {} };
+  });
 }
 
 /**
@@ -781,41 +842,43 @@ export async function setWorkspacePath(key: string, path: string): Promise<Confi
  * field is dropped rather than stored, and an entry left empty is removed entirely -- a policy
  * that says nothing should not stay in the file. See docs/workspace-prompt-inheritance.md.
  */
-export async function setWorkspacePromptPolicy(
+export function setWorkspacePromptPolicy(
   workspace: string,
   file: string,
   inherit: string | undefined,
   off: boolean | undefined,
 ): Promise<ConfigEditResult> {
-  if (!(PROMPT_FILES as readonly string[]).includes(file)) {
-    return { ok: false, error: `unknown prompt file: ${file}` };
-  }
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+  return oneEditAtATime(async () => {
+    if (!(PROMPT_FILES as readonly string[]).includes(file)) {
+      return { ok: false, error: `unknown prompt file: ${file}` };
+    }
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const workspaces = read.data["workspaces"];
-  if (workspace !== "default" && !(workspaces && typeof workspaces === "object" && workspace in (workspaces as Record<string, unknown>))) {
-    return { ok: false, error: `unknown workspace: ${workspace}` };
-  }
+    const workspaces = read.data["workspaces"];
+    if (workspace !== "default" && !(workspaces && typeof workspaces === "object" && workspace in (workspaces as Record<string, unknown>))) {
+      return { ok: false, error: `unknown workspace: ${workspace}` };
+    }
 
-  const section = objectAt(read.data, "workspacePrompts");
-  const entry: Record<string, unknown> = {};
-  if (inherit !== undefined && inherit !== "default") entry.inherit = inherit;
-  if (off !== undefined && off !== false) entry.off = off;
-  const workspacePolicy = objectAt(section, workspace);
-  if (Object.keys(entry).length > 0) {
-    workspacePolicy[file] = entry;
-  } else {
-    delete workspacePolicy[file];
-  }
-  // A policy that says nothing is not a policy: drop the empty containers.
-  if (Object.keys(workspacePolicy).length === 0) delete section[workspace];
-  if (Object.keys(section).length === 0) delete read.data["workspacePrompts"];
+    const section = objectAt(read.data, "workspacePrompts");
+    const entry: Record<string, unknown> = {};
+    if (inherit !== undefined && inherit !== "default") entry.inherit = inherit;
+    if (off !== undefined && off !== false) entry.off = off;
+    const workspacePolicy = objectAt(section, workspace);
+    if (Object.keys(entry).length > 0) {
+      workspacePolicy[file] = entry;
+    } else {
+      delete workspacePolicy[file];
+    }
+    // A policy that says nothing is not a policy: drop the empty containers.
+    if (Object.keys(workspacePolicy).length === 0) delete section[workspace];
+    if (Object.keys(section).length === 0) delete read.data["workspacePrompts"];
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant politique prompt ${workspace}/${file}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { workspace, file, inherit, off });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant politique prompt ${workspace}/${file}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { workspace, file, inherit, off });
+    return { ok: true, previous: {} };
+  });
 }
 
 /** The provider key is the model namespace (`llm.providers.<key>`), so it must be typable. */
@@ -873,86 +936,90 @@ function providersAt(data: Record<string, unknown>): Record<string, unknown> {
  * has no config entry of its own. Empty optional strings delete the field: the file must not
  * carry settings that say nothing.
  */
-export async function upsertProvider(key: string, patch: ProviderPatch): Promise<ConfigEditResult> {
-  if (!PROVIDER_KEY_RE.test(key)) {
-    return { ok: false, error: `Invalid provider key: "${key}" (letters, digits, "-", "_")` };
-  }
-  if (key === "tags") return { ok: false, error: `The provider key "${key}" is reserved` };
-  if (patch.type !== undefined && !(PROVIDER_TYPES as readonly string[]).includes(patch.type)) {
-    return { ok: false, error: `Invalid provider type: ${patch.type}` };
-  }
-  if (patch.apiKeyEnv !== undefined && patch.apiKeyEnv !== "" && !ENV_NAME_RE.test(patch.apiKeyEnv)) {
-    return { ok: false, error: `Invalid environment variable name: ${patch.apiKeyEnv}` };
-  }
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function upsertProvider(key: string, patch: ProviderPatch): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    if (!PROVIDER_KEY_RE.test(key)) {
+      return { ok: false, error: `Invalid provider key: "${key}" (letters, digits, "-", "_")` };
+    }
+    if (key === "tags") return { ok: false, error: `The provider key "${key}" is reserved` };
+    if (patch.type !== undefined && !(PROVIDER_TYPES as readonly string[]).includes(patch.type)) {
+      return { ok: false, error: `Invalid provider type: ${patch.type}` };
+    }
+    if (patch.apiKeyEnv !== undefined && patch.apiKeyEnv !== "" && !ENV_NAME_RE.test(patch.apiKeyEnv)) {
+      return { ok: false, error: `Invalid environment variable name: ${patch.apiKeyEnv}` };
+    }
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const providers = providersAt(read.data);
-  const existing = providers[key];
-  const created = existing === undefined;
-  const spec: Record<string, unknown> =
-    existing === null || typeof existing !== "object" || Array.isArray(existing)
-      ? { type: patch.type ?? "openai" }
-      : { ...(existing as Record<string, unknown>) };
-  if (patch.type !== undefined) spec["type"] = patch.type;
-  for (const field of ["baseUrl", "apiKeyEnv", "group", "pricingProvider", "fallbackModel"] as const) {
-    if (patch[field] === undefined) continue;
-    if (patch[field] === "") delete spec[field];
-    else spec[field] = patch[field];
-  }
-  if (patch.discover !== undefined) spec["discover"] = patch.discover;
-  if (patch.promptCache !== undefined) spec["promptCache"] = patch.promptCache;
-  if (patch.reasoningReplay !== undefined) spec["reasoningReplay"] = patch.reasoningReplay;
-  const shapeError = providerShapeError(spec);
-  if (shapeError) return { ok: false, error: shapeError };
-  // A name is how a provider reads in the picker and in Stats: two that read alike cannot be told
-  // apart there. Checked only when the name changes, so a config that already holds a duplicate
-  // can still edit its other fields.
-  const nameOf = (entryKey: string, entry: unknown): string => {
-    const group = entry && typeof entry === "object" ? (entry as Record<string, unknown>)["group"] : undefined;
-    return (typeof group === "string" && group.trim() ? group : entryKey).trim().toLowerCase();
-  };
-  const name = nameOf(key, spec);
-  if (created || name !== nameOf(key, existing)) {
-    const clash = Object.entries(providers).find(([other, entry]) => other !== key && nameOf(other, entry) === name);
-    if (clash) return { ok: false, error: `A provider already has this name: ${String(spec["group"] ?? key)}` };
-  }
-  providers[key] = spec;
+    const providers = providersAt(read.data);
+    const existing = providers[key];
+    const created = existing === undefined;
+    const spec: Record<string, unknown> =
+      existing === null || typeof existing !== "object" || Array.isArray(existing)
+        ? { type: patch.type ?? "openai" }
+        : { ...(existing as Record<string, unknown>) };
+    if (patch.type !== undefined) spec["type"] = patch.type;
+    for (const field of ["baseUrl", "apiKeyEnv", "group", "pricingProvider", "fallbackModel"] as const) {
+      if (patch[field] === undefined) continue;
+      if (patch[field] === "") delete spec[field];
+      else spec[field] = patch[field];
+    }
+    if (patch.discover !== undefined) spec["discover"] = patch.discover;
+    if (patch.promptCache !== undefined) spec["promptCache"] = patch.promptCache;
+    if (patch.reasoningReplay !== undefined) spec["reasoningReplay"] = patch.reasoningReplay;
+    const shapeError = providerShapeError(spec);
+    if (shapeError) return { ok: false, error: shapeError };
+    // A name is how a provider reads in the picker and in Stats: two that read alike cannot be told
+    // apart there. Checked only when the name changes, so a config that already holds a duplicate
+    // can still edit its other fields.
+    const nameOf = (entryKey: string, entry: unknown): string => {
+      const group = entry && typeof entry === "object" ? (entry as Record<string, unknown>)["group"] : undefined;
+      return (typeof group === "string" && group.trim() ? group : entryKey).trim().toLowerCase();
+    };
+    const name = nameOf(key, spec);
+    if (created || name !== nameOf(key, existing)) {
+      const clash = Object.entries(providers).find(([other, entry]) => other !== key && nameOf(other, entry) === name);
+      if (clash) return { ok: false, error: `A provider already has this name: ${String(spec["group"] ?? key)}` };
+    }
+    providers[key] = spec;
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant ${created ? "ajout" : "édition"} provider ${key}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { providerUpserted: key, created });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant ${created ? "ajout" : "édition"} provider ${key}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { providerUpserted: key, created });
+    return { ok: true, previous: {} };
+  });
 }
 
 /**
  * Repoints every provider that reads `from` at `to`, in one write: an env rename whose variable
  * is shared by two providers must not leave one of them dangling after the .env line moves.
  */
-export async function repointEnvKey(from: string, to: string): Promise<ConfigEditResult> {
-  if (!ENV_NAME_RE.test(to)) {
-    return { ok: false, error: `Invalid environment variable name: ${to}` };
-  }
-  if (from === to) return { ok: true, previous: {} };
-  const read = await readConfigFile();
-  if (!read.ok) return read;
-
-  const providers = providersAt(read.data);
-  let touched = 0;
-  for (const [key, entry] of Object.entries(providers)) {
-    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const cast = entry as Record<string, unknown>;
-    if (cast["apiKeyEnv"] === from) {
-      cast["apiKeyEnv"] = to;
-      touched += 1;
+export function repointEnvKey(from: string, to: string): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    if (!ENV_NAME_RE.test(to)) {
+      return { ok: false, error: `Invalid environment variable name: ${to}` };
     }
-  }
-  if (touched === 0) return { ok: true, previous: {} };
+    if (from === to) return { ok: true, previous: {} };
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant repointage ${from} -> ${to}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { envRepointed: { from, to, touched } });
-  return { ok: true, previous: {} };
+    const providers = providersAt(read.data);
+    let touched = 0;
+    for (const [key, entry] of Object.entries(providers)) {
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const cast = entry as Record<string, unknown>;
+      if (cast["apiKeyEnv"] === from) {
+        cast["apiKeyEnv"] = to;
+        touched += 1;
+      }
+    }
+    if (touched === 0) return { ok: true, previous: {} };
+
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant repointage ${from} -> ${to}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { envRepointed: { from, to, touched } });
+    return { ok: true, previous: {} };
+  });
 }
 
 /**
@@ -971,82 +1038,84 @@ export interface RemoveProviderOptions {
   withModels?: boolean;
 }
 
-export async function removeProvider(key: string, options: RemoveProviderOptions = {}): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
-  const providers = providersAt(read.data);
-  if (providers[key] === undefined) {
-    return { ok: false, error: `Provider not declared: ${key}` };
-  }
+export function removeProvider(key: string, options: RemoveProviderOptions = {}): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
+    const providers = providersAt(read.data);
+    if (providers[key] === undefined) {
+      return { ok: false, error: `Provider not declared: ${key}` };
+    }
 
-  const llm = objectAt(read.data, "llm");
-  const blocking: string[] = [];
-  if (llm["defaultProvider"] === key) blocking.push(`llm.defaultProvider`);
-  const models = llm["models"];
-  const entries: unknown[] = Array.isArray(models) ? models : [];
-  const declared: Record<string, unknown>[] = [];
-  if (entries.length > 0) {
-    for (const model of entries) {
-      if (model && typeof model === "object" && (model as Record<string, unknown>)["provider"] === key) {
-        declared.push(model as Record<string, unknown>);
+    const llm = objectAt(read.data, "llm");
+    const blocking: string[] = [];
+    if (llm["defaultProvider"] === key) blocking.push(`llm.defaultProvider`);
+    const models = llm["models"];
+    const entries: unknown[] = Array.isArray(models) ? models : [];
+    const declared: Record<string, unknown>[] = [];
+    if (entries.length > 0) {
+      for (const model of entries) {
+        if (model && typeof model === "object" && (model as Record<string, unknown>)["provider"] === key) {
+          declared.push(model as Record<string, unknown>);
+        }
       }
     }
-  }
-  for (const model of declared) {
-    const id = model["id"];
-    blocking.push(`curated model ${typeof id === "string" ? id : "(unnamed)"}`);
-  }
-  /*
-   * Tags too. A route pointing at a model of this provider dies with it, and nothing says so: the
-   * router falls back to the global default and the tag quietly stops meaning what it says. The
-   * owner's `Cheap` route is exactly this shape.
-   */
-  const tags = objectAt(read.data, "tags");
-  const providerNames = Object.keys(providers);
-  const tagHits: Array<{ name: string; tag: TagConfig; route: TagRouteCandidate[] }> = [];
-  for (const [name, raw] of Object.entries(tags)) {
-    const tag = (raw ?? {}) as TagConfig;
-    const route = tagRouteOf(tag);
-    const hit = route.find((candidate) => parseModelRef(candidate.model, providerNames).provider === key);
-    if (!hit) continue;
-    blocking.push(`tag ${name} -> ${hit.model}`);
-    tagHits.push({ name, tag, route });
-  }
-  if (blocking.length > 0 && options.withModels !== true) {
-    return { ok: false, error: `Cannot remove ${key}: still referenced by ${blocking.join(", ")}` };
-  }
+    for (const model of declared) {
+      const id = model["id"];
+      blocking.push(`curated model ${typeof id === "string" ? id : "(unnamed)"}`);
+    }
+    /*
+     * Tags too. A route pointing at a model of this provider dies with it, and nothing says so: the
+     * router falls back to the global default and the tag quietly stops meaning what it says. The
+     * owner's `Cheap` route is exactly this shape.
+     */
+    const tags = objectAt(read.data, "tags");
+    const providerNames = Object.keys(providers);
+    const tagHits: Array<{ name: string; tag: TagConfig; route: TagRouteCandidate[] }> = [];
+    for (const [name, raw] of Object.entries(tags)) {
+      const tag = (raw ?? {}) as TagConfig;
+      const route = tagRouteOf(tag);
+      const hit = route.find((candidate) => parseModelRef(candidate.model, providerNames).provider === key);
+      if (!hit) continue;
+      blocking.push(`tag ${name} -> ${hit.model}`);
+      tagHits.push({ name, tag, route });
+    }
+    if (blocking.length > 0 && options.withModels !== true) {
+      return { ok: false, error: `Cannot remove ${key}: still referenced by ${blocking.join(", ")}` };
+    }
 
-  if (options.withModels === true) {
-    if (declared.length > 0) {
-      llm["models"] = entries.filter((model) => !declared.includes(model as Record<string, unknown>));
-    }
-    if (llm["defaultProvider"] === key) delete llm["defaultProvider"];
-    for (const { name, tag, route } of tagHits) {
-      const kept = route.filter((candidate) => parseModelRef(candidate.model, providerNames).provider !== key);
-      const legacy = typeof tag.model === "string" && parseModelRef(tag.model, providerNames).provider === key;
-      if (legacy && !Array.isArray(tag.route)) {
-        // The pre-route shape holds one model: dropping it leaves a tag with nothing to resolve.
-        delete tags[name];
-        continue;
+    if (options.withModels === true) {
+      if (declared.length > 0) {
+        llm["models"] = entries.filter((model) => !declared.includes(model as Record<string, unknown>));
       }
-      if (kept.length === 0) {
-        // Nothing left to try: a tag with an empty route is a trap, not a route.
-        delete tags[name];
-        continue;
+      if (llm["defaultProvider"] === key) delete llm["defaultProvider"];
+      for (const { name, tag, route } of tagHits) {
+        const kept = route.filter((candidate) => parseModelRef(candidate.model, providerNames).provider !== key);
+        const legacy = typeof tag.model === "string" && parseModelRef(tag.model, providerNames).provider === key;
+        if (legacy && !Array.isArray(tag.route)) {
+          // The pre-route shape holds one model: dropping it leaves a tag with nothing to resolve.
+          delete tags[name];
+          continue;
+        }
+        if (kept.length === 0) {
+          // Nothing left to try: a tag with an empty route is a trap, not a route.
+          delete tags[name];
+          continue;
+        }
+        // The route is written, the legacy single-model field goes: leaving both would keep the
+        // removed model alive as the shape the next read upgrades from.
+        tags[name] = { ...tag, route: kept };
+        if (legacy) delete (tags[name] as TagConfig).model;
       }
-      // The route is written, the legacy single-model field goes: leaving both would keep the
-      // removed model alive as the shape the next read upgrades from.
-      tags[name] = { ...tag, route: kept };
-      if (legacy) delete (tags[name] as TagConfig).model;
+      if (Object.keys(tags).length === 0) delete read.data["tags"];
     }
-    if (Object.keys(tags).length === 0) delete read.data["tags"];
-  }
-  delete providers[key];
-  if (Object.keys(providers).length === 0) delete llm["providers"];
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant retrait provider ${key}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { providerRemoved: key, withModels: options.withModels === true, tagsDropped: tagHits.map((hit) => hit.name) });
-  return { ok: true, previous: {} };
+    delete providers[key];
+    if (Object.keys(providers).length === 0) delete llm["providers"];
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant retrait provider ${key}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { providerRemoved: key, withModels: options.withModels === true, tagsDropped: tagHits.map((hit) => hit.name) });
+    return { ok: true, previous: {} };
+  });
 }
 
 /**
@@ -1054,39 +1123,41 @@ export async function removeProvider(key: string, options: RemoveProviderOptions
  * curated models and the default provider -- so the rename never leaves a dangling default,
  * exactly like `renameWorkspace` rewrites the agent pins it would otherwise break.
  */
-export async function renameProvider(from: string, to: string): Promise<ConfigEditResult> {
-  if (!PROVIDER_KEY_RE.test(to)) {
-    return { ok: false, error: `Invalid provider key: "${to}" (letters, digits, "-", "_")` };
-  }
-  if (to === "tags") return { ok: false, error: `The provider key "${to}" is reserved` };
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function renameProvider(from: string, to: string): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    if (!PROVIDER_KEY_RE.test(to)) {
+      return { ok: false, error: `Invalid provider key: "${to}" (letters, digits, "-", "_")` };
+    }
+    if (to === "tags") return { ok: false, error: `The provider key "${to}" is reserved` };
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const providers = providersAt(read.data);
-  if (providers[from] === undefined) {
-    return { ok: false, error: `Provider not declared: ${from}` };
-  }
-  if (providers[to] !== undefined) {
-    return { ok: false, error: `Provider already exists: ${to}` };
-  }
-  providers[to] = providers[from];
-  delete providers[from];
+    const providers = providersAt(read.data);
+    if (providers[from] === undefined) {
+      return { ok: false, error: `Provider not declared: ${from}` };
+    }
+    if (providers[to] !== undefined) {
+      return { ok: false, error: `Provider already exists: ${to}` };
+    }
+    providers[to] = providers[from];
+    delete providers[from];
 
-  const llm = objectAt(read.data, "llm");
-  if (llm["defaultProvider"] === from) llm["defaultProvider"] = to;
-  const models = llm["models"];
-  if (Array.isArray(models)) {
-    for (const model of models) {
-      if (model && typeof model === "object" && (model as Record<string, unknown>)["provider"] === from) {
-        (model as Record<string, unknown>)["provider"] = to;
+    const llm = objectAt(read.data, "llm");
+    if (llm["defaultProvider"] === from) llm["defaultProvider"] = to;
+    const models = llm["models"];
+    if (Array.isArray(models)) {
+      for (const model of models) {
+        if (model && typeof model === "object" && (model as Record<string, unknown>)["provider"] === from) {
+          (model as Record<string, unknown>)["provider"] = to;
+        }
       }
     }
-  }
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant renommage provider ${from}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { providerRenamed: { from, to } });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant renommage provider ${from}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { providerRenamed: { from, to } });
+    return { ok: true, previous: {} };
+  });
 }
 
 /** Everything a declared model may carry. `id` names it; every other field is an override. */
@@ -1189,42 +1260,44 @@ function modelsAt(data: Record<string, unknown>): Record<string, unknown>[] {
  * is a field the owner cleared. The merge that does happen is with *discovery*, field by field, in
  * `mergeModels` -- so an entry here only has to carry what differs from what the provider says.
  */
-export async function upsertModel(entry: ModelDeclaration): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function upsertModel(entry: ModelDeclaration): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const providers = providersAt(read.data);
-  const invalid = modelDeclarationError(entry, providers);
-  if (invalid) return { ok: false, error: invalid };
+    const providers = providersAt(read.data);
+    const invalid = modelDeclarationError(entry, providers);
+    if (invalid) return { ok: false, error: invalid };
 
-  const stored: Record<string, unknown> = { id: entry.id, label: entry.label || entry.id };
-  for (const field of ["apiId", "provider", "group", "family"] as const) {
-    if (entry[field]) stored[field] = entry[field];
-  }
-  for (const field of ["vision", "supportsEffort"] as const) {
-    if (entry[field] !== undefined) stored[field] = entry[field];
-  }
-  if (entry.supportedEffortLevels?.length) stored["supportedEffortLevels"] = entry.supportedEffortLevels;
-  if (entry.thinkingTypes) stored["thinkingTypes"] = entry.thinkingTypes;
-  if (entry.reasoningField) stored["reasoningField"] = entry.reasoningField;
-  const limit: Record<string, number> = {};
-  if (entry.limit?.context) limit["context"] = entry.limit.context;
-  if (entry.limit?.output) limit["output"] = entry.limit.output;
-  if (Object.keys(limit).length > 0) stored["limit"] = limit;
-  // Not `if (entry.timeoutMs)`: `0` is the value that disarms the timer, and truthiness would
-  // silently drop it and leave the transport default in place.
-  if (entry.timeoutMs !== undefined) stored["timeoutMs"] = entry.timeoutMs;
+    const stored: Record<string, unknown> = { id: entry.id, label: entry.label || entry.id };
+    for (const field of ["apiId", "provider", "group", "family"] as const) {
+      if (entry[field]) stored[field] = entry[field];
+    }
+    for (const field of ["vision", "supportsEffort"] as const) {
+      if (entry[field] !== undefined) stored[field] = entry[field];
+    }
+    if (entry.supportedEffortLevels?.length) stored["supportedEffortLevels"] = entry.supportedEffortLevels;
+    if (entry.thinkingTypes) stored["thinkingTypes"] = entry.thinkingTypes;
+    if (entry.reasoningField) stored["reasoningField"] = entry.reasoningField;
+    const limit: Record<string, number> = {};
+    if (entry.limit?.context) limit["context"] = entry.limit.context;
+    if (entry.limit?.output) limit["output"] = entry.limit.output;
+    if (Object.keys(limit).length > 0) stored["limit"] = limit;
+    // Not `if (entry.timeoutMs)`: `0` is the value that disarms the timer, and truthiness would
+    // silently drop it and leave the transport default in place.
+    if (entry.timeoutMs !== undefined) stored["timeoutMs"] = entry.timeoutMs;
 
-  const models = modelsAt(read.data);
-  const at = models.findIndex((m) => m && typeof m === "object" && m["id"] === entry.id);
-  const created = at < 0;
-  if (created) models.push(stored);
-  else models[at] = stored;
+    const models = modelsAt(read.data);
+    const at = models.findIndex((m) => m && typeof m === "object" && m["id"] === entry.id);
+    const created = at < 0;
+    if (created) models.push(stored);
+    else models[at] = stored;
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant ${created ? "ajout" : "édition"} modèle ${entry.id}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { modelUpserted: entry.id, created });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant ${created ? "ajout" : "édition"} modèle ${entry.id}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { modelUpserted: entry.id, created });
+    return { ok: true, previous: {} };
+  });
 }
 
 /**
@@ -1235,21 +1308,23 @@ export async function upsertModel(entry: ModelDeclaration): Promise<ConfigEditRe
  * identical from the app, and the difference is exactly what tells the owner the id they are
  * staring at came from discovery and not from their file.
  */
-export async function removeModel(id: string): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function removeModel(id: string): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const llm = objectAt(read.data, "llm");
-  const models = Array.isArray(llm["models"]) ? (llm["models"] as Record<string, unknown>[]) : [];
-  const at = models.findIndex((m) => m && typeof m === "object" && m["id"] === id);
-  if (at < 0) return { ok: false, error: `No model declared with the id "${id}"` };
-  models.splice(at, 1);
-  llm["models"] = models;
+    const llm = objectAt(read.data, "llm");
+    const models = Array.isArray(llm["models"]) ? (llm["models"] as Record<string, unknown>[]) : [];
+    const at = models.findIndex((m) => m && typeof m === "object" && m["id"] === id);
+    if (at < 0) return { ok: false, error: `No model declared with the id "${id}"` };
+    models.splice(at, 1);
+    llm["models"] = models;
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant suppression modèle ${id}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { modelRemoved: id });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant suppression modèle ${id}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { modelRemoved: id });
+    return { ok: true, previous: {} };
+  });
 }
 
 export interface DeviceEntry {
@@ -1269,36 +1344,40 @@ export interface DeviceEntry {
  * edit here: a device that appears out of nowhere is visible in `/config diff` and removable with
  * `/config rollback`. The token is never logged, only the id.
  */
-export async function upsertDevice(deviceId: string, entry: DeviceEntry): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function upsertDevice(deviceId: string, entry: DeviceEntry): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const channels = objectAt(read.data, "channels");
-  const channel = objectAt(channels, "my-claw-app");
-  const devices = objectAt(channel, "devices");
-  devices[deviceId] = { ...(devices[deviceId] as Record<string, unknown> | undefined), ...entry };
+    const channels = objectAt(read.data, "channels");
+    const channel = objectAt(channels, "my-claw-app");
+    const devices = objectAt(channel, "devices");
+    devices[deviceId] = { ...(devices[deviceId] as Record<string, unknown> | undefined), ...entry };
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant ajout device ${deviceId}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { deviceAdded: deviceId, kind: entry.kind });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant ajout device ${deviceId}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { deviceAdded: deviceId, kind: entry.kind });
+    return { ok: true, previous: {} };
+  });
 }
 
 /** Drops a device entry. Returns ok even when it was already gone: revoking twice is not an error. */
-export async function removeDevice(deviceId: string): Promise<ConfigEditResult> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
+export function removeDevice(deviceId: string): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
 
-  const channels = objectAt(read.data, "channels");
-  const channel = objectAt(channels, "my-claw-app");
-  const devices = objectAt(channel, "devices");
-  if (!(deviceId in devices)) return { ok: true, previous: {} };
-  delete devices[deviceId];
+    const channels = objectAt(read.data, "channels");
+    const channel = objectAt(channels, "my-claw-app");
+    const devices = objectAt(channel, "devices");
+    if (!(deviceId in devices)) return { ok: true, previous: {} };
+    delete devices[deviceId];
 
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant revocation device ${deviceId}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { deviceRemoved: deviceId });
-  return { ok: true, previous: {} };
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant revocation device ${deviceId}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { deviceRemoved: deviceId });
+    return { ok: true, previous: {} };
+  });
 }
 
 /**
@@ -1307,15 +1386,17 @@ export async function removeDevice(deviceId: string): Promise<ConfigEditResult> 
  * patched here first would leave it nothing to diff. Answers with the config as written, for the
  * caller to describe.
  */
-export async function setService(choice: ServiceChoice): Promise<{ ok: true; written: Record<string, unknown> } | { ok: false; error: string }> {
-  const read = await readConfigFile();
-  if (!read.ok) return read;
-  const applied = applyServiceChoice(read.data, choice, installKind());
-  if (!applied.ok) return applied;
-  await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant service ${choice.id} ${choice.source}` });
-  await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-  await journal("edit", artifactId(CONFIG_PATH), { service: choice.id, source: choice.source });
-  return { ok: true, written: read.data };
+export function setService(choice: ServiceChoice): Promise<{ ok: true; written: Record<string, unknown> } | { ok: false; error: string }> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
+    const applied = applyServiceChoice(read.data, choice, installKind());
+    if (!applied.ok) return applied;
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant service ${choice.id} ${choice.source}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { service: choice.id, source: choice.source });
+    return { ok: true, written: read.data };
+  });
 }
 
 /**

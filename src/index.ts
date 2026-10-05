@@ -193,6 +193,7 @@ import {
 import {
   setVoiceSttMode,
   setService,
+  oneEditAtATime,
   engineInUse,
   setUiPrefs,
   setDefaultModel,
@@ -2048,28 +2049,34 @@ async function main() {
         return { content: raw, sha: contentSha(raw), maxBytes: MAX_CONFIG_BYTES };
       },
       set: async (sha, content) => {
-        const current = await readFile(CONFIG_PATH, "utf-8").catch(() => "");
-        if (current && sha !== "" && contentSha(current) !== sha) {
-          return { ok: false, sha: "", conflict: true, changed: [], rebootRequired: [], error: "changed on the server since it was opened" };
-        }
-        if (Buffer.byteLength(content, "utf-8") > MAX_CONFIG_BYTES) {
-          return { ok: false, sha: "", conflict: false, changed: [], rebootRequired: [], error: `config too large to save (max ${MAX_CONFIG_BYTES} bytes)` };
-        }
-        try {
-          parseConfig(content);
-        } catch (err) {
-          return {
-            ok: false,
-            sha: "",
-            conflict: false,
-            changed: [],
-            rebootRequired: [],
-            error: err instanceof Error ? err.message : String(err),
-          };
-        }
-        const mode = await stat(CONFIG_PATH).then((s) => s.mode & 0o777, () => 0o600);
-        await snapshotConfigFile(CONFIG_PATH, { origin: "pre-write", note: "avant config.set depuis l'app" });
-        await writeFileAtomically(CONFIG_PATH, content, { mode });
+        // Checked and written in one go with every other edit: an edit landing between the two
+        // would be overwritten by a file that never saw it.
+        const refused = await oneEditAtATime(async () => {
+          const current = await readFile(CONFIG_PATH, "utf-8").catch(() => "");
+          if (current && sha !== "" && contentSha(current) !== sha) {
+            return { ok: false, sha: "", conflict: true, changed: [], rebootRequired: [], error: "changed on the server since it was opened" };
+          }
+          if (Buffer.byteLength(content, "utf-8") > MAX_CONFIG_BYTES) {
+            return { ok: false, sha: "", conflict: false, changed: [], rebootRequired: [], error: `config too large to save (max ${MAX_CONFIG_BYTES} bytes)` };
+          }
+          try {
+            parseConfig(content);
+          } catch (err) {
+            return {
+              ok: false,
+              sha: "",
+              conflict: false,
+              changed: [],
+              rebootRequired: [],
+              error: err instanceof Error ? err.message : String(err),
+            };
+          }
+          const mode = await stat(CONFIG_PATH).then((s) => s.mode & 0o777, () => 0o600);
+          await snapshotConfigFile(CONFIG_PATH, { origin: "pre-write", note: "avant config.set depuis l'app" });
+          await writeFileAtomically(CONFIG_PATH, content, { mode });
+          return null;
+        });
+        if (refused) return refused;
         let changed: string[] = [];
         let rebootRequired: string[] = [];
         try {
