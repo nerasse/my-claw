@@ -77,17 +77,24 @@ function runExecFile(
     let child: ChildProcess | undefined;
     let finished = false;
     let timedOut = false;
+    let killed = false;
+    // The stall watch polls: a tick already in flight when the process is killed lands after it and
+    // would signal the same child a second time (measured on a loaded CI runner, 2026-10-05). One
+    // kill per process, whoever asks for it first (the watch, the deadline, an abort).
+    const killOnce = (): void => {
+      if (killed || !child) return;
+      killed = true;
+      try { child.kill("SIGKILL"); } catch {}
+    };
     const expire = (): void => {
       timedOut = true;
-      try { child?.kill("SIGKILL"); } catch {}
+      killOnce();
     };
     const stopWatch = "timeoutMs" in limit
       ? ((t) => () => clearTimeout(t))(setTimeout(expire, limit.timeoutMs))
       : watchGrowth(limit.stall.path, limit.stall.afterMs, expire);
 
-    const onAbort = (): void => {
-      try { child?.kill("SIGKILL"); } catch {}
-    };
+    const onAbort = (): void => killOnce();
     const finish = (error: unknown, stdout: string): void => {
       if (finished) return;
       finished = true;

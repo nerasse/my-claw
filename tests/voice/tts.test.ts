@@ -77,6 +77,31 @@ describe("Edge TTS deadlines and cancellation", () => {
     expectCleaned(fake.calls[0]!);
   });
 
+  test("the process is signalled once, however many watch ticks were in flight", async () => {
+    // The stall watch polls, and a tick already running when the stall is seen lands after the
+    // kill: the same child was signalled twice. The exit is delayed here so those ticks really do
+    // land; on a loaded runner that overlap is what made the test above flake (CI run 2526).
+    const kills: string[] = [];
+    let started = 0;
+    const execute = ((file: string, args: readonly string[], _options: ProcessCall["options"], complete: Callback) => {
+      started += 1;
+      const outputIndex = args.indexOf("--write-media");
+      if (outputIndex >= 0) writeFileSync(args[outputIndex + 1]!, "partial audio");
+      return {
+        kill(signal: string) {
+          kills.push(signal);
+          setTimeout(() => complete(new Error(`Command failed: ${file}`), ""), 60);
+          return true;
+        },
+      } as ChildProcess;
+    }) as unknown as typeof execFile;
+    await expect(pipeline({ execFile: execute, edgeStallMs: 20 }).generate("private spoken text")).rejects.toMatchObject({
+      message: "TTS cloud stalled: no audio for 0.02s.",
+    });
+    expect(kills).toEqual(["SIGKILL"]);
+    expect(started).toBe(1);
+  });
+
   test("a long reading whose audio keeps growing outlives the stall window", async () => {
     // 83.6 s for 4 950 characters on 2026-10-04: a total deadline would have to be guessed.
     const fake = fakeExec((call) => {
