@@ -17,7 +17,8 @@ set -uo pipefail
 # user units yet. Its one job there is the same gate, then handing over to the updater, which
 # migrates the install (or, when it cannot, updates it the old way).
 
-APP_DIR="/opt/my-claw"
+# Overridable for the packaging tests only; an install always lives here.
+APP_DIR="${MY_CLAW_APP_DIR:-/opt/my-claw}"
 command -v jq >/dev/null 2>&1 || { echo "Error: jq not found" >&2; exit 1; }
 
 if [ "$EUID" -eq 0 ]; then
@@ -29,11 +30,13 @@ if [ "$EUID" -eq 0 ]; then
   ENV_FILE="/etc/my-claw/.env"
   TREE="$APP_DIR"
   UPDATER="/usr/local/bin/my-claw-update"
+  UPDATE_LOCK="/var/lock/my-claw-update.lock"
   SYSCTL=(systemctl)
 else
   META_FILE="${APP_DIR}/.install-meta"
   TREE="${APP_DIR}/current"
   UPDATER="${TREE}/packaging/update.sh"
+  UPDATE_LOCK="${APP_DIR}/.update.lock"
   SYSCTL=(systemctl --user)
   export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
   export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=${XDG_RUNTIME_DIR}/bus}"
@@ -65,6 +68,16 @@ if [ -f "$ENV_FILE" ]; then
       FORGEJO_USER) FORGEJO_USER="$value" ;;
     esac
   done < "$ENV_FILE"
+fi
+
+# An update already under way (a `myclaw update`, or the previous tick still swapping) stops the
+# server, which the gate below reads as a free pass: the updater would start again only to die on
+# its own lock and leave this unit failed. Asked first, on the lock the updater takes.
+if [ -e "$UPDATE_LOCK" ] && command -v flock >/dev/null 2>&1; then
+  if ! flock -n "$UPDATE_LOCK" true 2>/dev/null; then
+    echo "my-claw auto-update: an update is already running, retrying in 15 minutes"
+    exit 0
+  fi
 fi
 
 INSTALLED="$(jq -r .version "${TREE}/package.json" 2>/dev/null || true)"

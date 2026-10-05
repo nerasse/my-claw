@@ -40,6 +40,15 @@ A run starting between the check and the swap stays interruptible, exactly like 
 `myclaw update` today — the race is inherent to any updater and the updater's rollback
 covers the result.
 
+## An update already under way
+
+Before anything else the timer asks the updater's lock (`/opt/my-claw/.update.lock`, or
+`/var/lock/my-claw-update.lock` on the legacy root layout) with `flock -n`. Held: the tick says
+"an update is already running" and exits 0. Without it, an update in progress has stopped the
+server, the health gate reads a stopped server as a free pass, and the tick started a second
+update that died on the lock and left the unit failed (2026-09-22). `tests/packaging/auto-update.test.ts`
+runs the script as shipped against a throwaway install.
+
 ## The web client bundle
 
 The bundle is released from the app repository and served off `~/.my-claw/web/current`. The
