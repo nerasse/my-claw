@@ -167,18 +167,24 @@ test("refresh is resilient: a failing provider keeps its previous models", async
   }
 });
 
-test("two refreshes at once are one pass: the second joins the first", async () => {
+test("never two passes at once: the calls made during one share a single pass after it", async () => {
   const config = makeConfig();
+  config.providers = { litellm: config.providers!.litellm! };
   let calls = 0;
+  let inFlight = 0;
+  let overlapped = false;
   let release: (() => void) | undefined;
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
   const mock = mockFetch(async () => {
     calls += 1;
-    // Held open on purpose: the second caller has to arrive while the first is still in flight,
-    // which is exactly what a button pressed during the boot pass does.
+    inFlight += 1;
+    if (inFlight > 1) overlapped = true;
+    // Held open on purpose: the later callers have to arrive while the first pass is still in
+    // flight, which is what a button pressed during the boot pass does.
     await gate;
+    inFlight -= 1;
     return new Response(JSON.stringify({ data: [{ id: "qwen-72b" }] }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
@@ -186,19 +192,57 @@ test("two refreshes at once are one pass: the second joins the first", async () 
   });
 
   try {
-
     const catalog = new ModelCatalog(() => config);
     const first = catalog.refresh();
     const second = catalog.refresh();
-    assert.equal(first, second, "the second call must be handed the run already in flight");
+    const third = catalog.refresh();
+    assert.equal(second, third, "the callers that arrive during a pass share the one after it");
     release!();
-    await Promise.all([first, second]);
-    assert.equal(calls, 1, "one provider, one HTTP call, however many callers asked");
+    await Promise.all([first, second, third]);
+    assert.equal(overlapped, false, "the follow-up starts only once the first pass is over");
+    assert.equal(calls, 2, "two passes, however many callers asked during the first");
 
-    // And once it is over, a new call really does run again: this coalesces, it does not memoize.
+    // And once both are over, a new call runs at once: this coalesces, it does not memoize.
     await catalog.refresh();
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
   } finally {
+    mock.restore();
+  }
+});
+
+test("a key written while a pass runs is seen by the pass after it, and its failure is gone", async () => {
+  // The order the app sends a new provider in: its declaration (a pass starts), then its key.
+  const config = makeConfig();
+  config.providers = { litellm: config.providers!.litellm! };
+  delete process.env["TEST_LLM_KEY"];
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const mock = mockFetch(async (_url, init) => {
+    const authorized = new Headers(init?.headers).get("Authorization") === "Bearer sk-new";
+    if (!authorized) {
+      await gate;
+      return new Response("{}", { status: 401 });
+    }
+    return new Response(JSON.stringify({ data: [{ id: "qwen-72b" }] }), { status: 200 });
+  });
+  try {
+    const catalog = new ModelCatalog(() => config);
+    assert.deepEqual(catalog.discovery("litellm"), { state: "pending" });
+    const first = catalog.refresh();
+    process.env["TEST_LLM_KEY"] = "sk-new";
+    const second = catalog.refresh();
+    release!();
+    await first;
+    assert.deepEqual(catalog.discovery("litellm"), { state: "failed", error: "HTTP 401" });
+    await second;
+    assert.deepEqual(catalog.discovery("litellm"), { state: "ok" });
+    assert.deepEqual(catalog.discovered().map((m) => m.id), ["litellm/qwen-72b"]);
+    // A provider that does not discover has no discovery to report.
+    assert.equal(catalog.discovery("groq"), undefined);
+  } finally {
+    delete process.env["TEST_LLM_KEY"];
     mock.restore();
   }
 });

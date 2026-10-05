@@ -52,6 +52,19 @@ live list from the source of truth so `/model` always reflects what the account 
   startup, so the menu and model routing survive a restart while offline. A provider that fails
   to answer keeps its previously discovered models — the menu never breaks.
 
+## A pass requested during a pass, and what a failure says (2026-10-05)
+
+- `refresh()` never runs two passes at once, but a call that lands during one gets one more pass
+  after it, shared by every such call. Joining the running pass was wrong: the app declares a new
+  provider (a pass starts) and writes its key a frame later; the running pass reached the provider
+  before its key existed, answered 401, and nothing asked again for six hours.
+- The reason of a provider's last failed pass is kept (`failures`, cleared by its next complete
+  answer) and read by `discovery(provider)`: `pending` until a pass has reached it, `ok`, or
+  `failed` with the status or the network fault, never a response body (an error page can quote
+  the key). The app's `agents.config` snapshot carries it per provider (`discovery`), and the
+  server pushes that snapshot and the model list after every pass, so the page of a provider just
+  added moves from "asking" to its models or to the reason it has none.
+
 ## Scope and limits
 
 - The Claude SDK control call exposes only family aliases (`sonnet`, `opus`, `haiku`); the

@@ -2510,6 +2510,11 @@ export interface MyClawAppProviderInfo {
   discover: boolean;
   /** Models currently known to belong to this provider. */
   models: number;
+  /**
+   * How its last discovery went, for a provider that discovers: `pending` until a pass reached it,
+   * then `ok`, or `failed` with the status or network fault (never a response body).
+   */
+  discovery?: { state: "ok" | "failed" | "pending"; error?: string };
   keyEnv?: string;
   /** A ChatGPT or Claude plan: its credential is its sign-in, and `keyPresent` says it is signed in. */
   account?: MyClawAppAccountKind;

@@ -522,6 +522,13 @@ async function main() {
   pricingTimer.unref?.();
 
 
+  const pushModelListToOwners = (): void => {
+    const appConfig = config.channels["my-claw-app"];
+    if (!myClawAppRef || !appConfig) return;
+    const owners = new Set<string>();
+    for (const [deviceId, entry] of Object.entries(appConfig.devices ?? {})) owners.add(entry.owner ?? deviceId);
+    for (const owner of owners) myClawAppRef.pushModelList(owner);
+  };
   const onAuthChanged = async (_provider: string): Promise<void> => {
     // Before the refresh: a login that adds models must not have them judged unrunnable by a
     // stale auth sample, and a logout must stop offering them immediately.
@@ -530,14 +537,7 @@ async function main() {
     // The refresh re-projects the server-side picker, but nothing told the app: it keeps the
     // catalogue it already holds (no ChatGPT model, no effort levels) until it asks again, which
     // is what a manual "refresh" button papered over. Push the fresh list to every owner.
-    const appConfig = config.channels["my-claw-app"];
-    if (myClawAppRef && appConfig) {
-      const owners = new Set<string>();
-      for (const [deviceId, entry] of Object.entries(appConfig.devices ?? {})) {
-        owners.add(entry.owner ?? deviceId);
-      }
-      for (const owner of owners) myClawAppRef.pushModelList(owner);
-    }
+    pushModelListToOwners();
   };
   // A sign-in written by another process (`myclaw codex login` while the server runs) reaches the
   // picker without a restart. A token refresh rewrites the file too and leaves the sample as it was.
@@ -1396,6 +1396,9 @@ async function main() {
             ...(provider.fallbackModel ? { fallbackModel: provider.fallbackModel } : {}),
             discover: provider.discover === true,
             models: providerCountOf(key),
+            // How its last discovery went: what the page that just added it reads as "N models"
+            // or the reason the key was refused.
+            ...(modelCatalog.discovery(key) ? { discovery: modelCatalog.discovery(key)! } : {}),
             ...(provider.apiKeyEnv ? { keyEnv: provider.apiKeyEnv } : {}),
             // A plan: the app draws its sign-in instead of a key (docs/subscription-accounts.md).
             ...(accountKindOf(provider) ? { account: accountKindOf(provider)! } : {}),
@@ -1424,6 +1427,12 @@ async function main() {
       };
     };
     pushAgentsConfig = () => myClawApp.pushAgentsConfig(agentsConfigSnapshot());
+    // A pass changes what every provider page shows (its count, its failure) and what the picker
+    // offers: pushed, or a provider just added would read "checking" until the page is reopened.
+    hooks.on("models:discovered", () => {
+      pushAgentsConfig?.();
+      pushModelListToOwners();
+    });
     /**
      * Whether a name may receive config overrides: a reserved role, or an agent that has a file.
      * Accepting anything would let the app create an `agents.<typo>` section that nothing reads.

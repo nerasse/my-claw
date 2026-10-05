@@ -293,6 +293,12 @@ function openRouterEffortLevels(model: {
   return undefined;
 }
 
+/** What a failed pass tells the owner: the status or the network fault, never a response body. */
+function discoveryFailure(err: unknown): string {
+  if (err instanceof Error && err.name === "AbortError") return "no answer in time";
+  return (err instanceof Error ? err.message : String(err)).slice(0, 200);
+}
+
 async function fetchOpenAiModels(baseUrl: string, apiKey?: string): Promise<string[]> {
   const url = `${baseUrl.replace(/\/$/, "")}/models`;
   const controller = new AbortController();
@@ -389,6 +395,10 @@ export class ModelCatalog {
   private listedByProvider = new Map<string, ReadonlySet<string>>();
   /** The discovery pass currently running, so callers coalesce onto it rather than pile up. */
   private inFlight?: Promise<void>;
+  /** The one pass that runs after it, shared by every caller that arrived while it ran. */
+  private queued?: Promise<void>;
+  /** Why each provider's last pass failed, cleared by its next complete answer. */
+  private failures = new Map<string, string>();
 
   constructor(
     private getConfig: () => LlmConfig,
@@ -413,6 +423,18 @@ export class ModelCatalog {
    */
   answered(provider: string): boolean {
     return this.listedByProvider.has(provider);
+  }
+
+  /**
+   * How a discovering provider's last pass went, for the page that just added it: `pending` until
+   * a pass has reached it, then the answer or the reason it failed (`HTTP 401`, never a body: an
+   * error page can quote the key). Undefined for a provider that does not discover.
+   */
+  discovery(provider: string): { state: "ok" | "failed" | "pending"; error?: string } | undefined {
+    if (!this.getConfig().providers?.[provider]?.discover) return undefined;
+    const error = this.failures.get(provider);
+    if (error !== undefined) return { state: "failed", error };
+    return { state: this.listedByProvider.has(provider) ? "ok" : "pending" };
   }
 
   /** The ids that provider listed, empty when it never answered in full. */
@@ -463,13 +485,19 @@ export class ModelCatalog {
    * Re-discover every `discover` provider and update the merged set. Never throws: a provider
    * that fails to answer keeps its previously discovered models.
    *
-   * Concurrent calls join the run in flight instead of starting a second one. The boot refresh,
-   * the six-hour timer, a config edit and now a button can all land at once, and two passes
-   * racing would have the loser's `next` array overwrite the winner's for no gain: every caller
-   * wants the same thing, which is one fresh answer from each provider.
+   * Never two passes at once: the loser's `next` array would overwrite the winner's. A call that
+   * lands during a pass gets one more pass after it, shared by every such call, because it may
+   * carry what the running one could not see: a provider created, then its key written a frame
+   * later, was otherwise discovered before its key existed and showed nothing for six hours.
    */
   refresh(): Promise<void> {
-    if (this.inFlight) return this.inFlight;
+    if (this.inFlight) {
+      this.queued ??= this.inFlight.then(() => {
+        this.queued = undefined;
+        return this.refresh();
+      });
+      return this.queued;
+    }
     this.inFlight = this.runRefresh().finally(() => {
       this.inFlight = undefined;
     });
@@ -500,6 +528,7 @@ export class ModelCatalog {
             // Half an answer is not an answer: the versioned set falls back to what was already
             // known, so this listing cannot be used as evidence that a model disappeared.
             complete = false;
+            this.failures.set(name, discoveryFailure(err));
             void log("warn", "anthropic versioned model discovery failed", { error: String(err) });
             versioned = this.discoveredModels.filter((m) => m.provider === name);
           }
@@ -535,6 +564,7 @@ export class ModelCatalog {
       } catch (err) {
         anyFailed = true;
         complete = false;
+        this.failures.set(name, discoveryFailure(err));
         void log("warn", "model discovery failed for provider", { provider: name, error: String(err) });
         // Keep this provider's previously discovered models on failure.
         for (const m of this.discoveredModels) {
@@ -544,6 +574,7 @@ export class ModelCatalog {
       // What this provider listed, in the ids it uses itself: callers ask "does provider X still
       // serve model Y", and Y is the provider's own name for it, not our qualified reference.
       if (complete) {
+        this.failures.delete(name);
         this.listedByProvider.set(name, new Set(next.slice(before).map((m) => m.apiId ?? m.id)));
       } else {
         this.listedByProvider.delete(name);
