@@ -197,3 +197,52 @@ describe("the dialect table itself", () => {
     expect(cacheDialectOf("glm-5.3")).toBe("implicit");
   });
 });
+
+describe("a balance that covers less than the ask: the ask is capped to it, once, and never remembered", () => {
+  const OPENROUTER_402 = (n: number) =>
+    `This request requires more credits, or fewer max_tokens. You requested up to 131072 tokens, but can only afford ${n}. To increase, visit https://openrouter.ai/settings/credits`;
+  const body402 = (n: number) =>
+    new Response(JSON.stringify({ error: { message: OPENROUTER_402(n), code: 402 } }), { status: 402, headers: { "Content-Type": "application/json" } });
+  const routed = { ...base, model: "z-ai/glm-5.3", promptCache: false, limit: { output: 131072 } };
+
+  test("the same call is replayed asking for what can be paid, and answers", async () => {
+    const bodies = scriptedFetch([() => body402(54608), () => ok("paid")]);
+    const response = await chatCompletion(routed, messages);
+    expect(response.content).toBe("paid");
+    expect(bodies.map((b) => b["max_tokens"])).toEqual([131072, 54608]);
+  });
+
+  test("an ask the request never made is capped all the same: the model's whole output was reserved", async () => {
+    const bodies = scriptedFetch([() => body402(54608), () => ok()]);
+    await chatCompletion({ ...routed, limit: undefined }, messages);
+    expect(bodies.map((b) => b["max_tokens"])).toEqual([undefined, 54608]);
+  });
+
+  test("the next call asks for its own again: a balance is not a fact about the endpoint", async () => {
+    const bodies = scriptedFetch([() => body402(54608), () => ok(), () => ok()]);
+    await chatCompletion(routed, messages);
+    await chatCompletion(routed, messages);
+    expect(bodies.map((b) => b["max_tokens"])).toEqual([131072, 54608, 131072]);
+  });
+
+  test("too little to answer with, or refused again: the 402 goes up, for the route to move on", async () => {
+    scriptedFetch([() => body402(900)]);
+    await expect(chatCompletion(routed, messages)).rejects.toThrow("can only afford 900");
+    const twice = scriptedFetch([() => body402(54608), () => body402(30000)]);
+    await expect(chatCompletion(routed, messages)).rejects.toThrow("can only afford 30000");
+    expect(twice.length).toBe(2);
+  });
+
+  test("the stream is repaired the same way", async () => {
+    const bodies = scriptedFetch([
+      () => body402(54608),
+      () => new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "ok" }, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`, { status: 200, headers: { "Content-Type": "text/event-stream" } }),
+    ]);
+    const tokens: string[] = [];
+    await chatCompletionStream(routed, messages, (t) => {
+      tokens.push(t);
+    });
+    expect(tokens.join("")).toBe("ok");
+    expect(bodies[1]!["max_tokens"]).toBe(54608);
+  });
+});

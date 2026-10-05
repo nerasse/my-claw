@@ -38,6 +38,11 @@ export type RepairOptions = {
   forceReasoning: boolean;
   /** Top-level fields this endpoint has refused by name. */
   dropParameters: string[];
+  /**
+   * The output this call may ask for, when the account can pay for no more: OpenRouter answers 402
+   * "You requested up to X tokens, but can only afford N". Never learned: a balance moves.
+   */
+  maxTokensCap?: number;
 };
 
 export type Repair = {
@@ -54,6 +59,18 @@ function namedParameter(detail: string): string | undefined {
   const m = /parameter\s+["'`]?([A-Za-z0-9_.]+)["'`]?\s+(?:is|are)\s+not\s+supported/i.exec(detail);
   return m?.[1];
 }
+
+/** What a 402 says the balance still covers: `but can only afford 54608`. */
+function affordableTokens(detail: string): number | undefined {
+  const m = /can only afford\s+(\d+)/i.exec(detail);
+  return m ? Number(m[1]) : undefined;
+}
+
+/**
+ * Below this an answer would be cut before it says anything useful: the call moves to the next
+ * model of the route instead (a spent quota, `outage.ts`).
+ */
+export const MIN_AFFORDABLE_TOKENS = 2048;
 
 /**
  * Cache parameters are not top-level fields: `cache_control` rides inside a message part. Dropping
@@ -89,6 +106,20 @@ export const REPAIRS: readonly Repair[] = [
       options.cacheBreakpoints = false;
       options.cacheKey = false;
       return had;
+    },
+  },
+  {
+    // The request asked for more output than the balance covers, not more than the model allows:
+    // the same call, capped to what can be paid, usually answers in full (owner, 2026-10-05).
+    id: "afford-max-tokens",
+    match: (status, detail) => status === 402 && affordableTokens(detail) !== undefined,
+    apply: (options, detail) => {
+      const affordable = affordableTokens(detail);
+      if (affordable === undefined || affordable < MIN_AFFORDABLE_TOKENS) return false;
+      // Once per call: a second 402 means the balance is still moving down, not a cap to refine.
+      if (options.maxTokensCap !== undefined) return false;
+      options.maxTokensCap = affordable;
+      return true;
     },
   },
   {

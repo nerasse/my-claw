@@ -40,6 +40,7 @@ question; it holds no knowledge of its own.
 | `drop-refused-parameter` | `parameter X is not supported` | Drops `X`, or turns the cache dialect off when `X` is a cache parameter |
 | `plain-content` | `content.str`, `should be a valid string`, `messages[N].content` | Turns the cache hints off entirely |
 | `replay-reasoning` | `reasoning_content` + `must be passed back` / `required` | Replays reasoning on turns produced by another model |
+| `afford-max-tokens` | HTTP 402 + `can only afford N` (OpenRouter) | Caps `max_tokens` to `N` for this call, set even when the request asked nothing (OpenRouter then reserves the model's whole output). Once per call, at least 2048 tokens, **never learned**: a balance moves. A second 402, or less than 2048, goes up as a spent quota and the route moves on |
 
 Three properties keep it from becoming a burden:
 

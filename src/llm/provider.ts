@@ -547,6 +547,12 @@ function buildRequestBody(
   if (config.limit?.output) {
     body["max_tokens"] = config.limit.output;
   }
+  // What the balance covers, set even with no ask of our own: without one OpenRouter reserves the
+  // model's whole output, which is what it refused.
+  if (options.maxTokensCap !== undefined) {
+    const asked = body["max_tokens"];
+    if (typeof asked !== "number" || asked > options.maxTokensCap) body["max_tokens"] = options.maxTokensCap;
+  }
   // Only set when the resolver decided this model should receive it (see supportsEffort).
   if (config.effort) {
     body["reasoning_effort"] = config.effort;
