@@ -207,13 +207,37 @@ the same call. `all` adds the rollup.
    `avgDurationMs` and nothing finer: the rollup keeps sums, not distributions, so a percentile
    would exist for the live window and be silently missing for everything older.
 6. **Cache** -- read and write tokens as a share of the prompt tokens they are a part of.
-7. **Reconciliation** -- one entry per provider that publishes a ledger (OpenRouter alone today),
-   with the balance when there is one. A host we can only compare with itself is a row of the
+7. **Reconciliation** -- one entry per ledger: per OpenRouter API key (two providers naming the
+   same variable are one account, one entry), set against the calls of the providers using that
+   key, with the balance when there is one. A host we can only compare with itself is a row of the
    provider ranking, not a reconciliation, so it is not listed here.
 8. **Callers** -- `orchestrator`, `subagent`, `browser`, `compaction`, `compaction-speculative`.
 
 The first two, and 5, 6, 7 are all folded in TypeScript from **one** query (`usageByModel`), which
 is why the page costs four round trips to SQLite and not eight.
+
+## Which provider served a call (2026-10-05)
+
+Two accounts of one service share an address: two OpenRouter keys, a Claude plan and a Claude API
+key on `api.anthropic.com`. `base_url` cannot tell them apart, so the spend of both landed on one
+row and the OpenRouter ledger was read for the first key only. Owner: "si je colle lui, c'est lui".
+
+- Every call records `provider_key`, the key of the configured provider that served it
+  (`ResolvedLlmConfig.provider`), from the five writers (three in the bridge, the summary call,
+  the compaction).
+- The calls recorded before the column are placed **once** (`attributeCallsToProviders`, guarded by
+  `PRAGMA user_version`), and only where exactly one provider of the config of that boot has the
+  address. Two providers on one address leave the rows `NULL`: a guess would put one account's
+  spend on the other. A later config never re-files the past. On this install: 80 867 of 97 481
+  rows placed; `claude-sdk`, a removed CommandCode and old test rows stay `(unknown)`.
+- Every live group is `(model, base_url, provider_key)`. The page gets `providerKeys` (one row per
+  configured provider, by the name the owner gave it: `group`, else the key, `<key> (removed)` for
+  one gone since, `(unknown)` for `NULL`), and each model row carries `providerKey` and
+  `providerLabel`. `providers` stays the endpoint view (pin or host), which folds accounts together.
+- The reconciliation sets each key's ledger against its own providers' calls. `NULL` rows on
+  OpenRouter are counted only when there is one ledger: with two they cannot be split.
+- `/status` groups a conversation's rows the same way, with the same label (`providerLabels` in
+  `usage-route.ts`).
 
 ## Filtering
 
@@ -231,13 +255,13 @@ is folded from what is left.
 | `workspace` | `workspace` | where the call ran from: a workspace key, `default`, or `(unknown)` for the rows before the column |
 | `folderId` | `folder_id` | the folder the call was filed as at call time, `(none)` for the unfolder ones |
 | `model` | `model` | exact, endpoint pin included: `z-ai/glm-5.2@streamlake/fp8` is one bill |
-| `provider` | `base_url` | the host. The page draws a pin where the model carries one, and a pin is not a column -- the `model` filter already narrows to it |
+| `provider` | `provider_key` | a configured provider, `(unknown)` for the rows nothing could place. The endpoint pin lives in the model id, so the `model` filter narrows to it |
 | `caller` | `caller` | orchestrator, subagent, browser, compaction |
 | `sessionId` | `session_id` | one conversation |
 | `errorsOnly` | `error IS NOT NULL` | the calls that failed, not the routes that failed once |
 | `unpricedOnly` | `cost_usd IS NULL` | the calls no rung could price |
 
-The two sentinels are matched as `IS NULL`, never as a string: the pre-column history and the calls
+The three sentinels (`(unknown)` workspace, `(none)` folder, `(unknown)` provider) are matched as `IS NULL`, never as a string: the pre-column history and the calls
 nobody filed are populations worth asking after, and a filter that cannot select them has no way
 back to a quarter of the window.
 
@@ -247,12 +271,12 @@ different number wearing the same name.
 
 ### A filter the rollup cannot answer drops it
 
-`usage_monthly` is keyed by `(month, model, base_url, platform, caller)`. Three of the dimensions
-above are columns of it; five are not -- no session, no workspace and no folder on that key, and
+`usage_monthly` is keyed by `(month, model, base_url, platform, caller)`. Two of the dimensions
+above are columns of it; six are not -- no session, no workspace, no folder and no provider on that key, and
 `errors`/`unpriced_calls` are counters rather than rows, so "only the failures" is not a question a
 monthly fold can answer.
 
-Those five drop the rollup (`filterReachesRollup`), and `rollupIncluded` goes false with them. The
+Those six drop the rollup (`filterReachesRollup`), and `rollupIncluded` goes false with them. The
 alternative -- adding months no filter ever touched -- would make a filtered page report history it
 had excluded, which is worse than reporting less. (Extending the rollup key instead was priced and
 refused: it rebuilds the table, and every folded month predates the two columns, so it would gain

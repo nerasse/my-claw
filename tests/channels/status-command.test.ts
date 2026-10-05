@@ -638,3 +638,19 @@ test("measured is present when lastPrompt exists", async () => {
 
   expect(status.context.measured?.tokens).toBe(50_000);
 });
+
+test("a conversation that used a Claude plan and a Claude API key shows each under its own name", async () => {
+  const sessionId = "my-claw-app/thread/o/twoaccounts";
+  const twoAccounts = {
+    ...config,
+    llm: { ...config.llm, providers: { anthropic: { type: "anthropic", group: "Claude perso" }, "claude-api": { type: "anthropic", apiKeyEnv: "ANTHROPIC_API_KEY", group: "Claude API" } } },
+  } as typeof config;
+  call(sessionId, { providerKey: "anthropic" });
+  call(sessionId, { providerKey: "claude-api" });
+  call(sessionId, { providerKey: "claude-api" });
+  const status = await report({ sessionId, config: twoAccounts });
+  expect(status.usage?.own.rows.map((r) => [r.providerKey, r.providerLabel, r.calls]).sort()).toEqual([
+    ["anthropic", "Claude perso", 1],
+    ["claude-api", "Claude API", 2],
+  ]);
+});

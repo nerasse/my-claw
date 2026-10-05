@@ -1,3 +1,5 @@
+import type { MyClawConfig } from "../core/config.ts";
+import { UNKNOWN_PROVIDER } from "../analytics/usage-stats.ts";
 import { cachedOpenRouterProviderName } from "../llm/openrouter-endpoints.ts";
 
 /**
@@ -50,5 +52,19 @@ export function routeOf(model: string, baseUrl: string): UsageRoute {
     provider: head,
     ...(rest.length > 0 ? { variant: rest.join("/") } : {}),
     ...(name === undefined ? {} : { providerName: name }),
+  };
+}
+
+/** How a provider key reads on a report: the name the owner gave it, the key, or what became of it. */
+export type ProviderLabel = (key: string | null) => string;
+
+export function providerLabels(config: MyClawConfig): ProviderLabel {
+  const providers = config.llm.providers ?? {};
+  return (key) => {
+    if (key === null || key === UNKNOWN_PROVIDER) return UNKNOWN_PROVIDER;
+    const provider = providers[key];
+    // A provider removed since keeps its spend under its key, said to be gone rather than renamed.
+    if (!provider) return `${key} (removed)`;
+    return provider.group || key;
   };
 }

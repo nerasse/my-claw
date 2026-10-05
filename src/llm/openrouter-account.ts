@@ -45,8 +45,9 @@ interface Cached {
   value: OpenRouterAccount | null;
 }
 
-let cache: Cached | undefined;
-let inFlight: Promise<void> | undefined;
+/** By API key: two OpenRouter accounts are two ledgers, and one must never answer for the other. */
+const cache = new Map<string, Cached>();
+const inFlight = new Map<string, Promise<void>>();
 
 function fresh(entry: Cached | undefined): entry is Cached {
   if (!entry) return false;
@@ -54,17 +55,19 @@ function fresh(entry: Cached | undefined): entry is Cached {
 }
 
 /**
- * The key the OpenRouter catalogue is read with, by the path the catalogue reads it: the provider
- * whose base URL is OpenRouter, and the environment variable it names. No second place to configure
- * one -- a key declared twice is a key that rotates in one of the two.
+ * Every OpenRouter ledger the config can read: one per API key, with the providers that use it.
+ * Two providers naming the same variable are one account, so they share an entry rather than each
+ * showing the whole ledger as its own. The key is read where the catalogue reads it: the
+ * environment variable the provider names.
  */
-export function openRouterApiKey(providers: Record<string, LlmProviderConfig> | undefined): string | undefined {
-  for (const provider of Object.values(providers ?? {})) {
+export function openRouterLedgers(providers: Record<string, LlmProviderConfig> | undefined): Array<{ apiKey: string; providerKeys: string[] }> {
+  const byApiKey = new Map<string, string[]>();
+  for (const [key, provider] of Object.entries(providers ?? {})) {
     if (!isOpenRouterBaseUrl(provider.baseUrl) || !provider.apiKeyEnv) continue;
-    const key = process.env[provider.apiKeyEnv];
-    if (key) return key;
+    const apiKey = process.env[provider.apiKeyEnv];
+    if (apiKey) byApiKey.set(apiKey, [...(byApiKey.get(apiKey) ?? []), key]);
   }
-  return undefined;
+  return [...byApiKey].map(([apiKey, providerKeys]) => ({ apiKey, providerKeys }));
 }
 
 /**
@@ -74,13 +77,14 @@ export function openRouterApiKey(providers: Record<string, LlmProviderConfig> | 
  * both are "we do not have the provider's number right now", and neither is worth a second wording
  * on a page that is redrawn every time the conversation moves.
  */
-export function cachedOpenRouterAccount(): OpenRouterAccount | undefined {
-  return fresh(cache) ? cache.value ?? undefined : undefined;
+export function cachedOpenRouterAccount(apiKey: string): OpenRouterAccount | undefined {
+  const entry = cache.get(apiKey);
+  return fresh(entry) ? entry.value ?? undefined : undefined;
 }
 
 /** Start a refresh when the cache is stale and none is running. Never awaited by a caller. */
 export function warmOpenRouterAccount(apiKey: string): void {
-  if (fresh(cache) || inFlight) return;
+  if (fresh(cache.get(apiKey)) || inFlight.has(apiKey)) return;
   void refreshOpenRouterAccount(apiKey);
 }
 
@@ -113,32 +117,33 @@ export async function refreshOpenRouterAccount(apiKey: string): Promise<void> {
     const [key, credits] = await Promise.allSettled([getJson("/key", apiKey), getJson("/credits", apiKey)]);
     if (key.status === "rejected") {
       void log("warn", "openrouter account lookup failed", { error: String(key.reason) });
-      cache = { at: Date.now(), value: null };
+      cache.set(apiKey, { at: Date.now(), value: null });
       return;
     }
     const usageUsd = numberOf((key.value as { data?: { usage?: unknown } }).data?.usage);
     if (usageUsd === undefined) {
       void log("warn", "openrouter account lookup returned no usage");
-      cache = { at: Date.now(), value: null };
+      cache.set(apiKey, { at: Date.now(), value: null });
       return;
     }
     const balanceRaw = credits.status === "fulfilled" ? (credits.value as { data?: { total_credits?: unknown; total_usage?: unknown } }).data : undefined;
     const total = numberOf(balanceRaw?.total_credits);
     const spent = numberOf(balanceRaw?.total_usage);
-    cache = {
+    cache.set(apiKey, {
       at: Date.now(),
       value: { usageUsd, ...(total === undefined || spent === undefined ? {} : { balanceUsd: total - spent }) },
-    };
+    });
     hooks.emit("llm:account:refreshed", { provider: "openrouter.ai" });
   })();
-  inFlight = run.finally(() => {
-    inFlight = undefined;
+  const settled = run.finally(() => {
+    inFlight.delete(apiKey);
   });
-  return inFlight;
+  inFlight.set(apiKey, settled);
+  return settled;
 }
 
 /** Test seam: module state outlives a file, and a key's figures must not reach another one. */
 export function resetOpenRouterAccount(): void {
-  cache = undefined;
-  inFlight = undefined;
+  cache.clear();
+  inFlight.clear();
 }

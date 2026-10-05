@@ -107,12 +107,17 @@ function getDb(): Database {
   // set to one of them drops the rollup like `session_id` does. docs/stats-page.md.
   ensureColumn(db, "api_calls", "workspace", "TEXT");
   ensureColumn(db, "api_calls", "folder_id", "TEXT");
+  // The provider of the config that served the call, by its key: two accounts on one address (two
+  // OpenRouter keys) are two bills, and nothing else on the row tells them apart. NULL on rows
+  // older than the column that `attributeCallsToProviders` could not place. docs/stats-page.md.
+  ensureColumn(db, "api_calls", "provider_key", "TEXT");
 
   // Must come after ensureColumn: an index on a column the table does not have yet would throw,
   // and inside the block above it would take the whole statement down with it.
   db.exec("CREATE INDEX IF NOT EXISTS idx_api_calls_parent ON api_calls (parent_session_id)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_api_calls_workspace ON api_calls (workspace)");
   db.exec("CREATE INDEX IF NOT EXISTS idx_api_calls_folder ON api_calls (folder_id)");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_api_calls_provider_key ON api_calls (provider_key)");
 
   return db;
 }
@@ -143,6 +148,8 @@ export interface ApiCallRecord {
   platform: string;
   model: string;
   baseUrl: string;
+  /** The key of the configured provider that served the call (`ResolvedLlmConfig.provider`). */
+  providerKey?: string;
   streaming: boolean;
   caller: "orchestrator" | "subagent" | "compaction" | "compaction-speculative" | "browser";
 
@@ -227,13 +234,13 @@ export function recordApiCall(record: ApiCallRecord): void {
           session_id, parent_session_id, platform, model, base_url, streaming, caller,
           prompt_tokens, completion_tokens, total_tokens, cache_read_tokens, cache_write_tokens,
           tool_calls, iteration, duration_ms, proxy_cost_usd, upstream_api_base, backend,
-          cache_dialect, error, workspace, folder_id,
+          cache_dialect, error, workspace, folder_id, provider_key,
           cost_usd, cost_billed, cost_approximate, cost_source
         ) VALUES (
           $session_id, $parent_session_id, $platform, $model, $base_url, $streaming, $caller,
           $prompt_tokens, $completion_tokens, $total_tokens, $cache_read_tokens, $cache_write_tokens,
           $tool_calls, $iteration, $duration_ms, $proxy_cost_usd, $upstream_api_base, $backend,
-          $cache_dialect, $error, $workspace, $folder_id,
+          $cache_dialect, $error, $workspace, $folder_id, $provider_key,
           $cost_usd, $cost_billed, $cost_approximate, $cost_source
         )
       `);
@@ -263,6 +270,7 @@ export function recordApiCall(record: ApiCallRecord): void {
       $error: record.error ?? null,
       $workspace: record.workspace ?? null,
       $folder_id: record.folderId ?? null,
+      $provider_key: record.providerKey ?? null,
       $cost_usd: cost?.usd ?? null,
       $cost_billed: cost === undefined ? null : cost.billed ? 1 : 0,
       $cost_approximate: cost === undefined ? null : cost.approximate ? 1 : 0,
@@ -276,6 +284,35 @@ export function recordApiCall(record: ApiCallRecord): void {
   // on this rather than on each of the three call sites that write a row.
   hooks.emit("analytics:call:recorded", { sessionId: record.sessionId, parentSessionId: record.parentSessionId ?? record.sessionId });
 }
+
+/**
+ * The calls recorded before `provider_key` existed, given the provider whose address they reached
+ * when exactly one provider of the config has that address. Two providers on one address (a Claude
+ * plan and a Claude API key both reach api.anthropic.com) leave the rows unattributed: a guess would
+ * put one account's spend on the other. Runs once per database, at the boot that adds the column:
+ * the config of that moment is the best evidence there will ever be, and a later config would only
+ * be a worse one.
+ */
+export function attributeCallsToProviders(addressOf: Record<string, string>): number {
+  const d = getDb();
+  const version = (d.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+  if (version >= ATTRIBUTION_VERSION) return 0;
+  const byAddress = new Map<string, string[]>();
+  for (const [key, address] of Object.entries(addressOf)) {
+    if (address) byAddress.set(address, [...(byAddress.get(address) ?? []), key]);
+  }
+  let attributed = 0;
+  const update = d.prepare("UPDATE api_calls SET provider_key = ? WHERE provider_key IS NULL AND base_url = ?");
+  d.transaction(() => {
+    for (const [address, keys] of byAddress) {
+      if (keys.length === 1) attributed += update.run(keys[0]!, address).changes;
+    }
+    d.exec(`PRAGMA user_version = ${ATTRIBUTION_VERSION}`);
+  })();
+  return attributed;
+}
+
+const ATTRIBUTION_VERSION = 1;
 
 /**
  * Where the two halves of a global report start.
@@ -320,6 +357,8 @@ export interface UsageSummary {
 export interface SessionModelRow {
   model: string;
   baseUrl: string;
+  /** The configured provider that served these calls; null on old rows nothing could place. */
+  providerKey: string | null;
   upstreamApiBase: string | null;
   calls: number;
   promptTokens: number;
@@ -355,10 +394,11 @@ interface AggregatedModelRow extends SessionModelRow {
  * group spanning two rungs has two markers (`*` not a charge) that no single row can carry.
  */
 function withPinnedCost(row: AggregatedModelRow): SessionModelRow {
-  const { model, baseUrl, upstreamApiBase, calls, promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens, proxyCostUsd, errorCount, lastUsedAt } = row;
+  const { model, baseUrl, providerKey, upstreamApiBase, calls, promptTokens, completionTokens, cacheReadTokens, cacheWriteTokens, proxyCostUsd, errorCount, lastUsedAt } = row;
   const out: SessionModelRow = {
     model,
     baseUrl,
+    providerKey,
     upstreamApiBase,
     calls,
     promptTokens,
@@ -396,6 +436,7 @@ export function getSessionModelUsage(sessionId: string, scope: "own" | "delegate
         `SELECT
            model,
            base_url                        AS baseUrl,
+           provider_key                    AS providerKey,
            MAX(upstream_api_base)          AS upstreamApiBase,
            COUNT(*)                        AS calls,
            COALESCE(SUM(prompt_tokens), 0)     AS promptTokens,
@@ -413,7 +454,7 @@ export function getSessionModelUsage(sessionId: string, scope: "own" | "delegate
            MAX(cost_approximate)           AS costApproximate
          FROM api_calls
          WHERE ${where}
-         GROUP BY model, base_url
+         GROUP BY model, base_url, provider_key
          ORDER BY SUM(total_tokens) DESC`,
       )
       .all(sessionId) as AggregatedModelRow[];
@@ -443,6 +484,7 @@ export function getDelegatedModelUsage(parentSessionId: string): DelegatedModelR
            session_id                      AS sessionId,
            model,
            base_url                        AS baseUrl,
+           provider_key                    AS providerKey,
            MAX(upstream_api_base)          AS upstreamApiBase,
            COUNT(*)                        AS calls,
            COALESCE(SUM(prompt_tokens), 0)     AS promptTokens,
@@ -460,7 +502,7 @@ export function getDelegatedModelUsage(parentSessionId: string): DelegatedModelR
            MAX(cost_approximate)           AS costApproximate
          FROM api_calls
          WHERE parent_session_id = ? AND session_id <> parent_session_id
-         GROUP BY session_id, model, base_url
+         GROUP BY session_id, model, base_url, provider_key
          ORDER BY MAX(timestamp) DESC, SUM(total_tokens) DESC`,
       )
       .all(parentSessionId) as Array<AggregatedModelRow & { sessionId: string }>;
@@ -492,6 +534,7 @@ export function getTreeModelUsage(rootSessionId: string): DelegatedModelRow[] {
            session_id                      AS sessionId,
            model,
            base_url                        AS baseUrl,
+           provider_key                    AS providerKey,
            MAX(upstream_api_base)          AS upstreamApiBase,
            COUNT(*)                        AS calls,
            COALESCE(SUM(prompt_tokens), 0)     AS promptTokens,
@@ -511,7 +554,7 @@ export function getTreeModelUsage(rootSessionId: string): DelegatedModelRow[] {
          WHERE session_id <> ?1
            AND session_id IN (SELECT id FROM tree)
            AND parent_session_id IN (SELECT id FROM tree)
-         GROUP BY session_id, model, base_url
+         GROUP BY session_id, model, base_url, provider_key
          ORDER BY MAX(timestamp) DESC, SUM(total_tokens) DESC`,
       )
       .all(rootSessionId) as Array<AggregatedModelRow & { sessionId: string }>;

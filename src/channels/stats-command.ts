@@ -10,15 +10,16 @@ import {
   usageBySession,
   usageFacets,
   NO_FOLDER,
+  UNKNOWN_PROVIDER,
   type StatsFilter,
   type UsageGroup,
 } from "../analytics/usage-stats.ts";
 import { firstUserTextBySession } from "../conversations/store.ts";
 import { stripLocationBlock, splitAttachmentBlock } from "../agent/preprocess.ts";
 import { isOpenRouterBaseUrl } from "../llm/openrouter-endpoints.ts";
-import { cachedOpenRouterAccount, openRouterApiKey, warmOpenRouterAccount } from "../llm/openrouter-account.ts";
+import { cachedOpenRouterAccount, openRouterLedgers, warmOpenRouterAccount } from "../llm/openrouter-account.ts";
 import type { ModelPricing } from "../llm/pricing.ts";
-import { routeOf } from "./usage-route.ts";
+import { providerLabels, routeOf, type ProviderLabel } from "./usage-route.ts";
 import { MAX_TITLE_LENGTH } from "./my-claw-app/sessions.ts";
 import type {
   MyClawAppStatsCache,
@@ -32,6 +33,7 @@ import type {
   MyClawAppStatsModelRow,
   MyClawAppStatsPayload,
   MyClawAppStatsPeriod,
+  MyClawAppStatsProviderKeyRow,
   MyClawAppStatsProviderRow,
   MyClawAppStatsReconciliation,
   MyClawAppStatsReliabilityRow,
@@ -186,10 +188,23 @@ function bySpend(a: MyClawAppStatsTotals, b: MyClawAppStatsTotals): number {
   return spend(b) - spend(a) || b.calls - a.calls;
 }
 
-function modelRows(rows: Array<Priced<UsageGroup>>): MyClawAppStatsModelRow[] {
-  const folded = foldInto(rows, (g) => `${g.model}\u0000${routeOf(g.model, g.baseUrl).provider}`);
+function modelRows(rows: Array<Priced<UsageGroup>>, labelOf: ProviderLabel): MyClawAppStatsModelRow[] {
+  const folded = foldInto(rows, (g) => `${g.model}\u0000${routeOf(g.model, g.baseUrl).provider}\u0000${g.providerKey ?? ""}`);
   return [...folded.values()]
-    .map(({ first, totals }) => ({ model: first.model, ...routeOf(first.model, first.baseUrl), ...totals }))
+    .map(({ first, totals }) => ({
+      model: first.model,
+      providerKey: first.providerKey ?? UNKNOWN_PROVIDER,
+      providerLabel: labelOf(first.providerKey),
+      ...routeOf(first.model, first.baseUrl),
+      ...totals,
+    }))
+    .sort(bySpend);
+}
+
+function providerKeyRows(rows: Array<Priced<UsageGroup>>, labelOf: ProviderLabel): MyClawAppStatsProviderKeyRow[] {
+  const folded = foldInto(rows, (g) => g.providerKey ?? UNKNOWN_PROVIDER);
+  return [...folded.values()]
+    .map(({ first, totals }) => ({ providerKey: first.providerKey ?? UNKNOWN_PROVIDER, providerLabel: labelOf(first.providerKey), ...totals }))
     .sort(bySpend);
 }
 
@@ -327,26 +342,34 @@ async function sessionRows(rows: Array<Priced<UsageGroup & { sessionId: string; 
 }
 
 /**
- * What OpenRouter says the key spent, beside what we recorded for it.
+ * What OpenRouter says each key spent, beside what we recorded for it.
  *
- * One entry, because OpenRouter is the only configured provider that publishes a ledger, and none
- * at all when no key is configured: a single number wearing the label of a comparison is worse
- * than no comparison.
+ * One entry per API key, because OpenRouter is the only configured provider that publishes a
+ * ledger and a ledger belongs to a key: two OpenRouter accounts are two entries, each set against
+ * the calls its own providers made. None at all when no key is configured: a single number wearing
+ * the label of a comparison is worse than no comparison.
+ *
+ * Calls recorded before they named their provider (`provider_key` NULL) are counted only when
+ * there is one ledger to give them to; with two, they cannot be split, and stay under `(unknown)`.
  *
  * The provider's half is read from a cache and never waited on. A page may not hang on a third
  * party nor fail with it, so a cold cache and an unreachable API both leave the entry standing
  * with the recorded sum alone; the refresh started here answers the next request.
  */
-function reconciliationRows(config: MyClawConfig, rows: Array<Priced<UsageGroup>>): MyClawAppStatsReconciliation[] {
-  const apiKey = openRouterApiKey(config.llm.providers);
-  if (!apiKey) return [];
-  warmOpenRouterAccount(apiKey);
-  const ours = rows.filter((row) => isOpenRouterBaseUrl(row.group.baseUrl));
-  const recordedUsd = ours.reduce((sum, row) => sum + spend(row.totals), 0);
-  const account = cachedOpenRouterAccount();
-  return [
-    {
+function reconciliationRows(config: MyClawConfig, rows: Array<Priced<UsageGroup>>, labelOf: ProviderLabel): MyClawAppStatsReconciliation[] {
+  const ledgers = openRouterLedgers(config.llm.providers);
+  const onOpenRouter = rows.filter((row) => isOpenRouterBaseUrl(row.group.baseUrl));
+  return ledgers.map(({ apiKey, providerKeys }) => {
+    warmOpenRouterAccount(apiKey);
+    const ours = onOpenRouter.filter((row) =>
+      row.group.providerKey === null ? ledgers.length === 1 : providerKeys.includes(row.group.providerKey),
+    );
+    const recordedUsd = ours.reduce((sum, row) => sum + spend(row.totals), 0);
+    const account = cachedOpenRouterAccount(apiKey);
+    return {
       provider: "openrouter.ai",
+      providerKeys,
+      providerLabel: providerKeys.map((key) => labelOf(key)).join(" + "),
       recordedUsd,
       calls: ours.reduce((sum, row) => sum + row.totals.calls, 0),
       ...(account === undefined
@@ -357,12 +380,13 @@ function reconciliationRows(config: MyClawConfig, rows: Array<Priced<UsageGroup>
             deltaUsd: account.usageUsd - recordedUsd,
             ...(account.balanceUsd === undefined ? {} : { balanceUsd: account.balanceUsd }),
           }),
-    },
-  ];
+    };
+  });
 }
 
 export async function statsReport(p: StatsParams): Promise<MyClawAppStatsPayload> {
   const filter: MyClawAppStatsFilter = p.filter ?? {};
+  const labelOf = providerLabels(p.config);
   const models = price(usageByModel(p.period, filter), p.pricing);
   const totals = emptyTotals();
   for (const row of models) add(totals, row.totals);
@@ -380,14 +404,15 @@ export async function statsReport(p: StatsParams): Promise<MyClawAppStatsPayload
     // flag goes false with it: the page's horizon note must not promise months this answer left out.
     rollupIncluded: reachesRollup(p.period) && filterReachesRollup(filter) && horizon.totalsSince !== undefined,
     totals,
-    models: modelRows(models),
+    models: modelRows(models, labelOf),
+    providerKeys: providerKeyRows(models, labelOf),
     providers: providerRows(models),
     sessions,
     daily: dayRows(price(usageByDay(p.period, filter), p.pricing)),
     reliability: reliabilityRows(models),
     cache: cacheOf(totals),
     callers,
-    reconciliation: reconciliationRows(p.config, models),
+    reconciliation: reconciliationRows(p.config, models, labelOf),
     facets,
   };
 }
@@ -424,11 +449,14 @@ async function facetsOf(
   const folders: MyClawAppStatsFacetFolder[] = all.folderIds
     .map((folderId) => ({ folderId, label: folderId === NO_FOLDER ? NO_FOLDER : folderLabel.get(folderId) ?? "(deleted)" }))
     .sort((a, b) => a.label.localeCompare(b.label));
+  const labelOf = providerLabels(p.config);
+  const withLabels = (keys: string[]) => ({ providers: keys, providerLabels: Object.fromEntries(keys.map((key) => [key, labelOf(key)])) });
   const scopes = { workspaces: all.workspaces, folders };
   if (!filterNarrows(filter)) {
     return {
       models: sortedKeys(models.map((row) => row.group.model)),
-      providers: sortedKeys(models.map((row) => row.group.baseUrl)),
+      // The rollup's groups carry no provider: they are not a value the filter can be set to.
+      ...withLabels(sortedKeys(models.filter((row) => row.group.origin === "live").map((row) => row.group.providerKey ?? UNKNOWN_PROVIDER))),
       callers: sortedKeys(callers.map((row) => row.caller)),
       sessions: sessions.map(facetSession).sort((a, b) => a.label.localeCompare(b.label)),
       ...scopes,
@@ -437,7 +465,7 @@ async function facetsOf(
   const labels = await labelsOf(all.sessionIds, p.sessionInfo);
   return {
     models: all.models,
-    providers: all.providers,
+    ...withLabels(all.providers),
     callers: all.callers,
     sessions: all.sessionIds.flatMap((sessionId) => {
       const named = labels.get(sessionId);

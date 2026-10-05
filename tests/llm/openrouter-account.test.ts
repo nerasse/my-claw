@@ -3,7 +3,7 @@ import { mockFetch } from "../helpers/mock-fetch.ts";
 import { hooks } from "../../src/hooks/index.ts";
 import {
   cachedOpenRouterAccount,
-  openRouterApiKey,
+  openRouterLedgers,
   refreshOpenRouterAccount,
   resetOpenRouterAccount,
   warmOpenRouterAccount,
@@ -31,22 +31,46 @@ function accountMock(over: { key?: unknown; credits?: unknown; keyStatus?: numbe
   return { calls, restore: mock.restore };
 }
 
-test("the key comes from the provider that declares OpenRouter, through the variable it names", () => {
+test("one ledger per key, read from the providers that declare OpenRouter, through the variable they name", () => {
   process.env["TEST_OR_KEY"] = "sk-or-test";
+  process.env["TEST_OR_KEY2"] = "sk-or-work";
   try {
+    const openrouter = { baseUrl: "https://openrouter.ai/api/v1", apiKeyEnv: "TEST_OR_KEY" };
     const providers = {
       groq: { baseUrl: "https://api.groq.com/openai/v1", apiKeyEnv: "TEST_OR_KEY" },
-      openrouter: { baseUrl: "https://openrouter.ai/api/v1", apiKeyEnv: "TEST_OR_KEY" },
+      openrouter,
+      work: { baseUrl: "https://openrouter.ai/api/v1", apiKeyEnv: "TEST_OR_KEY2" },
+      // The same variable as `openrouter`: the same account, so the same ledger, not a second one.
+      alias: openrouter,
     };
-    expect(openRouterApiKey(providers)).toBe("sk-or-test");
+    expect(openRouterLedgers(providers)).toEqual([
+      { apiKey: "sk-or-test", providerKeys: ["openrouter", "alias"] },
+      { apiKey: "sk-or-work", providerKeys: ["work"] },
+    ]);
     // A provider that is not OpenRouter never donates its credential, whatever it holds.
-    expect(openRouterApiKey({ groq: providers.groq })).toBeUndefined();
+    expect(openRouterLedgers({ groq: providers.groq })).toEqual([]);
     // Declared but unset, and declared with no variable at all: both are "no key", not a crash.
-    expect(openRouterApiKey({ openrouter: { baseUrl: "https://openrouter.ai/api/v1", apiKeyEnv: "TEST_OR_ABSENT" } })).toBeUndefined();
-    expect(openRouterApiKey({ openrouter: { baseUrl: "https://openrouter.ai/api/v1" } })).toBeUndefined();
-    expect(openRouterApiKey(undefined)).toBeUndefined();
+    expect(openRouterLedgers({ openrouter: { baseUrl: "https://openrouter.ai/api/v1", apiKeyEnv: "TEST_OR_ABSENT" } })).toEqual([]);
+    expect(openRouterLedgers({ openrouter: { baseUrl: "https://openrouter.ai/api/v1" } })).toEqual([]);
+    expect(openRouterLedgers(undefined)).toEqual([]);
   } finally {
     delete process.env["TEST_OR_KEY"];
+    delete process.env["TEST_OR_KEY2"];
+  }
+});
+
+test("two keys are two ledgers: one key's reading never answers for the other", async () => {
+  resetOpenRouterAccount();
+  const mock = accountMock();
+  try {
+    await refreshOpenRouterAccount("sk-or-test");
+    expect(cachedOpenRouterAccount("sk-or-test")?.usageUsd).toBe(12.5);
+    expect(cachedOpenRouterAccount("sk-or-work")).toBeUndefined();
+    // And the second key is fetched, not skipped as already fresh.
+    warmOpenRouterAccount("sk-or-work");
+    expect(mock.calls).toHaveLength(4);
+  } finally {
+    mock.restore();
   }
 });
 
@@ -54,11 +78,11 @@ test("a cold cache is a miss and never a fetch, and the figures land only once a
   resetOpenRouterAccount();
   const mock = accountMock();
   try {
-    expect(cachedOpenRouterAccount()).toBeUndefined();
+    expect(cachedOpenRouterAccount("sk-or-test")).toBeUndefined();
     expect(mock.calls).toHaveLength(0);
 
     await refreshOpenRouterAccount("sk-or-test");
-    expect(cachedOpenRouterAccount()).toEqual({ usageUsd: 12.5, balanceUsd: 7.5 });
+    expect(cachedOpenRouterAccount("sk-or-test")).toEqual({ usageUsd: 12.5, balanceUsd: 7.5 });
     expect(mock.calls).toHaveLength(2);
   } finally {
     mock.restore();
@@ -76,7 +100,7 @@ test("a reading stands for five minutes and is not renewed under it, then goes c
 
     setSystemTime(new Date(Date.now() + 5 * 60_000 + 1));
     // An aged figure is not shown at all: it would be read as the provider's current position.
-    expect(cachedOpenRouterAccount()).toBeUndefined();
+    expect(cachedOpenRouterAccount("sk-or-test")).toBeUndefined();
   } finally {
     setSystemTime();
     mock.restore();
@@ -88,7 +112,7 @@ test("a failure is remembered for a minute, so a page redrawn on every call does
   const mock = accountMock({ keyStatus: 403 });
   try {
     await refreshOpenRouterAccount("sk-or-test");
-    expect(cachedOpenRouterAccount()).toBeUndefined();
+    expect(cachedOpenRouterAccount("sk-or-test")).toBeUndefined();
     expect(mock.calls).toHaveLength(2);
 
     warmOpenRouterAccount("sk-or-test");
@@ -109,7 +133,7 @@ test("a balance that cannot be read costs the line one number, not the whole rea
   const mock = accountMock({ creditsStatus: 403 });
   try {
     await refreshOpenRouterAccount("sk-or-test");
-    expect(cachedOpenRouterAccount()).toEqual({ usageUsd: 12.5 });
+    expect(cachedOpenRouterAccount("sk-or-test")).toEqual({ usageUsd: 12.5 });
   } finally {
     mock.restore();
   }
@@ -120,7 +144,7 @@ test("an answer that carries no usage is a failure, not a spend of zero", async 
   const mock = accountMock({ key: { data: { label: "sk-or-v1-..." } } });
   try {
     await refreshOpenRouterAccount("sk-or-test");
-    expect(cachedOpenRouterAccount()).toBeUndefined();
+    expect(cachedOpenRouterAccount("sk-or-test")).toBeUndefined();
   } finally {
     mock.restore();
   }
@@ -144,7 +168,7 @@ test("one refresh at a time: a second warm joins the first instead of doubling t
     expect(calls).toHaveLength(2);
     release?.();
     await pending;
-    expect(cachedOpenRouterAccount()?.usageUsd).toBe(12.5);
+    expect(cachedOpenRouterAccount("sk-or-test")?.usageUsd).toBe(12.5);
   } finally {
     mock.restore();
   }

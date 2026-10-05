@@ -79,6 +79,7 @@ interface CallOver {
   parentSessionId?: string;
   model?: string;
   baseUrl?: string;
+  providerKey?: string;
   caller?: "orchestrator" | "subagent" | "browser";
   workspace?: string;
   folderId?: string;
@@ -96,6 +97,7 @@ function call(over: CallOver = {}): void {
     platform: "my-claw-app",
     model: over.model ?? "glm-5.2",
     baseUrl: over.baseUrl ?? "https://openrouter.ai/api/v1",
+    ...(over.providerKey === undefined ? {} : { providerKey: over.providerKey }),
     streaming: true,
     caller: over.caller ?? "orchestrator",
     ...(over.workspace === undefined ? {} : { workspace: over.workspace }),
@@ -590,7 +592,7 @@ test("a filter narrows every view at once, and the totals are of the smaller pop
  * can undo -- so the list is computed by a pass that ignores the filter on screen.
  */
 test("the filter is echoed, and the facets ignore it so the choice can be undone", async () => {
-  call({ sessionId: "one", model: "glm-5.2", baseUrl: "https://openrouter.ai/api/v1" });
+  call({ sessionId: "one", model: "glm-5.2", baseUrl: "https://openrouter.ai/api/v1", providerKey: "openrouter" });
   call({ sessionId: "two", model: "kimi-k3", baseUrl: "https://api.anthropic.com", caller: "subagent" });
 
   const narrowed = await report({}, { filter: { model: "glm-5.2" } });
@@ -599,7 +601,9 @@ test("the filter is echoed, and the facets ignore it so the choice can be undone
   expect(narrowed.totals.calls).toBe(1);
 
   expect(narrowed.facets.models).toEqual(["glm-5.2", "kimi-k3"]);
-  expect(narrowed.facets.providers).toEqual(["https://api.anthropic.com", "https://openrouter.ai/api/v1"]);
+  // The configured providers, by key: a call nobody could place is a value too, so it can be found.
+  expect(narrowed.facets.providers).toEqual(["(unknown)", "openrouter"]);
+  expect(narrowed.facets.providerLabels).toEqual({ "(unknown)": "(unknown)", openrouter: "openrouter" });
   expect(narrowed.facets.callers).toEqual(["orchestrator", "subagent"]);
   expect(narrowed.facets.sessions.map((s) => s.sessionId).sort()).toEqual(["one", "two"]);
   expect(narrowed.facets.sessions.every((s) => s.deleted)).toBe(true);
@@ -713,4 +717,101 @@ test("the facets name the workspaces and the folders of the window", async () =>
     { folderId: "(none)", label: "(none)" },
     { folderId: "folder-career", label: "career" },
   ]);
+});
+
+/**
+ * Two accounts of one service are two bills (owner, 2026-10-05: "si je colle lui, c'est lui"). The
+ * address is the same for both, so the provider key on each row is the only thing that tells them
+ * apart, from the ranking down to the provider's own ledger.
+ */
+const twoAccounts = {
+  llm: {
+    ...config.llm,
+    providers: {
+      openrouter: { baseUrl: "https://openrouter.ai/api/v1", apiKeyEnv: KEY_ENV, group: "OpenRouter perso" },
+      work: { baseUrl: "https://openrouter.ai/api/v1", apiKeyEnv: `${KEY_ENV}_WORK`, group: "OpenRouter boulot" },
+    },
+  },
+} as unknown as MyClawConfig;
+
+test("two accounts on one address: each spends under its own name, and each ledger meets its own calls", async () => {
+  call({ sessionId: "a", providerKey: "openrouter" });
+  call({ sessionId: "b", providerKey: "work" });
+  call({ sessionId: "c", providerKey: "work" });
+  const mock = mockFetch(async (input, init) => {
+    const perso = new Headers(init?.headers).get("Authorization") === "Bearer sk-or-perso";
+    return String(input).endsWith("/key")
+      ? new Response(JSON.stringify({ data: { usage: perso ? 1.5 : 4 } }), { status: 200 })
+      : new Response("{}", { status: 403 });
+  });
+  try {
+    process.env[KEY_ENV] = "sk-or-perso";
+    process.env[`${KEY_ENV}_WORK`] = "sk-or-work";
+    await refreshOpenRouterAccount("sk-or-perso");
+    await refreshOpenRouterAccount("sk-or-work");
+    const stats = await report({}, { config: twoAccounts });
+
+    expect(stats.providerKeys.map((p) => [p.providerKey, p.providerLabel, p.calls])).toEqual([
+      ["work", "OpenRouter boulot", 2],
+      ["openrouter", "OpenRouter perso", 1],
+    ]);
+    // The same model on the same route is two rows, one per account.
+    expect(stats.models.map((m) => [m.model, m.providerLabel, m.calls])).toEqual([
+      ["glm-5.2", "OpenRouter boulot", 2],
+      ["glm-5.2", "OpenRouter perso", 1],
+    ]);
+    // The endpoint view still folds them: both went to openrouter.ai.
+    expect(stats.providers.map((p) => [p.provider, p.calls])).toEqual([["openrouter.ai", 3]]);
+
+    const byLabel = Object.fromEntries(stats.reconciliation.map((r) => [r.providerLabel, r]));
+    expect(byLabel["OpenRouter perso"]!.calls).toBe(1);
+    expect(byLabel["OpenRouter perso"]!.recordedUsd).toBeCloseTo(1, 6);
+    expect(byLabel["OpenRouter perso"]!.providerUsd).toBe(1.5);
+    expect(byLabel["OpenRouter boulot"]!.calls).toBe(2);
+    expect(byLabel["OpenRouter boulot"]!.recordedUsd).toBeCloseTo(2, 6);
+    expect(byLabel["OpenRouter boulot"]!.providerUsd).toBe(4);
+    expect(stats.facets.providerLabels).toEqual({ openrouter: "OpenRouter perso", work: "OpenRouter boulot" });
+  } finally {
+    delete process.env[KEY_ENV];
+    delete process.env[`${KEY_ENV}_WORK`];
+    mock.restore();
+  }
+});
+
+test("with two ledgers, a call nobody placed is counted by neither, and stays findable", async () => {
+  call({ sessionId: "a", providerKey: "openrouter" });
+  call({ sessionId: "old" });
+  try {
+    process.env[KEY_ENV] = "sk-or-perso";
+    process.env[`${KEY_ENV}_WORK`] = "sk-or-work";
+    const stats = await report({}, { config: twoAccounts });
+    expect(stats.reconciliation.map((r) => r.calls)).toEqual([1, 0]);
+    expect(stats.providerKeys.find((p) => p.providerKey === "(unknown)")?.calls).toBe(1);
+    const unknown = await report({}, { config: twoAccounts, filter: { provider: "(unknown)" } });
+    expect(unknown.totals.calls).toBe(1);
+    expect(unknown.sessions.map((s) => s.sessionId)).toEqual(["old"]);
+  } finally {
+    delete process.env[KEY_ENV];
+    delete process.env[`${KEY_ENV}_WORK`];
+  }
+});
+
+test("the provider filter narrows to one account, and a provider removed since keeps its spend", async () => {
+  call({ sessionId: "a", providerKey: "work" });
+  call({ sessionId: "b", providerKey: "gone" });
+  const work = await report({}, { config: twoAccounts, filter: { provider: "work" } });
+  expect(work.totals.calls).toBe(1);
+  expect(work.sessions.map((s) => s.sessionId)).toEqual(["a"]);
+  const all = await report({}, { config: twoAccounts });
+  expect(all.providerKeys.find((p) => p.providerKey === "gone")?.providerLabel).toBe("gone (removed)");
+});
+
+test("a provider filter cannot be asked of a swept month: the horizon goes off", async () => {
+  call({ at: "2026-01-05T10:00:00.000Z", sessionId: "old", providerKey: "openrouter" });
+  call({ sessionId: "new", providerKey: "openrouter" });
+  foldBefore("2026-04-01T00:00:00.000Z");
+  expect((await report()).rollupIncluded).toBe(true);
+  const narrowed = await report({}, { filter: { provider: "openrouter" } });
+  expect(narrowed.rollupIncluded).toBe(false);
+  expect(narrowed.totals.calls).toBe(1);
 });

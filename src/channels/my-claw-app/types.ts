@@ -2700,6 +2700,9 @@ export interface MyClawAppChatSendReceived {
 /** One model as one session used it, priced when a price is on record. */
 export interface MyClawAppUsageModelRow {
   model: string;
+  /** The configured provider that served the calls, by key (`(unknown)` on old rows) and by name. */
+  providerKey: string;
+  providerLabel: string;
   /**
    * Where the calls went, as precisely as the record allows: the endpoint pin's provider for a
    * routed OpenRouter call (`streamlake`), otherwise the host of the base that was reached
@@ -2927,8 +2930,10 @@ export interface MyClawAppStatsFilter {
  */
 export interface MyClawAppStatsFacets {
   models: string[];
-  /** The hosts, as `base_url`: what the filter matches, not the pin the page draws. */
+  /** The configured providers, by key (`(unknown)` for calls nobody could place): what the filter matches. */
   providers: string[];
+  /** The name of each key above, as the owner named the provider. */
+  providerLabels: Record<string, string>;
   callers: string[];
   sessions: MyClawAppStatsFacetSession[];
   /** Where the window's calls ran from, sentinel for the unknown included. */
@@ -2973,11 +2978,24 @@ export interface MyClawAppStatsTotals {
 /** One model on one route. `provider` is the endpoint pin when there is one, else the host. */
 export interface MyClawAppStatsModelRow extends MyClawAppStatsTotals {
   model: string;
+  /** The configured provider that served it, by key, and by the name the owner gave it. */
+  providerKey: string;
+  providerLabel: string;
   provider: string;
   /** How OpenRouter spells the provider tag. Decoration: `provider` is the key. */
   providerName?: string;
   /** The rest of the endpoint pin: a quantization or a service tier, never part of the model. */
   variant?: string;
+}
+
+/**
+ * One configured provider, every model it served folded together: two accounts on one address are
+ * two rows. `(unknown)` holds the calls recorded before the provider was, on an address no single
+ * provider owned.
+ */
+export interface MyClawAppStatsProviderKeyRow extends MyClawAppStatsTotals {
+  providerKey: string;
+  providerLabel: string;
 }
 
 /** One endpoint, every model it served folded together. */
@@ -3059,8 +3077,12 @@ export interface MyClawAppStatsCallerRow extends MyClawAppStatsTotals {
  * amounts are read from the provider's answer.
  */
 export interface MyClawAppStatsReconciliation {
-  /** The host the figures are about, as the page should name it (`openrouter.ai`). */
+  /** The host the figures are about (`openrouter.ai`). */
   provider: string;
+  /** The configured providers that use this key: one account, one ledger. */
+  providerKeys: string[];
+  /** How the page names the account: the providers' names, joined. */
+  providerLabel: string;
   /** Our own rows for that host over the period, priced like every other figure on the page. */
   recordedUsd: number;
   /** How many recorded calls that sum covers. Zero is a reading: nothing went there. */
@@ -3099,7 +3121,9 @@ export interface MyClawAppStatsPayload {
   totals: MyClawAppStatsTotals;
   /** Ranked by spend, billed first then reference. */
   models: MyClawAppStatsModelRow[];
-  /** Ranked by spend. */
+  /** The configured providers, ranked by spend. */
+  providerKeys: MyClawAppStatsProviderKeyRow[];
+  /** The endpoints, ranked by spend. */
   providers: MyClawAppStatsProviderRow[];
   /** Ranked by spend. Bounded by `detailSince`. */
   sessions: MyClawAppStatsSessionRow[];

@@ -1,6 +1,6 @@
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { closeDb, usageHorizon } from "./analytics/usage-db.ts";
+import { attributeCallsToProviders, closeDb, usageHorizon } from "./analytics/usage-db.ts";
 import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, loadSession, loadLegacySession } from "./sessions/store.ts";
 import { sessionLogOf } from "./sessions/log-access.ts";
 import { promptOf } from "./sessions/projection.ts";
@@ -167,7 +167,7 @@ import {
   subscriptionProviders,
   type AccountKind,
 } from "./llm/accounts-store.ts";
-import { resolveLlmConfig, resolveAgentLlmConfig, findModel, isOpenRouterBaseUrl } from "./llm/resolver.ts";
+import { resolveLlmConfig, resolveAgentLlmConfig, findModel, isOpenRouterBaseUrl, providerBaseUrl } from "./llm/resolver.ts";
 import type { ChatMessage } from "./llm/provider.ts";
 import { tagRouteOf } from "./core/config.ts";
 import { resolveUtilityLlmConfig } from "./llm/utility-model.ts";
@@ -364,6 +364,14 @@ async function main() {
   const reloadConfigNow = async (): Promise<{ changed: string[]; rebootRequired: string[] }> =>
     (await configWatcher?.reloadNow()) ?? { changed: [], rebootRequired: [] };
   const memoryPurgeTimer = initMemory(config);
+  // The calls recorded before each one named its provider, placed once by the address they reached.
+  try {
+    const providers = config.llm.providers ?? {};
+    const attributed = attributeCallsToProviders(Object.fromEntries(Object.entries(providers).map(([key, p]) => [key, providerBaseUrl(p)])));
+    if (attributed > 0) void log("info", "past calls attributed to their provider", { attributed });
+  } catch (err) {
+    void log("warn", "past calls could not be attributed to their provider", { error: String(err) });
+  }
   // A capture writes blobs and trees and no commit, so nothing in a shadow is reachable from a
   // ref and nothing ever pruned them: 247 MB of objects for snapshots long expired. Daily, and
   // never on the path of a run.

@@ -39,6 +39,11 @@ export interface UsageGroup {
   origin: UsageOrigin;
   model: string;
   baseUrl: string;
+  /**
+   * The configured provider that served the group, by key. Null on a rollup group (the purge key
+   * never had it) and on old rows nothing could place.
+   */
+  providerKey: string | null;
   /** Filled by the resellers that proxy; the pricing ladder reads it. Never on a rollup group. */
   upstreamApiBase: string | null;
   calls: number;
@@ -116,7 +121,7 @@ export function usageFacets(period: UsagePeriod): UsageFacets {
         .sort((a, b) => a.localeCompare(b));
     return {
       models: values("model", ""),
-      providers: values("base_url", ""),
+      providers: values("provider_key", UNKNOWN_PROVIDER),
       callers: values("caller", ""),
       sessionIds: values("session_id", ""),
       workspaces: values("workspace", UNKNOWN_WORKSPACE),
@@ -141,9 +146,9 @@ export function usageFacets(period: UsagePeriod): UsageFacets {
  * the calls that failed, not the routes that happened to fail once: a group-level version of that
  * filter would report the whole spend of a model with a single error on it.
  *
- * `provider` is a `base_url`, not the route the page draws. The page names an endpoint pin
- * (`streamlake/fp8`) where the model carries one, and a pin is not a column -- but nothing is lost:
- * the pin lives in the model id, so the `model` dimension narrows to it exactly.
+ * `provider` is the key of a configured provider (`provider_key`), not the route the page draws:
+ * two OpenRouter accounts are two values, one address. The endpoint pin (`streamlake/fp8`) lives in
+ * the model id, so the `model` dimension narrows to it exactly.
  */
 export interface StatsFilter {
   model?: string;
@@ -168,6 +173,8 @@ export interface StatsFilter {
  */
 export const UNKNOWN_WORKSPACE = "(unknown)";
 export const NO_FOLDER = "(none)";
+/** The calls no provider could be given: recorded before the column, on an address nothing owns. */
+export const UNKNOWN_PROVIDER = "(unknown)";
 
 /** True when the filter narrows anything: the one thing that makes the extra passes worth it. */
 export function filterNarrows(filter: StatsFilter): boolean {
@@ -177,8 +184,8 @@ export function filterNarrows(filter: StatsFilter): boolean {
 /**
  * Whether a filter can be asked of a month the purge already swept.
  *
- * The rollup key is `(month, model, base_url, platform, caller)`: three of the dimensions above
- * are columns of it, three are not. A session is not on that key, and `errors` and `unpriced_calls`
+ * The rollup key is `(month, model, base_url, platform, caller)`: two of the dimensions above
+ * are columns of it, the others are not (the provider among them: the purge never kept it). A session is not on that key, and `errors` and `unpriced_calls`
  * are counters rather than rows -- "only the failures" is not a question a monthly fold can
  * answer. Those three drop the rollup instead of adding months no filter ever touched, and the
  * payload's `rollupIncluded` goes false with them so the page stops claiming a horizon it is not
@@ -187,6 +194,7 @@ export function filterNarrows(filter: StatsFilter): boolean {
 export function filterReachesRollup(filter: StatsFilter): boolean {
   return (
     filter.sessionId === undefined &&
+    filter.provider === undefined &&
     filter.workspace === undefined &&
     filter.folderId === undefined &&
     filter.errorsOnly !== true &&
@@ -205,6 +213,7 @@ export function filterReachesRollup(filter: StatsFilter): boolean {
 const LIVE_COLUMNS = `
   model,
   base_url                                              AS baseUrl,
+  provider_key                                          AS providerKey,
   MAX(upstream_api_base)                                AS upstreamApiBase,
   COUNT(*)                                              AS calls,
   SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END)    AS errors,
@@ -222,6 +231,7 @@ const LIVE_COLUMNS = `
 const ROLLUP_COLUMNS = `
   model,
   base_url            AS baseUrl,
+  NULL                AS providerKey,
   NULL                AS upstreamApiBase,
   SUM(calls)          AS calls,
   SUM(errors)         AS errors,
@@ -285,8 +295,9 @@ function predicate(cutoff: string | null, filter: StatsFilter): { sql: string[];
     sql.push("model = $model");
     params.$model = filter.model;
   }
-  if (filter.provider !== undefined) {
-    sql.push("base_url = $provider");
+  if (filter.provider === UNKNOWN_PROVIDER) sql.push("provider_key IS NULL");
+  else if (filter.provider !== undefined) {
+    sql.push("provider_key = $provider");
     params.$provider = filter.provider;
   }
   if (filter.caller !== undefined) {
@@ -323,17 +334,13 @@ function bind(cutoff: string | null, filter: StatsFilter): Record<string, string
   return predicate(cutoff, filter).params;
 }
 
-/** The same three dimensions on the rollup, whose columns are the only ones it shares. */
+/** The two dimensions the rollup shares with the live rows. */
 function rolledPredicate(filter: StatsFilter): { sql: string; params: Record<string, string> } {
   const parts: string[] = [];
   const params: Record<string, string> = {};
   if (filter.model !== undefined) {
     parts.push("model = $model");
     params.$model = filter.model;
-  }
-  if (filter.provider !== undefined) {
-    parts.push("base_url = $provider");
-    params.$provider = filter.provider;
   }
   if (filter.caller !== undefined) {
     parts.push("caller = $caller");
@@ -353,7 +360,7 @@ export function usageByModel(period: UsagePeriod, filter: StatsFilter): UsageGro
   try {
     const cutoff = periodCutoff(period);
     const live = db()
-      .prepare(`SELECT ${LIVE_COLUMNS} FROM api_calls ${where(cutoff, filter)} GROUP BY model, base_url`)
+      .prepare(`SELECT ${LIVE_COLUMNS} FROM api_calls ${where(cutoff, filter)} GROUP BY model, base_url, provider_key`)
       .all(bind(cutoff, filter)) as RawGroup[];
     if (!reachesRollup(period) || !filterReachesRollup(filter)) return tag(live, "live");
     const months = rolledPredicate(filter);
@@ -375,7 +382,7 @@ export function usageByCaller(period: UsagePeriod, filter: StatsFilter): UsageCa
   try {
     const cutoff = periodCutoff(period);
     const live = db()
-      .prepare(`SELECT caller, ${LIVE_COLUMNS} FROM api_calls ${where(cutoff, filter)} GROUP BY caller, model, base_url`)
+      .prepare(`SELECT caller, ${LIVE_COLUMNS} FROM api_calls ${where(cutoff, filter)} GROUP BY caller, model, base_url, provider_key`)
       .all(bind(cutoff, filter)) as Array<RawGroup & { caller: string }>;
     const out: UsageCallerGroup[] = live.map((row) => ({ ...row, origin: "live" as const }));
     if (!reachesRollup(period) || !filterReachesRollup(filter)) return out;
@@ -405,7 +412,7 @@ export function usageBySession(period: UsagePeriod, filter: StatsFilter): UsageS
       .prepare(
         `SELECT session_id AS sessionId, MIN(timestamp) AS firstAt, MAX(timestamp) AS lastAt, MAX(parent_session_id) AS parentSessionId, ${LIVE_COLUMNS}
          FROM api_calls ${where(cutoff, filter)}
-         GROUP BY session_id, model, base_url`,
+         GROUP BY session_id, model, base_url, provider_key`,
       )
       .all(bind(cutoff, filter)) as Array<RawGroup & { sessionId: string; parentSessionId: string; firstAt: string; lastAt: string }>;
     return rows.map((row) => ({ ...row, origin: "live" as const }));
@@ -428,7 +435,7 @@ export function usageByDay(period: UsagePeriod, filter: StatsFilter): UsageDayGr
       .prepare(
         `SELECT substr(timestamp, 1, 10) AS date, ${LIVE_COLUMNS}
          FROM api_calls ${where(cutoff, filter)}
-         GROUP BY substr(timestamp, 1, 10), model, base_url`,
+         GROUP BY substr(timestamp, 1, 10), model, base_url, provider_key`,
       )
       .all(bind(cutoff, filter)) as Array<RawGroup & { date: string }>;
     return rows.map((row) => ({ ...row, origin: "live" as const }));

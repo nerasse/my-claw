@@ -24,7 +24,8 @@ import type { RunNode } from "../core/run-registry.ts";
 import { resolveModelContextWindow, occupiedContextTokens } from "../llm/context-window.ts";
 import { isSelfHosted } from "../llm/pricing.ts";
 import type { ChatMessage } from "../llm/provider.ts";
-import { routeOf } from "./usage-route.ts";
+import { providerLabels, routeOf, type ProviderLabel } from "./usage-route.ts";
+import { UNKNOWN_PROVIDER } from "../analytics/usage-stats.ts";
 import type {
   MyClawAppStatusPayload,
   MyClawAppUsageAgent,
@@ -111,9 +112,11 @@ function addTotals(into: MyClawAppUsageTotals, more: MyClawAppUsageTotals): void
   into.unpriced += more.unpriced;
 }
 
-function modelRow(row: PricedRow): MyClawAppUsageModelRow {
+function modelRow(row: PricedRow, labelOf: ProviderLabel): MyClawAppUsageModelRow {
   return {
     model: row.model,
+    providerKey: row.providerKey ?? UNKNOWN_PROVIDER,
+    providerLabel: labelOf(row.providerKey),
     ...routeOf(row.model, row.baseUrl),
     calls: row.calls,
     errors: row.errorCount,
@@ -157,6 +160,7 @@ function describeRequestTimeout(
 async function delegatedAgents(p: StatusParams): Promise<MyClawAppUsageAgent[]> {
   const agents: MyClawAppUsageAgent[] = [];
   const seen = new Set<string>([p.sessionId]);
+  const labelOf = providerLabels(p.config);
   const walk = async (parent: string, depth: number): Promise<void> => {
     if (depth > MAX_DELEGATION_DEPTH) return;
     const bySession = new Map<string, PricedRow[]>();
@@ -178,7 +182,7 @@ async function delegatedAgents(p: StatusParams): Promise<MyClawAppUsageAgent[]> 
         alive: meta !== null,
         running: meta !== null && p.liveRuns.some((r) => r.depth > 0 && r.label === meta.displayName),
         ...totalsOf(rows),
-        rows: rows.map(modelRow),
+        rows: rows.map((row) => modelRow(row, labelOf)),
       });
       await walk(sessionId, depth + 1);
     }
@@ -246,7 +250,7 @@ async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {
       own: {
         ...ownTotals,
         durationMs: own.length > 0 ? getSessionUsage(p.sessionId)?.totalDurationMs ?? 0 : 0,
-        rows: own.map(modelRow),
+        rows: own.map((row) => modelRow(row, providerLabels(p.config))),
       },
       agents,
       ...(Number.isFinite(createdAt) && detailSince !== undefined && Date.parse(detailSince) > createdAt ? { since: detailSince } : {}),

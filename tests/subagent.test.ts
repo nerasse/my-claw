@@ -811,6 +811,9 @@ test("a run is filed as its payer's folder, re-stamped at every drive", async ()
     });
     const spawned = filedFolders(id);
     assert.ok(spawned.length > 0, "the spawn run recorded calls");
+    // And the provider that served them, by its key: the implicit provider of a legacy config.
+    const keys = analyticsDb().prepare("SELECT DISTINCT provider_key AS key FROM api_calls WHERE session_id = ?").all(id) as Array<{ key: string | null }>;
+    assert.deepEqual(keys.map((k) => k.key), ["default"]);
     assert.deepEqual([...new Set(spawned)], ["folder-career"]);
 
     await runner.send(id, "do more", undefined, createMessage(), reg, DRIVER);

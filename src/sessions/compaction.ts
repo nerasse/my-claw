@@ -536,6 +536,7 @@ export async function summarizeForCompaction(
       platform: session.platform,
       model: usageModelOf(llmConfig),
       baseUrl: llmConfig.baseUrl,
+      providerKey: llmConfig.provider,
       streaming: false,
       caller,
       workspace: usageWorkspaceOf(config, session),

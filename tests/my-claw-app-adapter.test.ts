@@ -4348,6 +4348,8 @@ describe("command frames", () => {
         rows: [
           {
             model: "claude-opus-5",
+            providerKey: "anthropic",
+            providerLabel: "Claude",
             provider: "api.anthropic.com",
             calls: 4,
             errors: 0,
@@ -4431,6 +4433,7 @@ describe("command frames", () => {
     rollupIncluded: false,
     totals: { calls: 3, errors: 0, promptTokens: 10, completionTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, billedUsd: 1, referenceUsd: 0, unpriced: 0, durationMs: 5 },
     models: [],
+    providerKeys: [],
     providers: [],
     sessions: [],
     daily: [],
@@ -4439,7 +4442,7 @@ describe("command frames", () => {
     callers: [],
     reconciliation: [],
     filter: {},
-    facets: { models: [], providers: [], callers: [], sessions: [], workspaces: [], folders: [] },
+    facets: { models: [], providers: [], providerLabels: {}, callers: [], sessions: [], workspaces: [], folders: [] },
   };
 
   test("stats.get answers the install-wide report for the period it names, and nothing per thread", async () => {
