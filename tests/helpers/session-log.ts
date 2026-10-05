@@ -23,6 +23,12 @@ export interface SessionLogSetup {
 }
 
 const activeSetups = new Map<string, SessionLog>();
+/**
+ * The last log opened for each id, kept past its cleanup: a test's `afterEach` cleanup runs
+ * before the next test's setup, so `activeSetups` no longer holds the log whose appends are
+ * still in flight by then.
+ */
+const lastLogs = new Map<string, SessionLog>();
 
 /**
  * Parses old-style message content to extract structured metadata.
@@ -93,11 +99,12 @@ export async function setupSessionLog(sessionId: string): Promise<SessionLogSetu
   // A setup for the same id may still have appends in flight: an append is fire-and-forget, and
   // the rm below takes the file out from under it. Left alone, those bytes land in the file this
   // setup is about to create and the new log opens with a turn from the old one inside it.
-  await activeSetups.get(sessionId)?.flush();
+  await lastLogs.get(sessionId)?.flush();
   await rm(sessionDir(sessionId), { recursive: true, force: true });
   await mkdir(sessionDir(sessionId), { recursive: true });
   const log = await openSessionLog(sessionId);
   activeSetups.set(sessionId, log);
+  lastLogs.set(sessionId, log);
 
   setSessionLogResolver(async (id) => {
     const cached = activeSetups.get(id);

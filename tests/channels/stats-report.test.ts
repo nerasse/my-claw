@@ -781,6 +781,8 @@ test("two accounts on one address: each spends under its own name, and each ledg
 test("with two ledgers, a call nobody placed is counted by neither, and stays findable", async () => {
   call({ sessionId: "a", providerKey: "openrouter" });
   call({ sessionId: "old" });
+  // Both ledgers warm on the report: answered here, never by openrouter.ai.
+  const mock = accountMock(1);
   try {
     process.env[KEY_ENV] = "sk-or-perso";
     process.env[`${KEY_ENV}_WORK`] = "sk-or-work";
@@ -792,7 +794,7 @@ test("with two ledgers, a call nobody placed is counted by neither, and stays fi
     expect(unknown.sessions.map((s) => s.sessionId)).toEqual(["old"]);
   } finally {
     delete process.env[KEY_ENV];
-    delete process.env[`${KEY_ENV}_WORK`];
+    delete process.env[`${KEY_ENV}_WORK`];  mock.restore();
   }
 });
 

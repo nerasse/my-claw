@@ -139,6 +139,14 @@ async function writeUntilReloaded(file: string, content: string, reloaded: Promi
   }
 }
 
+/**
+ * Each message is a full route, and a route takes a snapshot of the workspace for `/undo` (a git
+ * write-tree in a shadow store): 250 ms warm, 700 ms for the first one of the process (measured
+ * 2026-10-05). The end-to-end case below routes six, so drawn first in a random order on a busy
+ * box it went past the 5 s default, and a test abandoned mid-body poisons the ones after it.
+ */
+const SIX_ROUTES_TIMEOUT_MS = 20_000;
+
 describe("E2E agent scoping", () => {
   test("a scoped sub-agent sees, and can read, only its own skills", async () => {
     const skills = await realSkills();
@@ -242,5 +250,5 @@ describe("E2E agent scoping", () => {
       expect(listed.toolOutput).toContain("beta");
       expect((await callTool(router, "skills", { name: "beta" })).toolOutput).toContain("BETA BODY");
     }
-  });
+  }, SIX_ROUTES_TIMEOUT_MS);
 });

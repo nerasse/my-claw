@@ -103,14 +103,13 @@ describe("AgentBridge voice integration", () => {
     });
     const session = createSession();
 
-    // Mock the LLM call to avoid actual network requests.
-    // Since we can't easily mock the provider here, we verify preprocessing
-    // indirectly via echo messages. The STT will fail (no server), but the
+    // No model answers here (http://test is refused by tests/setup-globals.ts), so preprocessing
+    // is checked through what it wrote to the log. The STT will fail (no server), but the
     // attachment should still be processed.
     try {
       await bridge.handleMessage(message, session, signal);
     } catch {
-      // Expected to fail due to mocked LLM.
+      // Expected: no model answers here.
     } finally {
       end();
     }
@@ -218,7 +217,7 @@ describe("AgentBridge voice integration", () => {
     try {
       await bridge.handleMessage(message, session, signal);
     } catch {
-      // Expected to fail due to mocked LLM.
+      // Expected: no model answers here.
     } finally {
       end();
     }

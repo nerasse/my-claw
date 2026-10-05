@@ -118,3 +118,20 @@ beforeEach(() => {
 // The bash scope probe and its limits are module state shared by every test file.
 resetBashScopeProbe();
 setBashLimits(undefined);
+
+// A unit test never reaches the network: what it calls is mocked (tests/helpers/mock-fetch.ts) or
+// served on loopback. One that slipped out used to pass or fail on whatever answered, `example.com`
+// included (CI, 2026-09-14). Off for the gated suites, which exist to reach it.
+const NETWORK_SUITES = ["BROWSER_E2E", "CONTINUE_E2E", "INSTALL_E2E", "VOICE_E2E", "BASH_CGROUP_E2E", "LIVE_E2E", "MODELS_DEV_E2E"];
+if (!NETWORK_SUITES.some((name) => process.env[name] === "1")) {
+  const loopback = new Set(["localhost", "127.0.0.1", "[::1]", "::1", "0.0.0.0"]);
+  const real = globalThis.fetch;
+  const guarded = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, "http://localhost");
+    if ((url.protocol === "http:" || url.protocol === "https:") && !loopback.has(url.hostname)) {
+      throw new Error(`a unit test tried to reach the network (${url.host}): mock it with tests/helpers/mock-fetch.ts`);
+    }
+    return real(input, init);
+  }) as typeof fetch;
+  globalThis.fetch = Object.assign(guarded, real);
+}
