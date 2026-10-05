@@ -60,7 +60,9 @@ const handles: Array<{ restore(): void }> = [];
 
 beforeEach(() => resetLearnedRepairs());
 afterEach(() => {
-  for (const handle of handles.splice(0)) handle.restore();
+  // Last made, first restored: each mock saved the one before it, and restoring them in the order
+  // they were made left the first installed for every later file (the adapter's HTTP tests).
+  for (const handle of handles.splice(0).reverse()) handle.restore();
 });
 
 describe("the cache hint is spoken in the dialect of the model being called", () => {

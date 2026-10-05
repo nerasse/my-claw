@@ -157,6 +157,9 @@ test("a conversation older than the analytics horizon says where its figures sta
   // more (2026-09-17). A conversation that began before it -- this install has one, at the June
   // fold -- is told where its figures start instead of reading a partial total as a whole one.
   const sessionId = "my-claw-app/thread/o/old";
+  // The horizon is the whole table's: a file run earlier that sowed backdated calls (the rollup
+  // and stats tests) would put it before this conversation. Start from the table this test needs.
+  analyticsDb().run("DELETE FROM api_calls");
   call(sessionId);
   const status = await report({ sessionId, session: session(sessionId, { createdAt: new Date(Date.now() - 200 * 86_400_000).toISOString() }) });
   const since = status.usage?.since;
