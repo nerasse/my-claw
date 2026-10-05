@@ -12,7 +12,9 @@ docker compose -f packaging/compose/compose.yml up -d --build
 docker compose -f packaging/compose/compose.yml exec my-claw myclaw setup
 ```
 
-The server listens on `127.0.0.1:8080` (`MYCLAW_BIND`, `MYCLAW_PORT`), noVNC on `127.0.0.1:6080`.
+The server listens on `127.0.0.1:8080` (`MYCLAW_BIND`, `MYCLAW_PORT`), noVNC on `127.0.0.1:6080`. VNC
+asks for a password, made once by the browser container in the shared home (`~/.vnc/passwd`) and
+shown in the app's Browser page, as on bare metal.
 Data lives in the `home` volume (`/home/claw/.my-claw`: config, `.env`, sessions, workspace).
 
 ## Services

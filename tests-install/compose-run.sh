@@ -46,16 +46,28 @@ in_claw "test -s $(echo "$shot" | jq -r .path)" || fail "the screenshot is not r
 in_claw 'DISPLAY=browser:99 xdotool search --onlyvisible --name . >/dev/null' || fail "xdotool cannot reach browser:99"
 ok "browser driven from my-claw, screenshot shared, display reachable"
 
+# VNC takes over the browser: password only, and my-claw reads the password the browser made.
+types="$(python3 -c 'import socket;s=socket.create_connection(("127.0.0.1",15900),5);s.recv(12);s.sendall(b"RFB 003.008\n");n=s.recv(1)[0];print(list(s.recv(n)))')" || fail "VNC handshake"
+[ "$types" = "[2]" ] || fail "VNC offers security types $types, not password only"
+in_claw 'test -s ~/.vnc/passwd' || fail "my-claw does not see the VNC password"
+ok "VNC asks for a password (security types $types), and my-claw sees it"
+
 # Search self-hosted: the profile, then the choice from the app.
 "${C[@]}" --profile searxng up -d searxng >/dev/null 2>&1
 s="$(probe '{"type":"services.set","id":"search","source":"self-hosted"}' services.result)" || fail "services.set search: $s"
 [ "$(service "$s" search .endpoint)" = http://searxng:8080 ] || fail "search endpoint"
+# What is ours is the wiring and the JSON format. The results come from the engines SearXNG asks,
+# which suspend a machine that searched too often (Brave "too many requests"): an empty list with
+# those engines named is still a JSON answer from our SearXNG.
 for _ in $(seq 1 60); do
-  in_claw 'curl -fsS "http://searxng:8080/search?q=bun&format=json" | jq -e ".results | length > 0" >/dev/null' 2>/dev/null && break
+  in_claw 'curl -fsS "http://searxng:8080/search?q=bun&format=json" | jq -e ".results | type == \"array\"" >/dev/null' 2>/dev/null && break
   sleep 2
 done
-in_claw 'curl -fsS "http://searxng:8080/search?q=bun&format=json" | jq -e ".results | length > 0" >/dev/null' || fail "searxng answers no JSON results"
-ok "search set to this server from the app; SearXNG answers JSON"
+answer="$(in_claw 'curl -fsS "http://searxng:8080/search?q=bun&format=json"')" || fail "searxng does not answer"
+echo "$answer" | jq -e '.results | type == "array"' >/dev/null || fail "searxng answers no JSON results"
+n="$(echo "$answer" | jq '.results | length')"
+[ "$n" -gt 0 ] || echo "note [compose] SearXNG answered 0 results: $(echo "$answer" | jq -c '[.unresponsive_engines[]? | .[0]]') suspended upstream"
+ok "search set to this server from the app; SearXNG answers JSON ($n results)"
 
 # Local speech-to-text: the profile, then the choice; the server finds whisper:8000.
 "${C[@]}" --profile whisper up -d --build whisper >/dev/null 2>&1 || fail "whisper profile"

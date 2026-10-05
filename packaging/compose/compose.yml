@@ -45,7 +45,7 @@ services:
     image: my-claw-browser:local
     ports:
       # noVNC (in a web page) and VNC (a native client), to watch the browser or take it over.
-      # No password, as on bare metal: keep them on loopback or a trusted network.
+      # Password protected (the app's Browser page shows it), and still on loopback by default.
       - "${VNC_BIND:-127.0.0.1}:${VNC_WEB_PORT:-6080}:6080"
       - "${VNC_BIND:-127.0.0.1}:${VNC_PORT:-5900}:5900"
     volumes:

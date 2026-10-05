@@ -22,7 +22,15 @@ chromium --user-data-dir="$profile" --restore-last-session --no-sandbox \
   --lang="${BROWSER_LANG:-fr-FR}" --accept-lang="${BROWSER_ACCEPT_LANG:-fr-FR,fr}" \
   --remote-debugging-port=9222 --window-size=1920,1080 &
 
-x11vnc -display :99 -rfbport 5900 -nopw -forever -shared -noxdamage -noxkb -xkb -noxrecord -noxfixes -noxrandr -quiet &
+# VNC takes over the browser and every session signed in it: a password, as on bare metal
+# (update.sh), created once in the home volume my-claw shares, so the app's Browser page shows it.
+pwfile="${HOME}/.vnc/passwd"
+if [ ! -s "$pwfile" ]; then
+  mkdir -p "${HOME}/.vnc" && chmod 700 "${HOME}/.vnc"
+  x11vnc -storepasswd "$(head -c 64 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | cut -c1-8)" "$pwfile" >/dev/null 2>&1
+  chmod 600 "$pwfile"
+fi
+x11vnc -display :99 -rfbport 5900 -rfbauth "$pwfile" -forever -shared -noxdamage -noxkb -xkb -noxrecord -noxfixes -noxrandr -quiet &
 websockify --web /usr/share/novnc 6080 localhost:5900 &
 # Listening on the compose network: my-claw reaches it at browser:9223. Not published.
 HOST=0.0.0.0 PORT=9223 CDP_URL=http://127.0.0.1:9222 node /app/sidecar/server.mjs &
