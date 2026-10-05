@@ -3500,6 +3500,21 @@ export interface MyClawAppJobEntry {
   runningSince?: string;
   /** The job's own wall-clock limit, when it has one. */
   timeoutMs?: number;
+  /** The install's limit a job without its own runs under (`cron.timeoutMs`); absent: none. */
+  defaultTimeoutMs?: number;
+  /** When a run still going is first announced: the job's own, and the install's it falls back to. */
+  alertAfterMs?: number;
+  defaultAlertAfterMs?: number;
+  /** The conversation archive is granted to this job (conversation_search). */
+  conversations?: boolean;
+  /** The job came from a conversation, so "origin" is a delivery it can be given. */
+  hasOrigin?: boolean;
+  /**
+   * The delivery, as the editor picks it: `thread` is one of the owner's conversations, named by
+   * `deliverThread`; `target` any other address, shown through `deliver` and left as it is.
+   */
+  deliverKind?: "origin" | "local" | "thread" | "target";
+  deliverThread?: string;
   createdAt: string;
   /** True when the model is not in the live catalog: shown red, saved anyway. */
   unknownModel: boolean;
@@ -3684,6 +3699,17 @@ export interface MyClawAppJobSave {
   /** The follow-up and its instruction: absent means "don't touch"; "" clears the instruction. */
   followUp?: boolean;
   followUpPrompt?: string;
+  /**
+   * Where the report goes: the conversation the job came from, nowhere (the server keeps it), or
+   * one of the owner's conversations by its title, created in the job's workspace if missing.
+   * Absent means "don't touch".
+   */
+  deliver?: { kind: "origin" } | { kind: "local" } | { kind: "thread"; title: string };
+  /** The job's own alert and limit in ms: absent "don't touch", 0 back to the install's. */
+  alertAfterMs?: number;
+  timeoutMs?: number;
+  /** The conversation archive (conversation_search): absent "don't touch". */
+  conversations?: boolean;
 }
 
 export interface MyClawAppJobDelete {

@@ -124,7 +124,12 @@ export interface ToolEntry extends EntryBase {
 
 export interface CommandEntry extends EntryBase {
   type: "command";
-  prompt: false;
+  /**
+   * False for what the owner typed (a slash command and its answer). True for a report filed by
+   * another part of the system that the conversation's agent must be able to read, such as a cron
+   * delivery: the model sees it as a context turn (`messagesOf`), never as something to answer.
+   */
+  prompt: boolean;
   input: string;
   output: string;
   details?: string;

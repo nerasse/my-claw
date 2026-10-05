@@ -94,7 +94,8 @@ export function orphanCalls(entries: readonly Entry[], leafId: string | null): O
   }
   if (!lastPhase) return [];
   const afterTurn = path.slice(path.indexOf(lastPhase) + 1);
-  const movedOn = afterTurn.some((e) => e.prompt && !(e.type === "tool" && e.runId === lastPhase!.runId));
+  // A filed report (a cron delivery) is not the model moving on: it says nothing in the turn.
+  const movedOn = afterTurn.some((e) => e.prompt && e.type !== "command" && !(e.type === "tool" && e.runId === lastPhase!.runId));
   return movedOn ? [] : out.filter((o) => o.turnId === lastPhase!.runId);
 }
 
@@ -157,7 +158,7 @@ export function interruptedSubagents(entries: readonly Entry[], leafId: string |
  * it starts over two times in three (measured on deepseek-v4.1-flash, 2026-09-28).
  */
 export function endsOnOwnText(entries: readonly Entry[], leafId: string | null): boolean {
-  const prompt = pathOf(entries, leafId).filter((e) => e.prompt);
+  const prompt = pathOf(entries, leafId).filter((e) => e.prompt && e.type !== "command");
   const last = prompt[prompt.length - 1];
   return last?.type === "phase" && last.text.trim().length > 0;
 }

@@ -129,6 +129,16 @@ describe("reading what a conversation stopped on", () => {
     stoppedRun((t) => log.append({ type: "phase", prompt: true, text: "Voici 5 conseils : 1.", runId: t }));
     expect(endsOnOwnText(log.entries(), log.leaf())).toBe(true);
   });
+
+  test("a cron report filed after the cut is looked through, by both readers of where the run stood", () => {
+    stoppedRun((t) => {
+      log.append({ type: "phase", prompt: true, text: "Voici 5 conseils : 1.", runId: t });
+      log.append({ type: "spawn_state", prompt: false, callId: "c-spawn", subagentId: "subagent/y", status: "running", action: "spawn" });
+      log.append({ type: "command", prompt: true, input: "cron delivery", output: "[Cron: veille]", quiet: true });
+    }, null);
+    expect(endsOnOwnText(log.entries(), log.leaf())).toBe(true);
+    expect(orphanCalls(log.entries(), log.leaf()).map((o) => o.callId)).toEqual(["c-spawn"]);
+  });
 });
 
 describe("a Stop keeps the whole batch", () => {

@@ -26,8 +26,24 @@ A delivery used to be a frame sent to whichever devices were connected: gone on 
 there at all when the phone was asleep -- which is when a morning job delivers. Measured on
 2026-09-27: four mail checks delivered to their thread, none of them in its history. The scheduler
 now writes the result into the target conversation first (`journal`, wired in `index.ts`), the way a
-sub-agent's handoff note is filed: a quiet `command` entry, shown on every reload, never sent to a
-model. Then the frame goes out for the devices that are online.
+sub-agent's handoff note is filed: a quiet `command` entry, shown on every reload. Then the frame
+goes out for the devices that are online.
+
+Since 2026-10-05 the entry is `prompt: true`: the conversation's agent reads it, so asked about the
+report afterwards it knows what it said (owner's choice). It reaches the model as a user-role turn
+marked as context ("Filed in this conversation, for context... Nothing to answer unless asked"),
+the role a compaction summary arrives in, and it opens no run: a run is what `followUp` is for.
+Filed while a run is in the middle of a turn, it is given after that turn's tool results
+(`messagesOf`), never between a call and its result. Continue looks through it (`endsOnOwnText`,
+`orphanCalls`): a report is not the model moving on.
+
+### The app's job editor sets the same fields
+
+`jobs.save` carries `deliver` (`origin`, `local`, or `{ kind: "thread", title }`, the owner's
+conversation of that title, created in the job's workspace if missing: the same lookup as
+`deliver: "thread:<title>"`), `alertAfterMs`, `timeoutMs` (0 back to the install's) and
+`conversations`. The listing sends the install's defaults beside the job's own, `hasOrigin`, and
+`deliverKind` / `deliverThread` for the picker. Logic in `src/channels/my-claw-app/job-fields.ts`.
 
 ### Follow-up: the conversation acts on the report (`followUp`)
 

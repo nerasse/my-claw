@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { promptOf, contextEntries, SUMMARY_OPEN } from "../../src/sessions/projection.ts";
 import type { Entry, Provisioned, UserEntry, PhaseEntry, ToolEntry, CompactionEntry } from "../../src/sessions/log.ts";
+import type { ChatMessage } from "../../src/llm/provider.ts";
 
 /**
  * Entries built by hand rather than through a log: the projection is pure, so it must be testable
@@ -266,5 +267,49 @@ describe("a turn that says nothing and asks for nothing", () => {
     const prompt = promptOf(entries, leaf);
     expect(prompt.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
     expect(prompt[1]).toMatchObject({ content: "", tool_calls: [{ id: "c1" }] });
+  });
+});
+
+describe("a filed report reaches the model as context, and never parts a call from its result", () => {
+  const filed = (output: string, prompt = true) =>
+    ({ type: "command", prompt, input: "cron delivery", output, quiet: true } as Provisioned<Entry>);
+  const asContext = (output: string) => ({
+    role: "user" as const,
+    content: `[Filed in this conversation, for context: cron delivery. Nothing to answer unless asked.]\n\n${output}`,
+  });
+
+  test("filed at rest: a context turn where it was filed; an owner's command still never is", () => {
+    const { entries, leaf } = chain([user("hi"), phase("hello"), filed("[Cron: veille]\n\n3 offres"), filed("/status", false), user("et alors ?")]);
+    expect(promptOf(entries, leaf)).toEqual<ChatMessage[]>([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "hello" },
+      asContext("[Cron: veille]\n\n3 offres"),
+      { role: "user", content: "et alors ?" },
+    ]);
+  });
+
+  test("filed first, before the agent has said anything: a context turn all the same", () => {
+    const { entries, leaf } = chain([filed("[Cron: veille]"), user("lu ?")]);
+    expect(promptOf(entries, leaf)).toEqual([asContext("[Cron: veille]"), { role: "user", content: "lu ?" }]);
+  });
+
+  test("filed between a call and its result: given after the turn, the call keeps its result", () => {
+    const { entries, leaf } = chain([user("go"), phase("je lance", "r1"), filed("rapport"), tool("c1", "r1"), phase("fini", "r2")]);
+    expect(promptOf(entries, leaf)).toEqual<ChatMessage[]>([
+      { role: "user", content: "go" },
+      {
+        role: "assistant",
+        content: "je lance",
+        tool_calls: [{ id: "c1", type: "function", function: { name: "bash", arguments: JSON.stringify({ command: "ls" }) } }],
+      },
+      { role: "tool", tool_call_id: "c1", content: "out-c1" },
+      asContext("rapport"),
+      { role: "assistant", content: "fini" },
+    ]);
+  });
+
+  test("filed inside a turn that turns out empty: the turn goes, the report stays", () => {
+    const { entries, leaf } = chain([user("go"), phase("", "r1"), filed("rapport")]);
+    expect(promptOf(entries, leaf)).toEqual([{ role: "user", content: "go" }, asContext("rapport")]);
   });
 });

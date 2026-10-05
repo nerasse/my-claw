@@ -317,7 +317,7 @@ export interface InstructionsTarget {
 export interface MyClawAppJobsController {
   list(): Promise<MyClawAppJobEntry[]>;
   /** Creates (no id) or updates a job. Refused when the schedule does not parse. */
-  save(fields: MyClawAppJobSave): Promise<MyClawAppJobEntry[]>;
+  save(fields: MyClawAppJobSave, owner: string): Promise<MyClawAppJobEntry[]>;
   /** Removes a job. Refused when no job carries that id. */
   remove(id: string): Promise<MyClawAppJobEntry[]>;
   /** The run sessions of one job, newest first. Refused when the job does not exist. */

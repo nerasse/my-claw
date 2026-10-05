@@ -11,7 +11,7 @@
  */
 
 import type { ChatMessage } from "../llm/provider.ts";
-import type { Entry, PhaseEntry, ToolEntry, CompactionEntry } from "./log.ts";
+import type { CommandEntry, Entry, PhaseEntry, ToolEntry, CompactionEntry } from "./log.ts";
 import { pathOf } from "./log.ts";
 
 /** Wrapper the model reads a compaction summary in. Same text the old summary turn carried. */
@@ -97,6 +97,11 @@ export function messagesOf(context: readonly Entry[]): ChatMessage[] {
       continue;
     }
 
+    if (entry.type === "command") {
+      out.push(commandTurn(entry));
+      continue;
+    }
+
     if (entry.type === "compaction") {
       // The owner's recent words first, then the summary last: codex's order, so the state the
       // model resumes from is the freshest thing above the next turn. A user turn, because that is
@@ -109,16 +114,27 @@ export function messagesOf(context: readonly Entry[]): ChatMessage[] {
 
     if (entry.type !== "phase") continue;
 
-    // One model turn: every phase sharing this runId, then the tools it called.
+    // One model turn: every phase sharing this runId, then the tools it called. A report filed
+    // while the turn was open (a cron delivery between a call and its result) is set aside and
+    // given after the turn: inside it, it would part a call from its result.
     const runId = entry.runId;
     const phases: PhaseEntry[] = [];
-    while (i < context.length && context[i]!.type === "phase" && (context[i] as PhaseEntry).runId === runId) {
-      phases.push(context[i] as PhaseEntry);
+    const filedDuring: CommandEntry[] = [];
+    const inTurn = (at: Entry, type: "phase" | "tool"): boolean => {
+      if (at.type === "command") return true;
+      return at.type === type && (at as PhaseEntry | ToolEntry).runId === runId;
+    };
+    while (i < context.length && inTurn(context[i]!, "phase")) {
+      const at = context[i]!;
+      if (at.type === "command") filedDuring.push(at);
+      else phases.push(at as PhaseEntry);
       i++;
     }
     const tools: ToolEntry[] = [];
-    while (i < context.length && context[i]!.type === "tool" && (context[i] as ToolEntry).runId === runId) {
-      tools.push(context[i] as ToolEntry);
+    while (i < context.length && inTurn(context[i]!, "tool")) {
+      const at = context[i]!;
+      if (at.type === "command") filedDuring.push(at);
+      else tools.push(at as ToolEntry);
       i++;
     }
     i--;
@@ -134,7 +150,10 @@ export function messagesOf(context: readonly Entry[]): ChatMessage[] {
     // that window. Sending it costs the whole conversation rather than one turn -- Anthropic
     // answers HTTP 400 "text content blocks must be non-empty", and a retry reposts the same
     // prompt, so the run cannot recover. Dropping it loses nothing: there is nothing in it.
-    if (!text && tools.length === 0) continue;
+    if (!text && tools.length === 0) {
+      for (const filed of filedDuring) out.push(commandTurn(filed));
+      continue;
+    }
 
     const assistant: ChatMessage = {
       role: "assistant",
@@ -155,9 +174,22 @@ export function messagesOf(context: readonly Entry[]): ChatMessage[] {
     for (const tool of tools) {
       out.push({ role: "tool", tool_call_id: tool.callId, content: tool.output });
     }
+    for (const filed of filedDuring) out.push(commandTurn(filed));
   }
 
   return out;
+}
+
+/**
+ * A filed report as the model reads it: a user-role turn, marked as context so it is not taken
+ * for the owner asking something. The same role a compaction summary arrives in, for the same
+ * reason.
+ */
+function commandTurn(entry: CommandEntry): ChatMessage {
+  return {
+    role: "user",
+    content: `[Filed in this conversation, for context: ${entry.input}. Nothing to answer unless asked.]\n\n${entry.output}`,
+  };
 }
 
 /**

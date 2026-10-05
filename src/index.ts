@@ -62,6 +62,7 @@ import { defaultOwner } from "./channels/my-claw-app/devices.ts";
 import type { MyClawAppSubAgentHandoffOutcome, MyClawAppAgentsConfigResult, MyClawAppAgentFileResult, MyClawAppJobEntry, MyClawAppJobsRunEntry, MyClawAppJobScope, MyClawAppMcpEntry, MyClawAppNestedInstruction, MyClawAppSkillEntry, MyClawAppProviderEnvResult, MyClawAppTagsResult, MyClawAppToolEntry, MyClawAppWorkspaceEntry } from "./channels/my-claw-app/types.ts";
 import { DEFAULT_THREAD } from "./channels/my-claw-app/types.ts";
 import type { CronDeliver } from "./cron/types.ts";
+import { applyRunLimits, deliverOfSave, deliveryThreadOf, runLimitsOfJob } from "./channels/my-claw-app/job-fields.ts";
 import { MyClawAppSessionStoreImpl, sanitizeThreadId } from "./channels/my-claw-app/sessions.ts";
 import { SessionFileStore } from "./channels/my-claw-app/files.ts";
 import { GeoapifyReverseGeocoder } from "./channels/my-claw-app/location.ts";
@@ -777,6 +778,31 @@ async function main() {
 
   toolRegistry.register(createNotifyTool());
 
+  const installAlertAfterMs = (): number => {
+    try {
+      return config.cron?.alertAfter !== undefined ? parseDurationMs(config.cron.alertAfter) : DEFAULT_ALERT_AFTER_MS;
+    } catch {
+      return DEFAULT_ALERT_AFTER_MS;
+    }
+  };
+  // `deliver: "thread:<title>"`: the owner's conversation of that name, or a new one in the job's
+  // workspace. Found by title among the owner's threads, so a second job naming the same thread
+  // lands beside the first instead of opening another. Shared by the cron tool and the app's job
+  // editor, so both name the same conversation the same way.
+  const ensureOwnerThread = async (owner: string, title: string, workspace?: string): Promise<string> => {
+    const prefix = `my-claw-app/thread/${owner}/`;
+    // The meta file alone: peeking every thread would load them all into the session cache.
+    for (const id of await sessionManager.listSessions(prefix, 500)) {
+      const meta = await readMeta(id).catch(() => null);
+      if (meta?.title?.trim() === title.trim()) return id.slice(prefix.length);
+    }
+    const threadId = crypto.randomUUID();
+    const sessionId = `${prefix}${threadId}`;
+    const created = await sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm", workspace);
+    created.title = title.trim();
+    await sessionManager.persist(sessionId);
+    return threadId;
+  };
   toolRegistry.register(createCronTool(cronScheduler, {
     // Live catalogs, read per call: a workspace or a skill added while the server runs must
     // show up on the next `cron list` without a restart.
@@ -794,30 +820,8 @@ async function main() {
     cronAgentSkills: () => resolveAgentSkills(config, "cron"),
     cronAgentMcp: () => resolveAgentMcp(config, "cron"),
     defaultTimeoutMs: () => config.cron?.timeoutMs,
-    defaultAlertAfterMs: () => {
-      try {
-        return config.cron?.alertAfter !== undefined ? parseDurationMs(config.cron.alertAfter) : DEFAULT_ALERT_AFTER_MS;
-      } catch {
-        return DEFAULT_ALERT_AFTER_MS;
-      }
-    },
-    // `deliver: "thread:<title>"`: the owner's conversation of that name, or a new one in the job's
-    // workspace. Found by title among the owner's threads, so a second job naming the same thread
-    // lands beside the first instead of opening another.
-    ensureThread: async (owner, title, workspace) => {
-      const prefix = `my-claw-app/thread/${owner}/`;
-      // The meta file alone: peeking every thread would load them all into the session cache.
-      for (const id of await sessionManager.listSessions(prefix, 500)) {
-        const meta = await readMeta(id).catch(() => null);
-        if (meta?.title?.trim() === title.trim()) return id.slice(prefix.length);
-      }
-      const threadId = crypto.randomUUID();
-      const sessionId = `${prefix}${threadId}`;
-      const created = await sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm", workspace);
-      created.title = title.trim();
-      await sessionManager.persist(sessionId);
-      return threadId;
-    },
+    defaultAlertAfterMs: installAlertAfterMs,
+    ensureThread: ensureOwnerThread,
   }));
 
   const adapters: Array<{ stop(): Promise<void> }> = [];
@@ -2125,9 +2129,17 @@ async function main() {
     const mcpNames = (): Set<string> => new Set(mcpManager.status().map((s) => s.name));
     const toolNames = (): Set<string> => new Set(toolsCatalog().tools.map((t) => t.name));
 
-    const jobsListing = (): Promise<MyClawAppJobEntry[]> =>
-      loadJobs().then((jobs) =>
-        jobs.map((job) => {
+    // The conversation a job delivers to, by the title the owner sees: what the editor shows and
+    // saves back. Undefined for a target that is not one of the owner's app conversations.
+    const deliveryThreadTitle = async (deliver: CronDeliver): Promise<string | undefined> => {
+      const sessionId = deliveryThreadOf(deliver);
+      const meta = sessionId ? await readMeta(sessionId).catch(() => null) : null;
+      return meta?.title?.trim() || undefined;
+    };
+    const jobsListing = async (): Promise<MyClawAppJobEntry[]> => {
+      const jobs = await loadJobs();
+      const titles = await Promise.all(jobs.map((job) => deliveryThreadTitle(job.deliver)));
+      return jobs.map((job, index) => {
           const models = modelIds();
           const workspaces = workspaceKeys();
           const skills = skillNames();
@@ -2170,6 +2182,7 @@ async function main() {
             ...(job.lastCostPartial ? { lastCostPartial: true } : {}),
             ...(job.runningSince ? { runningSince: job.runningSince } : {}),
             ...(job.timeoutMs ? { timeoutMs: job.timeoutMs } : {}),
+            ...runLimitsOfJob(job, titles[index], { alertAfterMs: installAlertAfterMs(), timeoutMs: config.cron?.timeoutMs }),
             createdAt: job.createdAt,
             unknownModel: job.model !== undefined && !models.has(job.model) && !isTagReference(job.model),
             unknownWorkspace: job.workspace !== undefined && !workspaces.has(job.workspace),
@@ -2177,12 +2190,12 @@ async function main() {
             unknownMcp: (job.mcp ?? []).filter((name) => name !== "*" && !mcp.has(name)),
             unknownTools: (job.tools ?? []).filter((name) => name !== "*" && !tools.has(name)),
           };
-        }),
-      );
+      });
+    };
 
     myClawApp.onJobsController({
       list: () => jobsListing(),
-      save: async (fields) => {
+      save: async (fields, owner) => {
         // Only checkable against a model the job names itself: a job with no pin runs whatever the
         // cron agent resolves to that day, and the run's own clamp is what covers that case.
         if (fields.effort !== undefined && fields.effort !== "") {
@@ -2210,6 +2223,11 @@ async function main() {
           ...(fields.followUp === undefined ? {} : { followUp: fields.followUp === true }),
           ...(fields.followUpPrompt === undefined ? {} : { followUpPrompt: fields.followUpPrompt }),
         };
+        // Resolved before the write, like the tool does: creating a conversation must not happen
+        // inside the lock. A thread is the owner's own conversation of that title.
+        const before = fields.id ? (await loadJobs()).find((j) => j.id === fields.id) : undefined;
+        if (fields.id && !before) throw new Error(`job not found: ${fields.id}`);
+        const deliver = await deliverOfSave(fields.deliver, before, owner, fields.workspace, ensureOwnerThread);
         // In turn with the tool and the scheduler: an edit from the phone while a `cron` call
         // writes would otherwise erase one of the two -- docs/cron.md.
         await mutateJobs((jobs) => {
@@ -2221,17 +2239,22 @@ async function main() {
             if (fields.skills.mode === "inherit") delete target.skills;
             if (fields.mcp.mode === "inherit") delete target.mcp;
             if (fields.tools.mode === "inherit") delete target.tools;
+            applyRunLimits(target, fields);
             const updated = updateJob(jobs, fields.id, {
               name: fields.name,
               prompt: fields.prompt,
               schedule: fields.schedule,
               enabled: fields.enabled,
+              ...(deliver === undefined ? {} : { deliver }),
               ...stored,
             });
             if (!updated) throw new Error(`job not found: ${fields.id}`);
           } else {
-            // A job made from the app has no chat of origin, so "local" is the only honest target.
-            jobs.push(createJob({ name: fields.name, prompt: fields.prompt, schedule: fields.schedule, origin: null, deliver: "local", ...stored }));
+            // A job made from the app has no chat of origin: it delivers nowhere unless a
+            // conversation is named.
+            const job = createJob({ name: fields.name, prompt: fields.prompt, schedule: fields.schedule, origin: null, deliver: deliver ?? "local", ...stored });
+            applyRunLimits(job, fields);
+            jobs.push(job);
           }
         });
         return jobsListing();
@@ -2818,8 +2841,9 @@ async function main() {
   // parks it in its mailbox (docs/cron.md).
   cronScheduler.handOver = async (target, text) =>
     myClawAppRef ? myClawAppRef.deliverOwnerTurn(target.chatId, target.threadId ?? "default", text) : false;
-  // A delivered result goes into the conversation's history, the way a sub-agent's handoff note
-  // does: filed, never prompted, so it reads back on reload and reaches a phone that was asleep.
+  // A delivered result goes into the conversation's history, so it reads back on reload and reaches
+  // a phone that was asleep, and into its context: asked about the report afterwards, the
+  // conversation's agent has read it (owner, 2026-10-05). Filed, not handed over: nothing runs.
   cronScheduler.journal = async (target, text) => {
     const sessionId = SessionManager.resolveSessionId("my-claw-app", "dm", target.chatId, target.chatId, {
       threadId: target.threadId ?? "default",
@@ -2827,7 +2851,7 @@ async function main() {
     });
     await sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm");
     const threadLog = await sessionManager.logOf(sessionId);
-    threadLog.append<CommandEntry>({ type: "command", prompt: false, input: "cron delivery", output: text, quiet: true });
+    threadLog.append<CommandEntry>({ type: "command", prompt: true, input: "cron delivery", output: text, quiet: true });
     await sessionManager.persist(sessionId);
   };
 

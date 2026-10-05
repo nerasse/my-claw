@@ -1236,7 +1236,7 @@ export async function handleJobSave(
     return;
   }
   try {
-    d.broadcastFrame(ws.data.owner, { type: "jobs.list.result", jobs: await d.jobs.save(frame) });
+    d.broadcastFrame(ws.data.owner, { type: "jobs.list.result", jobs: await d.jobs.save(frame, ws.data.owner) });
   } catch (err) {
     await d.refuse(ws, "jobs", "jobs.save failed", { name: frame.name, id: frame.id, error: String(err) });
   }
