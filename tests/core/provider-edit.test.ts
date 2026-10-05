@@ -72,6 +72,27 @@ describe("upsertProvider", () => {
     });
   });
 
+  test("two providers never read alike: a taken name is refused, case aside, on a create and on a rename", async () => {
+    await writeConfigFile();
+    // The plan reads "Claude (abo)", the gateway reads as its key.
+    const create = await upsertProvider("claude-2", { type: "anthropic", group: "claude (ABO)" });
+    expect(create).toEqual({ ok: false, error: "A provider already has this name: claude (ABO)" });
+    const rename = await upsertProvider("anthropic", { group: "LiteLLM" });
+    expect(rename.ok).toBe(false);
+    // Nothing was written by either refusal.
+    expect((await readConfigFile()).llm.providers).toEqual(FILE.llm.providers);
+    // Its own name again, or another field, is not a clash.
+    expect((await upsertProvider("anthropic", { group: "Claude (abo)", fallbackModel: "x" })).ok).toBe(true);
+    expect((await upsertProvider("claude-2", { type: "anthropic", group: "Claude perso" })).ok).toBe(true);
+  });
+
+  test("a config that already holds two alike can still edit them, short of renaming onto the other", async () => {
+    await writeConfigFile({ llm: { providers: { a: { type: "anthropic", group: "Same" }, b: { type: "anthropic", group: "Same" } } } });
+    expect((await upsertProvider("a", { group: "Same", discover: true })).ok).toBe(true);
+    expect((await upsertProvider("a", { group: "Other" })).ok).toBe(true);
+    expect((await upsertProvider("a", { group: "same" })).ok).toBe(false);
+  });
+
   test("refuses the reserved tags key", async () => {
     await writeConfigFile();
     const result = await upsertProvider("tags", { type: "openai", baseUrl: "https://x.test/v1" });
@@ -90,7 +111,7 @@ describe("upsertProvider", () => {
     expect((await upsertProvider("naked", { type: "openai" })).ok).toBe(false);
     expect((await upsertProvider("gpt", { type: "codex", baseUrl: "https://x" })).ok).toBe(false);
     expect((await upsertProvider("gpt", { type: "codex", apiKeyEnv: "CODEX_KEY" })).ok).toBe(false);
-    const ok = await upsertProvider("abo", { type: "anthropic", group: "Claude (abo)" });
+    const ok = await upsertProvider("abo", { type: "anthropic", group: "Claude (abo, 2)" });
     expect(ok.ok).toBe(true);
   });
 

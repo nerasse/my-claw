@@ -38,6 +38,11 @@ Claude line of `.env` is dropped (snapshotted first, like every `.env` write), e
 already had a sign-in, so there is one source per account and Sign out is a sign out. The env token
 is not read anywhere else any more.
 
+No two providers read alike (2026-10-05): `upsertProvider` refuses a name (its `group`, else its
+key) another provider already reads as, case aside, whenever the name changes, so a config that
+already holds a duplicate can still edit its other fields. The names the server picks itself
+(`accountFor`, the CLI) go through `freeProviderName` and are numbered (`Claude 2`).
+
 No sign-in is ever left on a provider that does not exist, or it would never be offered. On a fresh
 install the Claude token of `.env` finds no plan: it declares one (`PLAN_PROVIDER`, key `claude`,
 numbered if taken), as `/claude` would, then is adopted by it. The CLI does the same once a sign-in

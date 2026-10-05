@@ -66,6 +66,16 @@ export function freeProviderKey(providers: Record<string, unknown>, preferred: s
   for (let i = 2; ; i++) if (!(`${preferred}${i}` in providers)) return `${preferred}${i}`;
 }
 
+/**
+ * The preferred name, numbered when a provider already reads that way (its `group`, else its key):
+ * a sign-in declared by the server or the CLI never lands on a name the owner already uses.
+ */
+export function freeProviderName(providers: Record<string, { group?: string }>, preferred: string): string {
+  const taken = new Set(Object.entries(providers).map(([key, p]) => (p.group?.trim() || key).toLowerCase()));
+  if (!taken.has(preferred.toLowerCase())) return preferred;
+  for (let i = 2; ; i++) if (!taken.has(`${preferred} ${i}`.toLowerCase())) return `${preferred} ${i}`;
+}
+
 export async function readAccount<T>(provider: string): Promise<T | null> {
   try {
     const parsed = JSON.parse(await readFile(accountPath(provider), "utf-8")) as unknown;

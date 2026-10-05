@@ -19,8 +19,9 @@ test("a CLI sign-in with no Claude plan declared declares one, so its models can
   writeFileSync(join(dir, "config.json"), JSON.stringify({ llm: { providers: { claude: { baseUrl: "https://x", apiKeyEnv: "K" } } } }));
   const run = claudeCli(dir, "set-token", TOKEN);
   assert.equal(run.code, 0, run.out);
-  // `claude` is taken by a provider that is not a plan: the plan is numbered, never clobbers it.
-  assert.deepEqual(providersOf(dir)?.["claude2"], { type: "anthropic", group: "Claude", discover: true });
+  // `claude` is taken by a provider that is not a plan: the plan is numbered, never clobbers it,
+  // and its name too, since that provider already reads "claude".
+  assert.deepEqual(providersOf(dir)?.["claude2"], { type: "anthropic", group: "Claude 2", discover: true });
   assert.deepEqual(providersOf(dir)?.["claude"], { baseUrl: "https://x", apiKeyEnv: "K" });
   assert.equal(statSync(join(dir, "accounts", "claude2.json")).mode & 0o777, 0o600);
 });
@@ -42,4 +43,12 @@ test("a CLI sign-in on a key of the owner's choosing declares it under that name
   assert.equal(run.code, 0, run.out);
   assert.deepEqual(providersOf(dir)?.["work"], { type: "anthropic", group: "work", discover: true });
   assert.ok(existsSync(join(dir, "accounts", "work.json")));
+});
+
+test("a CLI sign-in that declares its plan never takes a name the owner already uses", () => {
+  const dir = mkdtempSync(join(tmpdir(), "account-cli-"));
+  writeFileSync(join(dir, "config.json"), JSON.stringify({ llm: { providers: { relay: { type: "anthropic", baseUrl: "https://x", apiKeyEnv: "K", group: "Claude" } } } }));
+  const run = claudeCli(dir, "set-token", TOKEN);
+  assert.equal(run.code, 0, run.out);
+  assert.deepEqual(providersOf(dir)?.["claude"], { type: "anthropic", group: "Claude 2", discover: true });
 });

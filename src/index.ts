@@ -160,6 +160,7 @@ import {
   accountKindOf,
   adoptLegacyAccounts,
   freeProviderKey,
+  freeProviderName,
   moveAccount,
   PLAN_PROVIDER,
   watchAccounts,
@@ -480,7 +481,7 @@ async function main() {
     const existing = firstAccountOf(config.llm.providers, kind);
     if (existing) return existing;
     const key = freeProviderKey(config.llm.providers ?? {}, PLAN_PROVIDER[kind].key);
-    await declareAccount(key, kind, PLAN_PROVIDER[kind].group);
+    await declareAccount(key, kind, freeProviderName(config.llm.providers ?? {}, PLAN_PROVIDER[kind].group));
     return key;
   };
   // One adoption at a time: declaring a plan for the Claude token of .env reloads the config, and a
@@ -3132,7 +3133,7 @@ async function cliAccount(
     if (account in providers) return true;
     const { type, group } = PLAN_PROVIDER[kind];
     // A key of the owner's choosing (`--provider work`) names the account in the picker too.
-    const written = await upsertProvider(account, { type, discover: true, group: named ?? group });
+    const written = await upsertProvider(account, { type, discover: true, group: named ?? freeProviderName(providers, group) });
     if (!written.ok) {
       console.error(`Signed in, but provider "${account}" could not be added to config.json: ${written.error}`);
       return false;

@@ -905,6 +905,18 @@ export async function upsertProvider(key: string, patch: ProviderPatch): Promise
   if (patch.reasoningReplay !== undefined) spec["reasoningReplay"] = patch.reasoningReplay;
   const shapeError = providerShapeError(spec);
   if (shapeError) return { ok: false, error: shapeError };
+  // A name is how a provider reads in the picker and in Stats: two that read alike cannot be told
+  // apart there. Checked only when the name changes, so a config that already holds a duplicate
+  // can still edit its other fields.
+  const nameOf = (entryKey: string, entry: unknown): string => {
+    const group = entry && typeof entry === "object" ? (entry as Record<string, unknown>)["group"] : undefined;
+    return (typeof group === "string" && group.trim() ? group : entryKey).trim().toLowerCase();
+  };
+  const name = nameOf(key, spec);
+  if (created || name !== nameOf(key, existing)) {
+    const clash = Object.entries(providers).find(([other, entry]) => other !== key && nameOf(other, entry) === name);
+    if (clash) return { ok: false, error: `A provider already has this name: ${String(spec["group"] ?? key)}` };
+  }
   providers[key] = spec;
 
   await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant ${created ? "ajout" : "édition"} provider ${key}` });
