@@ -318,22 +318,30 @@ describe("session log: ids", () => {
 describe("session log: what it costs", () => {
   test("an append stays flat on a long conversation", async () => {
     // The measured reason for this whole format: the JSON store rewrote 12 MB on every autosave
-    // tick, 41 ms of it synchronous. This test fails if an append ever grows with the history.
+    // tick, 41 ms of it synchronous. This test fails if an append ever grows with the history:
+    // what reaches the disk is the new line and nothing else, however long the file already is.
+    // Checked on the bytes, not on a stopwatch: a timing read on a loaded CI runner measured the
+    // runner (2026-10-05, a 5 s timeout spent building the history one write at a time).
     const id = freshId();
     const log = await openSessionLog(id);
-    for (let i = 0; i < 4000; i++) {
-      log.append<ToolEntry>({
-        type: "tool", prompt: true, callId: `c${i}`, name: "bash", args: { command: "x" },
+    log.appendAll(
+      Array.from({ length: 4000 }, (_, i) => ({
+        type: "tool" as const, prompt: true as const, callId: `c${i}`, name: "bash", args: { command: "x" },
         output: "y".repeat(500), truncated: false, ok: true, runId: "r1",
-      });
-    }
+      })),
+    );
     await log.flush();
+    // A line the log never wrote and does not hold: a rewrite from memory would drop it, an
+    // append leaves it where it is. Same bytes either way otherwise, so this is what tells them apart.
+    await appendFile(entriesPath(id), "{\"witness\":true}\n");
+    const before = await readFile(entriesPath(id), "utf-8");
+    expect(before.length).toBeGreaterThan(2_000_000);
 
-    const started = performance.now();
-    log.append<UserEntry>({ type: "user", prompt: true, text: "encore" });
-    const elapsed = performance.now() - started;
+    const entry = log.append<UserEntry>({ type: "user", prompt: true, text: "encore" });
     await log.flush();
-    expect(elapsed).toBeLessThan(5);
+    const after = await readFile(entriesPath(id), "utf-8");
+    expect(after.startsWith(before)).toBe(true);
+    expect(after.slice(before.length)).toBe(`${JSON.stringify(entry)}\n`);
     expect(log.entries()).toHaveLength(4001);
   });
 
