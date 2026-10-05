@@ -90,18 +90,23 @@ s="$(probe '{"type":"services.free","id":"stt"}' services.result)" || fail "serv
 as_claw 'test ! -e ~/.my-claw/runtime/whisper' || fail "the whisper venv is still there after free"
 ok "back to cloud: Whisper stopped, and its files freed"
 
-# 7. Local embeddings from the app: the model lands in ~/.my-claw/models, and is freed.
+# 7. Local embeddings from the app: transformers.js is not in the release, so it is installed into
+# ~/.my-claw/runtime, then the model lands in ~/.my-claw/models; both are freed.
+test -z "$(on 'find /opt/my-claw/current/node_modules -maxdepth 2 -name transformers -o -maxdepth 1 -name "onnxruntime*"')" \
+  || fail "transformers.js or onnxruntime shipped in the release"
 probe '{"type":"services.set","id":"embeddings","source":"self-hosted"}' services.result >/dev/null || fail "services.set embeddings"
-for _ in $(seq 1 180); do
+for _ in $(seq 1 300); do
   as_claw 'find ~/.my-claw/models/transformers -name "*.onnx" 2>/dev/null | grep . >/dev/null' && break
   sleep 1
 done
 as_claw 'find ~/.my-claw/models/transformers -name "*.onnx" | grep . >/dev/null' || fail "the embedding model was not downloaded into ~/.my-claw/models"
 as_claw 'grep -q "memory embedding ready" ~/.my-claw/logs/orchestrator-*.log' || fail "the embedding model did not warm up"
+as_claw 'test -d ~/.my-claw/runtime/transformers/node_modules/@huggingface/transformers' || fail "transformers.js was not installed into ~/.my-claw/runtime"
 probe '{"type":"services.set","id":"embeddings","source":"off"}' services.result >/dev/null || fail "embeddings off"
 probe '{"type":"services.free","id":"embeddings"}' services.result >/dev/null || fail "services.free embeddings"
 as_claw 'test ! -e ~/.my-claw/models/transformers' || fail "the embedding model is still there after free"
-ok "embeddings on this server: model downloaded and warmed up, then freed"
+as_claw 'test ! -e ~/.my-claw/runtime/transformers' || fail "transformers.js is still there after free"
+ok "embeddings on this server: transformers.js installed, model downloaded and warmed up, then both freed"
 
 # 8. An update: the same tarball, forced, through the real updater (swap, units, health gate).
 as_claw "myclaw update --file /dist/$(basename "$tarball") --force" > "/var/tmp/update-${machine}.log" 2>&1 \

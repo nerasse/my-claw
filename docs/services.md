@@ -90,9 +90,21 @@ switched on, and can be freed once it is not in use (`src/services/local-engines
   install reconciles again. The unit prefers that venv's Python, else the system one (`$$p`: systemd
   expands a bare `$p` itself). The model (`small`, ~460 MB) is fetched by the server on its first
   transcription. Verified on a fresh Debian 12 machine: `tests-install/`.
-- **Embeddings.** In-process: switching them to this server warms the model up, which downloads it,
-  into `~/.my-claw/models/transformers` (its default was inside `node_modules`, so every update
-  downloaded it again).
+- **Embeddings.** In-process, on bare metal and in compose alike. transformers.js and onnxruntime
+  (440 MB) are not in the release (since 0.7.97): switching embeddings to this server installs the
+  pinned `@huggingface/transformers` into `~/.my-claw/runtime/transformers` with the bun that runs
+  the server and the release's own `overrides`, once, in the background (`TransformersRuntime`);
+  recall stays on FTS5 until it ends, and its end warms the model up, which downloads it into
+  `~/.my-claw/models/transformers` (its default was inside `node_modules`, so every update
+  downloaded it again). A checkout resolves its devDependency instead, so development and the tests
+  install nothing. "Free" removes the package and the models.
+
+  **The one dynamic import of the server** (owner's exception to "top-level imports only",
+  2026-10-05): `src/memory/embedding.ts` imports transformers.js the first time local embeddings
+  run. A top-level import loaded it into every server at boot, embeddings on or off, and it cannot
+  be imported from a release that does not ship it. The module is resolved by path
+  (`TransformersRuntime.entry()`): Bun's resolver remembers a bare name it once failed to find, so a
+  name looked up before the install would stay missing until a restart.
 - **Text-to-speech (Piper)** stays the `piper` binary on bare metal, set up by hand; the compose
   profile is the packaged way.
 

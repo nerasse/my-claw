@@ -91,7 +91,7 @@ import { startConfigWatcher, type ConfigWatcherHandle } from "./core/config-watc
 import { managesUnits, scheduleReconcile } from "./services/on-demand.ts";
 import { createAccounts } from "./llm/subscription-accounts.ts";
 import { choicesOf, installKind, probeService, serviceStates } from "./services/catalog.ts";
-import { TRANSFORMERS_CACHE, diskBytes, freeEmbeddingModels, whisperRuntime } from "./services/local-engines.ts";
+import { diskBytes, transformersRuntime, whisperRuntime } from "./services/local-engines.ts";
 import { createMyClawAppCommandHandler } from "./channels/my-claw-app/commands.ts";
 import { askUndoMode } from "./channels/branch-commands.ts";
 import { effectiveEffort, EFFORT_LEVELS, leafModelId } from "./llm/resolver.ts";
@@ -560,6 +560,10 @@ async function main() {
   whisperRuntime.onChange(() => {
     if (whisperRuntime.status().state === "ready") reconcileOnDemand();
   });
+  // Likewise for transformers.js: local embeddings warm up once it is there.
+  transformersRuntime.onChange(() => {
+    if (transformersRuntime.status().state === "ready") void reloadMemoryEmbedding(config.memory);
+  });
   hooks.on("config:reloaded", reconcileOnDemand);
   hooks.on("env:refreshed", reconcileOnDemand);
   const sttPipeline = new SttPipeline(voiceManager);
@@ -942,14 +946,12 @@ async function main() {
       refreshEnvFile();
       const kind = installKind();
       const local = async (id: string) => {
-        // Only a bare-metal install downloads engines; compose runs them as images.
-        if (kind !== "native") return undefined;
-        if (id === "stt") {
-          const prep = whisperRuntime.status();
-          return { state: prep.state, ...(prep.state === "failed" ? { error: prep.error } : {}), bytes: await diskBytes(whisperRuntime.paths()) };
-        }
-        if (id === "embeddings") return { state: "idle" as const, bytes: await diskBytes([TRANSFORMERS_CACHE]) };
-        return undefined;
+        // Embeddings run in-process, so any install downloads them, compose included (into its
+        // home volume). Speech-to-text is an image in compose: only bare metal downloads it.
+        const runtime = id === "embeddings" ? transformersRuntime : id === "stt" && kind === "native" ? whisperRuntime : undefined;
+        if (!runtime) return undefined;
+        const prep = runtime.status();
+        return { state: prep.state, ...(prep.state === "failed" ? { error: prep.error } : {}), bytes: await diskBytes(runtime.paths()) };
       };
       const services = await Promise.all(
         serviceStates(source).map(async (state) => {
@@ -991,7 +993,7 @@ async function main() {
       free: async (id) => {
         if (await engineInUse(id)) return { ok: false, error: `${id} runs on this server: switch it to the cloud or a URL first` };
         if (id === "stt") await whisperRuntime.free();
-        else await freeEmbeddingModels();
+        else await transformersRuntime.free();
         void log("info", "local engine freed", { id });
         return { ok: true, state: await describeServices(config) };
       },

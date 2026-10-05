@@ -4,7 +4,9 @@
 
 - TypeScript, targeting Bun
 - Strict types, no `any` unless absolutely necessary
-- Top-level imports only, no dynamic imports
+- Top-level imports only, no dynamic imports. One exception, granted by the owner: transformers.js
+  in `src/memory/embedding.ts`, installed and imported only when local embeddings are switched on
+  (docs/services.md, "Local engines")
 
 ## Code Style
 

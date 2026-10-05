@@ -1,11 +1,26 @@
-import { env, pipeline } from "@huggingface/transformers";
+import type * as Transformers from "@huggingface/transformers";
 import type { EmbeddingConfig } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
-import { TRANSFORMERS_CACHE } from "../services/local-engines.ts";
+import { TRANSFORMERS_CACHE, transformersRuntime } from "../services/local-engines.ts";
 
-// Its default is inside its own node_modules, i.e. inside the release: every update downloaded the
-// model again, and the copies went with the old releases.
-env.cacheDir = TRANSFORMERS_CACHE;
+/**
+ * transformers.js, imported the first time local embeddings run: the one dynamic import of the
+ * server, by the owner's exception (2026-10-05, docs/services.md "Local engines"). It is not in
+ * the release at all -- 440 MB with onnxruntime -- and a top-level import loaded it into every
+ * server at boot, embeddings on or off.
+ */
+let transformers: Promise<typeof Transformers> | null = null;
+
+function loadTransformers(): Promise<typeof Transformers> {
+  const entry = transformersRuntime.entry();
+  if (!entry) return Promise.reject(new Error("transformers.js is not installed"));
+  transformers ??= import(entry).then((module: typeof Transformers) => {
+    // Its default is inside its own node_modules: every update downloaded the model again.
+    module.env.cacheDir = TRANSFORMERS_CACHE;
+    return module;
+  });
+  return transformers;
+}
 
 type FeatureExtractor = (
   text: string,
@@ -41,6 +56,7 @@ export function embeddingSignature(cfg?: EmbeddingConfig): string | null {
 
 async function getLocalPipeline(model: string): Promise<FeatureExtractor> {
   if (localPipe && localModel === model) return localPipe;
+  const { pipeline } = await loadTransformers();
   localPipe = (await pipeline("feature-extraction", model)) as unknown as FeatureExtractor;
   localModel = model;
   return localPipe;
@@ -51,10 +67,18 @@ async function getLocalPipeline(model: string): Promise<FeatureExtractor> {
  * Non-blocking by design: callers should not await this on the hot path.
  * Local models download on first use; until ready, recall falls back to FTS5.
  */
-export async function warmupEmbedding(cfg?: EmbeddingConfig): Promise<void> {
+export async function warmupEmbedding(
+  cfg?: EmbeddingConfig,
+  runtime: Pick<typeof transformersRuntime, "prepare"> = transformersRuntime,
+): Promise<void> {
   if (!cfg?.model || cfg.backend !== "local") {
     // http/none: nothing to preload (provider handles its own cold start).
     ready = true;
+    return;
+  }
+  // Not installed yet: the install starts, recall stays on FTS5, and its end warms up again.
+  if (!(await runtime.prepare())) {
+    ready = false;
     return;
   }
   try {

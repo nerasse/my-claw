@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
+import { briefError } from "../utils/errors.ts";
 
 /**
  * The local engines a bare-metal install downloads only once they are switched on, and can free
@@ -17,6 +18,14 @@ export const WHISPER_VENV = join(RUNTIME_DIR, "whisper");
 export const WHISPER_PACKAGES = ["faster-whisper==1.2.1", "av==17.0.0", "ctranslate2==4.7.1"];
 /** transformers.js' cache, outside the release: inside node_modules, every update re-downloaded the model. */
 export const TRANSFORMERS_CACHE = join(MY_CLAW_DIR, "models", "transformers");
+/**
+ * transformers.js and onnxruntime, out of the release: 440 MB that every install carried and only
+ * local embeddings use. Installed here, once, when they are switched on -- docs/services.md.
+ */
+export const TRANSFORMERS_DIR = join(RUNTIME_DIR, "transformers");
+/** The version the code is written against: the devDependency the repository typechecks with. */
+export const TRANSFORMERS_PACKAGE = "@huggingface/transformers";
+export const TRANSFORMERS_VERSION = "4.2.0";
 
 export type Run = (cmd: string[]) => Promise<{ code: number; output: string }>;
 
@@ -112,6 +121,103 @@ export class WhisperRuntime {
 
 export const whisperRuntime = new WhisperRuntime();
 
+/**
+ * transformers.js for in-process embeddings, installed with the bun that runs the server into its
+ * own directory under ~/.my-claw/runtime, with the release's own `overrides` (each one closes an
+ * advisory, AGENTS.md). Ready once that directory resolves the package. A checkout resolves its
+ * devDependency instead, so development and the tests need no install.
+ */
+export class TransformersRuntime {
+  private current: PrepareState = { state: "idle" };
+  private readonly listeners = new Set<() => void>();
+
+  constructor(
+    private readonly run: Run = runCommand,
+    private readonly dir = TRANSFORMERS_DIR,
+    private readonly appRoot = join(import.meta.dir, "..", ".."),
+  ) {}
+
+  status(): PrepareState {
+    return this.current;
+  }
+
+  onChange(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  private set(next: PrepareState): void {
+    this.current = next;
+    for (const listener of this.listeners) listener();
+  }
+
+  /**
+   * The module to import: this directory's install, else the checkout's devDependency.
+   *
+   * The directory is never shown to Bun's resolver before the install is there: it remembers a
+   * `node_modules` it once found missing for the life of the process, and the package then loaded
+   * and failed on its first require (onnxruntime-common, install test on Debian 12, 2026-10-05).
+   * So it is looked at with the file system first.
+   */
+  entry(): string | undefined {
+    const installed = join(this.dir, "node_modules", TRANSFORMERS_PACKAGE);
+    if (existsSync(join(installed, "package.json"))) return Bun.resolveSync(installed, this.dir);
+    try {
+      return Bun.resolveSync(TRANSFORMERS_PACKAGE, this.appRoot);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** True when the package can be imported now. Otherwise starts the install, once, and answers false. */
+  async prepare(): Promise<boolean> {
+    if (this.current.state === "ready") return true;
+    if (this.current.state === "installing") return false;
+    if (this.entry()) {
+      this.set({ state: "ready" });
+      return true;
+    }
+    this.set({ state: "installing" });
+    void this.install();
+    return false;
+  }
+
+  private async install(): Promise<void> {
+    void log("info", "local embeddings: installing transformers.js", { dir: this.dir });
+    try {
+      const own = (await Bun.file(join(this.appRoot, "package.json")).json()) as { overrides?: Record<string, string> };
+      await mkdir(this.dir, { recursive: true });
+      await Bun.write(
+        join(this.dir, "package.json"),
+        JSON.stringify({ name: "my-claw-transformers", private: true, overrides: own.overrides ?? {} }, null, 2),
+      );
+      const done = await this.run([process.execPath, "add", "--cwd", this.dir, `${TRANSFORMERS_PACKAGE}@${TRANSFORMERS_VERSION}`]);
+      if (done.code !== 0) throw new Error(`bun add failed: ${done.output.split("\n").slice(-3).join(" ").slice(0, 300)}`);
+      if (!this.entry()) throw new Error("installed, but the package does not resolve");
+    } catch (err) {
+      const error = briefError(err);
+      void log("warn", "local embeddings: install failed", { error });
+      this.set({ state: "failed", error });
+      return;
+    }
+    void log("info", "local embeddings: transformers.js installed");
+    this.set({ state: "ready" });
+  }
+
+  /** Removes the package and the models it downloaded. The caller checks the engine is not in use. */
+  async free(): Promise<void> {
+    await rm(this.dir, { recursive: true, force: true });
+    await rm(TRANSFORMERS_CACHE, { recursive: true, force: true });
+    this.set({ state: "idle" });
+  }
+
+  paths(): string[] {
+    return [this.dir, TRANSFORMERS_CACHE];
+  }
+}
+
+export const transformersRuntime = new TransformersRuntime();
+
 /** Bytes held on disk by a set of paths; 0 for what does not exist. */
 export async function diskBytes(paths: string[], run: Run = runCommand): Promise<number> {
   const present = paths.filter((p) => existsSync(p));
@@ -121,6 +227,4 @@ export async function diskBytes(paths: string[], run: Run = runCommand): Promise
   return total ? Number(total[1]) : 0;
 }
 
-export async function freeEmbeddingModels(): Promise<void> {
-  await rm(TRANSFORMERS_CACHE, { recursive: true, force: true });
-}
+

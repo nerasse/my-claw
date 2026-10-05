@@ -47,6 +47,14 @@ test("warmup with http backend marks ready without download", async () => {
   expect(isEmbeddingReady()).toBe(true);
 });
 
+test("local embeddings on a release without transformers.js start its install and stay on FTS5 meanwhile", async () => {
+  let asked = 0;
+  await warmupEmbedding({ backend: "local", model: "Xenova/all-MiniLM-L6-v2" }, { prepare: async () => (asked++, false) });
+  expect(asked).toBe(1);
+  expect(isEmbeddingReady()).toBe(false);
+  expect(await embed("hello", { backend: "local", model: "Xenova/all-MiniLM-L6-v2" })).toBeNull();
+});
+
 test("embed returns null when no model configured", async () => {
   expect(await embed("hello", undefined)).toBeNull();
   expect(await embed("hello", {})).toBeNull();

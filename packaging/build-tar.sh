@@ -25,8 +25,11 @@ cp "${PROJECT_ROOT}/tsconfig.json" "${TAR_DIR}/"
 mkdir -p "${TAR_DIR}/docs"
 cp -r "${PROJECT_ROOT}/docs/prompt" "${TAR_DIR}/docs/prompt"
 
-# Copy node_modules (pre-installed)
-cp -r "${PROJECT_ROOT}/node_modules" "${TAR_DIR}/"
+# The production dependencies only, from the lockfile: copying the checkout's node_modules shipped
+# the dev tools, and transformers.js with onnxruntime (440 MB) that only local embeddings use and
+# that the server installs when they are switched on (docs/services.md, "Local engines").
+cp "${PROJECT_ROOT}/bun.lock" "${TAR_DIR}/"
+(cd "${TAR_DIR}" && bun install --frozen-lockfile --production --silent)
 
 # Copy scripts
 mkdir -p "${TAR_DIR}/packaging"
