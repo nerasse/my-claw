@@ -30,7 +30,7 @@ export class VoiceManager {
 
   formatEcho(transcript: string): string {
     const { format } = this.getEchoConfig();
-    return format.replace("{transcript}", transcript);
+    return format.replace("{transcript}", () => transcript);
   }
 
   setGlobalMode(mode: "cloud" | "local" | "auto"): void {

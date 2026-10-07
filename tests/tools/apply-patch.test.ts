@@ -100,6 +100,20 @@ test("apply_patch: a later edit that misses rolls back the earlier ones", async 
   }
 });
 
+test("apply_patch: dollar sequences in the replacement are written as they are", async () => {
+  // String.replace reads $&, $`, $' and $$ in a string replacement as patterns: $` alone pasted the
+  // whole head of a note back into the middle of it.
+  const path = await file("dollar.sh", "head\nMARK\ntail\n");
+  try {
+    const replacement = "a=$& b=$` c=$' d=$$ e=$1 f=${HOME}";
+    const result = await applyPatchTool.execute({ path, edits: [{ old: "MARK", new: replacement }] });
+    assert.equal(result.success, true);
+    assert.equal(await readFile(path, "utf-8"), `head\n${replacement}\ntail\n`);
+  } finally {
+    await rm(TMP, { recursive: true, force: true });
+  }
+});
+
 test("apply_patch: an empty replacement deletes the block", async () => {
   const path = await file("f.ts", "keep\ndrop me\nkeep too\n");
   try {

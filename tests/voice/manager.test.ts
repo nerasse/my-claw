@@ -121,6 +121,11 @@ describe("VoiceManager", () => {
       const manager = new VoiceManager(config);
       expect(manager.formatEcho("hello")).toBe("[Voice]: hello");
     });
+
+    test("keeps dollar sequences of the transcript as spoken", () => {
+      const manager = new VoiceManager(createConfig({ voice: { stt: { echoFormat: "[Voice]: {transcript}" } } }));
+      expect(manager.formatEcho("it costs 5$' or $& and $$")).toBe("[Voice]: it costs 5$' or $& and $$");
+    });
   });
 
   describe("runtime mutation", () => {

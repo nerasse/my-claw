@@ -619,6 +619,19 @@ test("read_skill substitutes ${SKILL_DIR} with absolute path", async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
+test("read_skill substitutes ${SKILL_DIR} with a path holding dollar sequences as it is", async () => {
+  const root = await setupDir();
+  const dir = join(root, "a$&b$$c");
+  await writeSkill(dir, "scripted", "---\nname: scripted\ndescription: Scripted skill\n---\n\nRun: bash ${SKILL_DIR}/run.sh");
+
+  const registry = new SkillRegistry(await loadAllSkills({ builtInDir: dir, customDir: dir }));
+  const result = await readTool(registry, noScope).execute({ name: "scripted" });
+  assert.equal(result.success, true);
+  assert.ok(result.output.includes(`bash ${join(dir, "scripted")}/run.sh`), result.output);
+
+  await rm(root, { recursive: true, force: true });
+});
+
 test("read_skill substitutes ${SKILL_DIR} in referenced files too", async () => {
   const dir = await setupDir();
   await writeSkill(dir, "multi-ref", "---\nname: multi-ref\ndescription: Multi-ref skill\n---\n\nSee references/detail.md");

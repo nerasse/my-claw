@@ -132,7 +132,7 @@ export const applyPatchTool: Tool = {
             "surrounding lines until it is unique, or pass all=true to replace every occurrence.",
         };
       }
-      next = edit.all ? next.split(edit.old).join(edit.new) : next.replace(edit.old, edit.new);
+      next = edit.all ? next.split(edit.old).join(edit.new) : next.replace(edit.old, () => edit.new);
       applied.push(`edits[${index}]: ${found} occurrence${found > 1 ? "s" : ""} replaced`);
     }
 

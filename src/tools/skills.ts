@@ -138,7 +138,7 @@ async function readSkill(
   }
 
   hooks.emit("skill:read", { name });
-  const resolved = rawContent.replace(/\$\{SKILL_DIR\}/g, skillDir);
+  const resolved = rawContent.replace(/\$\{SKILL_DIR\}/g, () => skillDir);
   return { success: true, output: normalizeUntrusted(resolved, `skill:${name}`) };
 }
 
