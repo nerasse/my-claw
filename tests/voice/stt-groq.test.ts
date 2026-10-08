@@ -59,6 +59,32 @@ describe("SttPipeline Groq upload fixes", () => {
       }
     });
 
+    test("renames .weba to .webm for Groq, which refuses the audio-only name", async () => {
+      const tmpDir = await mkdtemp(join(tmpdir(), "stt-test-"));
+      const filePath = join(tmpDir, "voice.weba");
+      await writeFile(filePath, Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x00, 0x00, 0x00, 0x00]));
+
+      const pipeline = new SttPipeline(new VoiceManager(createConfig({ voice: { mode: "cloud" } })));
+      const fetchCalls: FormData[] = [];
+      const fetchMock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
+        fetchCalls.push(init?.body as FormData);
+        return new Response(JSON.stringify({ text: "hello" }), { status: 200 });
+      });
+
+      try {
+        process.env.GROQ_API_KEY = "test-key";
+        await pipeline.transcribe(filePath);
+
+        const fileEntry = fetchCalls[0]!.get("file") as File;
+        expect(fileEntry.name).toBe("voice.webm");
+        expect(fileEntry.type).toBe("audio/webm");
+      } finally {
+        fetchMock.restore();
+        delete process.env.GROQ_API_KEY;
+        await unlink(filePath).catch(() => {});
+      }
+    });
+
     test("keeps .ogg extension unchanged", async () => {
       const tmpDir = await mkdtemp(join(tmpdir(), "stt-test-"));
       const filePath = join(tmpDir, "audio.ogg");

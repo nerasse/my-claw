@@ -56,9 +56,10 @@ export class SttPipeline {
 
     const formData = new FormData();
     const originalName = basename(filePath);
-    const uploadName = originalName.replace(/\.oga$/i, ".ogg");
+    // Groq validates the extension and knows neither audio-only alias.
+    const uploadName = originalName.replace(/\.oga$/i, ".ogg").replace(/\.weba$/i, ".webm");
     const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
-    const mimeMap: Record<string, string> = { ogg: "audio/ogg", oga: "audio/ogg", mp3: "audio/mpeg", wav: "audio/wav", flac: "audio/flac", m4a: "audio/mp4" };
+    const mimeMap: Record<string, string> = { ogg: "audio/ogg", oga: "audio/ogg", weba: "audio/webm", webm: "audio/webm", mp3: "audio/mpeg", wav: "audio/wav", flac: "audio/flac", m4a: "audio/mp4" };
     const mimeType = mimeMap[ext] ?? "audio/ogg";
     const file = new File([buffer], uploadName, { type: mimeType });
     formData.append("file", file);
