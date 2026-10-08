@@ -13,9 +13,17 @@ need to install and update it without an account on git.kssimi.fr.
 │ server -> APK, web   │                         │        │                             │
 └──────────────────────┘                         │        ▼                             │
   ~/.my-claw/.env                                │ my-claw-dist (relay/, bun, no deps)  │
-  MY_CLAW_RELEASE_URL=https://dl.kssimi.fr       │   read-only Forgejo token ───────────┼─► git.kssimi.fr
+  MY_CLAW_RELEASE_URL=https://dl.kssimi.fr       │   two read-only Forgejo tokens ──────┼─► git.kssimi.fr
   MY_CLAW_RELEASE_KEY=mcr_...                    └──────────────────────────────────────┘
 ```
+
+## The registry is public until `claw` is closed
+
+Measured 2026-10-08: `claw` is a public account, and Forgejo derives a package's visibility from
+its owner, not from the private repository. Anonymously, `/api/v1/packages/claw` answers 200 and
+the server tarball (with `src/`) downloads in full. Release assets of the private repositories
+answer 404. Closing it means setting `claw` to private (it owns no public repository), which also
+cuts the collaborators who read the registry directly: their installs need a key first.
 
 ## The layout (the contract)
 
@@ -71,7 +79,8 @@ to Forgejo, whatever the key.
 
 | Variable | Default | |
 |---|---|---|
-| `FORGEJO_TOKEN` | required | the read-only token below |
+| `FORGEJO_TOKEN` | required | `claw` token limited to `claw/my-claw` and `claw/my-claw-app`, `read:repository` |
+| `FORGEJO_PACKAGE_TOKEN` | required | `claw` token with `read:package` alone |
 | `RELAY_PROXY_SECRET` | required | shared with openresty, `openssl rand -hex 32` |
 | `RELAY_PUBLIC_URL` | required | `https://dl.kssimi.fr`, for the commands shown and the origin check |
 | `FORGEJO_URL` | `https://git.kssimi.fr` | |
@@ -91,22 +100,28 @@ mounts in `/home/neras/appdata/my-claw-dist/`, no named volume.
 └── data/                          keys.json (written by the relay, uid 1000)
 ```
 
-1. **Forgejo account**, in the web UI: a user `my-claw-dist`, added as a *Read* collaborator on
-   `claw/my-claw` and `claw/my-claw-app`. Signed in as that user, a token with `read:package` and
-   `read:repository` only. It can then read the packages, the releases, the installer and the
-   collaborator list, and nothing else.
+1. **Two tokens on the `claw` account** (Settings > Applications), no extra account. Forgejo will
+   not put both scopes on one narrow token: "Access tokens with specified repositories can only be
+   used with the read:issue, write:issue, read:repository, and write:repository scopes", and the
+   package registry belongs to the owner, not to a repository.
+   - `FORGEJO_TOKEN`: *specific repositories* `claw/my-claw` and `claw/my-claw-app`, scope
+     `read:repository`. Releases (APK, web bundle), the installer, the collaborator list.
+   - `FORGEJO_PACKAGE_TOKEN`: scope `read:package` alone. It reads packages and no repository;
+     the only package `claw` owns is the server tarball.
+   The relay checks both at startup and names the one that is wrong.
 2. **The stack**, on docker02deb:
    ```sh
    mkdir -p /home/neras/docker/my-claw-dist
    cd /home/neras/docker/my-claw-dist
-   printf 'FORGEJO_TOKEN=%s\nRELAY_PROXY_SECRET=%s\n' '<token>' "$(openssl rand -hex 32)" > .env
+   read -rsp 'repository token: ' T; echo
+   read -rsp 'package token: ' P; echo
+   printf 'FORGEJO_TOKEN=%s\nFORGEJO_PACKAGE_TOKEN=%s\nRELAY_PROXY_SECRET=%s\n' "$T" "$P" "$(openssl rand -hex 32)" > .env
    chmod 600 .env
-   T=$(sed -n 's/^FORGEJO_TOKEN=//p' .env)
    curl -fsS -H "Authorization: token $T" \
      "https://git.kssimi.fr/api/v1/repos/claw/my-claw/raw/relay/get.sh?ref=main" -o get.sh
    sh get.sh                 # fetches relay/*.ts and compose.yml with the same token
    docker compose up -d
-   docker logs my-claw-dist  # "relay listening"; a blind token says so and exits
+   docker logs my-claw-dist  # "relay listening"; a wrong token is named, and the relay exits
    ```
    The image is `oven/bun:1.3.13-alpine` as is: nothing to build. Read-only root, no capability,
    uid 1000.

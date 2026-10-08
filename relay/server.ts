@@ -16,7 +16,7 @@ function required(name: string): string {
 
 const forgejo = new Forgejo(
   (process.env["FORGEJO_URL"] ?? "https://git.kssimi.fr").replace(/\/+$/, ""),
-  required("FORGEJO_TOKEN"),
+  { repo: required("FORGEJO_TOKEN"), packages: required("FORGEJO_PACKAGE_TOKEN") },
 );
 try {
   await forgejo.checkAccess();

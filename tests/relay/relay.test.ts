@@ -6,7 +6,9 @@ import { Forgejo, route } from "../../relay/forgejo.ts";
 import { KeyStore } from "../../relay/keys.ts";
 import { createRelay, type LogEntry } from "../../relay/relay.ts";
 
-const TOKEN = "forgejo-read-token";
+const TOKEN = "forgejo-repo-token";
+const PKG_TOKEN = "forgejo-package-token";
+const TOKENS = { repo: TOKEN, packages: PKG_TOKEN };
 const SECRET = "proxy-secret";
 const PUBLIC = "https://dl.example.test";
 const TARBALL = new Uint8Array(1000).map((_, i) => i % 251);
@@ -14,6 +16,7 @@ const TARBALL = new Uint8Array(1000).map((_, i) => i % 251);
 let upstreamCalls: string[] = [];
 let refuseToken = false;
 let collaborators = new Set<string>();
+let appRepoHidden = false;
 
 const fake = Bun.serve({
   port: 0,
@@ -22,10 +25,18 @@ const fake = Bun.serve({
     const url = new URL(req.url);
     upstreamCalls.push(`${req.method} ${url.pathname}${url.search}`);
     // Forgejo 16: a revoked or wrong token is a 401, no token at all a 404 on a private repository.
-    if (refuseToken || req.headers.get("authorization") !== `token ${TOKEN}`) {
-      return new Response(null, { status: req.headers.has("authorization") ? 401 : 404 });
+    // Each token reaches its half only: a repository token has no package scope, and the package
+    // token no repository scope (Forgejo answers 403 to a missing scope).
+    const packages = url.pathname.startsWith("/api/packages/") || url.pathname.startsWith("/api/v1/packages/");
+    const auth = req.headers.get("authorization");
+    if (refuseToken || (auth !== `token ${TOKEN}` && auth !== `token ${PKG_TOKEN}`)) {
+      return new Response(null, { status: auth ? 401 : 404 });
     }
-    if (url.pathname === "/api/v1/repos/claw/my-claw") return Response.json({ full_name: "claw/my-claw" });
+    if (auth !== `token ${packages ? PKG_TOKEN : TOKEN}`) return new Response(null, { status: 403 });
+    if (appRepoHidden && url.pathname.startsWith("/api/v1/repos/claw/my-claw-app")) return new Response(null, { status: 404 });
+    if (url.pathname === "/api/v1/repos/claw/my-claw" || url.pathname === "/api/v1/repos/claw/my-claw-app") {
+      return Response.json({ full_name: url.pathname.slice(14) });
+    }
     const p = url.pathname;
     const collaborator = /^\/api\/v1\/repos\/claw\/my-claw\/collaborators\/(.+)$/.exec(p);
     if (collaborator) {
@@ -35,6 +46,7 @@ const fake = Bun.serve({
       return new Response(null, { status: name === "stranger" ? 404 : 422 });
     }
     if (p === "/api/v1/packages/claw") {
+      if (url.searchParams.get("limit") === "1") return Response.json([]);
       return Response.json([
         { name: "my-claw", type: "generic", version: "0.7.9" },
         { name: "my-claw", type: "generic", version: "0.7.10" },
@@ -92,11 +104,12 @@ afterAll(() => {
 beforeEach(async () => {
   upstreamCalls = [];
   refuseToken = false;
+  appRepoHidden = false;
   collaborators = new Set(["amine", "lastry", "neras"]);
   logs = [];
   keys = await KeyStore.open(join(dir, `keys-${crypto.randomUUID()}.json`));
   relay = createRelay({
-    forgejo: new Forgejo(`http://127.0.0.1:${fake.port}`, TOKEN),
+    forgejo: new Forgejo(`http://127.0.0.1:${fake.port}`, TOKENS),
     keys,
     proxySecret: SECRET,
     admins: ["neras"],
@@ -256,7 +269,7 @@ describe("collaborators only", () => {
     Date.now = () => now;
     try {
       const cached = createRelay({
-        forgejo: new Forgejo(`http://127.0.0.1:${fake.port}`, TOKEN),
+        forgejo: new Forgejo(`http://127.0.0.1:${fake.port}`, TOKENS),
         keys, proxySecret: SECRET, admins: [], publicUrl: PUBLIC, accessTtlMs: 60_000, log: () => {},
       });
       const auth = { authorization: `Bearer ${await keyFor("amine")}` };
@@ -376,10 +389,18 @@ describe("the key page", () => {
 });
 
 describe("startup", () => {
-  test("a token that cannot see the repository is refused before the relay serves anyone", async () => {
-    await new Forgejo(`http://127.0.0.1:${fake.port}`, TOKEN).checkAccess();
-    await expect(new Forgejo(`http://127.0.0.1:${fake.port}`, "other").checkAccess())
-      .rejects.toThrow("the Forgejo token cannot read claw/my-claw (HTTP 401)");
+  test("a token that cannot see its half is refused before the relay serves anyone", async () => {
+    const base = `http://127.0.0.1:${fake.port}`;
+    await new Forgejo(base, TOKENS).checkAccess();
+    await expect(new Forgejo(base, { repo: "other", packages: PKG_TOKEN }).checkAccess())
+      .rejects.toThrow("FORGEJO_TOKEN cannot read claw/my-claw (HTTP 401)");
+    await expect(new Forgejo(base, { repo: TOKEN, packages: TOKEN }).checkAccess())
+      .rejects.toThrow("FORGEJO_PACKAGE_TOKEN cannot read the claw packages (HTTP 403)");
+    await expect(new Forgejo(base, { repo: PKG_TOKEN, packages: PKG_TOKEN }).checkAccess())
+      .rejects.toThrow("FORGEJO_TOKEN cannot read claw/my-claw (HTTP 403)");
+    appRepoHidden = true;
+    await expect(new Forgejo(base, TOKENS).checkAccess())
+      .rejects.toThrow("FORGEJO_TOKEN cannot read claw/my-claw-app (HTTP 404)");
   });
 });
 

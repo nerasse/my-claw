@@ -93,12 +93,27 @@ function compareVersions(a: string, b: string): number {
 
 const isVersion = (v: unknown): v is string => typeof v === "string" && /^\d+\.\d+\.\d+$/.test(v);
 
+/**
+ * Two tokens, because Forgejo will not give one both narrow scopes: a token limited to chosen
+ * repositories may only carry repository and issue scopes, and the package registry belongs to
+ * the owner, not to a repository. So `repo` is limited to the two repositories (read:repository),
+ * and `packages` carries read:package alone, which reads no repository at all.
+ */
+export interface ForgejoTokens {
+  repo: string;
+  packages: string;
+}
+
+const isPackagePath = (path: string): boolean =>
+  path.startsWith("/api/packages/") || path.startsWith("/api/v1/packages/");
+
 export class Forgejo {
-  constructor(private readonly base: string, private readonly token: string) {}
+  constructor(private readonly base: string, private readonly tokens: ForgejoTokens) {}
 
   fetch(path: string, headers: Record<string, string> = {}): Promise<Response> {
+    const token = isPackagePath(path) ? this.tokens.packages : this.tokens.repo;
     return fetch(`${this.base}${path}`, {
-      headers: { ...headers, Authorization: `token ${this.token}` },
+      headers: { ...headers, Authorization: `token ${token}` },
     });
   }
 
@@ -110,12 +125,20 @@ export class Forgejo {
 
   /**
    * Forgejo answers 404 both to "not a collaborator" and to a repository the token cannot see: a
-   * token without access would refuse everyone and say nothing. Checked once, at startup.
+   * token without access would refuse everyone and say nothing. Checked once, at startup, with
+   * the package token too.
    */
   async checkAccess(): Promise<void> {
-    const response = await this.fetch(`/api/v1/repos/${SERVER_REPO}`);
-    await response.body?.cancel();
-    if (!response.ok) throw new Error(`the Forgejo token cannot read ${SERVER_REPO} (HTTP ${response.status})`);
+    const checks: Array<[string, string]> = [
+      [`/api/v1/repos/${SERVER_REPO}`, `FORGEJO_TOKEN cannot read ${SERVER_REPO}`],
+      [`/api/v1/repos/${APP_REPO}`, `FORGEJO_TOKEN cannot read ${APP_REPO}`],
+      [`/api/v1/packages/${OWNER}?type=generic&q=${PACKAGE}&limit=1`, `FORGEJO_PACKAGE_TOKEN cannot read the ${OWNER} packages`],
+    ];
+    for (const [path, problem] of checks) {
+      const response = await this.fetch(path);
+      await response.body?.cancel();
+      if (!response.ok) throw new Error(`${problem} (HTTP ${response.status})`);
+    }
   }
 
   /**
