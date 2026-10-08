@@ -292,9 +292,6 @@ src/
 └── index.ts               # Entry point: config -> skills -> tools -> sessions -> agent -> router -> adapters
 ```
 
-`relay/` sits beside `src/`, not in it: the download relay in front of Forgejo, deployed on its own
-host and never shipped in the tarball. It imports nothing from `src/` -- `docs/release-source.md`.
-
 ### Splitting rules
 
 - A channel folder (`channels/my-claw-app/`) contains:
