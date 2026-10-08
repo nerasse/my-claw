@@ -1,7 +1,9 @@
 # Gemini TTS
 
-Active when `voice.tts.provider` is `"gemini"` (cloud mode, `GEMINI_API_KEY` in `.env`). It
-replaces Edge entirely: no Edge voice name works there, and no failure falls back to Edge.
+Active when `voice.tts.provider` is `"gemini"` (cloud mode, `GEMINI_API_KEY` in `.env`). No Edge
+voice name works there. On failure it falls back by itself: the next model of `voice.tts.models`
+(older ones read in their own voice, Charon by default, without `style`), then Edge in one voice.
+A `Fallback:` line in the result says so: tell the user.
 
 ## Voices (French, curated)
 
@@ -54,9 +56,11 @@ audio(action="speak",
 
 ## Quota (free tier)
 
-**10 requests per model per day.** One request voices at most 2 speakers and ~4000 characters,
+**10 requests per model per day**, and every model of the chain has its own. One request voices
+at most 2 speakers and ~4000 characters,
 so the cost is one request per ~4000 characters **or per change of speaker pair**: `A B A C A B`
 costs 3 requests. Group the exchanges of a pair together when there are 3 or 4 voices.
 
-A text needing more than 10 is refused before any request: shorten it or regroup the turns. A
-daily-quota error says when it resets: report it, do not retry. Ceiling: 40 000 characters.
+A model out of quota is skipped until its reset, by itself. A text needing more requests than
+the models left allow (10 each) goes straight to Edge: shorten it or regroup the turns when the
+quality matters. Ceiling: 40 000 characters.

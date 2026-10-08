@@ -54,7 +54,10 @@ export function createAudioTool(voice: { stt: SttPipeline; tts: TtsPipeline; man
     return {
       success: true,
       // Not sent by itself: the answer sends it, once, the version the agent keeps.
-      output: `Audio generated: ${result.path}\nNot sent yet. To send it, put MEDIA:${result.path} in your answer.`,
+      output:
+        `Audio generated: ${result.path}\n` +
+        (result.notice ? `Fallback: ${result.notice}. Tell the user in your answer.\n` : "") +
+        `Not sent yet. To send it, put MEDIA:${result.path} in your answer.`,
       keepFromReply: true,
       attachments: [{ type: "audio", path: result.path, mimeType: result.mimeType }],
     };
@@ -84,7 +87,8 @@ export function createAudioTool(voice: { stt: SttPipeline; tts: TtsPipeline; man
       "short spoken summary unless a full reading is asked. Gemini only: up to 40000 chars (read in pieces, joined), " +
       "a dialogue or podcast of up to 4 voices with `speakers` and the text as one `Name: line` per turn, " +
       "a `style` for delivery (global, or per speaker). The voices and how to write a podcast are in the voice skill. " +
-      "On failure, finish the written answer without automatic retries or engine changes. " +
+      "Gemini falls back by itself (other models, then Edge): a `Fallback:` line in the result must be told to the user. " +
+      "On failure, finish the written answer without retrying or changing the engine yourself. " +
       "action='mode' (mode, feature): set the voice engine to cloud, local or auto, at runtime.",
     parameters: {
       type: "object",

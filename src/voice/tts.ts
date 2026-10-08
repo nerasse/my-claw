@@ -7,7 +7,7 @@ import type { TTSResult } from "./types.ts";
 import { piperEndpoint } from "../services/catalog.ts";
 import { AbortedError, isAbort, rethrowIfAborted } from "../core/aborted.ts";
 import {
-  GeminiTts, GeminiTtsError, GEMINI_DEFAULT_MODEL, GEMINI_DEFAULT_VOICE, GEMINI_MAX_TEXT, type Speaker,
+  GeminiTts, GeminiTtsError, GEMINI_DEFAULT_MODELS, GEMINI_DEFAULT_VOICE, GEMINI_MAX_TEXT, type Speaker,
 } from "./gemini-tts.ts";
 
 /**
@@ -19,6 +19,8 @@ export const EDGE_TTS_STALL_MS = 20_000;
 const BINARY_PROBE_TIMEOUT_MS = 5_000;
 const PIPER_TIMEOUT_MS = 30_000;
 const MAX_TEXT = 5_000;
+/** Edge's voice when it stands in for Gemini, whose voice ids it does not know. */
+const EDGE_FALLBACK_VOICE = "fr-FR-RemyMultilingualNeural";
 const MAX_PROBE_OUTPUT_BYTES = 64 * 1024;
 
 type ExecFile = typeof execFile;
@@ -44,6 +46,19 @@ export interface TtsOverrides {
 }
 
 class BinaryNotFoundError extends Error {}
+
+/** Both cloud engines failed; the message already names each failure. */
+class CloudChainError extends Error {}
+
+/** A dialogue as Edge can read it: one voice, the speaker names dropped. */
+function withoutSpeakerNames(text: string, speakers: Speaker[] | undefined): string {
+  if (!speakers) return text;
+  const names = new Set(speakers.map((s) => s.name.toLowerCase()));
+  return text.split("\n").map((line) => {
+    const colon = line.indexOf(":");
+    return colon > 0 && names.has(line.slice(0, colon).trim().toLowerCase()) ? line.slice(colon + 1).trim() : line;
+  }).join("\n");
+}
 
 class ProcessDeadlineError extends Error {
   constructor(readonly timeoutMs: number) {
@@ -232,34 +247,48 @@ export class TtsPipeline {
         : await this.generatePiper(text, overrides?.voice, signal);
     } catch (err) {
       if (isAbort(err, signal)) throw new AbortedError();
-      if (err instanceof ProcessStallError) {
-        throw new Error(`TTS ${mode} stalled: no audio for ${timeoutLabel(err.stallMs)}.`);
-      }
-      if (err instanceof ProcessDeadlineError) {
-        throw new Error(`TTS ${mode} timed out after ${timeoutLabel(err.timeoutMs)}.`);
-      }
-      if (err instanceof BinaryNotFoundError) {
-        throw new Error(`TTS ${mode} failed: ${err.message}`);
-      }
-      if (err instanceof GeminiTtsError) throw new Error(`TTS cloud (Gemini) failed: ${err.message}`);
-      if (gemini) throw new Error("TTS cloud (Gemini) failed: the audio could not be encoded to MP3 (ffmpeg).");
-      if (mode === "cloud") throw new Error("TTS cloud failed: edge-tts did not produce audio.");
-      if (err instanceof Error && err.name === "TimeoutError") {
-        throw new Error(`TTS local timed out after ${timeoutLabel(this.piperTimeoutMs)}.`);
-      }
-      throw new Error("TTS local failed: Piper did not produce audio.");
+      throw new Error(this.failure(err, mode));
     }
   }
 
-  private generateGemini(text: string, overrides: TtsOverrides | undefined, signal?: AbortSignal): Promise<TTSResult> {
+  private failure(err: unknown, mode: "cloud" | "local"): string {
+    if (err instanceof CloudChainError) return err.message;
+    if (err instanceof ProcessStallError) return `TTS ${mode} stalled: no audio for ${timeoutLabel(err.stallMs)}.`;
+    if (err instanceof ProcessDeadlineError) return `TTS ${mode} timed out after ${timeoutLabel(err.timeoutMs)}.`;
+    if (err instanceof BinaryNotFoundError) return `TTS ${mode} failed: ${err.message}`;
+    if (mode === "cloud") return "TTS cloud failed: edge-tts did not produce audio.";
+    if (err instanceof Error && err.name === "TimeoutError") {
+      return `TTS local timed out after ${timeoutLabel(this.piperTimeoutMs)}.`;
+    }
+    return "TTS local failed: Piper did not produce audio.";
+  }
+
+  /**
+   * Every Gemini model first, then Edge whatever went wrong: the owner asked for audio, and a
+   * reading in a plainer voice beats none. The result says so, for the answer to tell him.
+   */
+  private async generateGemini(text: string, overrides: TtsOverrides | undefined, signal?: AbortSignal): Promise<TTSResult> {
     const tts = this.voiceManager.getVoiceConfig()?.tts;
-    return this.gemini.generate({
-      text,
-      voice: overrides?.voice ?? tts?.voice ?? GEMINI_DEFAULT_VOICE,
-      model: tts?.model ?? GEMINI_DEFAULT_MODEL,
-      speakers: overrides?.speakers,
-      style: overrides?.style,
-    }, signal);
+    let reason: string;
+    try {
+      return await this.gemini.generate({
+        text,
+        voice: overrides?.voice ?? tts?.voice ?? GEMINI_DEFAULT_VOICE,
+        models: tts?.models?.length ? tts.models : GEMINI_DEFAULT_MODELS,
+        speakers: overrides?.speakers,
+        style: overrides?.style,
+      }, signal);
+    } catch (err) {
+      if (isAbort(err, signal)) throw new AbortedError();
+      reason = err instanceof GeminiTtsError ? err.message : "the audio could not be encoded to MP3 (ffmpeg)";
+    }
+    try {
+      const edge = await this.generateEdgeTTS(withoutSpeakerNames(text, overrides?.speakers), EDGE_FALLBACK_VOICE, signal);
+      return { ...edge, notice: `Gemini failed (${reason}): read with Edge instead` };
+    } catch (err) {
+      if (isAbort(err, signal)) throw new AbortedError();
+      throw new CloudChainError(`TTS cloud failed: Gemini (${reason}), then the Edge fallback (${this.failure(err, "cloud")})`);
+    }
   }
 
   private async generateEdgeTTS(text: string, voice: string | undefined, signal?: AbortSignal): Promise<TTSResult> {

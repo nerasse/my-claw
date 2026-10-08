@@ -9,7 +9,6 @@ import type { TTSResult } from "./types.ts";
 const execFileAsync = promisify(execFile);
 
 const ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions";
-export const GEMINI_DEFAULT_MODEL = "gemini-3.8-flash-tts";
 export const GEMINI_DEFAULT_VOICE = "fr-fr-podcaster-2";
 export const GEMINI_MAX_TEXT = 40_000;
 const SAMPLE_RATE = 24_000;
@@ -30,6 +29,30 @@ const ENCODE_TIMEOUT_MS = 120_000;
 /** Free tier, per model and per day: the 11th request of 2026-10-08 answered 429 "limit: 10". */
 export const GEMINI_DAILY_REQUESTS = 10;
 export const GEMINI_MAX_SPEAKERS = 4;
+const DAY_MS = 24 * 3_600_000;
+
+/**
+ * One step of the fallback chain, each with a daily quota of its own. An entry with its own
+ * `voice` is an older model: it knows neither the fr-fr-* voices nor per-turn annotations, so it
+ * reads in that voice (dialogues: that voice, then LEGACY_VOICES) and without `style`.
+ */
+export interface GeminiModel {
+  model: string;
+  voice?: string;
+}
+
+/**
+ * Measured 2026-10-08 on the free tier. gemini-2.5-pro-preview-tts is left out: its free quota is
+ * 0 requests a day. The older models refuse `response_format` audio/l16 but answer it by default.
+ */
+export const GEMINI_DEFAULT_MODELS: readonly GeminiModel[] = [
+  { model: "gemini-3.8-flash-tts" },
+  { model: "gemini-3.8-flash-lite-tts" },
+  { model: "gemini-3.1-flash-tts-preview", voice: "Charon" },
+  { model: "gemini-2.5-flash-preview-tts", voice: "Charon" },
+];
+
+const LEGACY_VOICES = ["Charon", "Kore", "Puck", "Aoede", "Fenrir"];
 /** One request voices at most two speakers ("conversational" mode). */
 const SPEAKERS_PER_REQUEST = 2;
 /** Between two requests only: Gemini paces the turns inside one itself. 16-bit mono, so an even count. */
@@ -45,7 +68,8 @@ export interface Speaker {
 export interface GeminiSpeech {
   text: string;
   voice: string;
-  model: string;
+  /** Tried in order, a piece at a time: a model out of quota hands the piece to the next. */
+  models: readonly GeminiModel[];
   speakers?: Speaker[];
   style?: string;
 }
@@ -62,7 +86,9 @@ export interface GeminiTtsOptions {
   encode?: (pcmPath: string, mp3Path: string, signal?: AbortSignal) => Promise<void>;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   chunkChars?: number;
+  now?: () => number;
 }
+
 
 export function parseDialogue(text: string, speakers: Speaker[]): Turn[] {
   const names = new Map(speakers.map((s) => [s.name.toLowerCase(), s.name]));
@@ -137,13 +163,37 @@ function narrationTurns(text: string): Turn[] {
   return text.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean).map((p) => ({ text: p }));
 }
 
-function requestBody(chunk: Turn[], speech: GeminiSpeech): unknown {
+/** An older model's voice for each speaker: its own voice first, then distinct ones, in speaker order. */
+function legacyVoices(speakers: Speaker[], own: string): Map<string, string> {
+  const pool = [own, ...LEGACY_VOICES.filter((v) => v !== own)];
+  return new Map(speakers.map((s, i) => [s.name, pool[i % pool.length]!]));
+}
+
+function requestBody(chunk: Turn[], speech: GeminiSpeech, entry: GeminiModel): unknown {
   const byName = new Map((speech.speakers ?? []).map((s) => [s.name, s]));
   const present = [...new Set(chunk.map((t) => t.speaker))].flatMap((name) => byName.get(name ?? "") ?? []);
-  const styleOf = (speaker?: Speaker): string | undefined => speaker?.style ?? speech.style;
-  const style = (value: string | undefined) => (value ? { style: value } : {});
   // A chunk where one speaker talks alone is a plain reading in that speaker's voice.
   const conversational = present.length === SPEAKERS_PER_REQUEST;
+
+  if (entry.voice) {
+    const voices = legacyVoices(speech.speakers ?? [], entry.voice);
+    const voiceOf = (s: Speaker): string => voices.get(s.name)!;
+    const text = conversational
+      ? chunk.map((t) => `${t.speaker}: ${t.text}`).join("\n")
+      : chunk.map((t) => t.text).join("\n\n");
+    return {
+      model: entry.model,
+      input: [{ type: "user_input", content: [{ type: "text", text }] }],
+      generation_config: {
+        speech_config: conversational
+          ? { mode: "conversational", speakers: present.map((s) => ({ speaker: s.name, voice: voiceOf(s) })) }
+          : [{ voice: present[0] ? voiceOf(present[0]) : entry.voice }],
+      },
+    };
+  }
+
+  const styleOf = (speaker?: Speaker): string | undefined => speaker?.style ?? speech.style;
+  const style = (value: string | undefined) => (value ? { style: value } : {});
   const content = conversational
     ? chunk.map((turn) => ({
         type: "text",
@@ -156,7 +206,7 @@ function requestBody(chunk: Turn[], speech: GeminiSpeech): unknown {
         ...(styleOf(present[0]) ? { annotations: [{ type: "speech_metadata", ...style(styleOf(present[0])) }] } : {}),
       }];
   return {
-    model: speech.model,
+    model: entry.model,
     input: [{ type: "user_input", content }],
     response_format: { type: "audio", mime_type: "audio/l16", sample_rate: SAMPLE_RATE },
     generation_config: {
@@ -168,7 +218,7 @@ function requestBody(chunk: Turn[], speech: GeminiSpeech): unknown {
 }
 
 interface InteractionResponse {
-  steps?: { type?: string; content?: { type?: string; data?: string }[] }[];
+  steps?: { type?: string; content?: { type?: string; data?: string; mime_type?: string }[] }[];
   error?: { message?: string };
 }
 
@@ -179,6 +229,12 @@ function audioOf(response: InteractionResponse): Uint8Array {
     .filter((c) => c.type === "audio" && c.data);
   const last = blocks.at(-1);
   if (!last?.data) throw new GeminiTtsError("the response carried no audio");
+  // The pieces are joined as raw 24 kHz PCM: anything else would play at the wrong speed or as noise.
+  const mime = (last.mime_type ?? "audio/l16").toLowerCase();
+  const rate = /rate=(\d+)/.exec(mime)?.[1];
+  if (!mime.startsWith("audio/l16") || (rate && Number(rate) !== SAMPLE_RATE)) {
+    throw new GeminiTtsError(`unexpected audio format ${last.mime_type}`);
+  }
   return Buffer.from(last.data, "base64");
 }
 
@@ -191,14 +247,18 @@ function errorMessage(body: string): string {
 }
 
 /** "retry in 4h6m13s" (the daily free quota, 2026-10-08), "retryDelay": "12s", or a Retry-After header. */
-function retryDelayMs(response: Response, body: string): number {
+function retryDelayMs(response: Response, body: string): number | undefined {
   const header = Number(response.headers.get("retry-after"));
   if (header > 0) return header * 1000;
   const duration = /retry(?:Delay"?\s*:\s*"|\s+in\s+)([\d.hms]+)/i.exec(body)?.[1] ?? "";
   const unitMs: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1_000 };
   let ms = 0;
   for (const [, value, unit] of duration.matchAll(/(\d+(?:\.\d+)?)([hms])/g)) ms += Number(value) * (unitMs[unit!] ?? 0);
-  return ms > 0 ? ms : RATE_LIMIT_WAIT_MS;
+  return ms > 0 ? ms : undefined;
+}
+
+function clock(ms: number): string {
+  return new Date(ms).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Paris" });
 }
 
 async function encodeMp3(pcmPath: string, mp3Path: string, signal?: AbortSignal): Promise<void> {
@@ -227,11 +287,19 @@ export class GeminiTts {
   private readonly encode: NonNullable<GeminiTtsOptions["encode"]>;
   private readonly wait: NonNullable<GeminiTtsOptions["sleep"]>;
   private readonly chunkChars: number;
+  private readonly now: () => number;
+  /** Model -> when its daily quota comes back. Lives as long as the server: no request is spent learning it twice. */
+  private readonly exhausted = new Map<string, number>();
 
   constructor(options: GeminiTtsOptions = {}) {
     this.encode = options.encode ?? encodeMp3;
     this.wait = options.sleep ?? sleep;
     this.chunkChars = options.chunkChars ?? CHUNK_CHARS;
+    this.now = options.now ?? Date.now;
+  }
+
+  private available(models: readonly GeminiModel[]): GeminiModel[] {
+    return models.filter((entry) => (this.exhausted.get(entry.model) ?? 0) <= this.now());
   }
 
   async generate(speech: GeminiSpeech, signal?: AbortSignal): Promise<TTSResult> {
@@ -239,20 +307,26 @@ export class GeminiTts {
     if (!apiKey) throw new GeminiTtsError("GEMINI_API_KEY not set: add a Gemini API key to .env, or set voice.tts.provider to edge");
     const turns = speech.speakers ? parseDialogue(speech.text, speech.speakers) : narrationTurns(speech.text);
     const chunks = chunkTurns(turns, this.chunkChars);
-    if (chunks.length > GEMINI_DAILY_REQUESTS) {
+    const available = this.available(speech.models);
+    if (available.length === 0) {
+      const back = Math.min(...speech.models.map((m) => this.exhausted.get(m.model) ?? 0));
+      throw new GeminiTtsError(`every Gemini TTS model is out of its daily quota, the first is back at ${clock(back)}`);
+    }
+    const budget = available.length * GEMINI_DAILY_REQUESTS;
+    if (chunks.length > budget) {
       throw new GeminiTtsError(
-        `needs ${chunks.length} requests, the free tier allows ${GEMINI_DAILY_REQUESTS} per day: ` +
+        `needs ${chunks.length} requests, the free tier allows ${budget} today across the models left: ` +
         "shorten the text or use fewer speaker changes",
       );
     }
 
-    // One failed chunk stops the others: a reading with a hole in it is not an answer.
+    // A piece no model could read stops the others: a reading with a hole in it is not an answer.
     const controller = new AbortController();
     const stop = (): void => controller.abort();
     signal?.addEventListener("abort", stop, { once: true });
     const dir = await mkdtemp(join(tmpdir(), "tts-"));
     try {
-      const pcm = await mapLimit(chunks, CONCURRENCY, (chunk) => this.synthesize(chunk, speech, apiKey, controller.signal))
+      const pieces = await mapLimit(chunks, CONCURRENCY, (chunk) => this.readPiece(chunk, speech, apiKey, controller.signal))
         .catch((err: unknown) => {
           controller.abort();
           throw err;
@@ -260,10 +334,17 @@ export class GeminiTts {
       rethrowIfAborted(undefined, signal);
       const pcmPath = join(dir, "speech.pcm");
       const mp3Path = join(dir, "output.mp3");
+      const pcm = pieces.map((p) => p.pcm);
       await writeFile(pcmPath, Buffer.concat(pcm.flatMap((piece, i) => (i === 0 ? [piece] : [SEGMENT_GAP, piece]))));
       await this.encode(pcmPath, mp3Path, signal);
       await rm(pcmPath, { force: true });
-      return { path: mp3Path, mimeType: "audio/mpeg" };
+      const first = speech.models[0]!.model;
+      const others = [...new Set(pieces.map((p) => p.model))].filter((m) => m !== first);
+      return {
+        path: mp3Path,
+        mimeType: "audio/mpeg",
+        ...(others.length > 0 ? { notice: `${first} out of quota or failing, read with ${others.join(", ")}` } : {}),
+      };
     } catch (err) {
       await rm(dir, { recursive: true, force: true });
       if (signal?.aborted) throw new AbortedError();
@@ -273,8 +354,22 @@ export class GeminiTts {
     }
   }
 
-  private async synthesize(chunk: Turn[], speech: GeminiSpeech, apiKey: string, signal: AbortSignal): Promise<Uint8Array> {
-    const body = JSON.stringify(requestBody(chunk, speech));
+  /** The first model left that reads it. Any failure moves on; a spent daily quota also benches the model. */
+  private async readPiece(chunk: Turn[], speech: GeminiSpeech, apiKey: string, signal: AbortSignal): Promise<{ pcm: Uint8Array; model: string }> {
+    const failures: string[] = [];
+    for (const entry of this.available(speech.models)) {
+      try {
+        return { pcm: await this.synthesize(chunk, speech, entry, apiKey, signal), model: entry.model };
+      } catch (err) {
+        if (!(err instanceof GeminiTtsError) || signal.aborted) throw err;
+        failures.push(`${entry.model}: ${err.message}`);
+      }
+    }
+    throw new GeminiTtsError(failures.join("; ") || "every Gemini TTS model is out of its daily quota");
+  }
+
+  private async synthesize(chunk: Turn[], speech: GeminiSpeech, entry: GeminiModel, apiKey: string, signal: AbortSignal): Promise<Uint8Array> {
+    const body = JSON.stringify(requestBody(chunk, speech, entry));
     for (let attempt = 1; ; attempt++) {
       rethrowIfAborted(undefined, signal);
       const response = await fetch(ENDPOINT, {
@@ -291,11 +386,15 @@ export class GeminiTts {
       });
       if (response.ok) return audioOf(await response.json() as InteractionResponse);
       const text = await response.text().catch(() => "");
-      // A per-minute limit is waited out; a daily quota (hours away) fails now, with Google's own words.
-      const delay = response.status === 429 ? retryDelayMs(response, text) : 0;
-      if (response.status === 429 && attempt < RATE_LIMIT_ATTEMPTS && delay <= RATE_LIMIT_MAX_WAIT_MS) {
-        await this.wait(delay, signal);
-        continue;
+      if (response.status === 429) {
+        // A per-minute limit is waited out; a daily quota (hours away, or "limit: 0") benches the model.
+        const delay = retryDelayMs(response, text);
+        if (/per day/i.test(text) || (delay ?? 0) > RATE_LIMIT_MAX_WAIT_MS) {
+          this.exhausted.set(entry.model, this.now() + (delay ?? DAY_MS));
+        } else if (attempt < RATE_LIMIT_ATTEMPTS) {
+          await this.wait(delay ?? RATE_LIMIT_WAIT_MS, signal);
+          continue;
+        }
       }
       throw new GeminiTtsError(`HTTP ${response.status}: ${errorMessage(text)}`);
     }

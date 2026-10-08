@@ -688,14 +688,25 @@ See `docs/my-claw-app-channel.md` for the wire protocol and `docs/web-pairing.md
   `audio` tool's `transcribe` takes a per-call `language` for the cases the agent is sure about.
 - `tts.mode` — override for TTS. Cloud uses `tts.provider`, local uses Piper.
 - `tts.provider` — the cloud engine: `"edge"` (default, no key, 5000 characters per call) or
-  `"gemini"` (`GEMINI_API_KEY` in `.env`, a free key from aistudio.google.com/apikey). No fallback
-  between them: a Gemini failure is an error, never a silent Edge reading. In `auto` mode,
-  `gemini` without a key resolves to local.
+  `"gemini"` (`GEMINI_API_KEY` in `.env`, a free key from aistudio.google.com/apikey). With
+  `gemini`, Edge is the last resort: when every Gemini model has failed (quota, error, missing
+  key, encoding), Edge reads the text in `fr-FR-RemyMultilingualNeural`, a dialogue in that one
+  voice with the names dropped, and the tool result carries a `Fallback:` line the agent passes
+  on to the owner. Only a stop skips it. In `auto` mode, `gemini` without a key resolves to local.
 - `tts.voice` — voice ID for the engine in use: an Edge voice name (`fr-FR-RemyMultilingualNeural`),
   a Gemini voice id (`fr-fr-podcaster-2`, list: `GET /v1beta/voices?language_code=fr-FR`), or a
   Piper model name. It is not translated when `provider` changes.
-- `tts.model` — Gemini only, default `gemini-3.8-flash-tts`; `gemini-3.8-flash-lite-tts` has a
-  quota of its own.
+- `tts.models` — Gemini only: the fallback chain, `[{model, voice?}]`, tried in order. Each model
+  has a daily quota of its own, so the chain multiplies the free budget. An entry with a `voice` is
+  an older model with voices of its own (Charon, Kore, Puck, Aoede, Fenrir): it reads in that
+  voice, a dialogue in that voice then the next ones, and ignores `style` (it takes no per-turn
+  annotations). Default, measured 2026-10-08:
+  ```json
+  [{ "model": "gemini-3.8-flash-tts" }, { "model": "gemini-3.8-flash-lite-tts" },
+   { "model": "gemini-3.1-flash-tts-preview", "voice": "Charon" },
+   { "model": "gemini-2.5-flash-preview-tts", "voice": "Charon" }]
+  ```
+  `gemini-2.5-pro-preview-tts` is left out: its free quota is 0 requests a day.
 
 ### Gemini TTS
 
@@ -717,10 +728,17 @@ Artificial Analysis TTS arena, native dialogue. What `src/voice/gemini-tts.ts` d
   piece (Gemini paces them). `style` (global, or per speaker, which wins) goes in
   `speech_metadata.style`, never in the text, which Gemini reads verbatim.
 - **Quota**: the free tier is 10 requests per model per day (measured: the 11th answered
-  `429 ... limit: 10 requests per day on Free Tier. Please retry in 4h6m13s`), so the ceiling is
-  ten pieces. A 429 that asks to wait up to a minute is waited out (3 attempts); a longer one fails
-  at once with Google's message. A text that needs more than ten requests is refused before the
-  first one. One failed piece stops the others: a reading with a hole is not returned.
+  `429 ... limit: 10 requests per day on Free Tier. Please retry in 4h6m13s`). A 429 that asks to
+  wait up to a minute is waited out (3 attempts). A daily one ("per day", or a wait past a minute)
+  benches the model until the reset Google gives (a day when it gives none, as with `limit: 0`),
+  in memory for the life of the server, so no request is spent learning it twice. Each piece
+  takes the first model of `tts.models` not benched; any failure moves it to the next model, so a
+  long reading can end on a later model. A text needing more than ten requests per model left is
+  refused before the first one. A piece no model can read stops the others (a reading with a hole
+  is not returned), and Edge takes over (`tts.provider`).
+- **Formats**: the 3.8 models are asked for `audio/l16` (unasked, they answer WAV); the older ones
+  refuse that parameter and answer `audio/L16` 24 kHz unasked. Any audio that is not 24 kHz L16 is
+  refused rather than joined.
 - **Privacy**: in the EEA the paid-service data terms apply to the free quota as well, so the text
   is not used for training (Gemini API terms).
 - **Errors** never carry the text being read: `HTTP <status>: <API message>`, or the ffmpeg failure.

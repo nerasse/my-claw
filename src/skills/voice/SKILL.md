@@ -39,10 +39,10 @@ The quality engine for audio reports and podcasts: Gemini voice ids, a `style`, 
 podcasts of **up to 4 voices** (`speakers`). Voices, examples, podcast writing and quota:
 read `references/gemini.md` before a Gemini reading.
 
-Edge is killed once **no audio arrives for 20 seconds** (a long reading is fine while it
-progresses); Stop cancels any engine. If it fails, finish with the written answer and a
-brief audio error: no automatic retry, no silent engine change, no partial file. A new attempt
-or a different engine needs the user's choice.
+With Gemini, the fallback is automatic: the next Gemini model, then Edge. When the result has a
+`Fallback:` line, **tell the user** (which engine or model read it, and why). Edge is killed once
+**no audio arrives for 20 seconds**; Stop cancels any engine. If it still fails, finish with the
+written answer and a brief audio error: no retry of your own, no partial file.
 
 ## Manual STT
 
@@ -70,7 +70,7 @@ audio(action="mode", mode="local", feature="tts")     # TTS local only
 | Cloud | Groq whisper-large-v3 (~1-2s) | Gemini or Edge TTS (per `voice.tts.provider`), MP3 |
 | Local | faster-whisper :8000 (~5-7s) | Piper WAV |
 
-No automatic fallback anywhere: a failed STT or TTS is an error, never another engine.
+No STT fallback. TTS falls back only from Gemini (other models, then Edge), never from Edge or Piper.
 
 ## Overrides (priority)
 

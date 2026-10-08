@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import type { ChildProcess, execFile } from "node:child_process";
 import { tmpdir } from "node:os";
-import { GeminiTts, GeminiTtsError, chunkTurns, parseDialogue } from "../../src/voice/gemini-tts.ts";
+import { GEMINI_DEFAULT_MODELS, GeminiTts, GeminiTtsError, chunkTurns, parseDialogue } from "../../src/voice/gemini-tts.ts";
 import { TtsPipeline } from "../../src/voice/tts.ts";
 import { VoiceManager } from "../../src/voice/manager.ts";
 import { AbortedError } from "../../src/core/aborted.ts";
@@ -113,7 +114,7 @@ describe("GeminiTts", () => {
     restores.push(echoServer(sent));
     const tts = new GeminiTts({ encode: fakeEncode, chunkChars: 12 });
 
-    const result = await tts.generate({ text: "Premier.\n\nDeuxième.\n\nTroisième.", voice: "fr-fr-podcaster-2", model: "m" });
+    const result = await tts.generate({ text: "Premier.\n\nDeuxième.\n\nTroisième.", voice: "fr-fr-podcaster-2", models: [{ model: "m" }] });
 
     expect(sent).toHaveLength(3);
     expect(sent[0]!.url).toBe("https://generativelanguage.googleapis.com/v1beta/interactions");
@@ -136,7 +137,7 @@ describe("GeminiTts", () => {
     await tts.generate({
       text: "Léa: Bonjour.\nMarc: Salut.",
       voice: "unused",
-      model: "m",
+      models: [{ model: "m" }],
       speakers: [{ name: "Léa", voice: "v1" }, { name: "Marc", voice: "v2" }],
       style: "radio",
     });
@@ -161,7 +162,7 @@ describe("GeminiTts", () => {
     await tts.generate({
       text: "Léa: un\nMarc: deux\nLéa: trois\nInès: quatre\nLéa: cinq\nMarc: six\nTom: sept",
       voice: "unused",
-      model: "m",
+      models: [{ model: "m" }],
       speakers: [
         { name: "Léa", voice: "v1" },
         { name: "Marc", voice: "v2", style: "amusé" },
@@ -188,7 +189,7 @@ describe("GeminiTts", () => {
     await tts.generate({
       text: "Léa: un\nMarc: deux\nInès: trois",
       voice: "unused",
-      model: "m",
+      models: [{ model: "m" }],
       speakers: [{ name: "Léa", voice: "v1" }, { name: "Marc", voice: "v2" }, { name: "Inès", voice: "v3", style: "vif" }],
     });
 
@@ -204,12 +205,124 @@ describe("GeminiTts", () => {
     restores.push(echoServer(sent));
     const tts = new GeminiTts({ encode: fakeEncode, chunkChars: 5 });
 
-    const failure = await tts.generate({ text: Array.from({ length: 11 }, (_, i) => `para${i % 10}`).join("\n\n"), voice: "v", model: "m" })
+    const failure = await tts.generate({ text: Array.from({ length: 11 }, (_, i) => `para${i % 10}`).join("\n\n"), voice: "v", models: [{ model: "m" }] })
       .catch((e: Error) => e);
 
     expect(failure).toBeInstanceOf(GeminiTtsError);
     expect((failure as Error).message).toContain("needs 11 requests");
     expect(sent).toHaveLength(0);
+  });
+
+  test("a daily quota hands the piece to the next model, and benches the spent one until Google's reset", async () => {
+    let now = 1_000_000;
+    const sent: Sent[] = [];
+    const daily = "Rate limit exceeded (limit: 10 requests per day on Free Tier). Please retry in 2h";
+    restores.push(echoServer(sent, (r) => (r.body.model === "a" ? Response.json({ error: { message: daily } }, { status: 429 }) : undefined)));
+    const tts = new GeminiTts({ encode: fakeEncode, now: () => now });
+    const models = [{ model: "a" }, { model: "b" }];
+
+    const first = await tts.generate({ text: "x", voice: "v", models });
+    expect(sent.map((r) => r.body.model)).toEqual(["a", "b"]);
+    expect(first.notice).toBe("a out of quota or failing, read with b");
+
+    // Still benched: no request is spent on it again.
+    await tts.generate({ text: "y", voice: "v", models });
+    expect(sent.map((r) => r.body.model)).toEqual(["a", "b", "b"]);
+
+    now += 2 * 3_600_000 + 1;
+    await tts.generate({ text: "z", voice: "v", models });
+    expect(sent.map((r) => r.body.model)).toEqual(["a", "b", "b", "a", "b"]);
+  });
+
+  test("a free quota of zero (no retry time) benches the model for a day", async () => {
+    let now = 0;
+    const sent: Sent[] = [];
+    const zero = "Rate limit exceeded for model gemini-2.5-pro-tts (limit: 0 requests per day on Free Tier).";
+    restores.push(echoServer(sent, (r) => (r.body.model === "pro" ? Response.json({ error: { message: zero } }, { status: 429 }) : undefined)));
+    const waits: number[] = [];
+    const tts = new GeminiTts({ encode: fakeEncode, now: () => now, sleep: async (ms) => { waits.push(ms); } });
+    const models = [{ model: "pro" }, { model: "b" }];
+
+    await tts.generate({ text: "x", voice: "v", models });
+    now += 23 * 3_600_000;
+    await tts.generate({ text: "y", voice: "v", models });
+    expect(sent.map((r) => r.body.model)).toEqual(["pro", "b", "b"]);
+    expect(waits).toEqual([]);
+  });
+
+  test("any other failure moves the piece on too, without benching the model", async () => {
+    const sent: Sent[] = [];
+    restores.push(echoServer(sent, (r, i) => (r.body.model === "a" && i === 0 ? Response.json({ error: { message: "boom" } }, { status: 500 }) : undefined)));
+    const tts = new GeminiTts({ encode: fakeEncode });
+    await tts.generate({ text: "x", voice: "v", models: [{ model: "a" }, { model: "b" }] });
+    await tts.generate({ text: "y", voice: "v", models: [{ model: "a" }, { model: "b" }] });
+    expect(sent.map((r) => r.body.model)).toEqual(["a", "b", "a"]);
+  });
+
+  test("every model benched: refused before any request, naming the first reset", async () => {
+    const sent: Sent[] = [];
+    const daily = (h: number) => `limit: 10 requests per day. Please retry in ${h}h`;
+    restores.push(echoServer(sent, (r) => Response.json({ error: { message: daily(r.body.model === "a" ? 3 : 1) } }, { status: 429 })));
+    const tts = new GeminiTts({ encode: fakeEncode, now: () => Date.UTC(2026, 9, 8, 22, 0) });
+    const models = [{ model: "a" }, { model: "b" }];
+
+    const failure = await tts.generate({ text: "x", voice: "v", models }).catch((e: Error) => e);
+    expect((failure as Error).message).toContain("a: HTTP 429");
+    expect((failure as Error).message).toContain("b: HTTP 429");
+    expect(sent).toHaveLength(2);
+
+    const again = await tts.generate({ text: "x", voice: "v", models }).catch((e: Error) => e);
+    expect((again as Error).message).toBe("every Gemini TTS model is out of its daily quota, the first is back at 01:00");
+    expect(sent).toHaveLength(2);
+  });
+
+  test("the request budget counts every model left, ten each", async () => {
+    const sent: Sent[] = [];
+    restores.push(echoServer(sent));
+    const tts = new GeminiTts({ encode: fakeEncode, chunkChars: 5 });
+    const text = Array.from({ length: 15 }, (_, i) => `para${i % 10}`).join("\n\n");
+    await tts.generate({ text, voice: "v", models: [{ model: "a" }, { model: "b" }] });
+    expect(sent).toHaveLength(15);
+  });
+
+  test("an older model: its own voice, no response_format, no annotations, the dialogue written out", async () => {
+    const sent: Sent[] = [];
+    restores.push(mockFetch(async (input, init) => {
+      sent.push({ url: String(input), key: null, body: JSON.parse(String(init?.body)) });
+      const data = Buffer.from("pcm").toString("base64");
+      return Response.json({ steps: [{ type: "model_output", content: [{ type: "audio", data, mime_type: "audio/L16;codec=pcm;rate=24000" }] }] });
+    }));
+    const tts = new GeminiTts({ encode: fakeEncode });
+    const old = [{ model: "old", voice: "Charon" }];
+
+    await tts.generate({ text: "Un récit.", voice: "fr-fr-podcaster-2", models: old, style: "radio" });
+    await tts.generate({
+      text: "Léa: un\nMarc: deux\nInès: trois",
+      voice: "unused",
+      models: old,
+      speakers: [{ name: "Léa", voice: "fr-1" }, { name: "Marc", voice: "fr-2", style: "vif" }, { name: "Inès", voice: "fr-3" }],
+    });
+
+    expect(sent[0]!.body).toEqual({
+      model: "old",
+      input: [{ type: "user_input", content: [{ type: "text", text: "Un récit." }] }],
+      generation_config: { speech_config: [{ voice: "Charon" }] },
+    } as unknown as Sent["body"]);
+    expect(sent[1]!.body.input[0]!.content).toEqual([{ type: "text", text: "Léa: un\nMarc: deux" }]);
+    expect(sent[1]!.body.generation_config.speech_config).toEqual({
+      mode: "conversational",
+      speakers: [{ speaker: "Léa", voice: "Charon" }, { speaker: "Marc", voice: "Kore" }],
+    });
+    expect(sent[2]!.body.generation_config.speech_config).toEqual([{ voice: "Puck" }]);
+  });
+
+  test("audio that is not 24 kHz PCM is refused, never joined as noise", async () => {
+    restores.push(mockFetch(async () => Response.json({
+      steps: [{ type: "model_output", content: [{ type: "audio", data: "UklGRg==", mime_type: "audio/wav" }] }],
+    })));
+    const failure = await new GeminiTts({ encode: fakeEncode }).generate({ text: "x", voice: "v", models: [{ model: "m" }] })
+      .catch((e: Error) => e);
+    expect((failure as Error).message).toBe("m: unexpected audio format audio/wav");
   });
 
   test("a 429 waits the delay the API gives, then retries the same piece", async () => {
@@ -220,7 +333,7 @@ describe("GeminiTts", () => {
       : undefined)));
     const tts = new GeminiTts({ encode: fakeEncode, sleep: async (ms) => { waits.push(ms); } });
 
-    await tts.generate({ text: "Bonjour.", voice: "v", model: "m" });
+    await tts.generate({ text: "Bonjour.", voice: "v", models: [{ model: "m" }] });
 
     expect(waits).toEqual([7000]);
     expect(sent).toHaveLength(2);
@@ -233,14 +346,14 @@ describe("GeminiTts", () => {
     const sent: Sent[] = [];
     restores.push(echoServer(sent, (_s, i) => (i === 0 ? quota("Rate limit. Please retry in 12.5s.") : undefined)));
     const tts = new GeminiTts({ encode: fakeEncode, sleep: async (ms) => { waits.push(ms); } });
-    await tts.generate({ text: "x", voice: "v", model: "m" });
+    await tts.generate({ text: "x", voice: "v", models: [{ model: "m" }] });
     expect(waits).toEqual([12_500]);
     restores.pop()!.restore();
 
     const daily = "Rate limit exceeded (limit: 10 requests per day on Free Tier). Please retry in 4h6m13s";
     restores.push(mockFetch(async () => quota(daily)));
-    const failure = await tts.generate({ text: "x", voice: "v", model: "m" }).catch((e: Error) => e);
-    expect((failure as Error).message).toBe(`HTTP 429: ${daily}`);
+    const failure = await tts.generate({ text: "x", voice: "v", models: [{ model: "m" }] }).catch((e: Error) => e);
+    expect((failure as Error).message).toBe(`m: HTTP 429: ${daily}`);
     expect(waits).toEqual([12_500]);
   });
 
@@ -249,10 +362,10 @@ describe("GeminiTts", () => {
     const tts = new GeminiTts({ encode: fakeEncode });
     const before = workDirs();
 
-    const failure = await tts.generate({ text: "texte privé", voice: "nope", model: "m" }).catch((e: Error) => e);
+    const failure = await tts.generate({ text: "texte privé", voice: "nope", models: [{ model: "m" }] }).catch((e: Error) => e);
 
     expect(failure).toBeInstanceOf(GeminiTtsError);
-    expect((failure as Error).message).toBe("HTTP 400: No matching speaker voice");
+    expect((failure as Error).message).toBe("m: HTTP 400: No matching speaker voice");
     expect(encoded).toEqual([]);
     expect(workDirs()).toEqual(before);
   });
@@ -262,7 +375,7 @@ describe("GeminiTts", () => {
     const sent: Sent[] = [];
     restores.push(echoServer(sent));
 
-    await expect(new GeminiTts({ encode: fakeEncode }).generate({ text: "x", voice: "v", model: "m" }))
+    await expect(new GeminiTts({ encode: fakeEncode }).generate({ text: "x", voice: "v", models: [{ model: "m" }] }))
       .rejects.toThrow("GEMINI_API_KEY not set");
     expect(sent).toEqual([]);
   });
@@ -275,7 +388,7 @@ describe("GeminiTts", () => {
       controller.abort();
     })));
 
-    await expect(new GeminiTts({ encode: fakeEncode }).generate({ text: "x", voice: "v", model: "m" }, controller.signal))
+    await expect(new GeminiTts({ encode: fakeEncode }).generate({ text: "x", voice: "v", models: [{ model: "m" }] }, controller.signal))
       .rejects.toBeInstanceOf(AbortedError);
     expect(encoded).toEqual([]);
     expect(workDirs()).toEqual(before);
@@ -290,8 +403,20 @@ function pipelineManager(tts: Record<string, unknown>): VoiceManager {
   } as MyClawConfig);
 }
 
-function pipeline(tts: Record<string, unknown>, gemini?: GeminiTts) {
-  return new TtsPipeline(pipelineManager(tts), { resolveBinary: async () => "edge-tts", gemini });
+/** Edge, without the binary: records what it was asked to read, writes a file or fails. */
+function fakeEdge(fail = false) {
+  const reads: { text: string; voice: string }[] = [];
+  const execute = ((_file: string, args: readonly string[], _options: unknown, done: (err: Error | null, out: string) => void) => {
+    reads.push({ text: args[args.indexOf("--text") + 1]!, voice: args[args.indexOf("--voice") + 1]! });
+    if (!fail) writeFileSync(args[args.indexOf("--write-media") + 1]!, "edge audio");
+    queueMicrotask(() => done(fail ? new Error("edge down") : null, ""));
+    return { kill: () => true } as unknown as ChildProcess;
+  }) as unknown as typeof execFile;
+  return { execute, reads };
+}
+
+function pipeline(tts: Record<string, unknown>, gemini?: GeminiTts, edge = fakeEdge()) {
+  return new TtsPipeline(pipelineManager(tts), { resolveBinary: async () => "edge-tts", execFile: edge.execute, gemini });
 }
 
 describe("TtsPipeline with voice.tts.provider", () => {
@@ -300,11 +425,19 @@ describe("TtsPipeline with voice.tts.provider", () => {
     const gemini = { generate: async (speech: unknown) => { calls.push(speech); return { path: "/x.mp3", mimeType: "audio/mpeg" }; } } as unknown as GeminiTts;
     const text = "a".repeat(12_000);
 
-    const result = await pipeline({ mode: "cloud", provider: "gemini", voice: "fr-fr-podcaster-9", model: "gm" }, gemini)
+    const models = [{ model: "gm" }, { model: "old", voice: "Charon" }];
+    const result = await pipeline({ mode: "cloud", provider: "gemini", voice: "fr-fr-podcaster-9", models }, gemini)
       .generate(text, { style: "calme" });
 
     expect(result.path).toBe("/x.mp3");
-    expect(calls).toEqual([{ text, voice: "fr-fr-podcaster-9", model: "gm", speakers: undefined, style: "calme" }]);
+    expect(calls).toEqual([{ text, voice: "fr-fr-podcaster-9", models, speakers: undefined, style: "calme" }]);
+  });
+
+  test("without models in the config, the measured default chain is used", async () => {
+    const calls: { models: unknown }[] = [];
+    const gemini = { generate: async (speech: { models: unknown }) => { calls.push(speech); return { path: "/x.mp3", mimeType: "audio/mpeg" }; } } as unknown as GeminiTts;
+    await pipeline({ mode: "cloud", provider: "gemini" }, gemini).generate("x");
+    expect(calls[0]!.models).toBe(GEMINI_DEFAULT_MODELS);
   });
 
   test("gemini still has a ceiling", async () => {
@@ -318,10 +451,44 @@ describe("TtsPipeline with voice.tts.provider", () => {
       .rejects.toThrow("need the Gemini engine");
   });
 
-  test("a Gemini failure surfaces its own safe message", async () => {
+  test("when Gemini fails, Edge reads it in its own voice, names dropped, and the result says so", async () => {
+    const gemini = { generate: async () => { throw new GeminiTtsError("every model is out of quota"); } } as unknown as GeminiTts;
+    const edge = fakeEdge();
+
+    const result = await pipeline({ mode: "cloud", provider: "gemini", voice: "fr-fr-podcaster-2" }, gemini, edge)
+      .generate("Léa: Bonjour.\nmarc : Salut.\nça continue.", { speakers: [{ name: "Léa", voice: "a" }, { name: "Marc", voice: "b" }] });
+
+    expect(edge.reads).toEqual([{ text: "Bonjour.\nSalut.\nça continue.", voice: "fr-FR-RemyMultilingualNeural" }]);
+    expect(existsSync(result.path)).toBe(true);
+    expect(result.notice).toBe("Gemini failed (every model is out of quota): read with Edge instead");
+  });
+
+  test("Edge stands in for a key that is missing too, and for a failed MP3 encoding", async () => {
+    const encodeFails = { generate: async () => { throw new Error("ffmpeg exited 1"); } } as unknown as GeminiTts;
+    const result = await pipeline({ mode: "cloud", provider: "gemini" }, encodeFails).generate("x");
+    expect(result.notice).toContain("the audio could not be encoded to MP3");
+
+    delete process.env["GEMINI_API_KEY"];
+    const noKey = await pipeline({ mode: "cloud", provider: "gemini" }).generate("x");
+    expect(noKey.notice).toContain("GEMINI_API_KEY not set");
+  });
+
+  test("Gemini then Edge failing is one error naming both, never the text", async () => {
     const gemini = { generate: async () => { throw new GeminiTtsError("HTTP 400: bad voice"); } } as unknown as GeminiTts;
-    await expect(pipeline({ mode: "cloud", provider: "gemini" }, gemini).generate("x"))
-      .rejects.toThrow("TTS cloud (Gemini) failed: HTTP 400: bad voice");
+    const failure = await pipeline({ mode: "cloud", provider: "gemini" }, gemini, fakeEdge(true)).generate("texte privé")
+      .catch((e: Error) => e);
+    expect((failure as Error).message).toBe(
+      "TTS cloud failed: Gemini (HTTP 400: bad voice), then the Edge fallback (TTS cloud failed: edge-tts did not produce audio.)",
+    );
+  });
+
+  test("a stop is a stop: Edge is not tried", async () => {
+    const controller = new AbortController();
+    const gemini = { generate: async () => { controller.abort(); throw new AbortedError(); } } as unknown as GeminiTts;
+    const edge = fakeEdge();
+    await expect(pipeline({ mode: "cloud", provider: "gemini" }, gemini, edge).generate("x", undefined, controller.signal))
+      .rejects.toBeInstanceOf(AbortedError);
+    expect(edge.reads).toEqual([]);
   });
 
   test("auto mode reads the Gemini key as the cloud credential", () => {
