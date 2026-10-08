@@ -1,10 +1,11 @@
 # The download relay, as it runs on docker02deb: docs/release-source.md.
 #
-#   /home/neras/docker/my-claw-dist/
-#   ├── compose.yml      this file
-#   ├── .env             FORGEJO_TOKEN, RELAY_PROXY_SECRET (0600)
-#   ├── relay/           forgejo.ts keys.ts page.ts relay.ts server.ts, copied from the repo
-#   └── data/            keys.json, written by the relay (owned by 1000:1000)
+#   /home/neras/docker/my-claw-dist/      compose.yml (this file), .env (0600)
+#   /home/neras/appdata/my-claw-dist/
+#   ├── relay/                            the five relay/*.ts, read-only in the container
+#   └── data/                             keys.json, written by the relay
+#
+# Host bind mounts only, no named volume.
 services:
   relay:
     image: oven/bun:1.3.13-alpine
@@ -21,8 +22,8 @@ services:
       RELAY_DATA: /data
       PORT: "8090"
     volumes:
-      - ./relay:/relay:ro
-      - ./data:/data
+      - /home/neras/appdata/my-claw-dist/relay:/relay:ro
+      - /home/neras/appdata/my-claw-dist/data:/data
     read_only: true
     tmpfs:
       - /tmp

@@ -13,6 +13,7 @@ const TARBALL = new Uint8Array(1000).map((_, i) => i % 251);
 
 let upstreamCalls: string[] = [];
 let refuseToken = false;
+let collaborators = new Set<string>();
 
 const fake = Bun.serve({
   port: 0,
@@ -20,10 +21,19 @@ const fake = Bun.serve({
   fetch(req) {
     const url = new URL(req.url);
     upstreamCalls.push(`${req.method} ${url.pathname}${url.search}`);
+    // Forgejo 16: a revoked or wrong token is a 401, no token at all a 404 on a private repository.
     if (refuseToken || req.headers.get("authorization") !== `token ${TOKEN}`) {
-      return new Response("Not found.", { status: 404 });
+      return new Response(null, { status: req.headers.has("authorization") ? 401 : 404 });
     }
+    if (url.pathname === "/api/v1/repos/claw/my-claw") return Response.json({ full_name: "claw/my-claw" });
     const p = url.pathname;
+    const collaborator = /^\/api\/v1\/repos\/claw\/my-claw\/collaborators\/(.+)$/.exec(p);
+    if (collaborator) {
+      // Forgejo 16: 204, 404 for an account that is not one, 422 for an unknown name (2026-10-07).
+      const name = collaborator[1]!.toLowerCase();
+      if (collaborators.has(name)) return new Response(null, { status: 204 });
+      return new Response(null, { status: name === "stranger" ? 404 : 422 });
+    }
     if (p === "/api/v1/packages/claw") {
       return Response.json([
         { name: "my-claw", type: "generic", version: "0.7.9" },
@@ -82,6 +92,7 @@ afterAll(() => {
 beforeEach(async () => {
   upstreamCalls = [];
   refuseToken = false;
+  collaborators = new Set(["amine", "lastry", "neras"]);
   logs = [];
   keys = await KeyStore.open(join(dir, `keys-${crypto.randomUUID()}.json`));
   relay = createRelay({
@@ -90,9 +101,12 @@ beforeEach(async () => {
     proxySecret: SECRET,
     admins: ["neras"],
     publicUrl: PUBLIC,
+    accessTtlMs: 0,
     log: (e) => logs.push(e),
   });
 });
+
+const downloadsOnly = () => upstreamCalls.filter((c) => !c.includes("/collaborators/"));
 
 const get = (path: string, headers: Record<string, string> = {}, method = "GET") =>
   relay(new Request(`${PUBLIC}${path}`, { method, headers }));
@@ -152,7 +166,7 @@ describe("downloads", () => {
     const res = await get("/server/0.7.10/my-claw-0.7.10-linux-x64.tar.gz", auth, "HEAD");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-length")).toBe(String(TARBALL.length));
-    expect(upstreamCalls).toEqual(["GET /api/packages/claw/generic/my-claw/0.7.10/my-claw-0.7.10-linux-x64.tar.gz"]);
+    expect(downloadsOnly()).toEqual(["GET /api/packages/claw/generic/my-claw/0.7.10/my-claw-0.7.10-linux-x64.tar.gz"]);
   });
 
   test("the newest app release skips drafts and compares versions, not dates", async () => {
@@ -180,7 +194,7 @@ describe("downloads", () => {
       "/claw/my-claw/raw/main/src/index.ts",
     ];
     for (const path of paths) expect((await get(path, auth)).status).toBe(404);
-    expect(upstreamCalls).toEqual([]);
+    expect(downloadsOnly()).toEqual([]);
     expect((await get("/server/latest.json", auth, "POST")).status).toBe(405);
   });
 
@@ -190,7 +204,7 @@ describe("downloads", () => {
     expect((await get("/server/0.7.11/my-claw-0.7.11-linux-x64.tar.gz", auth, "HEAD")).status).toBe(404);
     refuseToken = true;
     expect((await get("/server/latest.json", auth)).status).toBe(502);
-    expect(logs.at(-1)).toMatchObject({ status: 502, error: "forgejo answered 404 on /api/v1/packages/claw?type=generic&q=my-claw&limit=50" });
+    expect(logs.at(-1)).toMatchObject({ status: 502, error: "forgejo answered 401 on the collaborator check" });
   });
 
   test("every request is logged with the person and the key id, never the key", async () => {
@@ -201,6 +215,72 @@ describe("downloads", () => {
       expect.objectContaining({ method: "GET", path: "/app/latest.json", status: 200, user: "amine", key: record!.id }),
     ]);
     expect(JSON.stringify(logs)).not.toContain(key);
+  });
+});
+
+describe("collaborators only", () => {
+  test("someone signed in who is not a collaborator gets no page and cannot create a key", async () => {
+    for (const user of ["stranger", "keycloak-only"]) {
+      const page = await get("/key", signedIn(user));
+      expect(page.status).toBe(403);
+      expect(await page.text()).toContain("not a collaborator of my-claw");
+      expect((await post("/key", user, { label: "pc" })).status).toBe(403);
+    }
+    expect(keys.list()).toEqual([]);
+  });
+
+  test("a name Forgejo could not take is refused without asking it", async () => {
+    expect((await get("/key", signedIn("a/b"))).status).toBe(403);
+    expect(upstreamCalls).toEqual([]);
+  });
+
+  test("the check ignores case, like Forgejo", async () => {
+    expect((await get("/key", signedIn("Amine"))).status).toBe(200);
+  });
+
+  test("a collaborator removed from the repository loses the page and every key", async () => {
+    const key = await keyFor("amine");
+    const auth = { authorization: `Bearer ${key}` };
+    expect((await get("/app/latest.json", auth)).status).toBe(200);
+    collaborators.delete("amine");
+    const refused = await get("/app/latest.json", auth);
+    expect(refused.status).toBe(403);
+    expect(await refused.text()).toContain("no longer has access");
+    expect((await get("/key", signedIn("amine"))).status).toBe(403);
+    expect(logs.at(-2)).toMatchObject({ status: 403, user: "amine", key: keys.list("amine")[0]!.id });
+  });
+
+  test("an answer holds for the configured delay, then is asked again", async () => {
+    let now = 1_000_000;
+    const spy = Date.now;
+    Date.now = () => now;
+    try {
+      const cached = createRelay({
+        forgejo: new Forgejo(`http://127.0.0.1:${fake.port}`, TOKEN),
+        keys, proxySecret: SECRET, admins: [], publicUrl: PUBLIC, accessTtlMs: 60_000, log: () => {},
+      });
+      const auth = { authorization: `Bearer ${await keyFor("amine")}` };
+      const ask = () => cached(new Request(`${PUBLIC}/app/latest.json`, { headers: auth }));
+      const checks = () => upstreamCalls.filter((c) => c.includes("/collaborators/")).length;
+      expect((await ask()).status).toBe(200);
+      expect((await ask()).status).toBe(200);
+      expect(checks()).toBe(1);
+      collaborators.delete("amine");
+      now += 59_000;
+      expect((await ask()).status).toBe(200);
+      now += 2_000;
+      expect((await ask()).status).toBe(403);
+      expect(checks()).toBe(2);
+    } finally {
+      Date.now = spy;
+    }
+  });
+
+  test("Forgejo failing the check is a 502, never an open door", async () => {
+    const auth = { authorization: `Bearer ${await keyFor("amine")}` };
+    refuseToken = true;
+    expect((await get("/app/latest.json", auth)).status).toBe(502);
+    expect((await get("/key", signedIn("amine"))).status).toBe(502);
   });
 });
 
@@ -292,6 +372,14 @@ describe("the key page", () => {
     const [record] = keys.list("amine");
     expect((await post("/key/revoke", "neras", { id: record!.id })).status).toBe(303);
     expect(keys.list("amine")).toEqual([]);
+  });
+});
+
+describe("startup", () => {
+  test("a token that cannot see the repository is refused before the relay serves anyone", async () => {
+    await new Forgejo(`http://127.0.0.1:${fake.port}`, TOKEN).checkAccess();
+    await expect(new Forgejo(`http://127.0.0.1:${fake.port}`, "other").checkAccess())
+      .rejects.toThrow("the Forgejo token cannot read claw/my-claw (HTTP 401)");
   });
 });
 

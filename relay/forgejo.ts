@@ -108,6 +108,30 @@ export class Forgejo {
     return response.json();
   }
 
+  /**
+   * Forgejo answers 404 both to "not a collaborator" and to a repository the token cannot see: a
+   * token without access would refuse everyone and say nothing. Checked once, at startup.
+   */
+  async checkAccess(): Promise<void> {
+    const response = await this.fetch(`/api/v1/repos/${SERVER_REPO}`);
+    await response.body?.cancel();
+    if (!response.ok) throw new Error(`the Forgejo token cannot read ${SERVER_REPO} (HTTP ${response.status})`);
+  }
+
+  /**
+   * Access follows the server repository: whoever is a collaborator on it may download, and is
+   * cut off once removed. Forgejo answers 204, 404 for an account that is not one, 422 for a name
+   * it does not know.
+   */
+  async isCollaborator(user: string): Promise<boolean> {
+    if (!/^[A-Za-z0-9_.-]{1,40}$/.test(user)) return false;
+    const response = await this.fetch(`/api/v1/repos/${SERVER_REPO}/collaborators/${user}`);
+    await response.body?.cancel();
+    if (response.status === 204) return true;
+    if (response.status === 404 || response.status === 422) return false;
+    throw new UpstreamError(response.status, `forgejo answered ${response.status} on the collaborator check`);
+  }
+
   async serverLatest(): Promise<ServerLatest | undefined> {
     const list = await this.json(`/api/v1/packages/${OWNER}?type=generic&q=${PACKAGE}&limit=50`);
     const versions = (Array.isArray(list) ? list : [])

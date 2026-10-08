@@ -18,6 +18,12 @@ const forgejo = new Forgejo(
   (process.env["FORGEJO_URL"] ?? "https://git.kssimi.fr").replace(/\/+$/, ""),
   required("FORGEJO_TOKEN"),
 );
+try {
+  await forgejo.checkAccess();
+} catch (err) {
+  console.error((err as Error).message);
+  process.exit(1);
+}
 const keys = await KeyStore.open(join(process.env["RELAY_DATA"] ?? "/data", "keys.json"));
 const handler = createRelay({
   forgejo,

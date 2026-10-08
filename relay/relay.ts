@@ -2,7 +2,7 @@ import { timingSafeEqual } from "node:crypto";
 import { Forgejo, UpstreamError, route } from "./forgejo.ts";
 import type { KeyStore } from "./keys.ts";
 import { LABEL_MAX, hashKey } from "./keys.ts";
-import { keysPage } from "./page.ts";
+import { keysPage, refusedPage } from "./page.ts";
 
 export interface LogEntry {
   t: string;
@@ -21,6 +21,8 @@ export interface RelayOptions {
   proxySecret: string;
   admins: string[];
   publicUrl: string;
+  /** How long a collaborator check holds. A removed collaborator is cut off within this delay. */
+  accessTtlMs?: number;
   log?: (entry: LogEntry) => void;
 }
 
@@ -85,6 +87,16 @@ export function createRelay(options: RelayOptions): (req: Request) => Promise<Re
   const { forgejo, keys, admins, publicUrl } = options;
   const log = options.log ?? ((entry: LogEntry) => console.log(JSON.stringify(entry)));
   const origin = new URL(publicUrl).origin;
+  const accessTtl = options.accessTtlMs ?? 5 * 60 * 1000;
+  const access = new Map<string, { allowed: boolean; at: number }>();
+
+  async function isCollaborator(user: string): Promise<boolean> {
+    const known = access.get(user);
+    if (known && Date.now() - known.at < accessTtl) return known.allowed;
+    const allowed = await forgejo.isCollaborator(user);
+    access.set(user, { allowed, at: Date.now() });
+    return allowed;
+  }
 
   async function keyPage(req: Request, path: string, user: string): Promise<Response> {
     const isAdmin = admins.includes(user);
@@ -159,7 +171,9 @@ export function createRelay(options: RelayOptions): (req: Request) => Promise<Re
           response = text(403, "this page is reached through the sign-in");
         } else {
           entry.user = user;
-          response = await keyPage(req, path, user);
+          response = await isCollaborator(user)
+            ? await keyPage(req, path, user)
+            : html(refusedPage(user), 403);
         }
       } else {
         const given = bearer(req);
@@ -169,7 +183,9 @@ export function createRelay(options: RelayOptions): (req: Request) => Promise<Re
         } else {
           entry.user = record.user;
           entry.key = record.id;
-          response = await download(req, path);
+          response = await isCollaborator(record.user)
+            ? await download(req, path)
+            : text(403, "this key's owner no longer has access to my-claw");
         }
       }
     } catch (err) {

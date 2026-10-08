@@ -64,6 +64,12 @@ curl -fsSL -H "Authorization: Bearer $MY_CLAW_RELEASE_KEY" ${esc(publicUrl)}/ins
 <pre>myclaw release-key '${esc(key)}'</pre><button class="copy" type="button">Copy</button></div>`;
 }
 
+export function refusedPage(user: string): string {
+  return layout(`<h1>my-claw downloads</h1>
+<p>Signed in as ${esc(user)}, who is not a collaborator of my-claw on git.kssimi.fr.</p>
+<p class="muted">Download keys are for collaborators only. Ask the owner to add you.</p>`);
+}
+
 export interface PageInput {
   user: string;
   own: KeyRecord[];
