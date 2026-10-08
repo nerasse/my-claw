@@ -59,6 +59,7 @@ try {
 // call against the provider (and make the suite pass or fail depending on the shell it ran in).
 delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
 delete process.env["GEOAPIFY_API_KEY"];
+delete process.env["GEMINI_API_KEY"];
 
 // Same hazard on the config side: parseConfig() overwrites the token/password fields with these
 // (applySecretOverrides), so a developer running the suite with the real orchestrator's env got a

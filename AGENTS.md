@@ -269,7 +269,8 @@ src/
 ├── voice/
 │   ├── manager.ts         # Voice mode resolution (cloud/local/auto)
 │   ├── stt.ts             # Speech-to-text (Groq cloud + faster-whisper local)
-│   ├── tts.ts             # Text-to-speech (Edge TTS + Piper)
+│   ├── tts.ts             # Text-to-speech: engine choice, Edge TTS + Piper
+│   ├── gemini-tts.ts      # Gemini TTS: long text in pieces, dialogue up to 4 voices, MP3 -- docs/config.md
 │   └── types.ts
 ├── browser/
 │   ├── client.ts          # HTTP client to the Node browser sidecar (pages = opaque ids)

@@ -87,8 +87,11 @@ const SERVICES: Record<ServiceId, (config: MyClawConfig, env: Env) => Omit<Servi
   // Shared GPS positions are turned into an address by Geoapify: its key is the whole setup.
   location: (_config, env) => ({ source: "cloud", missing: needsEnv("GEOAPIFY_API_KEY", env) }),
   tts: (config, env) => {
-    // Edge needs no key; the `edge-tts` binary is what a probe would find missing.
-    if (new VoiceManager(config).resolveMode("tts") === "cloud") return { source: "cloud", missing: [] };
+    // Edge needs no key (the `edge-tts` binary is what a probe would find missing); Gemini needs its own.
+    const voice = new VoiceManager(config);
+    if (voice.resolveMode("tts") === "cloud") {
+      return { source: "cloud", missing: voice.ttsProvider() === "gemini" ? needsEnv("GEMINI_API_KEY", env) : [] };
+    }
     const endpoint = piperEndpoint(config.voice, env);
     if (!endpoint) return { source: "self-hosted", missing: [] };
     return { source: trimmed(config.voice?.tts?.url) ? selfOrUrl(endpoint, installKind(env), "piper") : "self-hosted", endpoint, missing: [] };

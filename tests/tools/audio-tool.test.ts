@@ -63,6 +63,67 @@ describe("audio: speak", () => {
     expect(result.keepFromReply).toBe(true);
   });
 
+  test("forwards a dialogue's speakers and style, trimmed", async () => {
+    const seen: unknown[] = [];
+    const tts = {
+      generate: async (_text: string, opts?: { speakers?: unknown; style?: string }) => {
+        seen.push({ speakers: opts?.speakers, style: opts?.style });
+        return { path: "/tmp/d.mp3", mimeType: "audio/mpeg" };
+      },
+    };
+
+    const result = await tool({ tts }).execute({
+      action: "speak",
+      text: "Léa: Bonjour.\nMarc: Salut.",
+      speakers: [{ name: " Léa ", voice: "fr-fr-podcaster-9" }, { name: "Marc", voice: "fr-fr-podcaster-2" }],
+      style: "radio",
+    });
+
+    expect(result.success).toBe(true);
+    expect(seen).toEqual([{
+      speakers: [{ name: "Léa", voice: "fr-fr-podcaster-9" }, { name: "Marc", voice: "fr-fr-podcaster-2" }],
+      style: "radio",
+    }]);
+  });
+
+  test("forwards up to four speakers, each with an optional style", async () => {
+    const seen: unknown[] = [];
+    const tts = {
+      generate: async (_text: string, opts?: { speakers?: unknown }) => {
+        seen.push(opts?.speakers);
+        return { path: "/tmp/d.mp3", mimeType: "audio/mpeg" };
+      },
+    };
+    const speakers = [
+      { name: "A", voice: "v1" },
+      { name: "B", voice: "v2", style: " amusé " },
+      { name: "C", voice: "v3", style: "" },
+      { name: "D", voice: "v4" },
+    ];
+
+    const result = await tool({ tts }).execute({ action: "speak", text: "A: x", speakers });
+
+    expect(result.success).toBe(true);
+    expect(seen).toEqual([[
+      { name: "A", voice: "v1" },
+      { name: "B", voice: "v2", style: "amusé" },
+      { name: "C", voice: "v3" },
+      { name: "D", voice: "v4" },
+    ]]);
+  });
+
+  test("refuses malformed speakers before any generation", async () => {
+    let called = false;
+    const tts = { generate: async () => { called = true; return { path: "/x", mimeType: "audio/mpeg" }; } };
+    const five = ["A", "B", "C", "D", "E"].map((name) => ({ name, voice: "v" }));
+    for (const speakers of [[], five, [{ name: "A:", voice: "v" }], [{ name: "A" }], "A", [{ name: "Léa", voice: "v" }, { name: " léa", voice: "w" }]]) {
+      const result = await tool({ tts }).execute({ action: "speak", text: "A: x", speakers });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("speakers must be 1 to 4 entries");
+    }
+    expect(called).toBe(false);
+  });
+
   test("forwards the run signal and propagates a stop rather than swallowing it", async () => {
     const controller = new AbortController();
     const tts = {

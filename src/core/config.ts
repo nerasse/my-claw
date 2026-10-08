@@ -73,6 +73,10 @@ export interface VoiceFeatureConfig {
 }
 
 export interface VoiceTtsConfig extends VoiceFeatureConfig {
+  /** The cloud engine: Edge (no key, the default) or Gemini (GEMINI_API_KEY) -- docs/config.md "Voice". */
+  provider?: "edge" | "gemini";
+  /** Gemini only: the TTS model, gemini-3.8-flash-tts when absent. */
+  model?: string;
   voice?: string;
   /** A Piper HTTP server the owner runs elsewhere, used when the mode is local -- docs/services.md. */
   url?: string;

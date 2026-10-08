@@ -17,10 +17,9 @@ that is simply wrong.
 
 ## Manual TTS (outbound)
 
-TTS is **never automatic**. The agent must call the `audio` tool (`action="speak"`)
-when the user asks for audio. The file it makes is **not sent by itself**: put
-`MEDIA:<path>` in the answer to send it. Listening to it (`action="transcribe"`) and making it
-again is fine; only the take the answer names is delivered.
+TTS is **never automatic**: call `audio(action="speak")` when the user asks for audio. The file
+is **not sent by itself**: put `MEDIA:<path>` in the answer. Only the take the answer names is
+delivered, so listening to it (`transcribe`) and making it again is fine.
 
 ```tool
 audio(action="speak", text="Hello")                     # Effective mode; forceCloud/forceLocal=true per call
@@ -31,10 +30,17 @@ audio(action="speak", text="Hello")                     # Effective mode; forceC
 `MEDIA:<path>` in the final answer; do not duplicate the whole written answer there.
 
 Prefer a short spoken summary (about 30–60 seconds), unless the user explicitly requests
-the full reading. The **5000-character limit** is a ceiling, not a target.
+the full reading or an audio report / podcast. Ceilings: **5000 characters** on Edge and Piper,
+**40 000** on Gemini (read in ~4000-character pieces, joined into one MP3). A ceiling is not a target.
 
-Cloud generation is killed once **no audio arrives for 20 seconds** (a long reading is fine
-while it progresses); Stop cancels it too. If it fails, finish with the written answer and a
+### Gemini (`voice.tts.provider: "gemini"`)
+
+The quality engine for audio reports and podcasts: Gemini voice ids, a `style`, dialogues and
+podcasts of **up to 4 voices** (`speakers`). Voices, examples, podcast writing and quota:
+read `references/gemini.md` before a Gemini reading.
+
+Edge is killed once **no audio arrives for 20 seconds** (a long reading is fine while it
+progresses); Stop cancels any engine. If it fails, finish with the written answer and a
 brief audio error: no automatic retry, no silent engine change, no partial file. A new attempt
 or a different engine needs the user's choice.
 
@@ -44,12 +50,10 @@ or a different engine needs the user's choice.
 audio(action="transcribe", filePath="/tmp/audio.ogg")                 # Auto-detect the language
 audio(action="transcribe", filePath="/tmp/audio.ogg", language="en")  # Force a language you are sure of
 ```
+Limit: **25 MB** per file, compress or split longer recordings.
 
-Limit: **25 MB max** per audio file — compress/split longer recordings first.
-
-Only pass `language` when you actually know it (the user told you, or the surrounding
-conversation makes it certain). Guessing is worse than omitting it: auto-detection is
-reliable, whereas a wrong forced language yields plausible nonsense with no error.
+Pass `language` only when you know it: a wrong forced language yields plausible nonsense with
+no error, auto-detection is reliable.
 
 ## Mode Switch (runtime)
 
@@ -59,21 +63,18 @@ audio(action="mode", mode="local", feature="stt")     # STT local only
 audio(action="mode", mode="local", feature="tts")     # TTS local only
 ```
 
-The change applies at runtime, no reboot.
-
 ## Modes
 
 | Mode | STT | TTS |
 |---|---|---|
-| Cloud | Groq whisper-large-v3 (~1-2s) | Edge TTS MP3 |
+| Cloud | Groq whisper-large-v3 (~1-2s) | Gemini or Edge TTS (per `voice.tts.provider`), MP3 |
 | Local | faster-whisper :8000 (~5-7s) | Piper WAV |
 
-No automatic fallback anywhere: a failed STT is a visible error to the user, a failed TTS an
-error returned to the tool.
+No automatic fallback anywhere: a failed STT or TTS is an error, never another engine.
 
 ## Overrides (priority)
 
 1. `forceCloud` / `forceLocal` in the tool call (per-call)
 2. `voice.<stt|tts>.mode` (per-feature)
 3. `voice.mode` (global)
-4. `"auto"` -> STT: cloud if GROQ_API_KEY is set, else local. TTS: always cloud (edge-tts needs no credentials).
+4. `"auto"` -> STT: cloud if GROQ_API_KEY is set, else local. TTS: cloud, except with provider gemini and no GEMINI_API_KEY (then local).

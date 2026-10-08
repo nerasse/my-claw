@@ -6,6 +6,9 @@ import type { VoiceManager } from "./manager.ts";
 import type { TTSResult } from "./types.ts";
 import { piperEndpoint } from "../services/catalog.ts";
 import { AbortedError, isAbort, rethrowIfAborted } from "../core/aborted.ts";
+import {
+  GeminiTts, GeminiTtsError, GEMINI_DEFAULT_MODEL, GEMINI_DEFAULT_VOICE, GEMINI_MAX_TEXT, type Speaker,
+} from "./gemini-tts.ts";
 
 /**
  * Edge is watched for progress, not timed: a 4 950-character text (the 5 000 ceiling) took 83.6 s
@@ -15,6 +18,7 @@ import { AbortedError, isAbort, rethrowIfAborted } from "../core/aborted.ts";
 export const EDGE_TTS_STALL_MS = 20_000;
 const BINARY_PROBE_TIMEOUT_MS = 5_000;
 const PIPER_TIMEOUT_MS = 30_000;
+const MAX_TEXT = 5_000;
 const MAX_PROBE_OUTPUT_BYTES = 64 * 1024;
 
 type ExecFile = typeof execFile;
@@ -26,6 +30,17 @@ export interface TtsPipelineOptions {
   edgeStallMs?: number;
   piperTimeoutMs?: number;
   probeTimeoutMs?: number;
+  gemini?: GeminiTts;
+}
+
+export interface TtsOverrides {
+  forceCloud?: boolean;
+  forceLocal?: boolean;
+  voice?: string;
+  /** Gemini only: a dialogue of up to four voices, the text written as `Name: line`. */
+  speakers?: Speaker[];
+  /** Gemini only: delivery for the whole reading ("calm, radio host"), never read aloud. */
+  style?: string;
 }
 
 class BinaryNotFoundError extends Error {}
@@ -181,6 +196,7 @@ export class TtsPipeline {
   private readonly edgeStallMs: number;
   private readonly piperTimeoutMs: number;
   private readonly spawnImpl: typeof spawn;
+  private readonly gemini: GeminiTts;
 
   constructor(private voiceManager: VoiceManager, options: TtsPipelineOptions = {}) {
     this.execFileImpl = options.execFile ?? execFile;
@@ -193,19 +209,22 @@ export class TtsPipeline {
     this.edgeStallMs = options.edgeStallMs ?? EDGE_TTS_STALL_MS;
     this.piperTimeoutMs = options.piperTimeoutMs ?? PIPER_TIMEOUT_MS;
     this.spawnImpl = options.spawn ?? spawn;
+    this.gemini = options.gemini ?? new GeminiTts();
   }
 
-  async generate(
-    text: string,
-    overrides?: { forceCloud?: boolean; forceLocal?: boolean; voice?: string },
-    signal?: AbortSignal,
-  ): Promise<TTSResult> {
+  async generate(text: string, overrides?: TtsOverrides, signal?: AbortSignal): Promise<TTSResult> {
     rethrowIfAborted(undefined, signal);
-    if (text.length > 5000) {
-      throw new Error(`TTS text too long (${text.length} chars, max 5000). Shorten the text.`);
-    }
     const mode = this.voiceManager.resolveMode("tts", overrides);
+    const gemini = mode === "cloud" && this.voiceManager.ttsProvider() === "gemini";
+    const max = gemini ? GEMINI_MAX_TEXT : MAX_TEXT;
+    if (text.length > max) {
+      throw new Error(`TTS text too long (${text.length} chars, max ${max}). Shorten the text.`);
+    }
+    if (!gemini && (overrides?.speakers || overrides?.style)) {
+      throw new Error("TTS dialogue and style need the Gemini engine: voice.tts.provider \"gemini\" in cloud mode.");
+    }
     try {
+      if (gemini) return await this.generateGemini(text, overrides, signal);
       if (mode === "cloud") return await this.generateEdgeTTS(text, overrides?.voice, signal);
       const endpoint = piperEndpoint(this.voiceManager.getVoiceConfig());
       return endpoint
@@ -222,12 +241,25 @@ export class TtsPipeline {
       if (err instanceof BinaryNotFoundError) {
         throw new Error(`TTS ${mode} failed: ${err.message}`);
       }
+      if (err instanceof GeminiTtsError) throw new Error(`TTS cloud (Gemini) failed: ${err.message}`);
+      if (gemini) throw new Error("TTS cloud (Gemini) failed: the audio could not be encoded to MP3 (ffmpeg).");
       if (mode === "cloud") throw new Error("TTS cloud failed: edge-tts did not produce audio.");
       if (err instanceof Error && err.name === "TimeoutError") {
         throw new Error(`TTS local timed out after ${timeoutLabel(this.piperTimeoutMs)}.`);
       }
       throw new Error("TTS local failed: Piper did not produce audio.");
     }
+  }
+
+  private generateGemini(text: string, overrides: TtsOverrides | undefined, signal?: AbortSignal): Promise<TTSResult> {
+    const tts = this.voiceManager.getVoiceConfig()?.tts;
+    return this.gemini.generate({
+      text,
+      voice: overrides?.voice ?? tts?.voice ?? GEMINI_DEFAULT_VOICE,
+      model: tts?.model ?? GEMINI_DEFAULT_MODEL,
+      speakers: overrides?.speakers,
+      style: overrides?.style,
+    }, signal);
   }
 
   private async generateEdgeTTS(text: string, voice: string | undefined, signal?: AbortSignal): Promise<TTSResult> {

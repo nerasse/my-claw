@@ -54,10 +54,14 @@ export class VoiceManager {
     return this.config.voice;
   }
 
+  ttsProvider(): "edge" | "gemini" {
+    return this.config.voice?.tts?.provider === "gemini" ? "gemini" : "edge";
+  }
+
   private hasCloudCredentials(feature: "stt" | "tts"): boolean {
     if (feature === "stt") {
       return !!process.env.GROQ_API_KEY;
     }
-    return true;
+    return this.ttsProvider() === "gemini" ? !!process.env.GEMINI_API_KEY?.trim() : true;
   }
 }

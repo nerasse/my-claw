@@ -2,10 +2,28 @@ import { type Tool, type ToolResult, str, strOpt, bool } from "./types.ts";
 import type { SttPipeline } from "../voice/stt.ts";
 import type { TtsPipeline } from "../voice/tts.ts";
 import type { VoiceManager } from "../voice/manager.ts";
+import { GEMINI_MAX_SPEAKERS, type Speaker } from "../voice/gemini-tts.ts";
 import { rethrowIfAborted } from "../core/aborted.ts";
 
 type Mode = "cloud" | "local" | "auto";
 const MODES: readonly string[] = ["cloud", "local", "auto"];
+
+function speakersOf(value: unknown): Speaker[] | string | undefined {
+  if (value === undefined) return undefined;
+  const invalid = `speakers must be 1 to ${GEMINI_MAX_SPEAKERS} entries of {name, voice, style?}, names unique and without ':'`;
+  if (!Array.isArray(value) || value.length < 1 || value.length > GEMINI_MAX_SPEAKERS) return invalid;
+  const speakers: Speaker[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const name = typeof entry?.name === "string" ? entry.name.trim() : "";
+    const voice = typeof entry?.voice === "string" ? entry.voice.trim() : "";
+    const style = typeof entry?.style === "string" ? entry.style.trim() : "";
+    if (!name || !voice || name.includes(":") || seen.has(name.toLowerCase())) return invalid;
+    seen.add(name.toLowerCase());
+    speakers.push({ name, voice, ...(style ? { style } : {}) });
+  }
+  return speakers;
+}
 
 /**
  * Speech in both directions and the engine that does it, as one tool: `transcribe` (an audio file
@@ -24,10 +42,14 @@ export function createAudioTool(voice: { stt: SttPipeline; tts: TtsPipeline; man
   async function speak(args: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> {
     const text = str(args, "text");
     if (!text) return { success: false, output: "", error: "speak needs text" };
+    const speakers = speakersOf(args["speakers"]);
+    if (typeof speakers === "string") return { success: false, output: "", error: speakers };
     const result = await voice.tts.generate(text, {
       voice: strOpt(args, "voice"),
       forceCloud: bool(args, "forceCloud", false),
       forceLocal: bool(args, "forceLocal", false),
+      speakers,
+      style: strOpt(args, "style"),
     }, signal);
     return {
       success: true,
@@ -57,8 +79,11 @@ export function createAudioTool(voice: { stt: SttPipeline; tts: TtsPipeline; man
       "Speech, both ways. action='transcribe' (filePath): an audio file to text; the language is auto-detected unless " +
       "you pass `language`, so set it when you already know it and the audio is short or noisy, and leave it out " +
       "otherwise, because a forced language makes the transcriber invent plausible text instead of failing. " +
-      "action='speak' (text): text to an audio file (cloud: Edge TTS, local: Piper); it is not sent until your answer " +
-      "includes MEDIA:<path>. Show the written answer before calling speak; prefer a short spoken summary. " +
+      "action='speak' (text): text to an MP3/WAV file (cloud: Gemini or Edge per voice.tts.provider, local: Piper); " +
+      "it is not sent until your answer includes MEDIA:<path>. Show the written answer before calling speak; prefer a " +
+      "short spoken summary unless a full reading is asked. Gemini only: up to 40000 chars (read in pieces, joined), " +
+      "a dialogue or podcast of up to 4 voices with `speakers` and the text as one `Name: line` per turn, " +
+      "a `style` for delivery (global, or per speaker). The voices and how to write a podcast are in the voice skill. " +
       "On failure, finish the written answer without automatic retries or engine changes. " +
       "action='mode' (mode, feature): set the voice engine to cloud, local or auto, at runtime.",
     parameters: {
@@ -68,7 +93,21 @@ export function createAudioTool(voice: { stt: SttPipeline; tts: TtsPipeline; man
         filePath: { type: "string", description: "transcribe: absolute path to the audio file" },
         language: { type: "string", description: "transcribe: optional ISO code (fr, en, es...). Omit to auto-detect." },
         text: { type: "string", description: "speak: the text to say" },
-        voice: { type: "string", description: "speak: optional voice id, e.g. 'fr-FR-RemyMultilingualNeural' (cloud), 'fr_FR-siwis-medium' (local)" },
+        voice: { type: "string", description: "speak: optional voice id, e.g. 'fr-fr-podcaster-2' (Gemini), 'fr-FR-RemyMultilingualNeural' (Edge), 'fr_FR-siwis-medium' (local)" },
+        speakers: {
+          type: "array",
+          description: "speak, Gemini only: 1 to 4 voices of a dialogue; each line of text starts with one of these names and a colon",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              voice: { type: "string", description: "Gemini voice id" },
+              style: { type: "string", description: "this speaker's delivery, overrides the global style" },
+            },
+            required: ["name", "voice"],
+          },
+        },
+        style: { type: "string", description: "speak, Gemini only: delivery for the whole reading, e.g. 'calm, warm radio host'; never read aloud" },
         forceCloud: { type: "boolean", description: "speak: force the cloud engine for this call" },
         forceLocal: { type: "boolean", description: "speak: force the local engine for this call" },
         mode: { type: "string", enum: ["cloud", "local", "auto"], description: "mode: the engine to use" },

@@ -22,7 +22,7 @@
 | Mid-run injection (steering) | Complete — a message arriving during an active run is injected at the next iteration boundary (text + media), answered in its own threaded bubble, with correct reactions; per-session mailbox, cap + reroute fallback — see `docs/injection.md` |
 | Active Memory | Complete — SQLite store (no cap), hybrid FTS5 + optional embeddings (local transformers.js / OpenAI-compatible http), dedup, background consolidation, soft-delete + 365d purge, MEMORY.md view — see `docs/memory.md` |
 | Blacklist system | Complete — approval is purely blacklist-driven (empty by default = full autonomy); listed tools require an interactive accept/deny, everything else runs unconfirmed |
-| Voice / Multimedia | Complete — STT auto (Groq + faster-whisper), TTS manual (Edge TTS + Piper), voice mode runtime, echo transcript, image vision (ffmpeg resize + base64), video frames (ffmpeg 1 frame/3s, max 20) |
+| Voice / Multimedia | Complete — STT auto (Groq + faster-whisper), TTS manual (Gemini or Edge TTS + Piper), voice mode runtime, echo transcript, image vision (ffmpeg resize + base64), video frames (ffmpeg 1 frame/3s, max 20) |
 | Full wiring (index.ts) | Complete — config -> skills -> tools -> sessions -> agent -> router -> adapter |
 
 ## Channel Structure
@@ -70,7 +70,8 @@
   - No fallback — error explicit if chosen mode fails
   - Echo transcript sent as visible message: `📝 "transcription"`
 - **TTS manual**: agent calls the `audio` tool (`speak`) only when user asks for audio
-  - Cloud: Edge TTS (fr-FR-RemyMultilingualNeural)
+  - Cloud: `voice.tts.provider`, Edge TTS (fr-FR-RemyMultilingualNeural, default) or Gemini TTS
+    (long text in pieces, dialogue of up to four voices, MP3 via ffmpeg) -- docs/config.md "Gemini TTS"
   - Local: Piper (fr_FR-siwis-medium)
   - No automatic TTS post-response
   - Written answer streamed before generation; a short spoken summary by default, full reading only on request.

@@ -674,7 +674,7 @@ See `docs/my-claw-app-channel.md` for the wire protocol and `docs/web-pairing.md
 "voice": {
   "mode": "auto",
   "stt": { "mode": "cloud", "echoTranscript": true, "language": "fr" },
-  "tts": { "mode": "cloud", "voice": "fr-FR-RemyMultilingualNeural" }
+  "tts": { "mode": "cloud", "provider": "gemini", "voice": "fr-fr-podcaster-2" }
 }
 ```
 
@@ -686,8 +686,44 @@ See `docs/my-claw-app-channel.md` for the wire protocol and `docs/web-pairing.md
   applies to the owner's voice notes only. Other audio files are always auto-detected, since
   forcing the wrong language makes Whisper emit confident nonsense rather than an error. The
   `audio` tool's `transcribe` takes a per-call `language` for the cases the agent is sure about.
-- `tts.mode` — override for TTS. Cloud uses Edge TTS, local uses Piper.
-- `tts.voice` — voice ID (Edge TTS voice name or Piper model name).
+- `tts.mode` — override for TTS. Cloud uses `tts.provider`, local uses Piper.
+- `tts.provider` — the cloud engine: `"edge"` (default, no key, 5000 characters per call) or
+  `"gemini"` (`GEMINI_API_KEY` in `.env`, a free key from aistudio.google.com/apikey). No fallback
+  between them: a Gemini failure is an error, never a silent Edge reading. In `auto` mode,
+  `gemini` without a key resolves to local.
+- `tts.voice` — voice ID for the engine in use: an Edge voice name (`fr-FR-RemyMultilingualNeural`),
+  a Gemini voice id (`fr-fr-podcaster-2`, list: `GET /v1beta/voices?language_code=fr-FR`), or a
+  Piper model name. It is not translated when `provider` changes.
+- `tts.model` — Gemini only, default `gemini-3.8-flash-tts`; `gemini-3.8-flash-lite-tts` has a
+  quota of its own.
+
+### Gemini TTS
+
+Chosen 2026-10-08 over Edge for audio reports and podcasts: free, no GPU, top-5 on the
+Artificial Analysis TTS arena, native dialogue. What `src/voice/gemini-tts.ts` does:
+
+- **Long text**: up to 40 000 characters, cut into ~4000-character pieces at paragraphs (dialogue:
+  at turns; an oversized one at sentence ends), three requests at a time, each asking raw PCM
+  (`audio/l16`, 24 kHz). The PCM is joined, then encoded once by ffmpeg to MP3 128k with
+  `loudnorm` (EBU R128), so the pieces share one level. Pieces are kept under the 2 to 4 minutes
+  past which users report the voice fading (cookbook #1292); two 2m45 pieces measured on
+  2026-10-08 held level and voice across the join.
+- **Dialogue and podcasts**: the `audio` tool's `speakers` (1 to 4 `{name, voice, style?}`) and a
+  text of `Name: line` turns. A request voices at most two speakers (`conversational` mode), so
+  the turns are cut greedily into pieces of at most two speakers and ~4000 characters: `A B A C A
+  B` is `[A B A] [C A] [B]`, three requests. A piece with two speakers is one `conversational`
+  request with a `speech_metadata` speaker annotation per turn; a piece where one speaks alone is
+  a plain reading in that voice. 350 ms of silence separate pieces, none between the turns of one
+  piece (Gemini paces them). `style` (global, or per speaker, which wins) goes in
+  `speech_metadata.style`, never in the text, which Gemini reads verbatim.
+- **Quota**: the free tier is 10 requests per model per day (measured: the 11th answered
+  `429 ... limit: 10 requests per day on Free Tier. Please retry in 4h6m13s`), so the ceiling is
+  ten pieces. A 429 that asks to wait up to a minute is waited out (3 attempts); a longer one fails
+  at once with Google's message. A text that needs more than ten requests is refused before the
+  first one. One failed piece stops the others: a reading with a hole is not returned.
+- **Privacy**: in the EEA the paid-service data terms apply to the free quota as well, so the text
+  is not used for training (Gemini API terms).
+- **Errors** never carry the text being read: `HTTP <status>: <API message>`, or the ffmpeg failure.
 
 ### Tests
 
@@ -695,7 +731,10 @@ See `docs/my-claw-app-channel.md` for the wire protocol and `docs/web-pairing.md
   and error mapping), `tests/voice/stt-groq.test.ts`, `tests/voice/stt.test.ts` (failure paths,
   no network — the file read fails before the request).
 - **E2E**, real binaries and real network, so they never run in CI: `tests-e2e/voice/tts.test.ts`
-  spawns edge-tts/piper (`VOICE_E2E=1`), `tests-e2e/voice/stt-language.test.ts` synthesizes
+  spawns edge-tts/piper (`VOICE_E2E=1`) and calls Gemini when `GEMINI_E2E_API_KEY` is set (the
+  test preload drops `GEMINI_API_KEY`; three requests of the daily quota),
+  `tests/voice/gemini-tts.test.ts` covers chunking, dialogue, quota and errors on a mocked fetch,
+  `tests-e2e/voice/stt-language.test.ts` synthesizes
   speech then transcribes it through Groq (`VOICE_E2E=1` + `GROQ_API_KEY`). Run them by hand
   after touching the voice pipeline.
 
