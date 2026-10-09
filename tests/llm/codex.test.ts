@@ -134,6 +134,9 @@ test("codex pins the implicit prefix cache to the conversation", async () => {
 
   const body = JSON.parse(String(capturedInit?.body)) as Record<string, any>;
   assert.equal(body.prompt_cache_key, "thread-42");
+  // The ChatGPT backend routes its cache on this header, not on the body key: without it every
+  // call read 0 cached tokens (measured 2026-10-09).
+  assert.equal(new Headers(capturedInit?.headers).get("session-id"), "thread-42");
   // The key is what makes store:false survivable: nothing is kept server-side, so the request
   // itself has to say which cache it belongs to.
   assert.equal(body.store, false);
@@ -151,6 +154,7 @@ test("codex omits the key when no conversation named one", async () => {
 
   const body = JSON.parse(String(capturedInit?.body)) as Record<string, any>;
   assert.equal("prompt_cache_key" in body, false);
+  assert.equal(new Headers(capturedInit?.headers).has("session-id"), false);
 });
 
 test("a tool's images ride its function_call_output as output items", async () => {

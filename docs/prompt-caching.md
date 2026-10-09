@@ -99,9 +99,13 @@ system prompt, so sharing the parent's key would point two different prefixes at
 
 Two places consume it:
 
-- **Codex** (`codex.ts`) always sends it. It is OpenAI's own API and the request sets `store: false`,
-  so nothing is kept server-side and without a key each iteration may land on a different cache
-  node. Measured before the key: 19-35% cache-read, against 94% on the Anthropic transport.
+- **Codex** (`codex.ts`) always sends it, and sends the same value as the `session-id` header. The
+  request sets `store: false`, so nothing is kept server-side and each iteration may land on a
+  different cache node. The ChatGPT backend routes its cache on the header, not on the body key
+  (the reference client says as much: "ChatGPT derives cache affinity from the Responses
+  session-id header"). Measured 2026-10-09 on four identical 11.6k-token calls: body key alone,
+  0 cached tokens on every call; with the header, 11,008 cached from the second call on.
+  `thread-id` alone caches nothing either.
 - **OpenAI-compatible** (`provider.ts`) sends it only for the `openai` dialect, and only when the
   provider opted into `promptCache` — that opt-in is precisely the owner stating the endpoint
   tolerates cache hint fields.
