@@ -3,7 +3,9 @@ import { mkdtemp, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
-import { authHeaders, runWebCli } from "../../src/channels/my-claw-app/web-cli.ts";
+import { runWebCli } from "../../src/channels/my-claw-app/web-cli.ts";
+import { appFileUrl, authHeaders } from "../../src/channels/my-claw-app/release-source.ts";
+import { mockFetch } from "../helpers/mock-fetch.ts";
 
 /**
  * `myclaw web install` never worked on a real machine, and both reasons were invisible from the
@@ -18,6 +20,8 @@ afterEach(async () => {
   await rm(WEB_DIR, { recursive: true, force: true });
   delete process.env["FORGEJO_TOKEN"];
   delete process.env["FORGEJO_URL"];
+  delete process.env["MY_CLAW_RELEASE_URL"];
+  delete process.env["MY_CLAW_RELEASE_KEY"];
 });
 
 describe("release credentials", () => {
@@ -43,6 +47,52 @@ describe("release credentials", () => {
   test("a source that is not a URL is never given a header", () => {
     process.env["FORGEJO_TOKEN"] = "secret";
     expect(authHeaders("/home/me/dist-web.tar.gz")).toEqual({});
+  });
+
+  test("a release key travels to the hub as a bearer, and wins over the forge token", () => {
+    process.env["FORGEJO_TOKEN"] = "forge-secret";
+    process.env["FORGEJO_URL"] = "https://git.example.test";
+    process.env["MY_CLAW_RELEASE_URL"] = "https://dl.example.test/my-claw";
+    process.env["MY_CLAW_RELEASE_KEY"] = "dlh_k";
+    expect(authHeaders("https://dl.example.test/my-claw/app/1.2.3/dist-web.tar.gz")).toEqual({ Authorization: "Bearer dlh_k" });
+    expect(authHeaders("https://git.example.test/claw/my-claw-app/releases/download/v1/x.tar.gz")).toEqual({});
+    expect(authHeaders("http://dl.example.test/my-claw/x")).toEqual({});
+  });
+
+  test("a public source without a key gets no header", () => {
+    process.env["MY_CLAW_RELEASE_URL"] = "https://dl.example.test/my-claw";
+    expect(authHeaders("https://dl.example.test/my-claw/app/1.2.3/dist-web.tar.gz")).toEqual({});
+  });
+});
+
+describe("the default source", () => {
+  test("is the web bundle of that version on the release source, tag or bare version", () => {
+    process.env["MY_CLAW_RELEASE_URL"] = "https://dl.example.test/my-claw/";
+    expect(appFileUrl("v0.6.143", "web")).toBe("https://dl.example.test/my-claw/app/0.6.143/dist-web.tar.gz");
+    expect(appFileUrl("0.6.143", "web")).toBe("https://dl.example.test/my-claw/app/0.6.143/dist-web.tar.gz");
+    delete process.env["MY_CLAW_RELEASE_URL"];
+    process.env["FORGEJO_URL"] = "https://git.example.test";
+    process.env["FORGEJO_TOKEN"] = "t";
+    expect(appFileUrl("v0.6.143", "web")).toBe("https://git.example.test/claw/my-claw-app/releases/download/v0.6.143/dist-web.tar.gz");
+  });
+
+  test("with no source, install without --from says what to do and downloads nothing", async () => {
+    const seen: string[] = [];
+    const fetchMock = mockFetch(async (input) => {
+      seen.push(String(input));
+      return new Response("", { status: 500 });
+    });
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (...args: unknown[]) => errors.push(args.join(" "));
+    try {
+      expect(await runWebCli(["install", "v0.6.143"])).toBe(1);
+    } finally {
+      console.error = original;
+      fetchMock.restore();
+    }
+    expect(seen).toEqual([]);
+    expect(errors.join("\n")).toContain("myclaw release-key");
   });
 });
 

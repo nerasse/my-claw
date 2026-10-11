@@ -32,16 +32,27 @@ The my-claw product in dl-hub: `server` reads the generic package registry (`cla
 the release assets of `claw/my-claw-app`; collaborators of `claw/my-claw` make their own keys, and
 the owner gives keys to anyone else.
 
-## Clients (lot 2, not done yet)
+## Clients
 
-`install-remote.sh`, `update.sh`, `auto-update.sh`, the app-update relay
-(`src/channels/my-claw-app/updates.ts`), `myclaw web` and the compose entrypoint read the two
-variables. `myclaw release-key <key>` writes both lines. `FORGEJO_USER:-neras` goes away.
+| Client | Reads | Where |
+|---|---|---|
+| `install-remote.sh` (served as `install.sh` by the hub) | `--key`, `--url`, or the two variables | writes both into `.env` through `install.sh` |
+| `myclaw update`, the 15-minute timer, the compose entrypoint | `.env` | `packaging/release-source.sh`, sourced |
+| the app-update relay, `myclaw web install` | `process.env` (`.env` is hot-reloaded) | `src/channels/my-claw-app/release-source.ts` |
 
-Transition: three installs of collaborators read Forgejo directly with their own `FORGEJO_TOKEN`.
-Until each has a key, an install with no `MY_CLAW_RELEASE_URL` keeps that direct path. It is a
-deliberate, temporary exception to "no backward-compatibility shims", removed by the first release
-after the hub shows every install on a key.
+`myclaw release-key <key> [--url <url>]` tries the key on `<url>/server/latest.json` and only then
+writes both lines (default URL `https://dl.kssimi.fr/my-claw`; without `<key>`, it is read from
+stdin). The server picks them up at once; the shell updaters on their next run.
+
+The credential never reaches a command line in the shell helpers: curl reads its header from a
+config on stdin (`curl -K -`), so `ps` does not show it. The TypeScript side sends it only to the
+source's own origin.
+
+Transition: three installs of collaborators read Forgejo directly with their own `FORGEJO_TOKEN`
+(the helpers' `forge` kind: the generic package, the app releases, `Authorization: token`, no
+username). The hub wins as soon as `MY_CLAW_RELEASE_URL` is set. The forge kind is a deliberate,
+temporary exception to "no backward-compatibility shims", removed by the first release after the
+hub's log shows every install on a key.
 
 ## The registry follows the `claw` account's visibility
 

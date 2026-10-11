@@ -249,9 +249,9 @@ are the same operation. Files are read per request: a new bundle is live without
 
 Two things that shape the download, both learned the hard way on the first real install:
 
-- **The release repository is private**, and a private asset answers an anonymous GET with `404`,
-  not `401`. `FORGEJO_TOKEN` from `~/.my-claw/.env` is sent as an `Authorization: token` header,
-  and only ever to the host in `FORGEJO_URL`: a `--from` pointing anywhere else is a plain
+- **The release source is private.** Its credential (`MY_CLAW_RELEASE_KEY` as a bearer, or the
+  legacy `FORGEJO_TOKEN`, docs/release-source.md) is sent only ever to the source's own origin:
+  a `--from` pointing anywhere else is a plain
   download, because a credential handed to whatever host was typed on the command line is how a
   mirror ends up holding the keys to the repository.
 - **The staging directory lives in `$MY_CLAW_DIR/web/`**, not in `/tmp`. A rename cannot cross a

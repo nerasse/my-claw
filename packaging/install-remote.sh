@@ -1,58 +1,67 @@
 #!/bin/bash
 set -euo pipefail
 
-# Quick install script for my-claw from Forgejo Package Registry
-# Usage: curl -fsSL https://git.kssimi.fr/claw/my-claw/raw/main/packaging/install-remote.sh | bash
-# Or with token: FORGEJO_TOKEN=xxx bash install-remote.sh [version]
+# Installs my-claw from its release source (docs/release-source.md), with a release key:
+#   curl -fsSL -H "Authorization: Bearer <key>" https://dl.kssimi.fr/my-claw/install.sh \
+#     | sudo bash -s -- --key <key>
+# Options: --key <key>, --url <release url> (default below), --version <x.y.z> (default: latest).
+# MY_CLAW_RELEASE_KEY and MY_CLAW_RELEASE_URL in the environment do the same.
+#
+# Nothing but bash, curl and tar is assumed: jq and the rest come with install.sh.
 
-FORGEJO_URL="${FORGEJO_URL:-https://git.kssimi.fr}"
-FORGEJO_TOKEN="${FORGEJO_TOKEN:-}"
-OWNER="claw"
-PACKAGE="my-claw"
-VERSION="${1:-latest}"
+RELEASE_URL="${MY_CLAW_RELEASE_URL:-https://dl.kssimi.fr/my-claw}"
+RELEASE_KEY="${MY_CLAW_RELEASE_KEY:-}"
+VERSION="latest"
 
-if [ -z "$FORGEJO_TOKEN" ]; then
-  echo "Error: FORGEJO_TOKEN is required."
-  echo "Get one from ${FORGEJO_URL}/user/settings/applications"
-  echo "Then run: FORGEJO_TOKEN=your_token bash install-remote.sh [version]"
-  echo "Optionally set FORGEJO_USER (default: neras)"
-  exit 1
-fi
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --key) RELEASE_KEY="${2:-}"; shift 2 ;;
+    --url) RELEASE_URL="${2:-}"; shift 2 ;;
+    --version) VERSION="${2:-}"; shift 2 ;;
+    *) echo "Error: unknown option $1" >&2; exit 1 ;;
+  esac
+done
+RELEASE_URL="${RELEASE_URL%/}"
+
+# The key reaches curl through a config on stdin, never its command line.
+fetch() {
+  if [ -n "$RELEASE_KEY" ]; then
+    printf 'header = "Authorization: Bearer %s"\n' "$RELEASE_KEY" | curl -K - "$@"
+  else
+    curl "$@"
+  fi
+}
 
 if [ "$VERSION" = "latest" ]; then
-  echo "Fetching latest version..."
-  VERSION=$(curl -fsS --user "${FORGEJO_USER:-neras}:${FORGEJO_TOKEN}" \
-    -H "Accept: application/json" \
-    "${FORGEJO_URL}/api/v1/packages/${OWNER}" | \
-    jq -r --arg pkg "${PACKAGE}" '.[] | select(.name == $pkg and .type == "generic") | .version' | \
-    sort -V | tail -1)
-  if [ -z "$VERSION" ] || [ "$VERSION" = "null" ]; then
-    echo "Error: could not determine latest version"
+  echo "Fetching the latest version from ${RELEASE_URL}..."
+  latest_json="$(fetch -fsS "${RELEASE_URL}/server/latest.json")" || {
+    echo "Error: ${RELEASE_URL} refused the request. Check the release key (--key)." >&2
     exit 1
-  fi
-  echo "Latest version: ${VERSION}"
+  }
+  VERSION="$(printf '%s' "$latest_json" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([0-9]*\.[0-9]*\.[0-9]*\)".*/\1/p')"
+  [ -n "$VERSION" ] || { echo "Error: could not read the latest version" >&2; exit 1; }
 fi
+echo "Version: ${VERSION}"
 
 TAR_FILE="my-claw-${VERSION}-linux-x64.tar.gz"
-URL="${FORGEJO_URL}/api/packages/${OWNER}/generic/${PACKAGE}/${VERSION}/${TAR_FILE}"
-TMP_DIR="$(mktemp -d)"
+TMP_DIR="$(mktemp -d /var/tmp/my-claw-install.XXXXXX)"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo "Downloading ${TAR_FILE}..."
-curl -fsSL --user "${FORGEJO_USER:-neras}:${FORGEJO_TOKEN}" "$URL" -o "${TMP_DIR}/${TAR_FILE}"
+fetch -fsSL "${RELEASE_URL}/server/${VERSION}/${TAR_FILE}" -o "${TMP_DIR}/${TAR_FILE}"
 
 echo "Extracting..."
 tar xzf "${TMP_DIR}/${TAR_FILE}" -C "${TMP_DIR}"
 
-echo "Installing..."
+# install.sh writes the source into the service user's .env, so updates use it from then on.
+export MY_CLAW_RELEASE_URL="$RELEASE_URL" MY_CLAW_RELEASE_KEY="$RELEASE_KEY"
 cd "${TMP_DIR}/my-claw-${VERSION}-linux-x64"
 if [ "$EUID" -ne 0 ]; then
   echo "Root required. Running with sudo..."
-  sudo ./packaging/install.sh
+  sudo --preserve-env=MY_CLAW_RELEASE_URL,MY_CLAW_RELEASE_KEY ./packaging/install.sh
 else
   ./packaging/install.sh
 fi
-
-rm -rf "$TMP_DIR"
 
 echo ""
 echo "Installed my-claw ${VERSION}"

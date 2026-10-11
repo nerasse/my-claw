@@ -51,8 +51,9 @@ run inside `my-claw`.
 - **First start writes the config** from the template, pointed at the neighbours (`sidecarUrl`,
   `display`, `novncUrl`, no systemd units to report). Written into the file, so what the server talks
   to is visible where it is changed.
-- **Web client:** installed at each start from the forge when `.env` holds `FORGEJO_TOKEN`
-  (`packaging/web-bundle.sh`, the same step as the bare-metal updater). Phase 2 removes the token.
+- **Web client:** installed at each start from the release source when `.env` has one
+  (`myclaw release-key <key>`, then restart; `packaging/web-bundle.sh`, the same step as the
+  bare-metal updater). `docs/release-source.md`.
 - **Updates come from the host**: pull the repo, `up -d --build`. The app's update button answers
   with that command instead of starting a unit (`COMPOSE_UPDATE`, `src/core/self-update.ts`).
 - **bash limits:** no systemd in the container, so no cgroup per command

@@ -102,24 +102,17 @@ Aucune autre clé n'est **strictement obligatoire** à l'installation :
 
 ### 6.1 One-liner (recommandé)
 
-```bash
-FORGEJO_TOKEN=ton_token bash -c '
-  curl -fsSL https://git.kssimi.fr/claw/my-claw/raw/main/packaging/install-remote.sh | bash'
-```
-
-Équivalent pas à pas (si on veut épingler une version) :
+Avec une clé de release (une par machine, créée sur https://dl.kssimi.fr/key ou donnée par le
+propriétaire) :
 
 ```bash
-export FORGEJO_TOKEN=ton_token
-export FORGEJO_USER=ton_utilisateur_forgejo   # défaut: neras
-bash install-remote.sh                # OU: bash install-remote.sh 0.4.71 pour épingler
+curl -fsSL -H "Authorization: Bearer <clé>" https://dl.kssimi.fr/my-claw/install.sh \
+  | sudo bash -s -- --key <clé>
 ```
 
-Si le repo forgejo n'est pas `git.kssimi.fr` (fork, autre instance) :
-
-```bash
-FORGEJO_URL=https://mon.forgejo.fr FORGEJO_TOKEN=... bash install-remote.sh
-```
+`--version 0.7.102` épingle une version, `--url` désigne une autre source de release. La clé est
+écrite dans `~/.my-claw/.env` : les mises à jour passent par la même source
+(`docs/release-source.md`).
 
 ### 6.2 Ce que fait l'installer
 
@@ -165,9 +158,9 @@ Valeurs minimales pour démarrer + rester à jour :
 ```dotenv
 # LLM : la clé du provider que vous allez utiliser (voir §7.2). Exemple :
 LITELLM_API_KEY=...          # OU OPENROUTER_API_KEY / GROQ_API_KEY / COMMANDCODE_KEY / OPENCODE_GO_KEY
-# Updates :
-FORGEJO_URL=https://git.kssimi.fr
-FORGEJO_TOKEN=ton_token_forgejo
+# Updates (écrit par l'installeur, ou par `myclaw release-key <clé>`) :
+MY_CLAW_RELEASE_URL=https://dl.kssimi.fr/my-claw
+MY_CLAW_RELEASE_KEY=dlh_...
 ```
 
 Optionnel : `GROQ_API_KEY` (STT cloud), `GEOAPIFY_API_KEY` (localisation),
@@ -552,10 +545,10 @@ streamer la réponse et afficher les cartes d'outils.
 |---|---|---|
 | `my-claw.service` ne démarre pas | Port 8080 pris (SearXNG mal configuré, autre service) | `ss -tlnp | grep 8080`, libérer ou changer `channels.my-claw-app.port` (reboot-only) |
 | `my-claw-whisper` crash-loop | STT en local et `faster-whisper` pas installé | `pip install faster-whisper`, ou repasser la STT en cloud (le serveur coupe alors le service) |
-| Auto-update ne fait rien | `jq` absent, ou `FORGEJO_TOKEN` manquant/dépassé | `apt install jq`, vérifier `~/.my-claw/.env` |
+| Auto-update ne fait rien | `jq` absent, ou clé de release absente/révoquée | `apt install jq`, `myclaw release-key <clé>` |
 | `systemctl --user` : « Failed to connect to bus » | Shell sans session (ssh sans login, `su`) | `export XDG_RUNTIME_DIR=/run/user/$(id -u)` ; `myclaw` le fait tout seul |
 | Rien ne démarre après un reboot | Linger désactivé | `sudo loginctl enable-linger <user>` |
-| `myclaw web install` → 404 | Token Forgejo absent ou dépôt privé | `FORGEJO_TOKEN` dans `.env` (le token ne va qu'au forge) |
+| `myclaw web install` → 401/404 | Clé de release absente ou révoquée | `myclaw release-key <clé>` (la clé ne va qu'à la source de release) |
 | Première page = « Unauthorized » | Normal : aucun device pairé | Ouvrir l'URL Claim de `myclaw device add` |
 | L'app affiche « Pair device » à l'ouverture | Device inconnu du serveur (401) | C'est le nouveau flow : scanner le code |
 | `web_search` répond « not configured » | `webSearch.baseUrl` vide | Renseigner l'URL SearXNG (§9) |

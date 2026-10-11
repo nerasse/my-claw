@@ -6,12 +6,12 @@ Forgejo Actions. Debian Bookworm runner. No self-hosted runner needed.
 
 | Variable | Source | Default |
 |---|---|---|
-| `FORGEJO_URL` | `.env`, env | `https://git.kssimi.fr` |
-| `FORGEJO_USER` | env | `neras` |
-| `FORGEJO_TOKEN` | `.env`, env | — |
+| `FORGEJO_URL` | env | `https://git.kssimi.fr` |
+| `FORGEJO_TOKEN` | env | — |
 | `KEEP_VERSIONS` | env | `15` |
 
-Token scope: `write:repository` (for Package Registry and releases).
+These are the publisher's (CI, `cleanup-versions.sh`): token scope `write:repository` and
+`write:package`. Installs read releases through dl-hub with a release key, `docs/release-source.md`.
 
 Secrets in workflows:
 - `release.yml` uses `${{ secrets.FORGEJO_TOKEN }}` for Package Registry upload and release creation.
@@ -47,7 +47,7 @@ Idempotent: `DELETE` existing file before `PUT` (409 guard). `DELETE` existing r
 | Create release | `POST /api/v1/repos/{owner}/{repo}/releases` | Basic Auth |
 | Delete release | `DELETE /api/v1/repos/{owner}/{repo}/releases/{id}` | Basic Auth |
 
-Basic Auth format: `--user "${FORGEJO_USER}:${FORGEJO_TOKEN}"`
+Auth: `Authorization: token ${FORGEJO_TOKEN}` (any username works for Basic Auth too, the token decides).
 
 ## Scripts
 
@@ -57,7 +57,8 @@ Basic Auth format: `--user "${FORGEJO_USER}:${FORGEJO_TOKEN}"`
 | `packaging/install.sh` | Install to `/opt/my-claw/releases/<v>`, hand the tree to the service user, linger, stub; then activate as that user | `root` (once) |
 | `packaging/uninstall.sh` | Remove `/opt/my-claw`, user and legacy units, CLI, `/etc/my-claw*` | `root` |
 | `packaging/update.sh` | Download tarball, stage `releases/<v>`, flip `current`, render user units, restart, health gate, rollback | service user |
-| `packaging/install-remote.sh` | One-liner: download tarball from registry, run install.sh | Any (calls sudo) |
+| `packaging/install-remote.sh` | One-liner: download the tarball from the release source with a key, run install.sh | Any (calls sudo) |
+| `packaging/release-source.sh` | Sourced: the release source the updaters read (hub with a key, or forge directly) | — |
 | `packaging/cleanup-versions.sh` | Keep last N versions in Package Registry | Any |
 | `scripts/myclaw.sh` | CLI: `start`, `stop`, `restart`, `status`, `logs`, `dev`, `update`, `device`, `web`, `codex`, `claude` | service user (root is dropped to it) |
 | `scripts/dev.sh` | Stop main app, keep deps, run `bun --watch` | Any (calls sudo to stop/start systemd) |
@@ -77,7 +78,7 @@ Auto-installs missing deps (`ffmpeg`, `chromium`, `Xvfb`, `x11vnc`, `websockify`
 ### Fresh install (remote one-liner)
 
 ```bash
-curl -fsSL https://git.kssimi.fr/claw/my-claw/raw/main/packaging/install-remote.sh | FORGEJO_TOKEN=xxx bash
+curl -fsSL -H "Authorization: Bearer <key>" https://dl.kssimi.fr/my-claw/install.sh | sudo bash -s -- --key <key>
 ```
 
 ### Update
@@ -88,7 +89,7 @@ myclaw update
 myclaw update [version] [--force] [--file <tarball>]
 ```
 
-Reads `FORGEJO_URL` and `FORGEJO_TOKEN` from `~/.my-claw/.env`. Layout, ownership and migration of older installs: `install-layout.md`.
+Reads the release source from `~/.my-claw/.env` (`docs/release-source.md`). Layout, ownership and migration of older installs: `install-layout.md`.
 
 Without a version argument it also brings the web client bundle to the latest app release, the
 same step the timer runs (`docs/auto-update.md`). With a pinned version it leaves the bundle
@@ -170,4 +171,4 @@ Some templates include `ExecStartPre` to kill stale user processes from previous
 3. `git tag -a "vX.Y.Z" -m "Release vX.Y.Z"`
 4. `git push origin "vX.Y.Z"`
 5. CI builds, uploads, creates release
-6. Verify: `curl --user "neras:${FORGEJO_TOKEN}" "${FORGEJO_URL}/api/packages/claw/generic/my-claw/X.Y.Z/my-claw-X.Y.Z-linux-x64.tar.gz"`
+6. Verify: `curl -r 0-0 -H "Authorization: token ${FORGEJO_TOKEN}" "${FORGEJO_URL}/api/packages/claw/generic/my-claw/X.Y.Z/my-claw-X.Y.Z-linux-x64.tar.gz"` (206)

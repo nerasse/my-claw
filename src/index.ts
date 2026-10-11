@@ -227,6 +227,7 @@ import {
 } from "./core/config-edit.ts";
 import type { ConfigEditResult } from "./core/config-edit.ts";
 import { envKeys, setEnvValue, renameEnvKey, removeEnvKey } from "./core/env-edit.ts";
+import { runReleaseKeyCli } from "./core/release-key.ts";
 import { claudeClaim } from "./llm/anthropic-release.ts";
 import {
   readAgentFile,
@@ -3308,7 +3309,7 @@ async function runWebCliCommand(args: string[]): Promise<number> {
   return runWebCli(args);
 }
 
-const CLI_COMMANDS = ["codex", "claude", "config", "device", "setup", "web"] as const;
+const CLI_COMMANDS = ["codex", "claude", "config", "device", "setup", "web", "release-key"] as const;
 
 const cliArgs = process.argv.slice(2);
 if ((CLI_COMMANDS as readonly string[]).includes(cliArgs[0] ?? "")) {
@@ -3319,6 +3320,7 @@ if ((CLI_COMMANDS as readonly string[]).includes(cliArgs[0] ?? "")) {
     device: runDeviceCliCommand,
     setup: runSetupCliCommand,
     web: runWebCliCommand,
+    "release-key": runReleaseKeyCli,
   };
   const runner = runners[cliArgs[0]!]!;
   runner(cliArgs.slice(1))

@@ -35,8 +35,6 @@ fi
 LEGACY_META="/etc/my-claw/.install-meta"
 LEGACY_ENV="/etc/my-claw/.env"
 MIGRATION_STAMP="/etc/my-claw/.migration-failed"
-OWNER="claw"
-PACKAGE="my-claw"
 TMP_BASE="/var/tmp"
 
 # Restart order matters: the browser stack before the server that talks to it. Xvfb is not
@@ -92,26 +90,18 @@ read_meta() {
   fi
 }
 
-FORGEJO_URL=""
-FORGEJO_TOKEN=""
+# The release source (packaging/release-source.sh), read from the service user's .env.
+SOURCE_HELPER="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/release-source.sh"
+[ -f "$SOURCE_HELPER" ] || { echo "Error: ${SOURCE_HELPER} missing" >&2; exit 1; }
+# shellcheck source=/dev/null
+. "$SOURCE_HELPER"
+
 read_registry_env() {
-  local key value
-  [ -f "$1" ] || return 0
-  while IFS='=' read -r key value; do
-    [[ -z "$key" || "$key" =~ ^# ]] && continue
-    value="$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed 's/^["\'"'"']//;s/["\'"'"']$//')"
-    case "$key" in
-      FORGEJO_URL) FORGEJO_URL="$value" ;;
-      FORGEJO_TOKEN) FORGEJO_TOKEN="$value" ;;
-      FORGEJO_USER) FORGEJO_USER="$value" ;;
-    esac
-  done < "$1"
+  read_release_env "$1"
 }
 
 require_registry() {
-  if [ -z "$FORGEJO_URL" ] || [ -z "$FORGEJO_TOKEN" ]; then
-    die "FORGEJO_URL and FORGEJO_TOKEN are needed to reach the registry (${TARGET_HOME}/.my-claw/.env)"
-  fi
+  release_configured || die "no release source in ${TARGET_HOME}/.my-claw/.env: run 'myclaw release-key <key>' first"
 }
 
 # ---------------------------------------------------------------------------
@@ -312,8 +302,8 @@ web_bundle_now() {
     echo "Warning: ${helper} missing, the web bundle is left alone"
     return 0
   fi
-  if [ -z "$FORGEJO_URL" ] || [ -z "$FORGEJO_TOKEN" ]; then
-    echo "No registry credentials yet, the web bundle will follow once FORGEJO_TOKEN is set"
+  if ! release_configured; then
+    echo "No release source yet, the web bundle will follow once 'myclaw release-key <key>' is run"
     return 0
   fi
   (
@@ -350,10 +340,10 @@ fetch_payload() {
     tarball_bytes="$(stat -c %s "$file")"
   else
     tar_file="my-claw-${version}-linux-x64.tar.gz"
-    url="${FORGEJO_URL}/api/packages/${OWNER}/generic/${PACKAGE}/${version}/${tar_file}"
-    # `|| true`: the registry may not answer HEAD at all. Under `set -e` a failing command
-    # substitution in an assignment silently kills the whole script.
-    tarball_bytes="$(curl -fsSI --user "${FORGEJO_USER:-neras}:${FORGEJO_TOKEN}" "$url" 2>/dev/null \
+    url="$(release_server_url "$version")"
+    # `|| true`: the forge's registry does not answer HEAD (dl-hub does). Under `set -e` a failing
+    # command substitution in an assignment silently kills the whole script.
+    tarball_bytes="$(release_curl -fsSI "$url" 2>/dev/null \
       | tr -d '\r' | awk 'tolower($1)=="content-length:" {print $2}' | tail -1 || true)"
     # No Content-Length (HEAD unsupported or proxy stripped it): assume a conservative 500MB tarball.
     [ -n "${tarball_bytes:-}" ] || tarball_bytes=$((500 * 1024 * 1024))
@@ -380,7 +370,7 @@ fetch_payload() {
     cp "$file" "${TMP_DIR}/${tar_file}"
   else
     echo "Downloading ${tar_file}..."
-    curl -fsSL --user "${FORGEJO_USER:-neras}:${FORGEJO_TOKEN}" "$url" -o "${TMP_DIR}/${tar_file}"
+    release_curl -fsSL "$url" -o "${TMP_DIR}/${tar_file}" || die "download failed from $(release_describe)"
   fi
 
   echo "Extracting..."
@@ -390,7 +380,7 @@ fetch_payload() {
   echo "Verifying payload..."
   [ -d "$EXTRACT_DIR" ] || die "expected directory missing in tarball: $(basename "$EXTRACT_DIR")"
   for required in package.json src/index.ts node_modules scripts/myclaw.sh packaging/update.sh \
-      packaging/auto-update.sh packaging/web-bundle.sh packaging/myclaw-stub.sh \
+      packaging/auto-update.sh packaging/web-bundle.sh packaging/release-source.sh packaging/myclaw-stub.sh \
       units units/my-claw.service units/my-claw-auto-update.timer; do
     [ -e "${EXTRACT_DIR}/${required}" ] || die "tarball is missing '${required}', refusing to install a broken payload"
   done
@@ -402,14 +392,8 @@ RESOLVED_VERSION=""
 resolve_latest() {
   local latest
   echo "Checking latest version..."
-  latest="$(curl -fsS --user "${FORGEJO_USER:-neras}:${FORGEJO_TOKEN}" \
-    -H "Accept: application/json" \
-    "${FORGEJO_URL}/api/v1/packages/${OWNER}" | \
-    jq -r --arg pkg "${PACKAGE}" '.[] | select(.name == $pkg and .type == "generic") | .version' | \
-    sort -V | tail -1)"
-  if [ -z "$latest" ] || [ "$latest" = "null" ]; then
-    die "could not determine latest version"
-  fi
+  latest="$(release_latest_server)"
+  [ -n "$latest" ] || die "could not determine the latest version from $(release_describe)"
   echo "Latest version: ${latest}"
   RESOLVED_VERSION="$latest"
 }

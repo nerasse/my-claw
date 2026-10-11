@@ -22,7 +22,7 @@ COPY package.json tsconfig.json ./
 COPY src ./src
 COPY docs/prompt ./docs/prompt
 COPY packaging/config.json packaging/.env.example ./etc/
-COPY packaging/web-bundle.sh packaging/compose/my-claw-entrypoint.sh ./packaging/
+COPY packaging/web-bundle.sh packaging/release-source.sh packaging/compose/my-claw-entrypoint.sh ./packaging/
 COPY packaging/compose/myclaw /usr/local/bin/myclaw
 USER claw
 EXPOSE 8080

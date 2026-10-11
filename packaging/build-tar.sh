@@ -40,6 +40,7 @@ cp "${SCRIPT_DIR}/auto-update.sh" "${TAR_DIR}/packaging/"
 # Sourced by both updaters out of the installed tree: without it in the tarball, the deployed
 # machine warns and never moves its web bundle again.
 cp "${SCRIPT_DIR}/web-bundle.sh" "${TAR_DIR}/packaging/"
+cp "${SCRIPT_DIR}/release-source.sh" "${TAR_DIR}/packaging/"
 # The /usr/local/bin/myclaw stub, installed once by install.sh or the migration.
 cp "${SCRIPT_DIR}/myclaw-stub.sh" "${TAR_DIR}/packaging/"
 # Run by the Chromium unit before every start: without it in the tarball the unit's ExecStartPre

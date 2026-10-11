@@ -8,6 +8,7 @@ The bare-metal installer, run on fresh machines in containers. Decided with the 
 packaging/build-tar.sh                         # the tarball of this tree, in dist/
 tests-install/run.sh debian12                  # or ubuntu2404; --keep leaves the machine up
 tests-install/upgrade.sh debian12              # an older release (dist/old/) updated to this tree
+tests-install/release-source.sh debian12       # install and updates through a dl-hub, with a key
 tests-install/compose-run.sh                   # the compose install, built from this tree
 INSTALL_E2E=1 bun test tests-e2e/install       # all four, as a gated test (~10 min each)
 ```
@@ -33,6 +34,13 @@ Nothing of my-claw. `run.sh` installs the tarball as root and checks, as the ser
    switched off and freed;
 9. `myclaw update --file … --force` goes through the real updater and leaves the server up and
    Whisper off.
+
+`release-source.sh` (docs/release-source.md): a fake dl-hub (`fake-hub.py`, in a python container
+beside the machine, which has no python) serves this tarball, a copy of it one version higher, and
+an app release with a web bundle. The one-line install with `--key`, the key in `.env` (600, claw),
+`myclaw update` bringing the web bundle, the timer installing the higher version, every request
+carrying the key, a revoked key (timer retries, `myclaw update` and `myclaw release-key` refuse
+and say why, nothing written), then `myclaw release-key` from stdin.
 
 `upgrade.sh`: an owner on 0.7.72 running local speech-to-text the way the old guide said (`pip
 --user faster-whisper`, voice on `auto`, the old template's placeholder Groq key), updated by their

@@ -184,6 +184,17 @@ if [ ! -f "${TARGET_HOME}/.my-claw/.env" ]; then
   cp "${PROJECT_DIR}/etc/.env.example" "${TARGET_HOME}/.my-claw/.env"
   echo "Installed env template to ${TARGET_HOME}/.my-claw/.env"
 fi
+# The release source install-remote.sh came from: written once, so updates use it from then on.
+# docs/release-source.md
+if [ -n "${MY_CLAW_RELEASE_URL:-}" ]; then
+  for name in MY_CLAW_RELEASE_URL MY_CLAW_RELEASE_KEY; do
+    sed -i "/^${name}=/d" "${TARGET_HOME}/.my-claw/.env"
+    if [ -n "${!name:-}" ]; then
+      printf '%s=%s\n' "$name" "${!name}" >> "${TARGET_HOME}/.my-claw/.env"
+    fi
+  done
+  echo "Release source: ${MY_CLAW_RELEASE_URL}"
+fi
 chmod 600 "${TARGET_HOME}/.my-claw/config.json" "${TARGET_HOME}/.my-claw/.env"
 chown "${TARGET_USER}:${TARGET_USER}" "${TARGET_HOME}/.my-claw/config.json" "${TARGET_HOME}/.my-claw/.env"
 

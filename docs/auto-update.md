@@ -1,12 +1,13 @@
 # Auto-update
 
-my-claw can keep itself current: a systemd timer asks the Forgejo registry every 15 minutes and,
+my-claw can keep itself current: a systemd timer asks the release source every 15 minutes and,
 when a newer release exists, runs the same swap `myclaw update` would. The same tick then
 brings the web client bundle to the latest app release.
 
-Two artifacts, one timer, one credential: the `FORGEJO_TOKEN` in `~/.my-claw/.env` reads both
-the generic package registry (the server) and the private release assets of `claw/my-claw-app`
-(the bundle).
+Two artifacts, one timer, one credential: the release source in `~/.my-claw/.env`
+(`MY_CLAW_RELEASE_URL` and `MY_CLAW_RELEASE_KEY`, written by `myclaw release-key`) serves both the
+server tarball and the web bundle. An install without a key still reads the forge directly with
+`FORGEJO_TOKEN`, until it gets one. `docs/release-source.md`.
 
 ## Pieces
 

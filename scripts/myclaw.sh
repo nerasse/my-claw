@@ -122,6 +122,7 @@ usage() {
   echo "  device    Pair and revoke app/browser devices (add, ls, rm, disable, enable)"
   echo "  setup     Pair the first device of a fresh install (a code, a link, a QR)"
   echo "  web       Install and switch the web client bundle (install, ls, use, rm)"
+  echo "  release-key  Set the key (and source) updates come from: myclaw release-key <key>"
   echo "  update    Update to the latest release, web client bundle included (or myclaw update <version>); the browser keeps running (--with-browser)"
   echo "  codex     ChatGPT/Codex auth: myclaw codex <login|status|logout>"
   echo "  claude    Claude subscription auth: myclaw claude <login|set-token <token>|status|logout>"
@@ -350,6 +351,10 @@ case "$cmd" in
   web)
     shift
     run_cli web "$@"
+    ;;
+  release-key)
+    shift
+    run_cli release-key "$@"
     ;;
   *)
     usage

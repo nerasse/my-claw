@@ -77,6 +77,8 @@ delete process.env["MY_CLAW_WEB_SEARCH_TOKEN"];
 // Green on CI, red on the maintainer's machine, and only on some seeds.
 delete process.env["FORGEJO_TOKEN"];
 delete process.env["FORGEJO_URL"];
+delete process.env["MY_CLAW_RELEASE_URL"];
+delete process.env["MY_CLAW_RELEASE_KEY"];
 
 // Wipe persisted sessions between every test. Files share one MY_CLAW_DIR and reuse ids
 // ("u1", "session-1", ...), so a session left on disk by one test could be read cold by

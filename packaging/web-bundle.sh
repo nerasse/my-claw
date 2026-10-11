@@ -6,8 +6,9 @@
 #   - packaging/auto-update.sh, once the server is already current
 #   - packaging/update.sh, after a successful server update and after the health check
 #
-# The caller must have these set: TARGET_HOME, FORGEJO_URL, FORGEJO_TOKEN. WEB_LOG_PREFIX names
-# who is talking in the journal, and defaults to something true either way.
+# The caller must have TARGET_HOME set and the release source read (packaging/release-source.sh,
+# sourced below; its variables come from the caller's environment or read_release_env).
+# WEB_LOG_PREFIX names who is talking in the journal, and defaults to something true either way.
 #
 # Nothing here is allowed to fail the caller. The manual updater rolls the server back on any
 # non-zero exit, and a bundle that could not be downloaded is not a reason to undo a good server
@@ -16,6 +17,9 @@
 # No health gate on this half, on purpose: the server resolves the bundle directory per request,
 # so installing one is a download and a symlink flip. There is no swap window to protect, and
 # `myclaw web use <version>` is the rollback.
+
+# shellcheck source=/dev/null
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/release-source.sh"
 
 WEB_KEEP="${WEB_KEEP:-3}"
 MYCLAW_BIN="${MYCLAW_BIN:-/usr/local/bin/myclaw}"
@@ -65,13 +69,8 @@ update_web_bundle() {
   # A release with no dist-web.tar.gz is an app-only release (an APK rebuild): skipping it is
   # what stops the bundle from chasing a tag that has nothing to install.
   local latest
-  latest="$(curl -fsS --max-time 30 -H "Authorization: token ${FORGEJO_TOKEN}" \
-    -H "Accept: application/json" \
-    "${FORGEJO_URL}/api/v1/repos/claw/my-claw-app/releases?limit=20" 2>/dev/null | \
-    jq -r '.[] | select(.draft == false and .prerelease == false)
-                | select([(.assets // [])[].name] | index("dist-web.tar.gz"))
-                | .tag_name' | sort -V | tail -1 || true)"
-  if [ -z "$latest" ] || [ "$latest" = "null" ]; then
+  latest="$(release_latest_web)"
+  if [ -z "$latest" ]; then
     echo "Warning: could not resolve the latest web bundle — leaving ${current:-none} in place"
     return 0
   fi

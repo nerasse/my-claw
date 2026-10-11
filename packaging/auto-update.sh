@@ -20,6 +20,10 @@ set -uo pipefail
 # Overridable for the packaging tests only; an install always lives here.
 APP_DIR="${MY_CLAW_APP_DIR:-/opt/my-claw}"
 command -v jq >/dev/null 2>&1 || { echo "Error: jq not found" >&2; exit 1; }
+SOURCE_HELPER="$(dirname "$(readlink -f "$0")")/release-source.sh"
+[ -f "$SOURCE_HELPER" ] || { echo "Error: ${SOURCE_HELPER} missing" >&2; exit 1; }
+# shellcheck source=/dev/null
+. "$SOURCE_HELPER"
 
 if [ "$EUID" -eq 0 ]; then
   if [ ! -f /etc/my-claw/.install-meta ] || [ -L "${APP_DIR}/current" ]; then
@@ -56,19 +60,7 @@ if [ "$EUID" -ne 0 ]; then
   ENV_FILE="${TARGET_HOME}/.my-claw/.env"
 fi
 
-FORGEJO_URL=""
-FORGEJO_TOKEN=""
-if [ -f "$ENV_FILE" ]; then
-  while IFS='=' read -r key value; do
-    [[ -z "$key" || "$key" =~ ^# ]] && continue
-    value="$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed 's/^["\'"'"']//;s/["\'"'"']$//')"
-    case "$key" in
-      FORGEJO_URL) FORGEJO_URL="$value" ;;
-      FORGEJO_TOKEN) FORGEJO_TOKEN="$value" ;;
-      FORGEJO_USER) FORGEJO_USER="$value" ;;
-    esac
-  done < "$ENV_FILE"
-fi
+read_release_env "$ENV_FILE"
 
 # An update already under way (a `myclaw update`, or the previous tick still swapping) stops the
 # server, which the gate below reads as a free pass: the updater would start again only to die on
@@ -132,8 +124,8 @@ if [ "$EUID" -eq 0 ] && [ -d "${TREE}/units" ] && [ "$TARGET_USER" != "root" ]; 
   fi
 fi
 
-if [ -z "$FORGEJO_URL" ] || [ -z "$FORGEJO_TOKEN" ]; then
-  echo "Warning: FORGEJO_URL/FORGEJO_TOKEN missing in ${ENV_FILE}, cannot check the registry"
+if ! release_configured; then
+  echo "Warning: no release source in ${ENV_FILE} (run: myclaw release-key <key>), cannot check for updates"
   exit 0
 fi
 
@@ -157,13 +149,9 @@ else
   web_bundle_step() { return 0; }
 fi
 
-echo "my-claw auto-update: installed ${INSTALLED}, checking registry..."
-LATEST="$(curl -fsS --max-time 30 --user "${FORGEJO_USER:-neras}:${FORGEJO_TOKEN}" \
-  -H "Accept: application/json" \
-  "${FORGEJO_URL}/api/v1/packages/claw" 2>/dev/null | \
-  jq -r --arg pkg "my-claw" '.[] | select(.name == $pkg and .type == "generic") | .version' | \
-  sort -V | tail -1 || true)"
-if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
+echo "my-claw auto-update: installed ${INSTALLED}, checking $(release_describe)..."
+LATEST="$(release_latest_server)"
+if [ -z "$LATEST" ]; then
   echo "Warning: could not resolve the latest version, retrying in 15 minutes"
   exit 0
 fi

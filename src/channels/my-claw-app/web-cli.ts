@@ -2,7 +2,7 @@ import { lstat, mkdtemp, mkdir, readdir, readlink, rename, rm, stat, symlink, un
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { MY_CLAW_DIR } from "../../core/config.ts";
-import { authHeaders, forgeBase } from "./forge.ts";
+import { appFileUrl, authHeaders } from "./release-source.ts";
 
 /**
  * `myclaw web`: installs the web client bundle the channel serves.
@@ -11,8 +11,8 @@ import { authHeaders, forgeBase } from "./forge.ts";
  * rather than something it carries. Versions live side by side and `current` is a symlink, which
  * makes a rollback a rename and never a re-download.
  *
- * Forgejo credentials live in ./forge.ts: the token travels to the configured forge and nowhere
- * else (a private release asset answers an anonymous GET with a 404, not a 401).
+ * The default source is the release source (./release-source.ts): its credential travels to it
+ * and nowhere else.
  */
 
 const USAGE = `usage: myclaw web <command>
@@ -26,10 +26,6 @@ const USAGE = `usage: myclaw web <command>
 const WEB_DIR = (): string => join(MY_CLAW_DIR, "web");
 const CURRENT = (): string => join(WEB_DIR(), "current");
 
-const DEFAULT_SOURCE = (version: string): string =>
-  `${forgeBase()}/claw/my-claw-app/releases/download/${version}/dist-web.tar.gz`;
-
-export { authHeaders } from "./forge.ts";
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -87,7 +83,7 @@ async function installFrom(source: string, version: string): Promise<{ ok: true 
       if (!response.ok) {
         const hint =
           response.status === 404 && Object.keys(headers).length === 0
-            ? " (a private release reads as 404 when anonymous: set FORGEJO_TOKEN in ~/.my-claw/.env)"
+            ? " (no release key: run `myclaw release-key <key>`)"
             : "";
         return { ok: false, error: `download failed: HTTP ${response.status}${hint}` };
       }
@@ -176,9 +172,9 @@ export async function runWebCli(args: string[]): Promise<number> {
 
   if (command === "install") {
     const fromIndex = args.indexOf("--from");
-    const source = fromIndex === -1 ? DEFAULT_SOURCE(version) : args[fromIndex + 1];
+    const source = fromIndex === -1 ? appFileUrl(version, "web") : args[fromIndex + 1];
     if (!source) {
-      console.error("--from needs a url or a path");
+      console.error(fromIndex === -1 ? "no release source: run `myclaw release-key <key>`, or pass --from" : "--from needs a url or a path");
       return 1;
     }
     const installed = await installFrom(source, version);
