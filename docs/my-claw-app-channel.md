@@ -132,7 +132,9 @@ directly over the LAN; browsers go through the proxy.
 That choice moves four facts out of the process, and the code has to read them from headers
 instead of from the socket. All four are only trusted when the request comes from a configured
 proxy address (`web.trustedProxies`, a list of CIDRs, empty by default), otherwise a client on the
-LAN forges them at will.
+LAN forges them at will. Bun listens dual-stack and reports an IPv4 peer as `::ffff:a.b.c.d`: the
+mapping is stripped before the match, so the plain address is what the owner declares. Until
+0.7.106 it was not, and no declared proxy was ever trusted.
 
 | Header | Read for | Broken if missing |
 | --- | --- | --- |

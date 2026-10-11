@@ -173,7 +173,10 @@ function trusted(config: MyClawAppChannelConfig, remoteAddress: string | undefin
  * A full IPv6 implementation would be dead weight here: a proxy is declared by the owner, and
  * an exact address covers the one case this deployment has.
  */
-export function addressInCidr(address: string, cidr: string): boolean {
+export function addressInCidr(raw: string, cidr: string): boolean {
+  // Bun listens dual-stack: an IPv4 peer reads `::ffff:10.10.10.50`, which never equalled the
+  // `10.10.10.50` an owner declares, and no proxy was ever trusted (2026-10-11).
+  const address = raw.replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/i, "");
   if (!cidr.includes("/")) return address === cidr;
   const [range, bitsRaw] = cidr.split("/");
   const bits = Number(bitsRaw);
