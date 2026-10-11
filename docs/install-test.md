@@ -9,6 +9,7 @@ packaging/build-tar.sh                         # the tarball of this tree, in di
 tests-install/run.sh debian12                  # or ubuntu2404; --keep leaves the machine up
 tests-install/upgrade.sh debian12              # an older release (dist/old/) updated to this tree
 tests-install/release-source.sh debian12       # install and updates through a dl-hub, with a key
+tests-install/no-token.sh debian12             # an old install with no forge token, updated by the one-line install
 tests-install/compose-run.sh                   # the compose install, built from this tree
 INSTALL_E2E=1 bun test tests-e2e/install       # all four, as a gated test (~10 min each)
 ```
@@ -34,6 +35,11 @@ Nothing of my-claw. `run.sh` installs the tarball as root and checks, as the ser
    switched off and freed;
 9. `myclaw update --file … --force` goes through the real updater and leaves the server up and
    Whisper off.
+
+`no-token.sh`: an owner on 0.7.72 who never set a forge token (the old template's placeholder),
+stuck there; the one-line install with a key, run over it, takes it to this tree in place and keeps
+`.env` lines, config, workspace, paired device and the old release for a rollback, then the timer
+reads the hub. It also caught the updater refusing every release older than `release-source.sh`.
 
 `release-source.sh` (docs/release-source.md): a fake dl-hub (`fake-hub.py`, in a python container
 beside the machine, which has no python) serves this tarball, a copy of it one version higher, and

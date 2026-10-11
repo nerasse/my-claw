@@ -378,9 +378,11 @@ fetch_payload() {
   EXTRACT_DIR="${TMP_DIR}/my-claw-${version}-linux-x64"
 
   echo "Verifying payload..."
+  # Only what every release since the user layout ships: a file added later (release-source.sh in
+  # 0.7.103) would make `myclaw update <older version>`, the rollback, refuse every older release.
   [ -d "$EXTRACT_DIR" ] || die "expected directory missing in tarball: $(basename "$EXTRACT_DIR")"
   for required in package.json src/index.ts node_modules scripts/myclaw.sh packaging/update.sh \
-      packaging/auto-update.sh packaging/web-bundle.sh packaging/release-source.sh packaging/myclaw-stub.sh \
+      packaging/auto-update.sh packaging/web-bundle.sh packaging/myclaw-stub.sh \
       units units/my-claw.service units/my-claw-auto-update.timer; do
     [ -e "${EXTRACT_DIR}/${required}" ] || die "tarball is missing '${required}', refusing to install a broken payload"
   done

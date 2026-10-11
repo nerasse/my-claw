@@ -131,6 +131,13 @@ describe("the .env", () => {
     expect(await sh(`read_release_env "${dir}/missing"; release_configured || echo none; release_describe`)).toBe("none\nnone");
     expect(await sh("release_kind", { FORGEJO_URL: BASE })).toBe("");
   });
+
+  test("the old template's placeholder token is no token: no source, nothing sent anywhere", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "release-env-"));
+    const env = join(dir, ".env");
+    await writeFile(env, "FORGEJO_URL=https://git.kssimi.fr\nFORGEJO_TOKEN=your_forgejo_token_here\n");
+    expect(await sh(`read_release_env "${env}"; release_configured || echo none; release_migrate "${env}" || echo kept`)).toBe("none\nkept");
+  });
 });
 
 describe("an install without a key trades its forge token for one", () => {

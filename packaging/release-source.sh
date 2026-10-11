@@ -16,13 +16,15 @@ MY_CLAW_RELEASE_KEY="${MY_CLAW_RELEASE_KEY:-}"
 FORGEJO_URL="${FORGEJO_URL:-}"
 FORGEJO_TOKEN="${FORGEJO_TOKEN:-}"
 
-# Reads the four names out of a .env file; quotes and surrounding spaces are dropped.
+# Reads the four names out of a .env file; quotes and surrounding spaces are dropped. A template
+# placeholder (your_..._here, the old .env.example) is no value, as for the server's own loader.
 read_release_env() {
   local key value
   [ -f "$1" ] || return 0
   while IFS='=' read -r key value; do
     [[ -z "$key" || "$key" =~ ^# ]] && continue
     value="$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed 's/^["\'"'"']//;s/["\'"'"']$//')"
+    [[ "$value" =~ ^[Yy][Oo][Uu][Rr]_[A-Za-z0-9_]+_[Hh][Ee][Rr][Ee]$ ]] && continue
     case "$key" in
       MY_CLAW_RELEASE_URL) MY_CLAW_RELEASE_URL="${value%/}" ;;
       MY_CLAW_RELEASE_KEY) MY_CLAW_RELEASE_KEY="$value" ;;
