@@ -36,7 +36,7 @@ the owner gives keys to anyone else.
 
 | Client | Reads | Where |
 |---|---|---|
-| `install-remote.sh` (served as `install.sh` by the hub) | `--key`, `--url`, or the two variables | writes both into `.env` through `install.sh` |
+| `install-remote.sh` (served as `install.sh` by the hub) | `DL_HUB_URL`/`DL_HUB_KEY`, written in by the hub from the request; `--key`, `--url` or the two variables win | writes both into `.env` through `install.sh` |
 | `myclaw update`, the 15-minute timer, the compose entrypoint | `.env` | `packaging/release-source.sh`, sourced |
 | the app-update relay, `myclaw web install` | `process.env` (`.env` is hot-reloaded) | `src/channels/my-claw-app/release-source.ts` |
 
@@ -48,11 +48,19 @@ The credential never reaches a command line in the shell helpers: curl reads its
 config on stdin (`curl -K -`), so `ps` does not show it. The TypeScript side sends it only to the
 source's own origin.
 
-Transition: three installs of collaborators read Forgejo directly with their own `FORGEJO_TOKEN`
-(the helpers' `forge` kind: the generic package, the app releases, `Authorization: token`, no
-username). The hub wins as soon as `MY_CLAW_RELEASE_URL` is set. The forge kind is a deliberate,
-temporary exception to "no backward-compatibility shims", removed by the first release after the
-hub's log shows every install on a key.
+The one-line install is `curl -fsSL -H "Authorization: Bearer <key>" https://dl.kssimi.fr/my-claw/install.sh | sudo bash`:
+the hub writes the source and that key into the script it serves, so nothing else is typed.
+
+Transition, with nobody doing anything: the installs of collaborators (and the owner's) read
+Forgejo directly with the `FORGEJO_TOKEN` they already hold (the helpers' `forge` kind). From this
+release on, the timer and `myclaw update` trade it once for a key (`release_migrate`): a POST to
+`<hub>/key/exchange` with that token, which dl-hub checks with Forgejo and never keeps. The key and
+source are written into `.env` (600, every other line kept, `FORGEJO_TOKEN` left for the skills
+that use it) and take over at once. Only an install whose `FORGEJO_URL` is the forge the hub fronts
+(`https://git.kssimi.fr`) ever sends its token there; a refusal leaves the install as it was, and
+the next tick asks again. `MY_CLAW_HUB_URL` and `MY_CLAW_HUB_FORGE` in the environment override the
+pair, for the tests. The forge kind is a deliberate, temporary exception to "no
+backward-compatibility shims", removed once dl-hub's dashboard shows every install on a key.
 
 ## The registry follows the `claw` account's visibility
 

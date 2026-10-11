@@ -4,7 +4,7 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -12,12 +12,19 @@ const helper = join(import.meta.dir, "..", "..", "packaging", "release-source.sh
 const KEY = "dlh_shell-key";
 const TOKEN = "forge-token";
 const seen: Array<{ path: string; auth: string | null }> = [];
+const trades: Array<{ auth: string | null; body: string }> = [];
 
 const fake = Bun.serve({
   port: 0,
   hostname: "127.0.0.1",
-  fetch(req) {
+  async fetch(req) {
     const url = new URL(req.url);
+    const trade = /^\/(ex|bad)\/my-claw\/key\/exchange$/.exec(url.pathname);
+    if (trade) {
+      trades.push({ auth: req.headers.get("authorization"), body: await req.text() });
+      if (req.method !== "POST" || req.headers.get("authorization") !== `token ${TOKEN}`) return new Response("refused", { status: 403 });
+      return Response.json({ key: trade[1] === "ex" ? "dlh_traded" : "dlh_x'; touch /tmp/pwned", url: "https://evil.test" });
+    }
     seen.push({ path: url.pathname + url.search, auth: req.headers.get("authorization") });
     const auth = req.headers.get("authorization");
     if (url.pathname.startsWith("/hub/")) {
@@ -123,5 +130,57 @@ describe("the .env", () => {
     );
     expect(await sh(`read_release_env "${dir}/missing"; release_configured || echo none; release_describe`)).toBe("none\nnone");
     expect(await sh("release_kind", { FORGEJO_URL: BASE })).toBe("");
+  });
+});
+
+describe("an install without a key trades its forge token for one", () => {
+  async function envFile(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "release-trade-"));
+    const file = join(dir, ".env");
+    await writeFile(file, `# mine\nFORGEJO_URL=${BASE}\nFORGEJO_TOKEN=${TOKEN}\nGROQ_API_KEY=g\n`, { mode: 0o644 });
+    return file;
+  }
+  const trading = (hub: string) => ({ MY_CLAW_HUB_FORGE: BASE, MY_CLAW_HUB_URL: `${BASE}/${hub}/my-claw/` });
+  const run = (file: string) => `read_release_env "${file}"; if release_migrate "${file}"; then echo traded; else echo kept; fi; release_kind`;
+
+  test("the key is written beside the rest, 600, and used for the rest of the run", async () => {
+    const file = await envFile();
+    trades.length = 0;
+    expect(await sh(`${run(file)}; echo "$MY_CLAW_RELEASE_URL $MY_CLAW_RELEASE_KEY"`, trading("ex"))).toBe(
+      `traded\nhub\n${BASE}/ex/my-claw dlh_traded`,
+    );
+    expect(await readFile(file, "utf8")).toBe(
+      `# mine\nFORGEJO_URL=${BASE}\nFORGEJO_TOKEN=${TOKEN}\nGROQ_API_KEY=g\nMY_CLAW_RELEASE_URL=${BASE}/ex/my-claw\nMY_CLAW_RELEASE_KEY=dlh_traded\n`,
+    );
+    expect((await stat(file)).mode & 0o777).toBe(0o600);
+    expect(trades).toEqual([{ auth: `token ${TOKEN}`, body: expect.stringMatching(/^machine=.+/) }]);
+  });
+
+  test("another forge's token never leaves for the hub", async () => {
+    const file = await envFile();
+    const before = await readFile(file, "utf8");
+    trades.length = 0;
+    expect(await sh(run(file), { ...trading("ex"), MY_CLAW_HUB_FORGE: "https://git.example.test" })).toBe("kept\nforge");
+    expect(trades).toEqual([]);
+    expect(await readFile(file, "utf8")).toBe(before);
+  });
+
+  test("a refusal or an answer that is not a key changes nothing", async () => {
+    // A key that is not one, then a token the hub refuses.
+    for (const [hub, token] of [["bad", TOKEN], ["ex", "other"]] as const) {
+      const file = await envFile();
+      await writeFile(file, (await readFile(file, "utf8")).replace(TOKEN, token));
+      const before = await readFile(file, "utf8");
+      expect(await sh(run(file), trading(hub))).toBe("kept\nforge");
+      expect(await readFile(file, "utf8")).toBe(before);
+    }
+  });
+
+  test("an install that has a key asks nothing", async () => {
+    const file = await envFile();
+    await writeFile(file, `MY_CLAW_RELEASE_URL=${BASE}/hub\nMY_CLAW_RELEASE_KEY=${KEY}\nFORGEJO_URL=${BASE}\nFORGEJO_TOKEN=${TOKEN}\n`);
+    trades.length = 0;
+    expect(await sh(run(file), trading("ex"))).toBe("kept\nhub");
+    expect(trades).toEqual([]);
   });
 });

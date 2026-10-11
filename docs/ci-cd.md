@@ -78,7 +78,7 @@ Auto-installs missing deps (`ffmpeg`, `chromium`, `Xvfb`, `x11vnc`, `websockify`
 ### Fresh install (remote one-liner)
 
 ```bash
-curl -fsSL -H "Authorization: Bearer <key>" https://dl.kssimi.fr/my-claw/install.sh | sudo bash -s -- --key <key>
+curl -fsSL -H "Authorization: Bearer <key>" https://dl.kssimi.fr/my-claw/install.sh | sudo bash
 ```
 
 ### Update

@@ -11,6 +11,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = "/srv/hub"
 KEY = sys.argv[1]
+FORGE_TOKEN = "forge-e2e"
+TRADED = KEY + "-traded"
 LOG = open("/srv/fake-hub.log", "a", buffering=1)
 
 
@@ -39,16 +41,28 @@ class Hub(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
+    def do_POST(self):
+        auth = self.headers.get("authorization", "")
+        LOG.write(f"POST {self.path} {'forge' if auth == 'token ' + FORGE_TOKEN else 'noforge'}\n")
+        self.rfile.read(int(self.headers.get("content-length", "0")))
+        if self.path != "/my-claw/key/exchange" or auth != "token " + FORGE_TOKEN:
+            return self.send(403, b"refused")
+        self.send(200, json.dumps({"key": TRADED, "url": "http://hub:8099/my-claw"}).encode(), "application/json")
+
     def do_GET(self):
         auth = self.headers.get("authorization", "")
-        LOG.write(f"{self.command} {self.path} {'key' if auth == 'Bearer ' + KEY else 'nokey'}\n")
-        if auth != "Bearer " + KEY or os.path.exists(os.path.join(ROOT, "revoked")):
+        good = auth in ("Bearer " + KEY, "Bearer " + TRADED)
+        LOG.write(f"{self.command} {self.path} {'key' if good else 'nokey'}\n")
+        if not good or os.path.exists(os.path.join(ROOT, "revoked")):
             return self.send(401, b"a download key is needed")
         m = re.fullmatch(r"/my-claw/(server|app)/latest\.json", self.path)
         if m:
             return self.send(200, json.dumps(latest(m.group(1))).encode(), "application/json")
         if self.path == "/my-claw/install.sh":
-            return self.send(200, open(os.path.join(ROOT, "install.sh"), "rb").read())
+            # As dl-hub serves it: the source and the request's key under the shebang.
+            script = open(os.path.join(ROOT, "install.sh")).read().split("\n", 1)
+            head = f"DL_HUB_URL='http://hub:8099/my-claw'\nDL_HUB_KEY='{auth[7:]}'\n"
+            return self.send(200, (script[0] + "\n" + head + script[1]).encode())
         m = re.fullmatch(r"/my-claw/(server|app)/(\d+\.\d+\.\d+)/([A-Za-z0-9._-]+)", self.path)
         if m and os.path.isfile(os.path.join(ROOT, *m.groups())):
             return self.send(200, open(os.path.join(ROOT, *m.groups()), "rb").read(), "application/gzip")

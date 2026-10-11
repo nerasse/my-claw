@@ -109,3 +109,37 @@ release_latest_web() {
       ;;
   esac
 }
+
+# The installs set up before keys existed trade their forge token for a release key, on their own:
+# the hub checks the token with the forge and answers a key (dl-hub, /<product>/key/exchange).
+# Only the forge the hub fronts ever sends its token there: a fork's token never leaves for it.
+RELEASE_HUB_URL="${MY_CLAW_HUB_URL:-https://dl.kssimi.fr/my-claw}"
+RELEASE_HUB_FORGE="${MY_CLAW_HUB_FORGE:-https://git.kssimi.fr}"
+
+# Writes the two lines into an .env in place, every other line kept. mktemp makes the file 600.
+release_write_env() {
+  local file="$1" url="$2" key="$3" tmp
+  tmp="$(mktemp "${file}.XXXXXX")" || return 1
+  {
+    grep -Ev '^(MY_CLAW_RELEASE_URL|MY_CLAW_RELEASE_KEY)=' "$file" || true
+    printf 'MY_CLAW_RELEASE_URL=%s\nMY_CLAW_RELEASE_KEY=%s\n' "$url" "$key"
+  } > "$tmp" && mv "$tmp" "$file" || { rm -f "$tmp"; return 1; }
+}
+
+# 0 when this install has just been given a key (written into <env file> and in effect for the rest
+# of the run), 1 when nothing changed: not a forge install, another forge, or the hub said no. The
+# next run asks again; FORGEJO_TOKEN stays where it is.
+release_migrate() {
+  local file="$1" answer key
+  [ "$(release_kind)" = forge ] || return 1
+  [ "${FORGEJO_URL%/}" = "${RELEASE_HUB_FORGE%/}" ] || return 1
+  [ -f "$file" ] && [ -w "$file" ] || return 1
+  answer="$(release_curl -fsS --max-time 30 -X POST \
+    --data-urlencode "machine=$(hostname 2>/dev/null || echo unknown)" \
+    "${RELEASE_HUB_URL%/}/key/exchange" 2>/dev/null)" || return 1
+  key="$(printf '%s' "$answer" | jq -r '.key // empty' 2>/dev/null || true)"
+  [[ "$key" =~ ^dlh_[A-Za-z0-9_-]+$ ]] || return 1
+  release_write_env "$file" "${RELEASE_HUB_URL%/}" "$key" || return 1
+  MY_CLAW_RELEASE_URL="${RELEASE_HUB_URL%/}"
+  MY_CLAW_RELEASE_KEY="$key"
+}

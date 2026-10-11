@@ -106,11 +106,11 @@ Avec une clé de release (une par machine, créée sur https://dl.kssimi.fr/key 
 propriétaire) :
 
 ```bash
-curl -fsSL -H "Authorization: Bearer <clé>" https://dl.kssimi.fr/my-claw/install.sh \
-  | sudo bash -s -- --key <clé>
+curl -fsSL -H "Authorization: Bearer <clé>" https://dl.kssimi.fr/my-claw/install.sh | sudo bash
 ```
 
-`--version 0.7.102` épingle une version, `--url` désigne une autre source de release. La clé est
+Le hub inscrit la clé dans le script servi : rien d'autre à taper. `sudo bash -s -- --version 0.7.102`
+épingle une version, `--url` désigne une autre source de release. La clé est
 écrite dans `~/.my-claw/.env` : les mises à jour passent par la même source
 (`docs/release-source.md`).
 

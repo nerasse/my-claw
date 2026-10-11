@@ -128,6 +128,9 @@ if ! release_configured; then
   echo "Warning: no release source in ${ENV_FILE} (run: myclaw release-key <key>), cannot check for updates"
   exit 0
 fi
+if release_migrate "$ENV_FILE"; then
+  echo "my-claw auto-update: switched to a release key from ${MY_CLAW_RELEASE_URL} (FORGEJO_TOKEN left in place)"
+fi
 
 # ---------------------------------------------------------------------------
 # The web client bundle

@@ -955,6 +955,9 @@ if [ "$(id -un)" != "$TARGET_USER" ]; then
   die "my-claw belongs to ${TARGET_USER}; run this as ${TARGET_USER} (or with sudo, which drops to that user)"
 fi
 read_registry_env "${TARGET_HOME}/.my-claw/.env"
+if release_migrate "${TARGET_HOME}/.my-claw/.env"; then
+  echo "Switched to a release key from ${MY_CLAW_RELEASE_URL} (FORGEJO_TOKEN left in place)"
+fi
 
 case "$MODE" in
   activate) activate_current ;;

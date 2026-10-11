@@ -6,7 +6,7 @@
  */
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { chmod, mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
+import { chmod, chown, mkdtemp, mkdir, writeFile, readFile } from "node:fs/promises";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import { existsSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,7 +25,8 @@ const UNPRIVILEGED = { uid: 65534, gid: 65534 };
 async function install(): Promise<{ app: string; marker: string; script: string; home: string }> {
   if (AS_NOBODY) await chmod(MY_CLAW_DIR, 0o711);
   const dir = await mkdtemp(join(tmpdir(), "auto-update-"));
-  if (AS_NOBODY) await chmod(dir, 0o755);
+  // Under CI's root the script runs as nobody, and the stand-in updater writes its marker here.
+  if (AS_NOBODY) await chmod(dir, 0o777);
   // Run the shipped script from inside the throwaway tree: a checkout under a home directory is
   // not readable by the unprivileged user CI makes these run as.
   const script = join(dir, "auto-update.sh");
@@ -105,6 +106,9 @@ describe("a tick with a release key", () => {
     hostname: "127.0.0.1",
     fetch(req) {
       seen.push(req.headers.get("authorization"));
+      if (new URL(req.url).pathname === "/my-claw/key/exchange") {
+        return req.headers.get("authorization") === "token forge-tok" ? Response.json({ key: KEY }) : new Response("", { status: 403 });
+      }
       if (req.headers.get("authorization") !== `Bearer ${KEY}`) return new Response("", { status: 401 });
       if (new URL(req.url).pathname === "/my-claw/server/latest.json") return Response.json({ version: latest, files: [] });
       return new Response("", { status: 404 });
@@ -113,12 +117,12 @@ describe("a tick with a release key", () => {
   afterAll(() => hub.stop(true));
 
   /** Async: the fake hub answers from this process, which spawnSync would block. */
-  async function tickAsync(app: string, script: string): Promise<string> {
+  async function tickAsync(app: string, script: string, extra: Record<string, string> = {}): Promise<string> {
     const run = Bun.spawn(
       AS_NOBODY
         ? ["setpriv", `--reuid=${UNPRIVILEGED.uid}`, `--regid=${UNPRIVILEGED.gid}`, "--clear-groups", "bash", script]
         : ["bash", script],
-      { env: { ...process.env, MY_CLAW_APP_DIR: app, XDG_RUNTIME_DIR: "/nonexistent" }, stdout: "pipe", stderr: "pipe" },
+      { env: { ...process.env, ...extra, MY_CLAW_APP_DIR: app, XDG_RUNTIME_DIR: "/nonexistent" }, stdout: "pipe", stderr: "pipe" },
     );
     const [out, err] = await Promise.all([new Response(run.stdout).text(), new Response(run.stderr).text(), run.exited]);
     return out + err;
@@ -143,6 +147,25 @@ describe("a tick with a release key", () => {
     latest = "0.7.1";
     expect(await tickAsync(app, script)).toContain("up to date (0.7.1)");
     expect(existsSync(marker)).toBe(false);
+  });
+
+  test("an install on the forge alone trades its token for a key, then checks the hub with it", async () => {
+    const { app, script, home } = await install();
+    const forge = `http://127.0.0.1:${hub.port}`;
+    await writeFile(join(home, ".my-claw", ".env"), `FORGEJO_URL=${forge}\nFORGEJO_TOKEN=forge-tok\n`);
+    // The timer writes its own .env: under CI's root, the user it runs as must own it.
+    if (AS_NOBODY) {
+      await chown(join(home, ".my-claw"), UNPRIVILEGED.uid, UNPRIVILEGED.gid);
+      await chown(join(home, ".my-claw", ".env"), UNPRIVILEGED.uid, UNPRIVILEGED.gid);
+    }
+    latest = "0.7.1";
+    const out = await tickAsync(app, script, { MY_CLAW_HUB_FORGE: forge, MY_CLAW_HUB_URL: `${forge}/my-claw` });
+    expect(out).toContain(`switched to a release key from ${forge}/my-claw (FORGEJO_TOKEN left in place)`);
+    expect(out).toContain(`checking ${forge}/my-claw`);
+    expect(out).toContain("up to date (0.7.1)");
+    expect(await readFile(join(home, ".my-claw", ".env"), "utf8")).toBe(
+      `FORGEJO_URL=${forge}\nFORGEJO_TOKEN=forge-tok\nMY_CLAW_RELEASE_URL=${forge}/my-claw\nMY_CLAW_RELEASE_KEY=${KEY}\n`,
+    );
   });
 
   test("a refused key is a quiet retry, never an update", async () => {

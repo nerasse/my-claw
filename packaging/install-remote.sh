@@ -2,15 +2,15 @@
 set -euo pipefail
 
 # Installs my-claw from its release source (docs/release-source.md), with a release key:
-#   curl -fsSL -H "Authorization: Bearer <key>" https://dl.kssimi.fr/my-claw/install.sh \
-#     | sudo bash -s -- --key <key>
-# Options: --key <key>, --url <release url> (default below), --version <x.y.z> (default: latest).
-# MY_CLAW_RELEASE_KEY and MY_CLAW_RELEASE_URL in the environment do the same.
+#   curl -fsSL -H "Authorization: Bearer <key>" https://dl.kssimi.fr/my-claw/install.sh | sudo bash
+# Served by dl-hub, the script carries the source and the key it was fetched with (DL_HUB_URL and
+# DL_HUB_KEY, written under the shebang). Options win over them: --key <key>, --url <release url>,
+# --version <x.y.z> (default: latest); so do MY_CLAW_RELEASE_KEY and MY_CLAW_RELEASE_URL.
 #
 # Nothing but bash, curl and tar is assumed: jq and the rest come with install.sh.
 
-RELEASE_URL="${MY_CLAW_RELEASE_URL:-https://dl.kssimi.fr/my-claw}"
-RELEASE_KEY="${MY_CLAW_RELEASE_KEY:-}"
+RELEASE_URL="${MY_CLAW_RELEASE_URL:-${DL_HUB_URL:-https://dl.kssimi.fr/my-claw}}"
+RELEASE_KEY="${MY_CLAW_RELEASE_KEY:-${DL_HUB_KEY:-}}"
 VERSION="latest"
 
 while [ $# -gt 0 ]; do
