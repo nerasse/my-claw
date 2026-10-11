@@ -25,43 +25,29 @@ afterEach(async () => {
 });
 
 describe("release credentials", () => {
-  test("the token travels to the forge and nowhere else", () => {
-    process.env["FORGEJO_TOKEN"] = "secret";
-    process.env["FORGEJO_URL"] = "https://git.example.test";
-
-    expect(authHeaders("https://git.example.test/claw/my-claw-app/releases/download/v1/x.tar.gz")).toEqual({
-      Authorization: "token secret",
-    });
-    // A --from pointing at a mirror is a plain download: a credential handed to whatever host was
-    // typed on the command line is how the forge token ends up in someone else's logs.
-    expect(authHeaders("https://mirror.example.test/x.tar.gz")).toEqual({});
-    // Same host over plain HTTP is a downgrade, and the token is not sent over it either.
-    expect(authHeaders("http://git.example.test/x.tar.gz")).toEqual({});
-  });
-
-  test("no token configured means no header, not a broken one", () => {
-    process.env["FORGEJO_URL"] = "https://git.example.test";
-    expect(authHeaders("https://git.example.test/x.tar.gz")).toEqual({});
-  });
-
-  test("a source that is not a URL is never given a header", () => {
-    process.env["FORGEJO_TOKEN"] = "secret";
-    expect(authHeaders("/home/me/dist-web.tar.gz")).toEqual({});
-  });
-
-  test("a release key travels to the hub as a bearer, and wins over the forge token", () => {
-    process.env["FORGEJO_TOKEN"] = "forge-secret";
-    process.env["FORGEJO_URL"] = "https://git.example.test";
+  test("the key travels to the source as a bearer, and nowhere else", () => {
     process.env["MY_CLAW_RELEASE_URL"] = "https://dl.example.test/my-claw";
     process.env["MY_CLAW_RELEASE_KEY"] = "dlh_k";
     expect(authHeaders("https://dl.example.test/my-claw/app/1.2.3/dist-web.tar.gz")).toEqual({ Authorization: "Bearer dlh_k" });
-    expect(authHeaders("https://git.example.test/claw/my-claw-app/releases/download/v1/x.tar.gz")).toEqual({});
+    // A --from pointing at a mirror is a plain download: a credential handed to whatever host was
+    // typed on the command line is how the key ends up in someone else's logs.
+    expect(authHeaders("https://mirror.example.test/x.tar.gz")).toEqual({});
+    // Same host over plain HTTP is a downgrade, and the key is not sent over it either.
     expect(authHeaders("http://dl.example.test/my-claw/x")).toEqual({});
   });
 
-  test("a public source without a key gets no header", () => {
+  test("no key, or no source, means no header; a forge token is no longer one", () => {
+    process.env["FORGEJO_URL"] = "https://git.example.test";
+    process.env["FORGEJO_TOKEN"] = "forge-secret";
+    expect(authHeaders("https://git.example.test/claw/my-claw-app/releases/download/v1/x.tar.gz")).toEqual({});
     process.env["MY_CLAW_RELEASE_URL"] = "https://dl.example.test/my-claw";
     expect(authHeaders("https://dl.example.test/my-claw/app/1.2.3/dist-web.tar.gz")).toEqual({});
+  });
+
+  test("a source that is not a URL is never given a header", () => {
+    process.env["MY_CLAW_RELEASE_URL"] = "https://dl.example.test/my-claw";
+    process.env["MY_CLAW_RELEASE_KEY"] = "dlh_k";
+    expect(authHeaders("/home/me/dist-web.tar.gz")).toEqual({});
   });
 });
 
@@ -71,9 +57,7 @@ describe("the default source", () => {
     expect(appFileUrl("v0.6.143", "web")).toBe("https://dl.example.test/my-claw/app/0.6.143/dist-web.tar.gz");
     expect(appFileUrl("0.6.143", "web")).toBe("https://dl.example.test/my-claw/app/0.6.143/dist-web.tar.gz");
     delete process.env["MY_CLAW_RELEASE_URL"];
-    process.env["FORGEJO_URL"] = "https://git.example.test";
-    process.env["FORGEJO_TOKEN"] = "t";
-    expect(appFileUrl("v0.6.143", "web")).toBe("https://git.example.test/claw/my-claw-app/releases/download/v0.6.143/dist-web.tar.gz");
+    expect(appFileUrl("v0.6.143", "web")).toBeUndefined();
   });
 
   test("with no source, install without --from says what to do and downloads nothing", async () => {

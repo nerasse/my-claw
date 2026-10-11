@@ -341,8 +341,8 @@ fetch_payload() {
   else
     tar_file="my-claw-${version}-linux-x64.tar.gz"
     url="$(release_server_url "$version")"
-    # `|| true`: the forge's registry does not answer HEAD (dl-hub does). Under `set -e` a failing
-    # command substitution in an assignment silently kills the whole script.
+    # `|| true`: a source may not answer HEAD. Under `set -e` a failing command substitution in
+    # an assignment silently kills the whole script.
     tarball_bytes="$(release_curl -fsSI "$url" 2>/dev/null \
       | tr -d '\r' | awk 'tolower($1)=="content-length:" {print $2}' | tail -1 || true)"
     # No Content-Length (HEAD unsupported or proxy stripped it): assume a conservative 500MB tarball.
@@ -957,9 +957,6 @@ if [ "$(id -un)" != "$TARGET_USER" ]; then
   die "my-claw belongs to ${TARGET_USER}; run this as ${TARGET_USER} (or with sudo, which drops to that user)"
 fi
 read_registry_env "${TARGET_HOME}/.my-claw/.env"
-if release_migrate "${TARGET_HOME}/.my-claw/.env"; then
-  echo "Switched to a release key from ${MY_CLAW_RELEASE_URL} (FORGEJO_TOKEN left in place)"
-fi
 
 case "$MODE" in
   activate) activate_current ;;

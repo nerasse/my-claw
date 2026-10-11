@@ -97,14 +97,4 @@ as_claw "myclaw update" > "/var/tmp/rs-update3-${machine}.log" 2>&1 || { tail -2
 grep -q "Latest version: ${next}" "/var/tmp/rs-update3-${machine}.log" || { tail -20 "/var/tmp/rs-update3-${machine}.log"; fail "myclaw update did not read the new key"; }
 ok "release-key from stdin checked the key and wrote it; myclaw update reads it"
 
-# 6. An install from before keys (forge token only) trades it for a key on the timer's next tick.
-as_claw "grep -Ev '^MY_CLAW_RELEASE_' ~/.my-claw/.env > ~/.my-claw/.env.old; printf 'FORGEJO_URL=http://hub:8099\nFORGEJO_TOKEN=forge-e2e\n' >> ~/.my-claw/.env.old; mv ~/.my-claw/.env.old ~/.my-claw/.env; chmod 600 ~/.my-claw/.env"
-as_claw "MY_CLAW_HUB_FORGE=http://hub:8099 MY_CLAW_HUB_URL=$URL /opt/my-claw/current/packaging/auto-update.sh" > "/var/tmp/rs-trade-${machine}.log" 2>&1 \
-  || { cat "/var/tmp/rs-trade-${machine}.log"; fail "auto-update on a forge-only install"; }
-grep -q "switched to a release key from $URL" "/var/tmp/rs-trade-${machine}.log" || { cat "/var/tmp/rs-trade-${machine}.log"; fail "no trade"; }
-grep -q "up to date (${next})" "/var/tmp/rs-trade-${machine}.log" || { cat "/var/tmp/rs-trade-${machine}.log"; fail "the traded key was not used"; }
-as_claw "grep -qx 'MY_CLAW_RELEASE_KEY=${KEY}-traded' ~/.my-claw/.env && grep -qx 'FORGEJO_TOKEN=forge-e2e' ~/.my-claw/.env" || fail ".env after the trade"
-[ "$(on "stat -c '%a %U' /home/claw/.my-claw/.env")" = "600 claw" ] || fail ".env is not 600 claw after the trade"
-ok "forge-only install: the timer traded the token for a key, kept FORGEJO_TOKEN, and checked the hub with it"
-
 echo "PASS [$machine] release source"

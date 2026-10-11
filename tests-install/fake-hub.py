@@ -11,8 +11,6 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT = "/srv/hub"
 KEY = sys.argv[1]
-FORGE_TOKEN = "forge-e2e"
-TRADED = KEY + "-traded"
 LOG = open("/srv/fake-hub.log", "a", buffering=1)
 
 
@@ -41,17 +39,9 @@ class Hub(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
-    def do_POST(self):
-        auth = self.headers.get("authorization", "")
-        LOG.write(f"POST {self.path} {'forge' if auth == 'token ' + FORGE_TOKEN else 'noforge'}\n")
-        self.rfile.read(int(self.headers.get("content-length", "0")))
-        if self.path != "/my-claw/key/exchange" or auth != "token " + FORGE_TOKEN:
-            return self.send(403, b"refused")
-        self.send(200, json.dumps({"key": TRADED, "url": "http://hub:8099/my-claw"}).encode(), "application/json")
-
     def do_GET(self):
         auth = self.headers.get("authorization", "")
-        good = auth in ("Bearer " + KEY, "Bearer " + TRADED)
+        good = auth == "Bearer " + KEY
         LOG.write(f"{self.command} {self.path} {'key' if good else 'nokey'}\n")
         if not good or os.path.exists(os.path.join(ROOT, "revoked")):
             return self.send(401, b"a download key is needed")

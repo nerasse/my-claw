@@ -249,8 +249,8 @@ are the same operation. Files are read per request: a new bundle is live without
 
 Two things that shape the download, both learned the hard way on the first real install:
 
-- **The release source is private.** Its credential (`MY_CLAW_RELEASE_KEY` as a bearer, or the
-  legacy `FORGEJO_TOKEN`, docs/release-source.md) is sent only ever to the source's own origin:
+- **The release source is private.** Its key (`MY_CLAW_RELEASE_KEY`, a bearer, docs/release-source.md)
+  is sent only ever to the source's own origin:
   a `--from` pointing anywhere else is a plain
   download, because a credential handed to whatever host was typed on the command line is how a
   mirror ends up holding the keys to the repository.

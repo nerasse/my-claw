@@ -5016,22 +5016,20 @@ describe("command frames", () => {
   });
 
   test("GET /app-update answers the paired device with the latest release", async () => {
-    process.env["FORGEJO_TOKEN"] = "secret";
-    process.env["FORGEJO_URL"] = "https://git.example.test";
+    process.env["MY_CLAW_RELEASE_URL"] = "https://dl.example.test/my-claw";
+    process.env["MY_CLAW_RELEASE_KEY"] = "dlh_secret";
     resetAppUpdateCache();
-    // The mock must only swallow the forge call. The test's own request to the local adapter
+    // The mock must only swallow the release source's call. The test's own request to the local adapter
     // would otherwise be answered by the mock with a release list.
     const realFetch = globalThis.fetch.bind(globalThis);
     const fetchMock = mockFetch(async (input, init) => {
       const url = String(input);
       if (url.startsWith("http://127.0.0.1")) return realFetch(input as string, init);
-      return Response.json([{
-        tag_name: "v0.5.55",
-        draft: false,
-        prerelease: false,
-        published_at: "2026-08-30T12:00:00Z",
-        assets: [{ name: "my-claw-app-v0.5.55.apk", size: 45438191 }],
-      }]);
+      return Response.json({
+        version: "0.5.55",
+        publishedAt: "2026-08-30T12:00:00Z",
+        files: [{ name: "my-claw-app-v0.5.55.apk", size: 45438191 }],
+      });
     });
     try {
       const res = await fetch(`http://127.0.0.1:${adapter.port}/app-update?device=${DEVICE_ID}&token=${TOKEN}`);
@@ -5041,8 +5039,8 @@ describe("command frames", () => {
       assert.equal(body.version, "0.5.55");
     } finally {
       fetchMock.restore();
-      delete process.env["FORGEJO_TOKEN"];
-      delete process.env["FORGEJO_URL"];
+      delete process.env["MY_CLAW_RELEASE_URL"];
+      delete process.env["MY_CLAW_RELEASE_KEY"];
       resetAppUpdateCache();
     }
   });
@@ -5053,21 +5051,15 @@ describe("command frames", () => {
   });
 
   test("GET /app-update/apk streams the apk to the paired device", async () => {
-    process.env["FORGEJO_TOKEN"] = "secret";
-    process.env["FORGEJO_URL"] = "https://git.example.test";
+    process.env["MY_CLAW_RELEASE_URL"] = "https://dl.example.test/my-claw";
+    process.env["MY_CLAW_RELEASE_KEY"] = "dlh_secret";
     resetAppUpdateCache();
     const realFetch = globalThis.fetch.bind(globalThis);
     const fetchMock = mockFetch(async (input, init) => {
       const url = String(input);
       if (url.startsWith("http://127.0.0.1")) return realFetch(input as string, init);
-      if (url.includes("/api/v1/repos")) {
-        return Response.json([{
-          tag_name: "v0.5.55",
-          draft: false,
-          prerelease: false,
-          published_at: "2026-08-30T12:00:00Z",
-          assets: [{ name: "my-claw-app-v0.5.55.apk", size: 11 }],
-        }]);
+      if (url.endsWith("/app/latest.json")) {
+        return Response.json({ version: "0.5.55", files: [{ name: "my-claw-app-v0.5.55.apk", size: 11 }] });
       }
       return new Response("PK\x03\x04fake-apk", { status: 200 });
     });
@@ -5077,8 +5069,8 @@ describe("command frames", () => {
       assert.equal(res.headers.get("content-type"), "application/vnd.android.package-archive");
     } finally {
       fetchMock.restore();
-      delete process.env["FORGEJO_TOKEN"];
-      delete process.env["FORGEJO_URL"];
+      delete process.env["MY_CLAW_RELEASE_URL"];
+      delete process.env["MY_CLAW_RELEASE_KEY"];
       resetAppUpdateCache();
     }
   });

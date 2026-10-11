@@ -6,8 +6,8 @@ brings the web client bundle to the latest app release.
 
 Two artifacts, one timer, one credential: the release source in `~/.my-claw/.env`
 (`MY_CLAW_RELEASE_URL` and `MY_CLAW_RELEASE_KEY`, written by `myclaw release-key`) serves both the
-server tarball and the web bundle. An install without a key still reads the forge directly with
-`FORGEJO_TOKEN`, until it gets one. `docs/release-source.md`.
+server tarball and the web bundle. An install without a key checks nothing and says so in the
+journal. `docs/release-source.md`.
 
 ## Pieces
 

@@ -46,8 +46,7 @@ beside the machine, which has no python) serves this tarball, a copy of it one v
 an app release with a web bundle. The one-line install with `--key`, the key in `.env` (600, claw),
 `myclaw update` bringing the web bundle, the timer installing the higher version, every request
 carrying the key, a revoked key (timer retries, `myclaw update` and `myclaw release-key` refuse
-and say why, nothing written), `myclaw release-key` from stdin, then an install with only a forge
-token trading it for a key on the timer's tick.
+and say why, nothing written), then `myclaw release-key` from stdin.
 
 `upgrade.sh`: an owner on 0.7.72 running local speech-to-text the way the old guide said (`pip
 --user faster-whisper`, voice on `auto`, the old template's placeholder Groq key), updated by their
