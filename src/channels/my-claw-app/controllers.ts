@@ -45,6 +45,8 @@ export interface MyClawAppSessionData {
   /** Conversation namespace of the device (config `owner`, else the device id). */
   owner: string;
   lastSeen: number;
+  /** When the media ticket last sent on this socket expires; a new bucket sends the next one. */
+  ticketExpiresAt?: number;
   /**
    * Set on a socket opened at /my-claw-app/pair. It is unauthenticated and speaks a protocol of
    * its own, so every chat handler refuses it before reading anything else -- docs/web-pairing.md.

@@ -56,7 +56,10 @@ function connectClient(
   receiveReceipts = false,
 ): Promise<WsClient> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/my-claw-app?device=${device}&token=${token}`);
+    // The credential in headers, as the app sends it (docs/my-claw-app-channel.md, "Credentials").
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/my-claw-app`, {
+      headers: { "X-My-Claw-Device": device, Authorization: `Bearer ${token}` },
+    } as never);
     const client: WsClient = { ws, frames: [], closed: null };
     let settled = false;
     const timer = setTimeout(() => {
@@ -79,6 +82,8 @@ function connectClient(
         const frame = JSON.parse(raw) as { type?: unknown };
         if (!receiveLocationCapabilities && frame.type === "location.capabilities") return;
         if (!receiveHello && frame.type === "hello") return;
+        // Sent as every socket opens: ambient, like the hello (credentials.test.ts covers it).
+        if (frame.type === "media.ticket") return;
         if (!receiveQuestionPending && frame.type === "question.pending") return;
         if (!receiveApprovalPending && frame.type === "approval.pending") return;
         // The transport receipt of every send: ambient for a test about anything else.

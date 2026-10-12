@@ -103,7 +103,7 @@ browser                          server                           paired phone
    │ ◄──── pair.granted ────────────┤  mintDevice(), session destroyed │
    │       { deviceId, token }      ├────── device.pair.result ───────►│
    │ store, close, reconnect        │                                  │
-   └───────────────────────────────►│ /my-claw-app?device=..&token=..  │
+   └───────────────────────────────►│ /my-claw-app + device headers    │
 ```
 
 The three digits are not decoration. Without them the live attack is reversed phishing: an

@@ -1,4 +1,5 @@
 import type { Server, ServerWebSocket } from "bun";
+import { mintTicket, verifyTicket } from "./media-ticket.ts";
 import { basename } from "node:path";
 import { handleBrowserInfo, handleBrowserUnblock } from "./browser-handlers.ts";
 import { BrowserLive } from "./browser-live.ts";
@@ -1221,13 +1222,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
     if (url.pathname.startsWith("/media/")) {
       const id = url.pathname.slice("/media/".length);
-      const deviceId = this.authenticate(req, url);
+      const deviceId = this.authenticate(req, url, "ticket");
       if (!deviceId) return new Response("Unauthorized", { status: 401 });
       return serveMedia(this.filesDeps(), id, ownerFor(this.config, deviceId), url.searchParams.get("thumb") === "1", req.headers.get("range"), url.searchParams.get("view"));
     }
 
     if (url.pathname === "/skills") {
-      if (!this.authenticate(req, url)) return new Response("Unauthorized", { status: 401 });
+      if (!this.authenticate(req, url, "ticket")) return new Response("Unauthorized", { status: 401 });
       return serveSkill(this.filesDeps(), 
         url.searchParams.get("source") ?? "",
         url.searchParams.get("name") ?? "",
@@ -1261,7 +1262,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
 
     if (url.pathname === "/fs/download" && req.method === "GET") {
-      if (!this.authenticate(req, url)) return new Response("Unauthorized", { status: 401 });
+      if (!this.authenticate(req, url, "ticket")) return new Response("Unauthorized", { status: 401 });
       return fsDownload(url.searchParams.get("path"));
     }
 
@@ -1301,8 +1302,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
       // `myclaw device add` mints the device by writing the config, then asks the running daemon
       // for a claim code: a ticket lives in memory, and the CLI is another process. The caller
       // authenticates with the credential it just created, so it can only ever ticket itself.
-      const deviceId = url.searchParams.get("device") ?? "";
-      if (!this.deviceFor(deviceId, url.searchParams.get("token") ?? "")) {
+      const deviceId = this.presented(req, url);
+      if (!deviceId) {
         return new Response("Unauthorized", { status: 401 });
       }
       if (!pairingEnabled(this.config)) {
@@ -1338,15 +1339,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
       if (req.headers.get("upgrade") !== "websocket") {
         return new Response("Upgrade Required", { status: 426 });
       }
-      const queryDevice = url.searchParams.get("device") ?? "";
-      const byQuery = this.deviceFor(queryDevice, url.searchParams.get("token") ?? "");
-      const cookieDevice = byQuery ? null : this.cookieDevice(req);
+      const presented = this.presented(req, url);
+      const cookieDevice = presented ? null : this.cookieDevice(req);
       if (cookieDevice && !this.originMatches(req, host)) {
         // A WebSocket handshake ignores the same-origin policy, so a cookie-authenticated socket
         // is reachable from any page unless the Origin is checked here.
         return new Response("Forbidden", { status: 403 });
       }
-      const deviceId = byQuery ? queryDevice : cookieDevice;
+      const deviceId = presented ?? cookieDevice;
       if (!deviceId) return new Response("Unauthorized", { status: 401 });
       if (server.upgrade(req, { data: { deviceId, owner: ownerFor(this.config, deviceId), lastSeen: Date.now() } })) {
         return undefined;
@@ -1374,11 +1374,64 @@ export class MyClawAppAdapter implements ChannelAdapter {
     return new Response("Not Found", { status: 404 });
   }
 
-  /** The device behind a request: query credentials for a native client, cookie for a browser. */
-  private authenticate(req: Request, url: URL): string | null {
-    const deviceId = url.searchParams.get("device") ?? "";
-    if (deviceId && this.deviceFor(deviceId, url.searchParams.get("token") ?? "")) return deviceId;
+  /**
+   * The device behind a request. A native client presents its credential in headers; a media
+   * view, which cannot, a ticket in the URL (`media-ticket.ts`), accepted on the read routes only
+   * (`"ticket"`); a browser lets its session cookie speak. docs/my-claw-app-channel.md, "Credentials".
+   */
+  private authenticate(req: Request, url: URL, accepts?: "ticket"): string | null {
+    const presented = this.presented(req, url);
+    if (presented) return presented;
+    if (accepts === "ticket") {
+      const ticket = url.searchParams.get("ticket");
+      if (ticket) {
+        const deviceId = verifyTicket(ticket, (id) => this.enabledToken(id));
+        if (deviceId) return deviceId;
+      }
+    }
     return this.cookieDevice(req);
+  }
+
+  /**
+   * The device credential a native client presents: `X-My-Claw-Device` and
+   * `Authorization: Bearer <token>`. A URL is logged by every proxy on the way, and this token
+   * opens everything. The `?device=&token=` of apps before v0.6.145 is still read, for one
+   * release, so that they can fetch the update that stops sending it; each use is logged.
+   */
+  private presented(req: Request, url: URL): string | null {
+    const headerDevice = req.headers.get("x-my-claw-device") ?? "";
+    const bearer = /^Bearer\s+(\S+)$/i.exec(req.headers.get("authorization") ?? "")?.[1] ?? "";
+    if (headerDevice && bearer) return this.deviceFor(headerDevice, bearer) ? headerDevice : null;
+    const queryDevice = url.searchParams.get("device") ?? "";
+    const queryToken = url.searchParams.get("token") ?? "";
+    if (!queryDevice || !queryToken || !this.deviceFor(queryDevice, queryToken)) return null;
+    if (!this.legacyWarned.has(queryDevice)) {
+      this.legacyWarned.add(queryDevice);
+      void myClawAppLog("warn", "device credential in a URL: an app older than v0.6.145, accepted until the next release", {
+        deviceId: queryDevice, path: url.pathname,
+      });
+    }
+    return queryDevice;
+  }
+
+  private legacyWarned = new Set<string>();
+
+  private enabledToken(deviceId: string): string | undefined {
+    const device = this.config.devices?.[deviceId];
+    return device && device.enabled !== false && device.token ? device.token : undefined;
+  }
+
+  /**
+   * The socket's media ticket (`media-ticket.ts`): sent as it opens, again as the bucket turns,
+   * and on request, because an app whose UI restarted over a socket the native service kept open
+   * never sees the socket open.
+   */
+  private sendMediaTicket(ws: ServerWebSocket<MyClawAppSessionData>, now = Date.now()): void {
+    const token = this.enabledToken(ws.data.deviceId);
+    if (!token) return;
+    const { ticket, expiresAt } = mintTicket(ws.data.deviceId, token, now);
+    ws.data.ticketExpiresAt = expiresAt;
+    this.sendFrame(ws, { type: "media.ticket", ticket, expiresAt });
   }
 
   /** The device a session cookie stands for, or null. Never trusts a cookie for a disabled device. */
@@ -1424,6 +1477,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     });
     // The server names itself first: the settings page labels its "connected" state with it.
     void readAppVersion().then((version) => this.sendFrame(ws, { type: "hello", version, receipts: true }));
+    this.sendMediaTicket(ws);
     const locationCapabilities: MyClawAppLocationCapabilities = {
       type: "location.capabilities",
       ...(this.locationResolver?.capabilities() ?? { enabled: false, address: false, provider: "geoapify" as const }),
@@ -1582,6 +1636,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "approval.history":
         this.handleApprovalHistory(ws, frame);
+        break;
+      case "media.ticket.get":
+        this.sendMediaTicket(ws);
         break;
       case "ping":
         // Answered, because the browser client has no transport-level ping of its own and its
@@ -3383,9 +3440,19 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
   }
 
+  /** A socket open for days is handed the next ticket as the bucket turns, well before its own expires. */
+  private refreshTickets(now: number): void {
+    const due = this.sockets.all().filter((ws) => {
+      const token = this.enabledToken(ws.data.deviceId);
+      return token !== undefined && ws.data.ticketExpiresAt !== mintTicket(ws.data.deviceId, token, now).expiresAt;
+    });
+    for (const ws of due) this.sendMediaTicket(ws, now);
+  }
+
   private sweep(): void {
     this.keepAlive();
     const now = Date.now();
+    this.refreshTickets(now);
     for (const ws of this.sockets.all()) {
       if (now - ws.data.lastSeen > STALE_SOCKET_MS) {
         try {

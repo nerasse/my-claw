@@ -78,14 +78,15 @@ async function requestTicket(
   deviceId: string,
   token: string,
 ): Promise<{ code: string; host: string } | { error: string }> {
-  const url = `http://127.0.0.1:${port}/my-claw-app/ticket?device=${encodeURIComponent(deviceId)}&token=${encodeURIComponent(token)}`;
+  const url = `http://127.0.0.1:${port}/my-claw-app/ticket`;
+  const headers = { "X-My-Claw-Device": deviceId, Authorization: `Bearer ${token}` };
   // The device exists on disk, but the daemon is another process and learns about it through its
   // config watcher, which debounces. Asking once answers 401 for a credential that is perfectly
   // valid, so the call waits for the reload instead of reporting a failure that is only early.
   let last = "the daemon is not reachable";
   for (let attempt = 0; attempt < 8; attempt++) {
     try {
-      const response = await fetch(url, { method: "POST", signal: AbortSignal.timeout(5000) });
+      const response = await fetch(url, { method: "POST", headers, signal: AbortSignal.timeout(5000) });
       if (response.status === 409) return { error: "pairing is disabled in the config" };
       if (response.ok) {
         const body = (await response.json()) as { code?: string; host?: string };

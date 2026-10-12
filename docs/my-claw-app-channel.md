@@ -64,7 +64,38 @@ src/channels/my-claw-app/
 - `owner` groups devices onto one conversation namespace. Omit it and the device stands
   alone under its own id. Changing it moves the device to another namespace: the threads and
   files of the previous owner stay where they are.
-- The app connects to `ws://<host>:<port>/my-claw-app?device=<id>&token=<token>`.
+- The app connects to `ws://<host>:<port>/my-claw-app`, its credential in headers (below).
+
+### Credentials
+
+Three, and which one a request carries depends on who builds it:
+
+```
+native request the app makes itself    X-My-Claw-Device: <id>
+(socket, upload, app update, CLI)      Authorization: Bearer <token>
+
+URL a native view loads by itself      ?ticket=<media ticket>        GET /media, /skills, /fs/download
+(image, player, download manager)
+
+browser                                claw_session cookie            everything
+```
+
+The device token never goes in a URL: every proxy on the way logs URLs, and that token opens
+everything. A view that loads a URL by itself (an `<Image>`, the player, Android's download
+manager) cannot always carry a header, so it carries a **media ticket** instead
+(`media-ticket.ts`): the token's HMAC over the device and an expiry, read-only, accepted on the
+three GET routes above and nowhere else. The server keeps no state for it: revoking the device or
+rotating its token voids every ticket it had.
+
+The server sends `media.ticket { ticket, expiresAt }` as the socket opens, again as the 12-hour
+bucket turns (a ticket always has 24 to 36 hours ahead of it, and every socket of a device gets
+the same one, so an image cache keyed on URLs stays warm), and on `media.ticket.get`, which the
+app sends when its UI restarted over a socket that stayed open. Until the ticket arrives the app
+has no media URL to give: it draws nothing rather than a broken image.
+
+Transition: apps before v0.6.145 put `?device=&token=` on every URL. That query is still read for
+one release, logged once per device (`device credential in a URL`), so that they can fetch the
+update that stops sending it. It is removed at the next server release.
 
 ## Serving the web client
 
@@ -88,11 +119,11 @@ The bundle is served only to a paired client, like everything else on this port.
 secret, but an unauthenticated copy of the UI is a free map of the surface: every route, every
 frame name, every dependency version, offered to whoever scans the host.
 
-A browser cannot present the credential the way the app does. `?device=&token=` works for a URL
-the client builds by hand; it does not work for the asset graph of an HTML page, for the service
-worker, or for an `<img src>`. The browser credential is therefore a **cookie**, and the app keeps
-its query parameters. One resolver, `authenticate(req)`, accepts either and returns a device or
-null.
+A browser cannot present the credential the way the app does. Headers work for a request the
+client builds by hand; they do not work for the asset graph of an HTML page, for the service
+worker, or for an `<img src>`. The browser credential is therefore a **cookie**. One resolver,
+`authenticate(req)`, accepts the headers, the cookie, and on the read routes the media ticket, and
+returns a device or null ("Credentials" above).
 
 ```
 Set-Cookie: claw_session=<32 CSPRNG bytes, base64url>
@@ -921,7 +952,7 @@ the privilege it needs and the reason the answer arrives before the socket dies 
 The device uploads files over HTTP first, then references them in `chat.send`:
 
 ```
-POST /media?device=<id>&token=<token>
+POST /media                      (credential in headers)
   headers: x-filename, x-type (image|audio|video|file), x-thread-id
   body: raw bytes
 -> { "id": "uuid", "type": "image", "filename": "...", "mimeType": "...", "sizeBytes": 123 }
@@ -1279,13 +1310,13 @@ History replays the same cards from the session file: entries with
 { "id": "media-id", "type": "image", "mimeType": "image/png", "filename": "a.png", "sizeBytes": 42 }
 ```
 
-The file is fetched over HTTP (same auth query params as the WS handshake):
+The file is fetched over HTTP, with the media ticket (see "Credentials"):
 
 ```
-GET /media/<id>?device=<deviceId>&token=<token>
+GET /media/<id>?ticket=<media ticket>
 ```
 
-The app builds the URL from its own credentials; the media registry is a small
+The app builds the URL from the ticket the socket handed it; the media registry is a small
 look-aside cache over the session store and dropped on adapter stop.
 
 ## The command journal

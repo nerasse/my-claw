@@ -95,7 +95,9 @@ run_gate() {
   fi
   did="${device%%$'\t'*}"
   token="${device#*$'\t'}"
-  health="$(curl -fsS --max-time 5 "http://127.0.0.1:${port}/health?device=${did}&token=${token}" 2>/dev/null || true)"
+  # The credential in headers read from stdin: neither ps nor a URL ever shows it.
+  health="$(printf 'header = "X-My-Claw-Device: %s"\nheader = "Authorization: Bearer %s"\n' "$did" "$token" \
+    | curl -fsS --max-time 5 -K - "http://127.0.0.1:${port}/health" 2>/dev/null || true)"
   # Not `.activeRun // "unknown"`: jq's alternative operator treats false as absent, so the
   # idle answer, the one case that must let the update through, read as unknown and the gate
   # never opened. Ask for the type instead, and let anything else be unknown.

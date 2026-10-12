@@ -397,6 +397,11 @@ export interface MyClawAppPing {
   type: "ping";
 }
 
+/** Asks for the media ticket again: the app's UI restarted over a socket that stayed open. */
+export interface MyClawAppMediaTicketGet {
+  type: "media.ticket.get";
+}
+
 /**
  * The answer to `ping`, and the only thing that proves the link is still two-way.
  *
@@ -1085,6 +1090,7 @@ export interface MyClawAppDeviceRevoke {
 }
 
 export type MyClawAppClientFrame =
+  | MyClawAppMediaTicketGet
   | MyClawAppBrowserInfo
   | MyClawAppBrowserUnblock
   | MyClawAppBrowserWatch
@@ -3820,6 +3826,16 @@ export interface MyClawAppHello {
   receipts: true;
 }
 
+/**
+ * The read-only credential for the URLs a native view loads by itself (media-ticket.ts): sent as
+ * the socket opens, again as it renews, and on `media.ticket.get`.
+ */
+export interface MyClawAppMediaTicket {
+  type: "media.ticket";
+  ticket: string;
+  expiresAt: number;
+}
+
 /** The thread's history is gone; the app drops its copy instead of guessing from an empty list. */
 export interface MyClawAppChatCleared {
   type: "chat.cleared";
@@ -4053,6 +4069,7 @@ export interface MyClawAppBrowserInfoResult {
 }
 
 export type MyClawAppServerFrame =
+  | MyClawAppMediaTicket
   | MyClawAppPong
   | MyClawAppBrowserInfoResult
   | MyClawAppBrowserUnblockResult

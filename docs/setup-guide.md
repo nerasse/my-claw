@@ -522,7 +522,7 @@ systemctl --user list-timers my-claw-auto-update.timer --no-pager  # next run da
 ss -tlnp | grep -E '8080|9222|9223|8000'
 
 # 3. Santé (device authentifié)
-curl -fsS "http://127.0.0.1:8080/health?device=<id>&token=<token>"   # → {"activeRun":false}
+curl -fsS -H "X-My-Claw-Device: <id>" -H "Authorization: Bearer <token>" http://127.0.0.1:8080/health   # → {"activeRun":false}
 
 # 4. Web
 curl -fsS http://127.0.0.1:8080/ | grep -q "<html" && echo "bundle OK"
