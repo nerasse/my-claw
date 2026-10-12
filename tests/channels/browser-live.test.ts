@@ -164,6 +164,15 @@ describe("BrowserLive", () => {
     ]);
   });
 
+  test("a window shown large on a wide screen is streamed at the page's own size", () => {
+    const b = fakeBrowser();
+    const live = new BrowserLive(() => b.session);
+    const desk = socket();
+    live.watch(desk, { type: "browser.watch", windows: false, streams: [{ pageId: "p1", quality: "focus-large" }] }, () => undefined);
+
+    expect(b.watches.get(desk)!.streams).toEqual([{ pageId: "p1", preset: "focus-large" }]);
+  });
+
   // A device from an older build, or a frame that got garbled: a tile, never nothing.
   test("an unknown quality is watched as a tile", () => {
     const b = fakeBrowser();

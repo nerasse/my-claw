@@ -3986,13 +3986,14 @@ export interface MyClawAppBrowserUnblockResult {
  * whose pictures it shows, as tiles or one at full size. Each frame replaces the device's previous
  * one; an empty one stops everything. Watching reserves nothing: agents keep their windows.
  *
- * A tile asks for the size it draws (`tile-large` past 640 device pixels): a picture stretched
- * past its own size reads as a blurry tile, which is worse than a smaller one.
+ * A tile asks for the size it draws (`tile-large` past 640 device pixels), and so does a window
+ * shown large (`focus-large` past 1600): a picture stretched past its own size reads as a blur,
+ * which is worse than a smaller one.
  */
 export interface MyClawAppBrowserWatch {
   type: "browser.watch";
   windows: boolean;
-  streams: Array<{ pageId: string; quality: "tile" | "tile-large" | "focus" }>;
+  streams: Array<{ pageId: string; quality: "tile" | "tile-large" | "focus" | "focus-large" }>;
 }
 
 /**

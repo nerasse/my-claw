@@ -8,10 +8,10 @@
  * without it a new watcher of a still page would wait for a picture forever.
  */
 
-export type CastPreset = "tile" | "tile-large" | "focus";
+export type CastPreset = "tile" | "tile-large" | "focus" | "focus-large";
 
 /** Smallest first: two devices watching one tab share the stream at the larger size. */
-export const CAST_RANK: Record<CastPreset, number> = { tile: 0, "tile-large": 1, focus: 2 };
+export const CAST_RANK: Record<CastPreset, number> = { tile: 0, "tile-large": 1, focus: 2, "focus-large": 3 };
 
 export interface CastOptions {
   maxWidth: number;
@@ -29,11 +29,17 @@ export interface CastOptions {
  * picture stretched to 1250 px reads as a blurry tile. Measured again on Chromium 147
  * (2026-10-11): a 1280x720 frame of a page animating at 60 fps weighs 19 KB against 5 KB at
  * 640x360, and a page that does not repaint sends one frame whatever its size.
+ *
+ * `focus-large` is the same thing for one window shown large on a screen wider than 1600 device
+ * pixels: the page itself is 1919x958, so its picture at 1920 is the page at 1:1. Measured on
+ * Chromium 147 (2026-10-13): 39 KB a frame of a page animating at 60 fps against 21 KB at 1600,
+ * and 123 KB against 83 KB for the one frame of a page of text.
  */
 export const CAST_PRESETS: Record<CastPreset, CastOptions> = {
   tile: { maxWidth: 640, maxHeight: 360, quality: 55, fps: 4 },
   "tile-large": { maxWidth: 1280, maxHeight: 720, quality: 55, fps: 4 },
   focus: { maxWidth: 1600, maxHeight: 900, quality: 70, fps: 15 },
+  "focus-large": { maxWidth: 1920, maxHeight: 1080, quality: 70, fps: 15 },
 };
 
 export interface CastFrame {

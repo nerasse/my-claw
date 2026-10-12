@@ -86,7 +86,7 @@ export function parseInput(raw: unknown): BrowserInput | undefined {
 
 /** What a device asks for, as the preset the sidecar is told: anything else is a tile. */
 export function presetOf(quality: unknown): CastPreset {
-  return quality === "focus" || quality === "tile-large" ? quality : "tile";
+  return quality === "focus" || quality === "focus-large" || quality === "tile-large" ? quality : "tile";
 }
 
 function windowsFrame(windows: WindowOverview[]): MyClawAppServerFrame {

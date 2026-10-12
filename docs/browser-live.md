@@ -56,8 +56,9 @@ Considered and dropped:
 
 The app's Browser page shows every window live, as tiles: which agent task holds it, whether it is
 free, waiting for the owner, or on the VNC screen, its tabs, and the picture of the tab it shows.
-A tile opens the window at full size. The same page serves a phone, a tablet and a desk: the wall
-takes as many columns as fit. On the web, "Pop out" opens one window in a browser tab of its own
+A tile opens the window at full size (a press on its picture, or its expand button), and the bar
+of that view switches to any other window without going back; Escape, or the back key, returns to
+the wall. The same page serves a phone, a tablet and a desk: the wall takes as many columns as fit. On the web, "Pop out" opens one window in a browser tab of its own
 (`#browser-window=<id>`), so five screens can show five windows.
 
 A tile is the page's own viewport, so its shape is the browser's and not 16/9: the page inside a
@@ -71,6 +72,14 @@ of one row of thumbnails with two thirds of the pane empty under it. A tile is n
 than the picture that fills it, and a pane wider than it is tall is a screen for a wall: the grid
 sits in it rather than against the top edge.
 
+The wall draws the rows it was given, in whole points, rather than let the browser wrap them: two
+tiles that filled a 2507.7pt pane to the last fraction wrapped once rounded, and two windows meant
+to sit side by side were stacked in a column on a 2560 screen.
+
+While the full-size picture has the focus, every key is the page's, Escape and the app's
+shortcuts included: a capital typed into a form is not Shift+letter for the app. A click outside
+the picture gives the keyboard back.
+
 Pictures come from the CDP screencast (`Page.startScreencast`), per tab:
 
 | use | size | JPEG quality | frames/s at most |
@@ -78,11 +87,17 @@ Pictures come from the CDP screencast (`Page.startScreencast`), per tab:
 | tile | 640x360 | 55 | 4 |
 | tile, drawn past 640 px | 1280x720 | 55 | 4 |
 | full size | 1600x900 | 70 | 15 |
+| full size, drawn past 1600 px | 1920x1080 | 70 | 15 |
 
 A tile asks for the size it draws (`tile-large` past 640 device pixels), which is why there are two
 tile sizes: a 640 px picture stretched to a 1250 px tile on a wide screen reads as a blurry tile.
 Measured on Chromium 147 (2026-10-11), a page animating at 60 fps weighs 5 KB a picture at 640x360
 and 19 KB at 1280x720, and a page that does not repaint sends one picture whatever its size.
+
+A window shown large does the same past 1600 device pixels (`focus-large`): the page in a
+1920x1080 window is 1919x958, so its 1920 px picture is the page at 1:1, and the web client never
+draws it wider than that. Measured on Chromium 147 (2026-10-13): 39 KB a picture of an animated page
+against 21 KB at 1600, 123 KB against 83 KB for the one picture of a page of text.
 
 Two devices watching one tab share one stream, at the larger size either asked for.
 

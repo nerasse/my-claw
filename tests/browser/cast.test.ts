@@ -118,6 +118,19 @@ describe("BrowserCast", () => {
     expect(current().watched()).toEqual([{ pageId: "p1", ...CAST_PRESETS.focus }]);
   });
 
+  test("a full view on a wide screen outranks a full view on a phone", () => {
+    const { cast, current } = relay();
+    const desk = {};
+    const phone = {};
+    cast.watch(desk, [{ pageId: "p1", preset: "focus-large" }], () => undefined);
+    current().accept();
+    cast.watch(phone, [{ pageId: "p1", preset: "focus" }], () => undefined);
+    expect(current().watched()).toEqual([{ pageId: "p1", ...CAST_PRESETS["focus-large"] }]);
+
+    cast.unwatch(desk);
+    expect(current().watched()).toEqual([{ pageId: "p1", ...CAST_PRESETS.focus }]);
+  });
+
   test("the same request is not sent twice", () => {
     const { cast, current } = relay();
     const w = {};
