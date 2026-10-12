@@ -3811,7 +3811,7 @@ export interface MyClawAppNotificationsChannels {
   channels: { ordinary?: string; ring?: string };
 }
 
-/** The VAPID public key the device must hand to its distributor at registration. */
+/** An iOS device's relay registration: the id and sending secret the relay issued it (docs/apns-relay.md). */
 export interface MyClawAppAPNsRegister {
   type: "notifications.apns.register";
   registrationId: string;
@@ -3827,6 +3827,7 @@ export interface MyClawAppAPNsResult {
   error?: string;
 }
 
+/** The VAPID public key the device must hand to its distributor at registration. */
 export interface MyClawAppNotificationsInfo {
   type: "notifications.info";
   vapidPublicKey: string;
