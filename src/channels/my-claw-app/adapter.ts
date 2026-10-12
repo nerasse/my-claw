@@ -1407,7 +1407,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     if (!queryDevice || !queryToken || !this.deviceFor(queryDevice, queryToken)) return null;
     if (!this.legacyWarned.has(queryDevice)) {
       this.legacyWarned.add(queryDevice);
-      void myClawAppLog("warn", "device credential in a URL: an app older than v0.6.145, accepted until the next release", {
+      void myClawAppLog("warn", "device credential in a URL: an app older than v0.6.145, accepted until the next major release", {
         deviceId: queryDevice, path: url.pathname,
       });
     }

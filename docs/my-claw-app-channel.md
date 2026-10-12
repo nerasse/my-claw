@@ -93,9 +93,10 @@ the same one, so an image cache keyed on URLs stays warm), and on `media.ticket.
 app sends when its UI restarted over a socket that stayed open. Until the ticket arrives the app
 has no media URL to give: it draws nothing rather than a broken image.
 
-Transition: apps before v0.6.145 put `?device=&token=` on every URL. That query is still read for
-one release, logged once per device (`device credential in a URL`), so that they can fetch the
-update that stops sending it. It is removed at the next server release.
+Transition: apps before v0.6.145 put `?device=&token=` on every URL. That query is still read,
+logged once per device (`device credential in a URL`), so that they can fetch the update that
+stops sending it. It stays until the next **major** release (0.8/1.0) and is removed then: no
+0.7.x drops it.
 
 ## Serving the web client
 
