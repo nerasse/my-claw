@@ -60,12 +60,31 @@ A tile opens the window at full size. The same page serves a phone, a tablet and
 takes as many columns as fit. On the web, "Pop out" opens one window in a browser tab of its own
 (`#browser-window=<id>`), so five screens can show five windows.
 
+A tile is the page's own viewport, so its shape is the browser's and not 16/9: the page inside a
+1920x1080 window is 1919x958, and a tile box assumed 16/9 draws every picture 13% taller than the
+page it shows. A window whose page is another shape (a site's own sign-in popup) keeps its own, so
+nothing is stretched.
+
+The grid is the pane's, not the wall's: the columns are chosen so the biggest tiles fit the room
+the pane leaves, which is what makes a wall of six windows take three columns and two rows instead
+of one row of thumbnails with two thirds of the pane empty under it. A tile is never drawn wider
+than the picture that fills it, and a pane wider than it is tall is a screen for a wall: the grid
+sits in it rather than against the top edge.
+
 Pictures come from the CDP screencast (`Page.startScreencast`), per tab:
 
 | use | size | JPEG quality | frames/s at most |
 |---|---|---|---|
 | tile | 640x360 | 55 | 4 |
+| tile, drawn past 640 px | 1280x720 | 55 | 4 |
 | full size | 1600x900 | 70 | 15 |
+
+A tile asks for the size it draws (`tile-large` past 640 device pixels), which is why there are two
+tile sizes: a 640 px picture stretched to a 1250 px tile on a wide screen reads as a blurry tile.
+Measured on Chromium 147 (2026-10-11), a page animating at 60 fps weighs 5 KB a picture at 640x360
+and 19 KB at 1280x720, and a page that does not repaint sends one picture whatever its size.
+
+Two devices watching one tab share one stream, at the larger size either asked for.
 
 The screencast sends a picture only when the page changes: a static page costs one picture, an
 animated one at 1280 px about 7 KB a picture (22.7 frames/s measured). Five windows, four of them

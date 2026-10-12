@@ -8,7 +8,10 @@
  * without it a new watcher of a still page would wait for a picture forever.
  */
 
-export type CastPreset = "tile" | "focus";
+export type CastPreset = "tile" | "tile-large" | "focus";
+
+/** Smallest first: two devices watching one tab share the stream at the larger size. */
+export const CAST_RANK: Record<CastPreset, number> = { tile: 0, "tile-large": 1, focus: 2 };
 
 export interface CastOptions {
   maxWidth: number;
@@ -21,9 +24,15 @@ export interface CastOptions {
  * A tile is watched to know what is happening, a full view to act in it. Measured on Chromium 147
  * (2026-09-27): 640 px frames of a busy page weigh 15 to 60 KB; 1600 px at 70 reaches 22 frames/s
  * and a tap shows on the next frame 77 ms later.
+ *
+ * `tile-large` is for a wall on a screen wide enough that a tile is drawn past 640 px: a 640 px
+ * picture stretched to 1250 px reads as a blurry tile. Measured again on Chromium 147
+ * (2026-10-11): a 1280x720 frame of a page animating at 60 fps weighs 19 KB against 5 KB at
+ * 640x360, and a page that does not repaint sends one frame whatever its size.
  */
 export const CAST_PRESETS: Record<CastPreset, CastOptions> = {
   tile: { maxWidth: 640, maxHeight: 360, quality: 55, fps: 4 },
+  "tile-large": { maxWidth: 1280, maxHeight: 720, quality: 55, fps: 4 },
   focus: { maxWidth: 1600, maxHeight: 900, quality: 70, fps: 15 },
 };
 
@@ -33,7 +42,10 @@ export interface CastFrame {
   seq: number;
   /** A JPEG, base64. */
   data: string;
-  /** The page's viewport, in CSS pixels: what a fraction of the picture is a fraction of. */
+  /**
+   * The page's viewport, in CSS pixels: what a fraction of the picture is a fraction of, and the
+   * shape the picture is drawn in (a tile of a page is as wide as its viewport, not 16:9).
+   */
   width: number;
   height: number;
 }
@@ -104,7 +116,8 @@ export class BrowserCast {
     const presets = new Map<string, CastPreset>();
     for (const w of this.watchers.values()) {
       for (const [pageId, preset] of w.streams) {
-        if (presets.get(pageId) !== "focus") presets.set(pageId, preset);
+        const known = presets.get(pageId);
+        if (known === undefined || CAST_RANK[preset] > CAST_RANK[known]) presets.set(pageId, preset);
       }
     }
     return new Map([...presets].map(([pageId, preset]) => [pageId, CAST_PRESETS[preset]]));

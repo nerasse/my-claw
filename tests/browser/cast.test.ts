@@ -91,6 +91,33 @@ describe("BrowserCast", () => {
     expect(current().watched()).toEqual([{ pageId: "p1", ...CAST_PRESETS.tile }]);
   });
 
+  // Three sizes now, so "the largest anyone wants" is a rank and not a test against `focus`:
+  // a small tile arriving last used to downgrade a wall drawn at 1280 px.
+  test("a small tile watched after a large one never shrinks it either", () => {
+    const { cast, current } = relay();
+    const wall = {};
+    const phone = {};
+    cast.watch(wall, [{ pageId: "p1", preset: "tile-large" }], () => undefined);
+    current().accept();
+    expect(current().watched()).toEqual([{ pageId: "p1", ...CAST_PRESETS["tile-large"] }]);
+
+    cast.watch(phone, [{ pageId: "p1", preset: "tile" }], () => undefined);
+    expect(current().watched()).toEqual([{ pageId: "p1", ...CAST_PRESETS["tile-large"] }]);
+
+    cast.unwatch(wall);
+    expect(current().watched()).toEqual([{ pageId: "p1", ...CAST_PRESETS.tile }]);
+  });
+
+  test("a large tile watched after a full view keeps the full view", () => {
+    const { cast, current } = relay();
+    const desk = {};
+    const wall = {};
+    cast.watch(desk, [{ pageId: "p1", preset: "focus" }], () => undefined);
+    current().accept();
+    cast.watch(wall, [{ pageId: "p1", preset: "tile-large" }], () => undefined);
+    expect(current().watched()).toEqual([{ pageId: "p1", ...CAST_PRESETS.focus }]);
+  });
+
   test("the same request is not sent twice", () => {
     const { cast, current } = relay();
     const w = {};

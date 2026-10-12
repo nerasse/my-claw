@@ -84,6 +84,11 @@ export function parseInput(raw: unknown): BrowserInput | undefined {
   }
 }
 
+/** What a device asks for, as the preset the sidecar is told: anything else is a tile. */
+export function presetOf(quality: unknown): CastPreset {
+  return quality === "focus" || quality === "tile-large" ? quality : "tile";
+}
+
 function windowsFrame(windows: WindowOverview[]): MyClawAppServerFrame {
   return {
     type: "browser.windows.result",
@@ -112,7 +117,7 @@ export class BrowserLive {
     const session = this.browser();
     const streams = (Array.isArray(frame.streams) ? frame.streams : [])
       .filter((s) => typeof s?.pageId === "string")
-      .map((s) => ({ pageId: s.pageId, preset: (s.quality === "focus" ? "focus" : "tile") as CastPreset }));
+      .map((s) => ({ pageId: s.pageId, preset: presetOf(s.quality) }));
     if (!frame.windows && streams.length === 0) {
       this.drop(ws);
       return;

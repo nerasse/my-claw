@@ -3965,11 +3965,14 @@ export interface MyClawAppBrowserUnblockResult {
  * The live view -- docs/browser-live.md. What a device watches: the window listing, and the tabs
  * whose pictures it shows, as tiles or one at full size. Each frame replaces the device's previous
  * one; an empty one stops everything. Watching reserves nothing: agents keep their windows.
+ *
+ * A tile asks for the size it draws (`tile-large` past 640 device pixels): a picture stretched
+ * past its own size reads as a blurry tile, which is worse than a smaller one.
  */
 export interface MyClawAppBrowserWatch {
   type: "browser.watch";
   windows: boolean;
-  streams: Array<{ pageId: string; quality: "tile" | "focus" }>;
+  streams: Array<{ pageId: string; quality: "tile" | "tile-large" | "focus" }>;
 }
 
 /**

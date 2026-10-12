@@ -149,6 +149,30 @@ describe("BrowserLive", () => {
     ]);
   });
 
+  test("a wall on a wide screen is streamed at the size it draws, and the phone keeps its small tile", () => {
+    const b = fakeBrowser();
+    const live = new BrowserLive(() => b.session);
+    const wall = socket();
+    const phone = socket();
+    live.watch(wall, { type: "browser.watch", windows: false, streams: [{ pageId: "p1", quality: "tile-large" }] }, () => undefined);
+    live.watch(phone, { type: "browser.watch", windows: false, streams: [{ pageId: "p1", quality: "tile" }, { pageId: "p2", quality: "tile-large" }] }, () => undefined);
+
+    expect(b.watches.get(wall)!.streams).toEqual([{ pageId: "p1", preset: "tile-large" }]);
+    expect(b.watches.get(phone)!.streams).toEqual([
+      { pageId: "p1", preset: "tile" },
+      { pageId: "p2", preset: "tile-large" },
+    ]);
+  });
+
+  // A device from an older build, or a frame that got garbled: a tile, never nothing.
+  test("an unknown quality is watched as a tile", () => {
+    const b = fakeBrowser();
+    const live = new BrowserLive(() => b.session);
+    const ws = socket();
+    live.watch(ws, { type: "browser.watch", windows: false, streams: [{ pageId: "p1", quality: "huge" as "tile" }] }, () => undefined);
+    expect(b.watches.get(ws)!.streams).toEqual([{ pageId: "p1", preset: "tile" }]);
+  });
+
   test("watching nothing, or leaving, stops the pictures", () => {
     const b = fakeBrowser();
     const live = new BrowserLive(() => b.session);
