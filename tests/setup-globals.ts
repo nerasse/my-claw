@@ -17,6 +17,7 @@ import { runRegistry } from "../src/core/run-registry.ts";
 import { resetBinaryCache } from "../src/voice/tts.ts";
 import { resetSkillLastGood } from "../src/skills/loader.ts";
 import { resetAgentLastGood } from "../src/agents/loader.ts";
+import { resetAPNsDeviceAuthorization } from "../src/notifications/apns.ts";
 import { resetPushState } from "../src/notifications/push.ts";
 import { resetAvailabilityWorld } from "../src/llm/world.ts";
 import { resetSessionLogResolver } from "../src/sessions/log-access.ts";
@@ -74,6 +75,7 @@ beforeEach(() => {
   // A stored push endpoint would keep deliver()ing to it and a stored foreground state would
   // skip notifications for a whole file.
   void resetPushState();
+  resetAPNsDeviceAuthorization();
   // A binary path resolved by an earlier file would defeat a test that simulates edge-tts or
   // piper being absent.
   resetBinaryCache();

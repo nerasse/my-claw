@@ -9,6 +9,7 @@
 // killed, and the app's native renderer (expo-unified-push) turns it into a system
 // notification. Publishing to a UnifiedPush endpoint is a plain HTTP POST — the endpoint URL
 // itself carries the secret, so no Web-Push/VAPID signing library is needed.
+import { apnsStore, publishAPNs } from "./apns.ts";
 import { linkOf, type NotificationTarget } from "./target.ts";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import { join, dirname } from "node:path";
@@ -179,13 +180,18 @@ export interface DeviceForegroundStore {
   get(deviceId: string): Promise<ForegroundState | undefined>;
 }
 
+let foregroundWrites: Promise<void> = Promise.resolve();
 export const foregroundStore: DeviceForegroundStore = {
-  async set(deviceId, state) {
-    const all = (await readJson<Record<string, ForegroundState>>(FOREGROUND_PATH)) ?? {};
-    all[deviceId] = state;
-    await writeJson(FOREGROUND_PATH, all);
+  set(deviceId, state) {
+    const work = foregroundWrites.then(async () => {
+      const all = (await readJson<Record<string, ForegroundState>>(FOREGROUND_PATH)) ?? {};
+      all[deviceId] = state;
+      await writeJson(FOREGROUND_PATH, all);
+    });
+    foregroundWrites = work.catch(() => {}); return work;
   },
   async get(deviceId) {
+    await foregroundWrites;
     const all = (await readJson<Record<string, ForegroundState>>(FOREGROUND_PATH)) ?? {};
     return all[deviceId];
   },
@@ -266,9 +272,12 @@ export async function publishNotification(
   options?: { skipDevice?: (deviceId: string) => Promise<boolean> },
 ): Promise<PublishOutcome> {
   const targets = await endpointStore.endpoints();
-  if (targets.length === 0) return { delivered: 0, rang: false };
+  const apnsTargets = await apnsStore.entries().catch(() => {
+    void log("warn", "APNs registration storage unavailable"); return [];
+  });
+  if (targets.length === 0 && apnsTargets.length === 0) return { delivered: 0, rang: false };
 
-  const vapid = await loadOrCreateVapid();
+  const vapid = targets.length ? await loadOrCreateVapid() : undefined;
   const rang = notification.ring === true && Date.now() - lastRingAt >= RING_COOLDOWN_MS;
   if (rang) lastRingAt = Date.now();
 
@@ -298,8 +307,8 @@ export async function publishNotification(
           contentEncoding: "aes128gcm",
           vapidDetails: {
             subject: VAPID_SUBJECT,
-            publicKey: vapid.publicKey,
-            privateKey: vapid.privateKey,
+            publicKey: vapid!.publicKey,
+            privateKey: vapid!.privateKey,
           },
         },
       );
@@ -324,6 +333,9 @@ export async function publishNotification(
       void log("warn", "push publish failed", { deviceId, error: String(err) });
     }
   }));
+  delivered += await publishAPNs({ ...notification, ring: rang }, options).catch(() => {
+    void log("warn", "APNs notification delivery unavailable"); return 0;
+  });
   return { delivered, rang };
 }
 
@@ -360,6 +372,8 @@ export function cleanNotificationText(text: string): string {
 /** Test seam: drops the stored endpoints and foreground state (setup-globals.ts). */
 export async function resetPushState(): Promise<void> {
   lastRingAt = 0;
+  await foregroundWrites;
+  await apnsStore.clear();
   for (const path of [ENDPOINTS_PATH, FOREGROUND_PATH]) {
     await rm(path, { force: true }).catch(() => {});
   }

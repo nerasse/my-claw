@@ -1,4 +1,5 @@
-import { describe, test, expect, afterEach } from "bun:test";
+import { apnsStore } from "../../src/notifications/apns.ts";
+import { describe, test, expect, afterEach, spyOn } from "bun:test";
 import { readFile, writeFile, rm, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { CONFIG_PATH, MY_CLAW_DIR, type MyClawAppChannelConfig } from "../../src/core/config.ts";
@@ -496,4 +497,20 @@ describe("live config", () => {
     await revokeDevice("web-1", live);
     expect(live.devices?.["web-1"]).toBeUndefined();
   });
+});
+
+test("an unavailable APNs store cannot prevent device revocation or disablement", async () => {
+  const cleanup = spyOn(apnsStore, "unregister").mockRejectedValue(new Error("storage unavailable"));
+  try {
+    const config: MyClawAppChannelConfig = { devices: { "app-test": { token: "fixture", owner: "owner", enabled: true } } };
+    await writeConfigFile(config);
+    const session = await redeemGrant(createGrant("app-test"));
+    expect(session.ok).toBe(true);
+    expect(await setDeviceEnabled(config, "app-test", false)).toEqual({ ok: true });
+    expect(config.devices?.["app-test"]?.enabled).toBe(false);
+    expect(await revokeDevice("app-test", config)).toEqual({ ok: true });
+    expect(config.devices?.["app-test"]).toBeUndefined();
+    if (session.ok) expect(deviceOfSession(session.sessionId)).toBeNull();
+    expect(await devicesOnDisk()).toEqual({});
+  } finally { cleanup.mockRestore(); }
 });

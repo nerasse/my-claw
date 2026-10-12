@@ -384,6 +384,11 @@ export interface MyClawAppStatsController {
 export interface MyClawAppNotificationsController {
   /** The VAPID public key the device hands its distributor at registration, if push is on. */
   info(): Promise<string | undefined>;
+  apns?: {
+    relayURL: string;
+    register(deviceId: string, registration: { registrationId: string; secret: string }): Promise<void>;
+    unregister(deviceId: string): Promise<void>;
+  };
   register(deviceId: string, frame: MyClawAppNotificationsRegister): Promise<void>;
   unregister(deviceId: string): Promise<void>;
   /** Stores the sound channels this device pre-created, next to its endpoint (docs/notifications.md). */

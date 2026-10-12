@@ -1,5 +1,6 @@
 import type { Server, ServerWebSocket } from "bun";
 import { mintTicket, verifyTicket } from "./media-ticket.ts";
+import { apnsRegistrationSchema } from "../../notifications/apns.ts";
 import { basename } from "node:path";
 import { handleBrowserInfo, handleBrowserUnblock } from "./browser-handlers.ts";
 import { BrowserLive } from "./browser-live.ts";
@@ -1476,7 +1477,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       surfaces: this.sockets.countFor(ws.data.deviceId),
     });
     // The server names itself first: the settings page labels its "connected" state with it.
-    void readAppVersion().then((version) => this.sendFrame(ws, { type: "hello", version, receipts: true }));
+    void readAppVersion().then((version) => this.sendFrame(ws, { type: "hello", version, receipts: true, capabilities: { apns: Boolean(this.notifications?.apns) } }));
     this.sendMediaTicket(ws);
     const locationCapabilities: MyClawAppLocationCapabilities = {
       type: "location.capabilities",
@@ -1508,7 +1509,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     // The device needs the VAPID public key before it can register with its distributor;
     // sent at connect so the app can register on startup without another round-trip.
     void this.notifications?.info().then((vapidPublicKey) => {
-      if (vapidPublicKey) this.sendFrame(ws, { type: "notifications.info", vapidPublicKey });
+      if (vapidPublicKey || this.notifications?.apns) this.sendFrame(ws, { type: "notifications.info", vapidPublicKey: vapidPublicKey ?? "", ...(this.notifications?.apns ? { apns: { relayURL: this.notifications.apns.relayURL } } : {}) });
     });
   }
 
@@ -1519,6 +1520,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
     this.sockets.remove(ws);
+    if (this.notifications?.apns && this.sockets.countFor(ws.data.deviceId) === 0) {
+      this.detach(this.notifications.setForeground(ws.data.deviceId, { foreground: false }), "clearAPNsForeground");
+    }
     this.statusWatch.unwatch(ws);
     this.fsWatches.drop(ws);
     this.browserLive.drop(ws);
@@ -1969,6 +1973,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "jobs.delete":
         this.detach(handleJobDelete(this.settingsDeps(), ws, frame), "handleJobDelete");
+        break;
+      case "notifications.apns.register":
+      case "notifications.apns.unregister":
+        this.detach(this.handleAPNs(ws, frame), "handleAPNs");
         break;
       case "notifications.register":
         this.detach(this.handleNotificationsRegister(ws, frame), "handleNotificationsRegister");
@@ -2681,6 +2689,26 @@ export class MyClawAppAdapter implements ChannelAdapter {
     }
     const last = answers.at(-1);
     return last && last.role === "assistant" ? last.text : undefined;
+  }
+
+  private async handleAPNs(ws: ServerWebSocket<MyClawAppSessionData>, frame: Extract<MyClawAppClientFrame,
+    { type: "notifications.apns.register" | "notifications.apns.unregister" }>): Promise<void> {
+    const controller = this.notifications?.apns;
+    if (!controller) {
+      this.sendFrame(ws, { type: "notifications.apns.result", ok: false, ...(frame.type === "notifications.apns.register" && /^[0-9a-f-]{36}$/.test(frame.registrationId) ? { registrationId: frame.registrationId } : {}), error: "APNs unavailable" }); return;
+    }
+    try {
+      if (frame.type === "notifications.apns.register") {
+        const value = apnsRegistrationSchema.parse({ registrationId: frame.registrationId, secret: frame.secret });
+        await controller.register(ws.data.deviceId, value);
+        this.sendFrame(ws, { type: "notifications.apns.result", ok: true, registrationId: value.registrationId });
+      } else {
+        await controller.unregister(ws.data.deviceId);
+        this.sendFrame(ws, { type: "notifications.apns.result", ok: true });
+      }
+    } catch {
+      this.sendFrame(ws, { type: "notifications.apns.result", ok: false, ...(frame.type === "notifications.apns.register" && typeof frame.registrationId === "string" && /^[0-9a-f-]{36}$/.test(frame.registrationId) ? { registrationId: frame.registrationId } : {}), error: "APNs registration refused" });
+    }
   }
 
   private async handleNotificationsRegister(

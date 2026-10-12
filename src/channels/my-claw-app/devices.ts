@@ -1,3 +1,4 @@
+import { apnsStore } from "../../notifications/apns.ts";
 import { randomBytes } from "node:crypto";
 import type { MyClawAppChannelConfig } from "../../core/config.ts";
 import { upsertDevice, removeDevice, type DeviceEntry } from "../../core/config-edit.ts";
@@ -141,6 +142,7 @@ export async function revokeDevice(
   if (!written.ok) return { ok: false, error: written.error };
   if (config?.devices) delete config.devices[deviceId];
   const sessions = await revokeSessionsOfDevice(deviceId);
+  await cleanAPNsRegistration(deviceId);
   myClawAppLog("info", "device revoked", { deviceId, sessions });
   return { ok: true };
 }
@@ -155,6 +157,7 @@ export async function setDeviceEnabled(
   const written = await upsertDevice(deviceId, { token: entry.token, enabled });
   if (!written.ok) return { ok: false, error: written.error };
   applyLive(config, deviceId, { ...entry, enabled });
+  if (!enabled) await cleanAPNsRegistration(deviceId);
   myClawAppLog("info", "device toggled", { deviceId, enabled });
   return { ok: true };
 }
@@ -203,4 +206,9 @@ export async function touchDevice(config: MyClawAppChannelConfig, deviceId: stri
 /** Module-level throttle state, reset between test files. */
 export function resetDeviceSeenCache(): void {
   lastWrittenSeen.clear();
+}
+
+async function cleanAPNsRegistration(deviceId: string): Promise<void> {
+  try { await apnsStore.unregister(deviceId); }
+  catch { void myClawAppLog("warn", "APNs registration cleanup unavailable", { deviceId }); }
 }

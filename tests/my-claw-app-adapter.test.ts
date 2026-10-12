@@ -5749,6 +5749,33 @@ describe("notifications", () => {
     assert.equal(info["vapidPublicKey"], "vapid-public-key");
   });
 
+  test("the last APNs socket closing clears foreground suppression", async () => {
+    const closed = Promise.withResolvers<void>();
+    const writes: boolean[] = [];
+    adapter.onNotificationsController({ info: async () => "vapid", register: async () => {}, unregister: async () => {},
+      setForeground: async (_, state) => { writes.push(state.foreground); if (!state.foreground) closed.resolve(); },
+      setChannels: async () => {}, apns: { relayURL: "https://relay.example", register: async () => {}, unregister: async () => {} } });
+    client.ws.close(); await closed.promise;
+    assert.deepEqual(writes, [false]);
+  });
+
+  test("APNs JSON frames register only the authenticated device and reject malformed credentials", async () => {
+    const received: Array<{ deviceId: string; registrationId: string; secret: string }> = [];
+    adapter.onNotificationsController({ info: async () => "vapid", register: async () => {}, unregister: async () => {},
+      setForeground: async () => {}, setChannels: async () => {}, apns: { relayURL: "https://relay.example",
+        register: async (deviceId, value) => { received.push({ deviceId, ...value }); }, unregister: async () => {} } });
+    const registrationId = "11111111-1111-4111-8111-111111111111";
+    client.ws.send(JSON.stringify({ type: "notifications.apns.register", registrationId, secret: "s".repeat(43), deviceId: "other" }));
+    let result;
+    do { result = await nextFrame(client); } while (result["type"] !== "notifications.apns.result");
+    assert.equal(result["ok"], true);
+    assert.deepEqual(received, [{ deviceId: DEVICE_ID, registrationId, secret: "s".repeat(43) }]);
+    client.ws.send(JSON.stringify({ type: "notifications.apns.register", registrationId: "../evil", secret: "short" }));
+    assert.equal((await nextFrame(client))["ok"], false); assert.equal(received.length, 1);
+    client.ws.send(JSON.stringify({ type: "notifications.apns.unregister" }));
+    assert.equal((await nextFrame(client))["ok"], true);
+  });
+
   test("notifications.register hands the endpoint to the controller", async () => {
     client.ws.send(JSON.stringify({
       type: "notifications.register",

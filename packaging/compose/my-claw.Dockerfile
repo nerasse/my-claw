@@ -3,6 +3,7 @@
 FROM oven/bun:1.3.13 AS deps
 WORKDIR /app
 COPY package.json bun.lock ./
+COPY scripts/apply-dependency-patches.cjs scripts/dependency-patches.json ./scripts/
 RUN bun install --frozen-lockfile --production
 
 FROM oven/bun:1.3.13
@@ -19,6 +20,8 @@ ENV PATH=/opt/venv/bin:$PATH \
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY package.json tsconfig.json ./
+COPY scripts/apply-dependency-patches.cjs scripts/dependency-patches.json ./scripts/
+RUN bun scripts/apply-dependency-patches.cjs --check
 COPY src ./src
 COPY docs/prompt ./docs/prompt
 COPY packaging/config.json packaging/.env.example ./etc/

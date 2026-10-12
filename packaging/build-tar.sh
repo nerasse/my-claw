@@ -29,6 +29,8 @@ cp -r "${PROJECT_ROOT}/docs/prompt" "${TAR_DIR}/docs/prompt"
 # the dev tools, and transformers.js with onnxruntime (440 MB) that only local embeddings use and
 # that the server installs when they are switched on (docs/services.md, "Local engines").
 cp "${PROJECT_ROOT}/bun.lock" "${TAR_DIR}/"
+mkdir -p "${TAR_DIR}/scripts"
+cp "${PROJECT_ROOT}/scripts/apply-dependency-patches.cjs" "${PROJECT_ROOT}/scripts/dependency-patches.json" "${TAR_DIR}/scripts/"
 (cd "${TAR_DIR}" && bun install --frozen-lockfile --production --silent)
 
 # Copy scripts

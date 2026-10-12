@@ -1219,6 +1219,8 @@ export type MyClawAppClientFrame =
   | MyClawAppJobSave
   | MyClawAppJobDelete
   | MyClawAppNotificationsRegister
+  | MyClawAppAPNsRegister
+  | MyClawAppAPNsUnregister
   | MyClawAppNotificationsState
   | MyClawAppNotificationsChannels
   | MyClawAppTagsList
@@ -3810,9 +3812,25 @@ export interface MyClawAppNotificationsChannels {
 }
 
 /** The VAPID public key the device must hand to its distributor at registration. */
+export interface MyClawAppAPNsRegister {
+  type: "notifications.apns.register";
+  registrationId: string;
+  secret: string;
+}
+export interface MyClawAppAPNsUnregister {
+  type: "notifications.apns.unregister";
+}
+export interface MyClawAppAPNsResult {
+  type: "notifications.apns.result";
+  ok: boolean;
+  registrationId?: string;
+  error?: string;
+}
+
 export interface MyClawAppNotificationsInfo {
   type: "notifications.info";
   vapidPublicKey: string;
+  apns?: { relayURL: string };
 }
 
 /**
@@ -3824,6 +3842,7 @@ export interface MyClawAppHello {
   type: "hello";
   version: string;
   receipts: true;
+  capabilities?: { apns: boolean };
 }
 
 /**
@@ -4170,6 +4189,7 @@ export type MyClawAppServerFrame =
   | MyClawAppSubAgentsCallersResult
   | MyClawAppSubAgentsHandoffResult
   | MyClawAppNotificationsInfo
+  | MyClawAppAPNsResult
   | MyClawAppHello
   | MyClawAppTagsResult
   | MyClawAppProviderEnvResult

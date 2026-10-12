@@ -1,0 +1,27 @@
+[
+  {
+    "file": "sprintf-js/src/sprintf.js",
+    "advisory": "GHSA-hp3w-g68c-fv3c",
+    "source": "Local bounds check",
+    "before": "95add43f116385be221745307fae02d06751b01d4f939df1debb17dbe2ebf4eb",
+    "after": "153baac628e25188a57d9a6e97e67c2b31b8026f1a59e8384ff046a7513eec46",
+    "replacements": [
+      {
+        "from": "parseFloat(arg).toExponential(ph.precision)",
+        "to": "parseFloat(arg).toExponential(Math.min(Number(ph.precision), 100))",
+        "count": 1
+      },
+      {
+        "from": "parseFloat(arg).toFixed(ph.precision)",
+        "to": "parseFloat(arg).toFixed(Math.min(Number(ph.precision), 100))",
+        "count": 1
+      },
+      {
+        "from": "arg.toPrecision(ph.precision)",
+        "to": "arg.toPrecision(Math.max(1, Math.min(Number(ph.precision), 100)))",
+        "count": 1
+      }
+    ],
+    "optional": true
+  }
+]

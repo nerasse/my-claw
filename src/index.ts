@@ -131,6 +131,7 @@ import { createWorkspacesTool } from "./tools/workspaces.ts";
 import { CronScheduler, DEFAULT_ALERT_AFTER_MS } from "./cron/scheduler.ts";
 import { parseDurationMs } from "./utils/duration.ts";
 import { createJob, loadJobs, mutateJobs, removeJob, updateJob } from "./cron/store.ts";
+import { apnsStore, registeredAPNsDevices, relayURL, setAPNsDeviceAuthorization } from "./notifications/apns.ts";
 import { endpointStore, foregroundStore, loadOrCreateVapid, publishNotification, isForegroundOn, cleanNotificationText } from "./notifications/push.ts";
 import { targetOfSession } from "./notifications/target.ts";
 import { registerRunNotifications } from "./notifications/run-notifications.ts";
@@ -853,6 +854,10 @@ async function main() {
     }
     if (!isMyClawAppChannelEnabled(config)) return;
     const myClawAppConfig = config.channels["my-claw-app"]!;
+    setAPNsDeviceAuthorization(deviceId => {
+      const device = config.channels["my-claw-app"]?.devices?.[deviceId];
+      return Boolean(device && device.enabled !== false);
+    });
     const myClawAppSessions = new MyClawAppSessionStoreImpl(
       sessionManager,
       new SessionFileStore(myClawAppConfig),
@@ -961,11 +966,14 @@ async function main() {
           return { ...state, choices: choicesOf(state.id, kind), health: await probeService(state), ...(held ? { local: held } : {}) };
         }),
       );
-      const push = await endpointStore.endpoints().catch(() => []);
+      const [push, apnsDevices] = await Promise.all([
+        endpointStore.endpoints().catch(() => []),
+        registeredAPNsDevices().catch(() => []),
+      ]);
       return {
         install: kind,
         services,
-        pushDevices: push.map((entry) => entry.deviceId),
+        pushDevices: [...new Set([...push.map((entry) => entry.deviceId), ...apnsDevices])],
         pairedDevices: Object.keys(config.channels["my-claw-app"]?.devices ?? {}).length,
       };
     };
@@ -2300,7 +2308,9 @@ async function main() {
       },
     });
 
+    const apnsRelay = relayURL();
     myClawApp.onNotificationsController({
+      ...(apnsRelay ? { apns: { relayURL: apnsRelay, register: (deviceId: string, registration: { registrationId: string; secret: string }) => apnsStore.register(deviceId, registration), unregister: (deviceId: string) => apnsStore.unregister(deviceId) } } : {}),
       info: () => loadOrCreateVapid().then((keys) => keys.publicKey).catch(() => undefined),
       register: (deviceId, frame) =>
         endpointStore.register(deviceId, {
