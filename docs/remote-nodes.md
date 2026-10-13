@@ -1,6 +1,7 @@
 # Remote nodes
 
-Status: spec, decided 2026-10-13, not implemented.
+Status: spec, decided 2026-10-13. Step 1 (server side) implemented; the client, its installers
+and the app screens are steps 2 and 3.
 
 A **node** is a small client installed on another machine. It gives my-claw hands there: the
 tools the machine's owner chose to expose, run with the rights the node was installed with. Each
@@ -12,7 +13,8 @@ node is reached through a sub-agent of its own; the orchestrator never receives 
 |---|---|
 | Name | "node" everywhere (app, code, docs) |
 | Transport | the node dials **out** to my-claw over WSS; nothing listens on the node machine |
-| Tunnel | none. my-claw must be reachable, as it already is for the app; a private install uses its VPN |
+| Endpoint | any reachable URL the operator gives the client. No domain is required |
+| Tunnel | none needed. my-claw must be reachable, as it already is for the app; a private install uses its VPN |
 | Admin install | system service under a dedicated account `myclaw-node`, with a targeted sudoers file |
 | User install | user service (`systemd --user` + linger, LaunchAgent, Scheduled Task), the user's rights only |
 | OS in v1 | Linux, macOS, Windows |
@@ -23,11 +25,67 @@ node is reached through a sub-agent of its own; the orchestrator never receives 
 
 - Endpoint `/node` on the existing port, `Authorization: Bearer <node token>`. A node token opens
   only this endpoint: no chat, files, config or media.
-- Pairing reuses `pairing.ts`: the app mints a single-use 8-character code with a short TTL, the
-  installer trades it for the node token (stored 0600 on the node, hashed on the server).
-- Revoking a node in the app closes its socket at once.
+- Pairing: a single-use 8-character code with a short TTL, traded by the node for its token
+  (stored 0600 on the node, hashed on the server). The code is minted where the operator is
+  (`myclaw node add`, later the app), claimed where the node is.
+- Revoking a node closes its socket at once and invalidates its token.
 - The node reconnects with backoff. While it is offline its agent is listed as offline and a spawn
   answers so, immediately.
+
+## Deployment modes
+
+Both are supported, and the server behaves the same in each: it is the operator's proxy that
+differs, and the node client only ever takes one URL.
+
+1. **Plain endpoint.** A `location /node` (and `POST /node/pair`) on the existing reverse proxy,
+   without the SSO gate the browser routes sit behind. The node token is the only lock, with the
+   claim code rate-limited. Five lines of proxy config, nothing else.
+2. **mTLS endpoint.** A hostname of its own where the proxy requires a client certificate on
+   `/node` (`ssl_verify_client on`, with the location for `/node/pair` exempted: the first
+   contact has no certificate yet). my-claw signs each node a client certificate at pairing
+   (lands with the client, step 2), from a small CA it keeps under `$MY_CLAW_DIR/nodes/ca/`. The
+   certificate is a second gate, checked by the proxy; the token stays the per-node, revocable
+   lock. When the proxy forwards the verdict, `nodes.clientCertHeader` names the header my-claw
+   itself refuses to do without.
+
+The wildcard certificate already in place covers a dedicated hostname; nothing new to issue.
+
+## Endpoints
+
+| Route | Auth | Purpose |
+|---|---|---|
+| `GET /node` (upgrade) | node token, plus the client-cert header when configured | the node's one WebSocket |
+| `POST /node/pair` | the claim code alone, rate-limited | trades a code for the node token |
+| `POST /node/ticket` | a paired device (like `/my-claw-app/ticket`) | mints a claim code for `myclaw node add` |
+| `POST /node/revoke` | a paired device | revokes a node, closes its socket, removes its agent |
+
+The client-certificate check applies to `/node` only; `/node/pair` must stay reachable without a
+certificate, since the first contact is what obtains one.
+
+## Config
+
+```json
+"nodes": {
+  "clientCertHeader": "X-SSL-Client-Verify",
+  "clientCertValue": "SUCCESS",
+  "claimTtlSeconds": 600
+}
+```
+
+All three optional. Absent, the surface is token-only and claim codes live ten minutes.
+
+## CLI
+
+`myclaw node add [--name <name>] [--url <base>]` prints a single-use code and the server URL;
+`myclaw node ls` lists what is paired; `myclaw node rm <nodeId>` revokes. `add` and `rm` go
+through the running daemon (a claim code lives in its memory, a revoke closes a socket) and
+authenticate with a paired device, like `myclaw device add`.
+
+## Journal
+
+Every remote call is journaled in `~/.my-claw/logs/orchestrator-<date>.log`: node, tool,
+arguments (truncated), duration, outcome. The connection, its hello and its disconnect are
+logged too.
 
 ## Handshake
 
@@ -63,6 +121,6 @@ Every remote call is journaled (node, tool, arguments, outcome). Results are unt
 
 ## Lots
 
-1. Protocol, pairing, `/node` endpoint, `node` base, generated agent, journal.
-2. Binary, installers (admin and user, three OS), dl-hub publication.
+1. Protocol, pairing, `/node` endpoint, `node` base, generated agent, journal. **Done.**
+2. Binary, installers (admin and user, three OS), dl-hub publication, client certificates.
 3. App: list, add (code, QR, command), description wizard, tool choice, approvals, revoke.

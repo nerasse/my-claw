@@ -278,6 +278,15 @@ src/
 │   └── types.ts           # Snapshot, Attachment, TabInfo, Result
 │   # NOTE: Playwright lives in the top-level sidecar/ (Node), not here — connectOverCDP
 │   # hangs under Bun. The sidecar owns navigate/snapshot/click/type/screenshot + tabs.
+├── nodes/                 # Remote nodes: machines my-claw runs tools on -- docs/remote-nodes.md
+│   ├── types.ts           # Wire frames, NodeFacts/NodeRecord, the one facts validator
+│   ├── store.ts           # nodes.json records: mint, revoke, facts, throttled lastSeen
+│   ├── claims.ts          # Single-use pairing codes (in memory, TTL, per-IP window)
+│   ├── hub.ts             # One socket per node, tool-call roundtrip, keepalive, journal
+│   ├── tools.ts           # A connected node's manifest, as the tools of its agent
+│   ├── agent.ts           # The generated agents/node-<slug>.md, write and remove
+│   ├── surface.ts         # /node, /node/pair, /node/ticket, /node/revoke on the channel port
+│   └── cli.ts             # `myclaw node add|ls|rm`
 ├── media/
 │   ├── image.ts           # Image resize + base64 conversion
 │   └── video.ts           # Video frame extraction (ffmpeg)

@@ -73,7 +73,8 @@ with a warning rather than registered under a name no one can type.
 | Field | Required | Meaning |
 | --- | --- | --- |
 | `description` | yes | One line. This is what the orchestrator reads to decide whether to spawn this agent, so it is the single most load-bearing field in the file. |
-| `base` | no | `general` (default) or `research`. The tool baseline this agent narrows from. `browser` exists too, for the agent of that name alone (see "Browser"). |
+| `base` | no | `general` (default), `research`, or `node`. The tool baseline this agent narrows from. `browser` exists too, for the agent of that name alone (see "Browser"). |
+| `node` | with `base: node` | The node id this agent belongs to. Required by `base: node` and dropped under any other base: it is what keeps the base from being claimed by a file that never names a machine (see "Node"). |
 | `tools` | no | Comma-separated tool names. Absent = the whole baseline. Intersected with the baseline, never added to it. |
 | `skills` | no | Comma-separated skill names, or `*`. Same semantics as `agents.<key>.skills`. |
 | `mcp` | no | Comma-separated MCP server names, or `*`. Same semantics as `agents.<key>.mcp`. |
@@ -403,6 +404,25 @@ browser agent's `maxIterations`, below an explicit `agents.browser.maxIterations
 file's default. `browser.allowEval` / `allowCdp` are read per run into `ResolvedAgent.deny`, so the
 low-level tools are taken away from a run rather than left unregistered, and a hot-reload toggles
 them.
+
+## Node
+
+A remote node's agent is a file like any other, `agents/node-<slug>.md`, generated at pairing with
+`base: node` and `node: <nodeId>`. The base is its own kind: the tools are not local at all, they
+are the live manifest of the machine the file names, and only the bridge builds that set for the
+run (`docs/remote-nodes.md`). Two consequences worth stating here:
+
+- **`node:` is required, and only under `base: node`.** Without it the base falls back to
+  `general`, so a workspace file cannot reach a machine it never named; with it under another base
+  the field is dropped. `getForAgent("node")` answers an empty set on purpose: nothing local can
+  answer for a remote machine.
+- **The file is generated once, then the owner's.** Re-pairing the same node keeps the file it
+  finds; the live tool set comes from the connection, so a machine that adds a tool later needs no
+  edit. A revoke removes the file, but only one that declares that node id.
+
+The app's agent editor carries the `node:` id from the file on disk through a write: an editor
+that never saw the field must not strip the file of the machine it belongs to. `baselineToolNames`
+offers nothing for this base -- the manifest is live, not static.
 
 ## Delivery
 
