@@ -130,6 +130,19 @@ export interface WebSearchConfig {
   timeoutMs?: number;
 }
 
+export interface NodesConfig {
+  /**
+   * Name of the header a TLS-terminating proxy sets with its client-certificate verdict (nginx:
+   * `proxy_set_header X-SSL-Client-Verify $ssl_client_verify;`). When set, `/node` upgrades
+   * without a matching value are refused -- the mTLS deployment mode, docs/remote-nodes.md.
+   */
+  clientCertHeader?: string;
+  /** What that header must equal. Defaults to "SUCCESS". */
+  clientCertValue?: string;
+  /** Life of a claim code minted by `myclaw node add`, in seconds. Defaults to 600. */
+  claimTtlSeconds?: number;
+}
+
 export interface BrowserConfig {
   enabled?: boolean;
   sidecarUrl?: string;
@@ -606,6 +619,8 @@ export interface MyClawConfig {
   voice?: VoiceConfig;
   webSearch?: WebSearchConfig;
   browser?: BrowserConfig;
+  /** Remote nodes: machines my-claw can run tools on -- docs/remote-nodes.md. */
+  nodes?: NodesConfig;
   workspace?: string;
   /**
    * Named secondary workspaces, each an absolute path. A cron job or future feature references

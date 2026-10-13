@@ -64,6 +64,8 @@ import { currentRunId, newRunId } from "../utils/run-context.ts";
 import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback, MediaStoreHook } from "./backend.ts";
 import { storeRunMedia, type StoredRunMedia } from "./media-store.ts";
 import { producesRemoteContent, cronCapabilityDeny } from "../tools/registry.ts";
+import { nodeToolsFor } from "../nodes/tools.ts";
+import { nodeRecord } from "../nodes/store.ts";
 import { normalizeUntrusted } from "./prompt/normalize-untrusted.ts";
 
 /**
@@ -456,12 +458,27 @@ export class AgentBridge implements AgentBackend {
       ...(agent.deny ?? []),
       ...(agentToolType === "cron" ? cronCapabilityDeny(session.scopeCapabilities, session.scopeOverride?.tools) : []),
     ];
-    const tools = this.toolRegistry.getForAgent(
+    let tools = this.toolRegistry.getForAgent(
       agent.base,
       disabled,
       agent.mcp,
       agent.allow,
     );
+    // A node agent's tools live on the remote machine: the registry knows none of them, so the
+    // connection's manifest is the set, narrowed by the file's `tools:` and the denylist exactly
+    // like a local baseline. The runner already refuses an offline node before the run starts;
+    // this is the backstop for one that went away in between. docs/remote-nodes.md.
+    let nodeRemoteNames: ReadonlySet<string> | undefined;
+    if (agent.base === "node") {
+      const nodeId = agent.node;
+      const remote = nodeId ? nodeToolsFor(nodeId, { ...(agent.allow ? { allow: agent.allow } : {}), disabled }) : null;
+      if (remote === null) {
+        const name = nodeId ? nodeRecord(nodeId)?.name ?? nodeId : "unknown";
+        return `Error: node "${name}" is offline. It reconnects on its own; try again once it is back.`;
+      }
+      tools = remote;
+      nodeRemoteNames = new Set(remote.map((tool) => tool.name));
+    }
     // The same resolution the dispatcher used to pick this engine: calling a different chain
     // here is how a run ended up on an engine chosen for another model.
     // Resolved into its own binding so the run's chain keeps its type: an override from the
@@ -1136,7 +1153,7 @@ export class AgentBridge implements AgentBackend {
             sessionId: session.id,
             toolCallId: tc.id,
           })).result;
-          if (producesRemoteContent(tc.name)) {
+          if (producesRemoteContent(tc.name) || nodeRemoteNames?.has(tc.name)) {
             transformedResult = normalizeUntrusted(transformedResult, `tool-result:${tc.name}`);
           }
           if (onToolUse) {

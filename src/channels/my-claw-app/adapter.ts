@@ -24,6 +24,9 @@ import { myClawAppLog } from "../../utils/logger.ts";
 import { ALWAYS_PER_INVOCATION } from "../../agent/approvals.ts";
 import { approvalStats, listApprovals, recordApproval, serializeArgs, type ApprovalOutcome } from "../../approvals/store.ts";
 import { PairingSockets, type PairSocketData } from "./pair-socket.ts";
+import { createNodeSurface, type NodeSurface } from "../../nodes/surface.ts";
+import type { NodeSocketData } from "../../nodes/hub.ts";
+import type { NodesConfig } from "../../core/config.ts";
 import { questionManager, type PendingQuestion } from "../../questions/manager.ts";
 import { undoManager } from "./undo.ts";
 import { latestAppUpdate, streamAppApk } from "./updates.ts";
@@ -328,6 +331,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private mediaOrder: string[] = [];
   /** The unauthenticated pairing surface, kept behind its own object and its own route. */
   private pairSockets = new PairingSockets(() => this.config);
+  /** The remote-node surface (/node and its JSON routes), built when the nodes config is wired. */
+  private nodeSurface?: NodeSurface;
+  /** Live read of `config.nodes`: the surface is built once and the config hot-reloads. */
+  private nodesConfig?: () => NodesConfig | undefined;
   /** Every open pairing socket, so the sweeper can reach the ones that never authenticate. */
   private pairing = new Set<ServerWebSocket<PairSocketData>>();
   private pendingApprovals = new Map<string, PendingApproval>();
@@ -404,6 +411,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
     this.files = new SessionFileStore(this.config);
   }
 
+  /**
+   * Wires the node surface before the server opens. A getter, not a snapshot: the config file is
+   * hot-reloaded and a `nodes` section edited meanwhile must take effect on the next claim.
+   */
+  setNodesConfig(read: () => NodesConfig | undefined): void {
+    this.nodesConfig = read;
+  }
+
   private files: SessionFileStore;
 
   /** Actual bound port; 0 until started. Exposed for tests. */
@@ -412,6 +427,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   async start(): Promise<void> {
+    // The remote-node surface shares this port: same credential resolver as every other admin
+    // route (`authenticate`), and a live read of the nodes config for the mTLS header and the
+    // claim TTL. docs/remote-nodes.md.
+    if (this.nodesConfig) {
+      this.nodeSurface = createNodeSurface({
+        nodes: this.nodesConfig,
+        authorizeAdmin: (req) => Boolean(this.authenticate(req, new URL(req.url))),
+      });
+    }
     // The manager's broadcast path is this adapter: a run that asks without a channel would wait
     // forever, so the tool checks hasSurface() and the handler is set before the server opens.
     questionManager.setHandler((question) => {
@@ -1198,6 +1222,18 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private async handleFetch(req: Request, server: Server<MyClawAppSessionData>): Promise<Response | undefined> {
     const url = new URL(req.url);
 
+    // The remote-node surface answers /node and /node/*, and nothing else: a `null` falls through
+    // to the routes below, a Response is the answer, and `undefined` means it upgraded. Its own
+    // protocol on this port, like the pairing shell. docs/remote-nodes.md.
+    if (this.nodeSurface) {
+      const reply = await this.nodeSurface.handle(
+        req,
+        server as unknown as Server<NodeSocketData>,
+        { ip: clientIp(this.config, req.headers, server.requestIP(req)?.address) },
+      );
+      if (reply !== null) return reply;
+    }
+
     // Every authenticated route resolves its device the same way: the query pair a native client
     // presents, or the session cookie a browser cannot avoid sending. One resolver, so a route
     // can never end up covering one of the two and not the other.
@@ -1463,6 +1499,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private thumbnails = new Map<string, Promise<string | undefined>>();
 
   private handleOpen(ws: ServerWebSocket<MyClawAppSessionData>): void {
+    if ((ws.data as Partial<NodeSocketData>).node === true) {
+      this.nodeSurface?.open(ws as unknown as ServerWebSocket<NodeSocketData>);
+      return;
+    }
     if (ws.data.pairing) {
       this.pairing.add(ws as unknown as ServerWebSocket<PairSocketData>);
       void myClawAppLog("info", "pairing socket opened", { ip: ws.data.ip, origin: ws.data.origin });
@@ -1515,6 +1555,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   private handleClose(ws: ServerWebSocket<MyClawAppSessionData>): void {
+    if ((ws.data as Partial<NodeSocketData>).node === true) {
+      this.nodeSurface?.close(ws as unknown as ServerWebSocket<NodeSocketData>);
+      return;
+    }
     if (ws.data.pairing) {
       this.pairing.delete(ws as unknown as ServerWebSocket<PairSocketData>);
       this.pairSockets.close(ws as unknown as ServerWebSocket<PairSocketData>);
@@ -1540,6 +1584,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
    */
   private handleMessage(ws: ServerWebSocket<MyClawAppSessionData>, message: string | Buffer): void {
     try {
+      if ((ws.data as Partial<NodeSocketData>).node === true) {
+        this.nodeSurface?.message(ws as unknown as ServerWebSocket<NodeSocketData>, typeof message === "string" ? message : Buffer.from(message).toString("utf8"));
+        return;
+      }
       this.routeFrame(ws, message);
     } catch (err) {
       void myClawAppLog("error", "frame dispatch threw", {

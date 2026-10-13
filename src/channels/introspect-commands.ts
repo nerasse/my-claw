@@ -12,6 +12,7 @@ import {
 import type { AgentRegistry } from "../agents/registry.ts";
 import { resolveAgent as resolveAgentDefinition } from "../agents/resolve.ts";
 import type { Tool } from "../tools/types.ts";
+import { nodeToolsFor } from "../nodes/tools.ts";
 
 import { resolveAgentLlmConfig } from "../llm/resolver.ts";
 import { buildSystemPrompt } from "../agent/prompt/builder.ts";
@@ -108,6 +109,9 @@ function backendFor(config: MyClawConfig, toolType: AgentToolType): string {
 /** The agent's effective tools, through the same resolver a run uses so the count cannot drift. */
 function toolsOf(p: IntrospectParams, toolType: AgentToolType): Tool[] {
   const agent = resolveAgentDefinition(p.config, p.agentRegistry, toolType);
+  // A node agent's set is its machine's live manifest; offline it is empty, which is what a run
+  // would find too. docs/remote-nodes.md.
+  if (agent.base === "node") return agent.node ? nodeToolsFor(agent.node) ?? [] : [];
   return p.toolRegistry.getForAgent(agent.base, p.config.tools?.disabled, agent.mcp, agent.allow);
 }
 

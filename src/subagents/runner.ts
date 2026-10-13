@@ -27,6 +27,8 @@ import { stopOutcomeOf, type StopOutcome } from "../core/stop.ts";
 import { indexSessionEntries } from "../conversations/store.ts";
 import type { SubAgentType, SubAgentMeta, SubAgentInfo, SubAgentCallerInfo } from "./types.ts";
 import { sanitizeDisplayName } from "./registry.ts";
+import { nodeOnline } from "../nodes/hub.ts";
+import { nodeRecord } from "../nodes/store.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 import { formatLocationForModel } from "../agent/preprocess.ts";
 import { withChildRunContext } from "../utils/run-context.ts";
@@ -313,6 +315,10 @@ export class SubAgentRunner {
 
     const resolved = this.resolveWorkspace(type, workspaceDir, parentWorkspaceDir);
     if ("error" in resolved) return { id: "", result: `Error: ${resolved.error}`, attachments: [] };
+    // A node agent whose machine is away answers here, before a session or a log entry exists:
+    // the spawn itself says so. docs/remote-nodes.md.
+    const offline = this.offlineNodeError(type, resolved.key);
+    if (offline) return { id: "", result: offline, attachments: [] };
 
     if (mode === "run") {
       return this.runOneShot(displayName, type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, signal, model, toolCallId, streamProvider, enqueue);
@@ -365,6 +371,23 @@ export class SubAgentRunner {
       hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
       return { id, result, attachments: this.takeAttachments(id) };
     });
+  }
+
+  /**
+   * The refusal a `base: node` agent gets while its machine is not connected: no run starts, and
+   * the message names the node and when it was last seen. An agent whose node record is gone
+   * entirely (revoked, file left behind) says that instead, so the fix is the right one.
+   */
+  private offlineNodeError(type: SubAgentType, layer?: string): string | undefined {
+    const meta = this.agentRegistry?.get(type, layer)?.meta;
+    if (meta?.base !== "node" || !meta.node) return undefined;
+    if (nodeOnline(meta.node)) return undefined;
+    const record = nodeRecord(meta.node);
+    if (!record) {
+      return `Error: the node this agent belongs to (${meta.node}) is not paired any more. Remove the agent file, or pair the machine again.`;
+    }
+    const seen = record.lastSeenAt ? `, last seen ${record.lastSeenAt}` : ", never seen";
+    return `Error: node "${record.name}" is offline${seen}. It reconnects on its own; try again once it is back.`;
   }
 
   /**
@@ -838,6 +861,9 @@ export class SubAgentRunner {
   ): Promise<string> {
     // Its real level, for the run tree and the tools: a browser task under a sub-agent is level 2.
     const depth = session.meta?.parentSessionId ? await this.depthUnder(session.meta.parentSessionId) : 1;
+    // The spawn path already checked; this is the one `send` and `resume` pass through.
+    const offline = this.offlineNodeError(type, session.workspace);
+    if (offline) return offline;
     // Adopt the session into the shared cache before the run: the app channel's history/peek
     // then sees the live object (pre-pushed task, streaming tokens in memory) instead of the
     // file that only contains the pre-pushed task. The manager persists it on its own ticks.

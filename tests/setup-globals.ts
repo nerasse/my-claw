@@ -24,6 +24,9 @@ import { resetSessionLogResolver } from "../src/sessions/log-access.ts";
 import { resetFallbackNotices } from "../src/llm/fallback-notice.ts";
 import { resetEffortClampNotices } from "../src/llm/effort-ladder.ts";
 import { resetPairing } from "../src/channels/my-claw-app/pairing.ts";
+import { resetClaims } from "../src/nodes/claims.ts";
+import { resetNodeHub } from "../src/nodes/hub.ts";
+import { resetNodesStore } from "../src/nodes/store.ts";
 import { resetWebSessions } from "../src/channels/my-claw-app/web-session.ts";
 import { resetDeviceSeenCache } from "../src/channels/my-claw-app/devices.ts";
 import { resetAppUpdateCache } from "../src/channels/my-claw-app/updates.ts";
@@ -97,6 +100,11 @@ beforeEach(() => {
   // Pairing codes and browser sessions are credentials held in memory, and a leaked one would
   // authenticate a later file's request. The pairing clock is restored with them.
   resetPairing();
+  // Node records are a file plus an in-memory map loaded once: a file another test wrote would be
+  // served to this one under the same ids, and a live socket map would answer nodeOnline wrongly.
+  resetNodesStore();
+  resetClaims();
+  resetNodeHub();
   resetWebSessions();
   // The lastSeen throttle would silently skip the write a later test asserts on.
   resetDeviceSeenCache();

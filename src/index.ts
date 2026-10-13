@@ -870,6 +870,8 @@ async function main() {
       (key) => key === "default" || key in (config.workspaces ?? {}),
     );
     const myClawApp = new MyClawAppAdapter(myClawAppConfig, myClawAppSessions);
+    // The remote-node surface reads the top-level `nodes` section live (mTLS header, claim TTL).
+    myClawApp.setNodesConfig(() => config.nodes);
     myClawApp.onLocationResolver(new GeoapifyReverseGeocoder(() => process.env.GEOAPIFY_API_KEY));
 
     myClawAppRef = myClawApp;
@@ -1599,12 +1601,16 @@ async function main() {
         if (!file) throw new Error(`unknown agent: ${agent}`);
         if (file.source === "built-in") throw new Error("built-in agents are repo-synced; fork to a custom file first");
         // The browser agent is the browser base and nothing else: the editor cannot move it off
-        // the toolbox `delegate_browser_task` runs it with, whatever picker it offers.
-        const base = agent === "browser" ? "browser" : fields.base;
+        // the toolbox `delegate_browser_task` runs it with, whatever picker it offers. A node
+        // agent is pinned the same way, and its `node:` id is carried from the file on disk: an
+        // editor that never saw the field must not strip the file of the machine it belongs to.
+        const currentMeta = agentRegistry.get(agent)?.meta;
+        const base = agent === "browser" ? "browser" : currentMeta?.base === "node" ? "node" : fields.base;
         const text = serializeAgentFile(
           {
             description: fields.description,
             ...(base ? { base } : {}),
+            ...(base === "node" && currentMeta?.node ? { node: currentMeta.node } : {}),
             ...(fields.tools ? { tools: fields.tools } : {}),
             skillsMode: fields.skillsMode,
             ...(fields.skills ? { skills: fields.skills } : {}),
@@ -3319,7 +3325,16 @@ async function runWebCliCommand(args: string[]): Promise<number> {
   return runWebCli(args);
 }
 
-const CLI_COMMANDS = ["codex", "claude", "config", "device", "setup", "web", "release-key"] as const;
+// Remote nodes from the shell: `myclaw node add` mints a claim code through the running daemon
+// (docs/remote-nodes.md). Lazy like the other CLI paths.
+async function runNodeCliCommand(args: string[]): Promise<number> {
+  const { runNodeCli } = await import("./nodes/cli.ts");
+  const { loadEnv } = await import("./core/config.ts");
+  await loadEnv();
+  return runNodeCli(args);
+}
+
+const CLI_COMMANDS = ["codex", "claude", "config", "device", "setup", "web", "node", "release-key"] as const;
 
 const cliArgs = process.argv.slice(2);
 if ((CLI_COMMANDS as readonly string[]).includes(cliArgs[0] ?? "")) {
@@ -3330,6 +3345,7 @@ if ((CLI_COMMANDS as readonly string[]).includes(cliArgs[0] ?? "")) {
     device: runDeviceCliCommand,
     setup: runSetupCliCommand,
     web: runWebCliCommand,
+    node: runNodeCliCommand,
     "release-key": runReleaseKeyCli,
   };
   const runner = runners[cliArgs[0]!]!;
