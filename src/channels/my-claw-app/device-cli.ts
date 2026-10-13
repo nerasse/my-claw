@@ -19,7 +19,8 @@ const SETUP_USAGE = `usage: myclaw setup [--url <public url>] [--owner <name>]
 
   Pairs the first device of a fresh install: prints a single-use code, a link and a QR, valid ten
   minutes. Run it again for a new code. Once a device has connected, add the next ones from it
-  (Settings > Devices > Scan) or with \`myclaw device add\`.
+  (Settings > Devices > Add a device: a QR and a code for the new one) or with
+  \`myclaw device add\`.
 `;
 
 const USAGE = `usage: myclaw device <command>
@@ -145,7 +146,7 @@ export async function runSetupCli(args: string[], env: Record<string, string | u
   const used = devices.filter((d) => d.lastSeenAt);
   if (used.length > 0) {
     console.log(`Already paired (${used.length} device${used.length > 1 ? "s" : ""} connected).`);
-    console.log("Add another from a paired device (Settings > Devices > Scan), or: myclaw device add --name <name>");
+    console.log("Add another from a paired device (Settings > Devices > Add a device), or: myclaw device add --name <name>");
     return 0;
   }
 

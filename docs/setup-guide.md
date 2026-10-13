@@ -394,6 +394,14 @@ curl -fsS "http://127.0.0.1:8888/search?q=test&format=json" | head -c 200
 
 ## 10. Pairing des clients — flow unifié
 
+Trois façons de faire entrer un appareil, une seule primitive côté serveur (`docs/web-pairing.md`) :
+
+| Qui | Comment | Quand |
+|---|---|---|
+| le terminal du serveur | `myclaw setup` ou `myclaw device add` | le tout premier appareil, ou sans appareil sous la main |
+| un appareil déjà appairé (app ou web) | Réglages › Appareils › **Ajouter un appareil** : QR + code | le cas normal, pour un proche aussi : pas de terminal |
+| le nouvel appareil lui-même | écran Rejoindre › **Demander l'accès** : code + 3 chiffres, approuvés ailleurs | quand rien ne peut être scanné |
+
 **Premier appareil : `myclaw setup`.** L'installeur le lance à la fin et affiche un code, un lien et
 un QR (usage unique, dix minutes) :
 
@@ -406,58 +414,68 @@ App     server ws://10.0.0.7:8080/my-claw-app, then type the code
 L'adresse est celle de la machine (`hostname -I`). Derrière un domaine ou un reverse proxy :
 `myclaw setup --url https://claw.exemple.fr`. Code raté ou expiré : relancer `myclaw setup`, qui
 redonne un code pour le même appareil. Dès qu'un appareil s'est connecté, `setup` ne fait plus rien :
-les suivants s'ajoutent depuis lui (Settings > Devices > Scan), ou avec `myclaw device add`.
+les suivants s'ajoutent depuis lui (Réglages › Appareils › Ajouter un appareil), ou avec
+`myclaw device add`. Le get started de l'app y mène aussi : son étape « Your other devices » ouvre
+directement l'invitation.
 
-### 10.1 Client web
+### 10.1 Inviter un appareil depuis l'app ou le web
+
+Sur un appareil déjà appairé : Réglages › Appareils › **Ajouter un appareil**, un nom (« Téléphone
+de papa »), puis **Create the invitation**. La carte affiche un QR, le code `XXXX-XXXX` et un lien,
+à usage unique, valables dix minutes. Le champ d'adresse est celle que le **nouvel** appareil
+utilisera : par défaut celle de l'appareil qui invite, à changer si le nouveau passe par un autre
+chemin (un web derrière le SSO invite un téléphone du LAN : `http://10.0.0.7:8080`).
+
+- **Un téléphone** : installer l'APK (lien `/dl` du hub), ouvrir l'app : l'écran **Join a server**
+  s'ouvre de lui-même. **Scan the QR**, ou taper l'adresse du serveur (`http://<ip>:8080` suffit,
+  l'app en déduit le socket) et le code, puis **Join**.
+- **Un navigateur** : ouvrir le lien, ou ouvrir `/pair` et taper le code dans « or type an
+  invitation code ».
+
+Rien n'est créé côté serveur tant que l'invitation n'est pas utilisée ; à l'usage, l'appareil qui a
+invité affiche « device added » et la liste se met à jour partout.
+
+### 10.2 Demander l'accès, sans invitation
+
+Sur le nouveau téléphone, écran Join › **Ask for access** (l'adresse du serveur doit être saisie).
+Il affiche un code et trois chiffres. Sur un appareil déjà appairé : Réglages › Appareils ›
+**Approve a request**, scanner ou taper le code, **vérifier que les trois chiffres sont les mêmes**,
+nommer l'appareil, **Approve**. Le téléphone reçoit son identité (`app-…`) et se connecte.
+
+Un navigateur fait la même chose depuis `/pair`, qui affiche son code et son QR : l'app approuve
+depuis Approve a request. Les trois chiffres, l'origine et l'IP sont affichés avant d'approuver
+(anti-phishing : sans eux, le QR de quelqu'un d'autre appairerait **son** navigateur à vos
+conversations).
+
+### 10.3 Un appareil que le serveur ne connaît plus
+
+Appareil révoqué, réinstallé, ou serveur réinstallé : le serveur répond 401. L'app rouvre l'écran
+Join à **chaque** refus qui suit une tentative de connexion, avec « This server does not know this
+device ». Fermé, il laisse la page Réglages › Serveur(s), où **Join** remplace Connect tant que le
+serveur refuse. Il suffit d'une nouvelle invitation.
+
+### 10.4 Plusieurs serveurs sur un téléphone (Android)
+
+Réglages › **Servers** : celui-ci (renommer), son adresse et sa connexion, les autres (Switch,
+renommer, oublier), **Add a server** (ouvre l'écran Join, l'invitation scannée nomme le serveur).
+Dès deux serveurs, le bas du menu latéral affiche le serveur courant et bascule d'un toucher.
+Chaque serveur garde son identité, ses messages en attente, ses étapes de get started passées et
+ses notifications (un serveur inactif notifie toujours, toucher la notification bascule dessus).
+Un serveur joint par deux chemins (LAN et VPN) reste **un** serveur : on modifie son adresse.
+Détails : `docs/servers.md` dans le dépôt de l'app.
+
+### 10.5 En ligne de commande
 
 ```bash
 myclaw device add --name "Bureau" --kind web --owner ton_owner
-```
-
-Sortie (à copier telle quelle) :
-
-```
-Device  web-a3f19c22  "Bureau"  owner=ton_owner
-Token   ...
-Claim   http://<host>/pair#K7QW-3M2P        (valid 10 min, single use)
-        or type K7QW-3M2P in the pairing page
-```
-
-Ouvrir l'URL `Claim` dans le navigateur → la page s'échange le grant contre un cookie →
-rechargé → le chat apparaît. **Pas de device pré-existant requis** (chemin bootstrap).
-
-Pour les clients web suivants : ouvrir `/pair` depuis le navigateur, scanner le QR depuis
-l'app (Settings → Devices → Scan) ou taper le code. L'app affiche les 3 chiffres de
-vérification + l'origine + IP avant d'approuver (anti-phishing).
-
-### 10.2 Client Android (app)
-
-```bash
 myclaw device add --name "Phone" --kind app --owner ton_owner
 ```
 
-1. Installer l'APK (release `my-claw-app-v0.5.53.apk` du forge).
-2. Ouvrir l'app. Si elle ne trouve pas de credential côté serveur, **l'écran de pairing
-   s'ouvre tout seul** (détection du 401). Sinon : Settings → General → **Pair**.
-3. Saisir l'URL du serveur : `ws://<ip>:8080/my-claw-app` (ou `wss://<domaine>/my-claw-app`).
-4. **Taper le code** affiché par `device add` (ex. `K7QW-3M2P`).
-5. L'app reçoit le token minté, le stocke dans le Keystore et se reconnecte. Terminé.
+Sortie : l'identifiant, le token (affiché une fois) et le lien `Claim` (`http://<host>/pair#K7QW-3M2P`,
+dix minutes, usage unique) avec son QR. Un navigateur ouvre le lien ; l'app le scanne, ou tape
+l'adresse et le code.
 
-**Le scan QR** : `myclaw setup` et `myclaw device add` impriment un QR du lien. Sinon, depuis
-le claim link (si `qrencode` est installé) :
-
-```bash
-qrencode -t ANSIUTF8 "http://<host>/pair#K7QW-3M2P"
-```
-
-Puis appuyez sur **Scan the code** dans l'app. (Le QR affiché par la page `/pair` d'un
-navigateur sert, lui, à approuver un **device web** depuis un device déjà pairé — pas à
-inscrire ce device.)
-
-Avant v0.5.53 : il fallait copier `device` + `token` depuis l'app vers `config.json`.
-Plus maintenant.
-
-### 10.3 Vérification
+### 10.6 Vérification
 
 ```bash
 myclaw device ls
@@ -550,7 +568,7 @@ streamer la réponse et afficher les cartes d'outils.
 | Rien ne démarre après un reboot | Linger désactivé | `sudo loginctl enable-linger <user>` |
 | `myclaw web install` → 401/404 | Clé de release absente ou révoquée | `myclaw release-key <clé>` (la clé ne va qu'à la source de release) |
 | Première page = « Unauthorized » | Normal : aucun device pairé | Ouvrir l'URL Claim de `myclaw device add` |
-| L'app affiche « Pair device » à l'ouverture | Device inconnu du serveur (401) | C'est le nouveau flow : scanner le code |
+| L'app affiche « Join a server » à l'ouverture | Device inconnu du serveur (401) | Une invitation depuis un appareil appairé (§10.1), ou Ask for access (§10.2) |
 | `web_search` répond « not configured » | `webSearch.baseUrl` vide | Renseigner l'URL SearXNG (§9) |
 | `web_search` répond « invalid JSON » | `formats: [html]` sans `json` | `search.formats: [html, json]` |
 | noVNC ne se connecte pas | x11vnc squatté sur 5900 | `systemctl --user restart my-claw-vnc my-claw-novnc` |

@@ -69,6 +69,8 @@ describe("myclaw setup", () => {
     expect(Object.keys(await devices())).toEqual(["app-11111111"]);
     expect(tickets).toEqual([]);
     expect(lines[0]).toContain("Already paired");
+    // Where the next one comes from, as the app says it today: no shell needed.
+    expect(lines[1]).toContain("Settings > Devices > Add a device");
   });
 });
 
