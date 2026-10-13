@@ -51,6 +51,8 @@ export interface ResolvedAgent {
    */
   fileModel?: string;
   workspace?: string;
+  /** The node a `base: node` file belongs to: the run reaches that machine's tools through it. */
+  node?: string;
   maxIterations: number;
   contextCap: number | undefined;
   /** False when the name matched no file: a spawn of it is a mistake worth reporting. */
@@ -113,10 +115,13 @@ export function resolveAgent(
   // overrides, the config or the file.
   const ownMcp = overrideScope("mcp") ?? readAgentScope(config, type, "mcp") ?? file?.meta.mcp;
   const baseline = file?.meta.base ?? fallbackBase(type);
+  const isBrowser = baseline === "browser";
   // The browser agent's set is closed whatever the config says: a page it reads is untrusted content
-  // that must not reach an MCP server. Its skills are not closed: it reads them with `skills` (read-only),
-  // under the same scope as anyone's, so `agents.browser.skills` narrows or empties it.
-  const closed = baseline === "browser";
+  // that must not reach an MCP server. A node agent's is closed for the same reason from the other
+  // side: its tools are the remote machine's, and a local MCP server mixed into that set would be a
+  // capability nobody declared. Their skills are not closed: they read them with `skills` (read-only),
+  // under the same scope as anyone's, so `agents.<name>.skills` narrows or empties it.
+  const closed = isBrowser || baseline === "node";
   const mcp = closed ? [] : ownMcp ?? (baseline === "research" ? [] : inheritedScope(config, "mcp") ?? "all");
 
   // The run's tool list intersects the baseline exactly like a file's: a name outside it is
@@ -125,7 +130,7 @@ export function resolveAgent(
   const toolsOverride = overrideScope("tools");
   const allow = toolsOverride !== undefined ? (toolsOverride === "all" ? undefined : toolsOverride) : file?.meta.tools;
 
-  const deny = closed
+  const deny = isBrowser
     ? [...(config.browser?.allowEval ? [] : ["browser_eval"]), ...(config.browser?.allowCdp ? [] : ["browser_cdp"])]
     : [];
 
@@ -141,10 +146,11 @@ export function resolveAgent(
     llm: resolveAgentLlm(config, type, file?.meta.model),
     ...(file?.meta.model ? { fileModel: file.meta.model } : {}),
     workspace: resolveAgentWorkspace(config, type, file?.meta.workspace),
+    ...(file?.meta.node ? { node: file.meta.node } : {}),
     // `browser.maxSteps` is the budget of one browsing task and predates the agent running through
     // this chain; it keeps meaning that, above the file's default and below an explicit
     // `agents.browser.maxIterations`.
-    maxIterations: resolveMaxIterations(config, type, (closed ? config.browser?.maxSteps : undefined) ?? file?.meta.maxIterations),
+    maxIterations: resolveMaxIterations(config, type, (isBrowser ? config.browser?.maxSteps : undefined) ?? file?.meta.maxIterations),
     contextCap: agentConfigOf(config, type)?.context?.cap === undefined && file?.meta.contextCap !== undefined
       ? resolveContextCapFor(config, file.meta.contextCap)
       : resolveContextCap(config, type),

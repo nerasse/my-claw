@@ -78,6 +78,7 @@ export async function deleteAgentFile(path: string): Promise<void> {
 export interface AgentFileFields {
   description: string;
   base?: AgentBase;
+  node?: string;
   tools?: string[];
   skillsMode: "absent" | "all" | "list";
   skills?: string[];
@@ -101,6 +102,7 @@ export function serializeAgentFile(fields: AgentFileFields, body: string): strin
   };
   push("description", fields.description);
   push("base", fields.base);
+  push("node", fields.node);
   push("tools", fields.tools?.join(", "));
   if (fields.skillsMode === "all") push("skills", "*");
   else if (fields.skillsMode === "list") push("skills", (fields.skills ?? []).join(", "));
@@ -120,6 +122,7 @@ export function serializeAgentFile(fields: AgentFileFields, body: string): strin
 export function fieldsOfMeta(meta: {
   description: string;
   base?: AgentBase;
+  node?: string;
   tools?: string[];
   skills?: string[] | "all";
   mcp?: string[] | "all";
@@ -132,6 +135,7 @@ export function fieldsOfMeta(meta: {
   return {
     description: meta.description,
     ...(meta.base ? { base: meta.base } : {}),
+    ...(meta.node ? { node: meta.node } : {}),
     ...(meta.tools ? { tools: meta.tools } : {}),
     skillsMode: meta.skills === undefined ? "absent" : meta.skills === "all" ? "all" : "list",
     ...(meta.skills && meta.skills !== "all" ? { skills: meta.skills } : {}),

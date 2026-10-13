@@ -4,11 +4,13 @@ import type { PromptLayerName } from "../agent/prompt/files.ts";
 /**
  * The tool baseline an agent narrows from. Not a free choice of tools: a file may subtract from one
  * of these sets and never add to it, so a workspace file cannot grant itself capability.
- * See docs/file-agents.md.
+ * `node` is the one base whose tools are not local at all: they are the live manifest of the
+ * remote machine the file names, and only a file declaring that machine may claim it.
+ * See docs/file-agents.md and docs/remote-nodes.md.
  */
-export type AgentBase = "general" | "research" | "browser";
+export type AgentBase = "general" | "research" | "browser" | "node";
 
-export const AGENT_BASES: readonly AgentBase[] = ["general", "research", "browser"];
+export const AGENT_BASES: readonly AgentBase[] = ["general", "research", "browser", "node"];
 
 /**
  * Roles rather than spawnable agents, so a file cannot claim their name. `nested` is here for a
@@ -28,6 +30,12 @@ export interface AgentMeta {
   model?: string;
   /** Workspace key the agent runs in. Distinct from `FileAgent.layer`, which is where it was found. */
   workspace?: string;
+  /**
+   * The node this agent belongs to, from the `node:` field. Required by `base: node` and refused
+   * everywhere else: it is what keeps the base from being claimed by a file that never names a
+   * machine, and it is how the run finds the connection. See docs/remote-nodes.md.
+   */
+  node?: string;
   maxIterations?: number;
   contextCap?: number;
   /** Workspace prompt layers included before the agent's own prompt. */
@@ -59,4 +67,6 @@ export interface AgentInfo {
   layer?: string;
   model?: string;
   workspace?: string;
+  /** The node a `base: node` agent belongs to; the spawn catalog reads it to say online or not. */
+  node?: string;
 }

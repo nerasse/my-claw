@@ -25,6 +25,7 @@ function infoOf(agent: FileAgent): AgentInfo {
     ...(agent.layer ? { layer: agent.layer } : {}),
     ...(agent.meta.model ? { model: agent.meta.model } : {}),
     ...(agent.meta.workspace ? { workspace: agent.meta.workspace } : {}),
+    ...(agent.meta.node ? { node: agent.meta.node } : {}),
   };
 }
 

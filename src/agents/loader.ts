@@ -33,7 +33,7 @@ function parseScope(raw: string | undefined): AgentScope | undefined {
   return list.includes("*") ? "all" : list;
 }
 
-function parseBase(raw: string | undefined, path: string, name: string): AgentBase {
+function parseBase(raw: string | undefined, path: string, name: string, nodeId: string | undefined): AgentBase {
   if (raw === undefined) return "general";
   // The browser base is the one shared Chromium's toolbox, reached one task at a time through
   // `delegate_browser_task`. Only the agent that tool runs may claim it: a second file on that base
@@ -41,6 +41,16 @@ function parseBase(raw: string | undefined, path: string, name: string): AgentBa
   if (raw === "browser" && name !== "browser") {
     void log("warn", "only the browser agent may declare the browser base, falling back to general", { path });
     return "general";
+  }
+  // A node's tools are not part of any local baseline: they are whatever that machine exposes.
+  // The `node:` field is what a file must carry to reach one, so a workspace file cannot quietly
+  // claim a base whose tools it was never given. See docs/remote-nodes.md.
+  if (raw === "node") {
+    if (!nodeId) {
+      void log("warn", "base: node without a node field, falling back to general", { path });
+      return "general";
+    }
+    return "node";
   }
   if ((AGENT_BASES as readonly string[]).includes(raw)) return raw as AgentBase;
   // The narrower baseline is not the safe one to guess: silently downgrading a general agent to
@@ -108,6 +118,7 @@ export function parseAgentFile(
 
   const model = parsed.fields["model"];
   const workspace = parsed.fields["workspace"];
+  const nodeId = parsed.fields["node"]?.trim();
   const tools = listField(parsed.fields["tools"]);
   const skills = parseScope(parsed.fields["skills"]);
   const mcp = parseScope(parsed.fields["mcp"]);
@@ -118,11 +129,20 @@ export function parseAgentFile(
     void log("warn", "agent description truncated", { path, name, length: description.length });
   }
 
+  const base = parseBase(parsed.fields["base"], path, name, nodeId);
+  // A node field without the node base names nothing: the base is what the run reads, so the
+  // field is dropped rather than left looking meaningful.
+  const node = base === "node" ? nodeId : undefined;
+  if (nodeId && base !== "node") {
+    void log("warn", "agent declares a node field without base: node, ignored", { path, name });
+  }
+
   return {
     meta: {
       description: description.slice(0, MAX_DESCRIPTION_LENGTH),
-      base: parseBase(parsed.fields["base"], path, name),
+      base,
       instructions: parseInstructions(parsed.fields["instructions"], path),
+      ...(node ? { node } : {}),
       ...(tools ? { tools } : {}),
       ...(skills !== undefined ? { skills } : {}),
       ...(mcp !== undefined ? { mcp } : {}),

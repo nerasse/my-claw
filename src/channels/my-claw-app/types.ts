@@ -838,7 +838,7 @@ export interface MyClawAppAgentFileSet {
   agent: string;
   sha: string;
   description: string;
-  base?: "general" | "research" | "browser";
+  base?: "general" | "research" | "browser" | "node";
   tools?: string[];
   skillsMode: "absent" | "all" | "list";
   skills?: string[];
@@ -2629,7 +2629,7 @@ export interface MyClawAppAgentFileResult {
   editable: boolean;
   sha: string;
   description: string;
-  base?: "general" | "research" | "browser";
+  base?: "general" | "research" | "browser" | "node";
   tools?: string[];
   skillsMode: "absent" | "all" | "list";
   skills?: string[];

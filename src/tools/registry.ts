@@ -91,9 +91,12 @@ export const BROWSER_SKILL_TOOLS = ["skills"];
 
 /** The tool names a file agent of the given base may narrow from. Exported so the app channel can
  *  offer exactly the names `getForAgent` will intersect the file's `tools:` against. */
-export function baselineToolNames(base: "general" | "research" | "browser", staticNames: readonly string[]): string[] {
+export function baselineToolNames(base: "general" | "research" | "browser" | "node", staticNames: readonly string[]): string[] {
   if (base === "research") return READ_ONLY_TOOLS.filter((n) => staticNames.includes(n));
   if (base === "browser") return staticNames.filter((n) => isBrowserTool(n) || BROWSER_SKILL_TOOLS.includes(n));
+  // A node's baseline is the live manifest of that machine, which no static list knows: the
+  // editor offers nothing to narrow from, and the file's `tools:` still applies at run time.
+  if (base === "node") return [];
   return staticNames.filter((n) => !SUBAGENT_EXCLUDED_TOOLS.includes(n) && !isBrowserTool(n));
 }
 
@@ -171,6 +174,11 @@ export class ToolRegistry {
       // The read-only built-in allowlist still applies. MCP used to be denied here unconditionally;
       // it now comes from the scope, which resolves to none for research unless explicitly granted.
       set = [...this.getByNames(READ_ONLY_TOOLS), ...dynamic];
+    } else if (agentType === "node") {
+      // A node agent's tools live on the remote machine, and only the bridge knows which node a
+      // run belongs to: it builds the set from the connection's live manifest and passes it to the
+      // model loop. Nothing here can answer it, so nothing here pretends to. docs/remote-nodes.md.
+      set = [];
     } else if (agentType === "cron") {
       set = [...this.tools.values(), ...dynamic].filter((t) => !CRON_ALWAYS_EXCLUDED.includes(t.name) && !isBrowserTool(t.name));
     } else {
