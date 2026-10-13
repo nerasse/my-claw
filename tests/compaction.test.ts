@@ -62,6 +62,26 @@ function makeConfig(): MyClawConfig {
   };
 }
 
+function multiProviderConfig(): MyClawConfig {
+  const config = makeConfig();
+  config.llm = {
+    ...config.llm,
+    defaultProvider: "primary",
+    defaultModel: "primary-model",
+    providers: {
+      primary: { baseUrl: "https://primary.example.com" },
+      secondary: { baseUrl: "https://secondary.example.com" },
+    },
+    models: [
+      { id: "primary-model", label: "Primary", provider: "primary" },
+      // Declared, or the session pin is not runnable and the summarizer falls back to the raw
+      // override: the test would then pass without exercising the provider of the resolved run.
+      { id: "secondary/secondary-model", label: "Secondary", provider: "secondary" },
+    ],
+  };
+  return config;
+}
+
 let log: SessionLog;
 let cleanupLog: () => void;
 let session: LegacySessionData;
@@ -139,6 +159,26 @@ test("the summarizer call names the conversation it is compacting", async () => 
     const expected = sessionAffinityHeaders("https://test.example.com", SESSION_ID, "ua");
     assert.equal(seen.length, 1);
     assert.equal(seen[0]!.get("x-session-affinity"), expected["x-session-affinity"]);
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+test("the summarizer keeps the provider of a session model", async () => {
+  appendMessages(log, makeMessages(12));
+  await log.flush();
+  session.modelOverride = "secondary/secondary-model";
+
+  const hosts: string[] = [];
+  const fetchMock = mockFetch(async (url) => {
+    hosts.push(new URL(String(url)).host);
+    return sseFromCompletion({ choices: [{ message: { content: "Summary of earlier context, long enough to verify the selected provider remains attached." } }] }) as never;
+  });
+
+  try {
+    const result = await compactSession(multiProviderConfig(), session);
+    assert.equal(result.ok, true, result.reason ?? "");
+    assert.deepEqual(hosts, ["secondary.example.com"]);
   } finally {
     fetchMock.restore();
   }

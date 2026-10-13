@@ -519,7 +519,9 @@ export async function summarizeForCompaction(
     { agent: agentTypeOf(session), ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}) },
     availabilityWorld(),
   );
-  const resolved = resolveUtilityLlmConfig(config.llm, runModel?.apiModel ?? runModel?.model ?? session.modelOverride);
+  // Keep the provider-qualified model id. `apiModel` is the wire id only; resolving it again
+  // would send a session to the default provider and can yield a misleading protocol 400.
+  const resolved = resolveUtilityLlmConfig(config.llm, runModel?.model ?? session.modelOverride ?? runModel?.apiModel);
   // `max_tokens` on the wire comes from `limit.output`, so bounding the answer is a matter of
   // handing the transport a narrower limit rather than a new parameter on every transport.
   // `limit.output` is what the transport turns into `max_tokens`, so dropping it is how the summary
