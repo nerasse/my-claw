@@ -50,6 +50,55 @@ differs, and the node client only ever takes one URL.
 
 The wildcard certificate already in place covers a dedicated hostname; nothing new to issue.
 
+The two proxy blocks, for the operator's side. Only `/node` and `/node/pair` ever need to be
+reachable: `myclaw node add` and `myclaw node rm` talk to the daemon on loopback directly.
+
+```nginx
+# Mode 1: the existing vhost, no SSO gate on these two locations.
+location = /node {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $host;
+    proxy_read_timeout 3600s;   # idle between calls; the node's keepalive is 30 s
+}
+location = /node/pair {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_set_header Host $host;
+}
+```
+
+```nginx
+# Mode 2: a hostname of its own, client certificate required on /node only.
+server {
+    listen 443 ssl;
+    server_name node-myclaw.example;
+    ssl_certificate     /etc/letsencrypt/live/example/fullchain.pem;   # the wildcard
+    ssl_certificate_key /etc/letsencrypt/live/example/privkey.pem;
+    ssl_client_certificate /path/to/nodes/ca/ca.crt;   # my-claw's node CA (step 2)
+    ssl_verify_client optional;
+
+    location = /node {
+        if ($ssl_client_verify != SUCCESS) { return 403; }
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-SSL-Client-Verify $ssl_client_verify;
+        proxy_read_timeout 3600s;
+    }
+    location = /node/pair {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+    }
+}
+```
+
+With the header set as above, `nodes.clientCertHeader: "X-SSL-Client-Verify"` makes my-claw itself
+refuse a `/node` upgrade that did not come through the certificate check.
+
 ## Endpoints
 
 | Route | Auth | Purpose |
