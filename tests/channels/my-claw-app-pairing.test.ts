@@ -28,6 +28,8 @@ import {
 } from "../../src/channels/my-claw-app/pairing.ts";
 import { pairRedirect } from "../../src/channels/my-claw-app/web.ts";
 import { PairingSockets, type PairSocketData } from "../../src/channels/my-claw-app/pair-socket.ts";
+import { handleDeviceInvite, handlePairLookup, type MyClawAppDeviceDeps } from "../../src/channels/my-claw-app/device-handlers.ts";
+import { createInvite } from "../../src/channels/my-claw-app/pairing.ts";
 import {
   createGrant,
   redeemGrant,
@@ -245,7 +247,7 @@ describe("pairing", () => {
     expect(sink.rejected).toEqual(["attempts"]);
   });
 
-  test("a CLI ticket is claimed once and only once", () => {
+  test("a CLI ticket is claimed once and only once", async () => {
     const ticket = createTicket(PAIRING_ON, {
       deviceId: "web-abc",
       owner: "neras",
@@ -253,24 +255,24 @@ describe("pairing", () => {
       token: "the-token",
     });
 
-    const claimed = claim(ticket.code, "web");
+    const claimed = await claim(PAIRING_ON, ticket.code, "web");
     expect(claimed.ok).toBe(true);
     if (!claimed.ok) return;
     expect(claimed.delivery.deviceId).toBe("web-abc");
     expect(claimed.delivery.grant).toBeString();
     expect(claimed.delivery.token).toBeUndefined();
 
-    expect(claim(ticket.code, "web")).toMatchObject({ ok: false, reason: "unknown" });
+    expect(await claim(PAIRING_ON, ticket.code, "web")).toMatchObject({ ok: false, reason: "unknown" });
   });
 
-  test("a ticket claimed by a native client carries the token it was minted with", () => {
+  test("a ticket claimed by a native client carries the token it was minted with", async () => {
     const ticket = createTicket(PAIRING_ON, {
       deviceId: "app-abc",
       owner: "neras",
       name: "Pixel",
       token: "the-token",
     });
-    const claimed = claim(ticket.code, "native");
+    const claimed = await claim(PAIRING_ON, ticket.code, "native");
     expect(claimed.ok).toBe(true);
     if (!claimed.ok) return;
     expect(claimed.delivery.token).toBe("the-token");
@@ -294,8 +296,8 @@ describe("pairing", () => {
     } as unknown as import("bun").ServerWebSocket<PairSocketData>;
 
     const sockets = new PairingSockets(() => PAIRING_ON);
-    sockets.message(ws, JSON.stringify({ type: "pair.hello", kind: "native" }));
-    sockets.message(ws, JSON.stringify({ type: "pair.claim", code: ticket.code }));
+    await sockets.message(ws, JSON.stringify({ type: "pair.hello", kind: "native" }));
+    await sockets.message(ws, JSON.stringify({ type: "pair.claim", code: ticket.code }));
 
     const granted = sent.find(f => f.type === "pair.granted") as Record<string, unknown> | undefined;
     expect(granted).toBeDefined();
@@ -513,4 +515,126 @@ test("an unavailable APNs store cannot prevent device revocation or disablement"
     if (session.ok) expect(deviceOfSession(session.sessionId)).toBeNull();
     expect(await devicesOnDisk()).toEqual({});
   } finally { cleanup.mockRestore(); }
+});
+
+/** A paired device's socket, for the frames a chat socket answers through the device handlers. */
+function deviceDeps(config: MyClawAppChannelConfig) {
+  const frames: Array<Record<string, unknown>> = [];
+  const deps = {
+    config,
+    sockets: { all: () => [], deviceIds: () => [], closeDevice: () => 0 },
+    sendFrame: (_ws: unknown, frame: unknown) => frames.push(frame as Record<string, unknown>),
+  } as unknown as MyClawAppDeviceDeps;
+  const ws = { data: { deviceId: "app-1", owner: "neras", lastSeen: Date.now() } } as unknown as Parameters<typeof handleDeviceInvite>[1];
+  return { deps, ws, frames };
+}
+
+// "Add a device" from a paired device, web included: the shell is no longer the only way in.
+describe("invitations", () => {
+  test("an invitation claimed by a phone mints an app device and hands it the token, once", async () => {
+    await writeConfigFile({ pairing: { enabled: true }, devices: { "app-1": { token: "t", owner: "neras" } } });
+    const invited = createInvite(PAIRING_ON, { owner: "neras", name: "Papa phone", by: "app-1" });
+    expect(invited.ok).toBe(true);
+    if (!invited.ok) return;
+    // Nothing exists until somebody claims it: an unused invitation leaves the config alone.
+    expect(Object.keys(await devicesOnDisk())).toEqual(["app-1"]);
+
+    const claimed = await claim(PAIRING_ON, invited.session.code, "native");
+    expect(claimed.ok).toBe(true);
+    if (!claimed.ok) return;
+    expect(claimed.delivery.deviceId).toStartWith("app-");
+    expect(claimed.delivery.owner).toBe("neras");
+    expect(claimed.delivery.token).toBeString();
+    expect(claimed.delivery.grant).toBeUndefined();
+    const onDisk = (await devicesOnDisk())[claimed.delivery.deviceId]!;
+    expect(onDisk).toMatchObject({ name: "Papa phone", kind: "app", owner: "neras", token: claimed.delivery.token });
+
+    expect(await claim(PAIRING_ON, invited.session.code, "native")).toMatchObject({ ok: false, reason: "unknown" });
+  });
+
+  test("an invitation claimed by a browser mints a web device and hands it a grant", async () => {
+    await writeConfigFile({ pairing: { enabled: true } });
+    const invited = createInvite(PAIRING_ON, { owner: "neras", name: "Laptop", by: "app-1" });
+    if (!invited.ok) throw new Error(invited.reason);
+    const claimed = await claim(PAIRING_ON, invited.session.code, "web");
+    if (!claimed.ok) throw new Error(claimed.reason);
+    expect(claimed.delivery.deviceId).toStartWith("web-");
+    expect(claimed.delivery.grant).toBeString();
+    expect(claimed.delivery.token).toBeUndefined();
+  });
+
+  test("an invitation is not approved a second time from another device", async () => {
+    await writeConfigFile({ pairing: { enabled: true } });
+    const invited = createInvite(PAIRING_ON, { owner: "neras", name: "Laptop", by: "app-1" });
+    if (!invited.ok) throw new Error(invited.reason);
+    expect(lookup(invited.session.code)).toMatchObject({ ok: false, reason: "unknown" });
+    const approved = await approve(PAIRING_ON, invited.session.code, { name: "x", owner: "neras", approver: "app-2" });
+    expect(approved.ok).toBe(false);
+    expect(await devicesOnDisk()).toEqual({});
+  });
+
+  test("no invitation while pairing is off", () => {
+    expect(createInvite({}, { owner: "neras", name: "x", by: "app-1" })).toMatchObject({ ok: false });
+  });
+
+  test("a phone asking from its Join screen becomes an app device when approved", async () => {
+    await writeConfigFile({ pairing: { enabled: true } });
+    const sink = recorder();
+    const opened = openSession(PAIRING_ON, { kind: "native", ...sink });
+    if (!opened.ok) throw new Error(opened.reason);
+    const { deps, ws, frames } = deviceDeps(PAIRING_ON);
+    handlePairLookup(deps, ws, opened.session.code);
+    // The approver is told it is a phone, so its card does not ask about a browser.
+    expect(frames[0]).toMatchObject({ type: "device.pair.info", kind: "native" });
+
+    const approved = await approve(PAIRING_ON, opened.session.code, { name: "Papa", owner: "neras", approver: "app-1" });
+    if (!approved.ok) throw new Error(approved.error);
+    expect(approved.deviceId).toStartWith("app-");
+    expect(sink.delivered[0]!.token).toBeString();
+  });
+
+  test("the invitation names the address the new device reaches the server at", async () => {
+    await writeConfigFile({ pairing: { enabled: true } });
+    const { deps, ws, frames } = deviceDeps(PAIRING_ON);
+    // What the app holds is a socket address: the claim URL is its http origin.
+    await handleDeviceInvite(deps, ws, { name: "Papa", origin: "ws://10.0.0.5:8080/my-claw-app" });
+    const result = frames[0]!;
+    expect(result).toMatchObject({ type: "device.invite.result", ok: true });
+    expect(result.url).toBe(`http://10.0.0.5:8080/pair#${String(result.code)}`);
+    expect(String(result.qrSvg)).toContain("<svg");
+    expect(Number(result.expiresAt)).toBeGreaterThan(Date.now());
+
+    await handleDeviceInvite(deps, ws, { origin: "ftp://host" });
+    await handleDeviceInvite(deps, ws, { origin: "https://user:pw@host" });
+    expect(frames.slice(1).map((f) => f.ok)).toEqual([false, false]);
+  });
+
+  test("a phone's pairing socket claims an invitation and receives its token", async () => {
+    await writeConfigFile({ pairing: { enabled: true } });
+    const invited = createInvite(PAIRING_ON, { owner: "neras", name: "Pixel", by: "web-1" });
+    if (!invited.ok) throw new Error(invited.reason);
+    const sent: Array<Record<string, unknown>> = [];
+    const ws = {
+      data: { pairing: true, deviceId: "", owner: "", lastSeen: Date.now() } as PairSocketData,
+      send: (raw: string) => sent.push(JSON.parse(raw) as Record<string, unknown>),
+      close: () => {},
+    } as unknown as import("bun").ServerWebSocket<PairSocketData>;
+    const sockets = new PairingSockets(() => PAIRING_ON);
+    await sockets.message(ws, JSON.stringify({ type: "pair.hello", kind: "native" }));
+    await sockets.message(ws, JSON.stringify({ type: "pair.claim", code: invited.session.code }));
+    const granted = sent.find((f) => f.type === "pair.granted");
+    expect(granted).toMatchObject({ owner: "neras", name: "Pixel" });
+    expect(String(granted?.deviceId)).toStartWith("app-");
+    expect(granted?.token).toBeString();
+  });
+
+  test("the inviting device is told when its invitation is claimed", async () => {
+    await writeConfigFile({ pairing: { enabled: true } });
+    const { deps, ws, frames } = deviceDeps(PAIRING_ON);
+    await handleDeviceInvite(deps, ws, { name: "Papa", origin: "http://10.0.0.5:8080" });
+    const claimed = await claim(PAIRING_ON, String(frames[0]!.code), "native");
+    if (!claimed.ok) throw new Error(claimed.reason);
+    expect(frames[1]).toEqual({ type: "device.pair.result", ok: true, deviceId: claimed.delivery.deviceId });
+    expect(frames[2]).toMatchObject({ type: "device.list.result" });
+  });
 });

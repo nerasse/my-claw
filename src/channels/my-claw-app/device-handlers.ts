@@ -3,7 +3,7 @@ import type { MyClawAppChannelConfig } from "../../core/config.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import type { MyClawAppSessionData } from "./controllers.ts";
 import { listDevices, revokeDevice } from "./devices.ts";
-import { approve, lookup } from "./pairing.ts";
+import { approve, claimQrSvg, createInvite, lookup } from "./pairing.ts";
 import type { SocketRegistry } from "./socket-registry.ts";
 import type { MyClawAppServerFrame } from "./types.ts";
 
@@ -93,6 +93,7 @@ export function handlePairLookup(d: MyClawAppDeviceDeps, ws: ServerWebSocket<MyC
     code: found.session.code,
     verification: found.session.verification,
     expiresAt: found.session.expiresAt,
+    kind: found.session.kind,
     ...(found.session.origin ? { origin: found.session.origin } : {}),
     ...(found.session.ip ? { ip: found.session.ip } : {}),
     ...(found.session.userAgent ? { userAgent: found.session.userAgent } : {}),
@@ -108,7 +109,7 @@ export async function handlePairApprove(
   // The new device joins the approver's owner: a browser paired from a phone lands on the
   // same threads, which is the whole point of the shared namespace.
   const approved = await approve(d.config, code, {
-    name: name.trim() || "browser",
+    name: name.trim(),
     owner: ws.data.owner,
     approver: ws.data.deviceId,
   });
@@ -118,6 +119,58 @@ export async function handlePairApprove(
     ...(approved.ok ? { deviceId: approved.deviceId } : { error: approved.error }),
   });
   if (approved.ok) mirrorDeviceList(d, ws);
+}
+
+/**
+ * "Add a device", from any paired device: an invitation the new device claims by scanning or
+ * typing it. The QR carries the address the owner says the new device reaches this server at,
+ * which is not always the one the inviting device uses (a browser behind a sign-in proxy, a phone
+ * on the LAN), so the client sends it and the server only checks it is an http(s) origin.
+ */
+export async function handleDeviceInvite(
+  d: MyClawAppDeviceDeps,
+  ws: ServerWebSocket<MyClawAppSessionData>,
+  frame: { name?: unknown; origin?: unknown },
+): Promise<void> {
+  const origin = typeof frame.origin === "string" ? httpOrigin(frame.origin) : null;
+  if (!origin) {
+    d.sendFrame(ws, { type: "device.invite.result", ok: false, error: "the server address is not an http(s) address" });
+    return;
+  }
+  const name = typeof frame.name === "string" && frame.name.trim() ? frame.name.trim().slice(0, 60) : "new device";
+  const invited = createInvite(d.config, { owner: ws.data.owner, name, by: ws.data.deviceId }, (deviceId) => {
+    // The inviting screen trades its QR for "joined", and every window of the owner lists it.
+    d.sendFrame(ws, { type: "device.pair.result", ok: true, deviceId });
+    handleDeviceList(d, ws);
+    mirrorDeviceList(d, ws);
+  });
+  if (!invited.ok) {
+    d.sendFrame(ws, { type: "device.invite.result", ok: false, error: invited.reason });
+    return;
+  }
+  const url = new URL(origin);
+  const secure = url.protocol === "https:";
+  const qrSvg = await claimQrSvg(url.host, invited.session.code, secure, { dark: "#111111", light: "#ffffff" }).catch(() => undefined);
+  d.sendFrame(ws, {
+    type: "device.invite.result",
+    ok: true,
+    code: invited.session.code,
+    expiresAt: invited.session.expiresAt,
+    url: `${origin}/pair#${invited.session.code}`,
+    ...(qrSvg ? { qrSvg } : {}),
+  });
+}
+
+/** `https://host:port` from what a client typed or uses, or null when it is not one. */
+function httpOrigin(raw: string): string | null {
+  try {
+    const url = new URL(raw.trim().replace(/^ws(s?):/i, "http$1:"));
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (url.username || url.password) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
 }
 
 export function handleDeviceList(d: MyClawAppDeviceDeps, ws: ServerWebSocket<MyClawAppSessionData>): void {

@@ -269,6 +269,7 @@ import {
   handleDeviceRevoke,
   handlePairApprove,
   handlePairLookup,
+  handleDeviceInvite,
   ownerFor,
   type MyClawAppDeviceDeps,
 } from "./device-handlers.ts";
@@ -1600,7 +1601,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     // A pairing socket never reaches a chat handler: it is unauthenticated, and its four frames
     // are the only thing this port accepts without a credential.
     if (ws.data.pairing) {
-      this.pairSockets.message(ws as unknown as ServerWebSocket<PairSocketData>, raw);
+      void this.pairSockets.message(ws as unknown as ServerWebSocket<PairSocketData>, raw);
       return;
     }
 
@@ -1922,6 +1923,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "device.pair.lookup":
         handlePairLookup(this.deviceDeps(), ws, frame.code);
+        break;
+      case "device.invite":
+        this.detach(handleDeviceInvite(this.deviceDeps(), ws, frame), "handleDeviceInvite");
         break;
       case "device.pair.approve":
         this.detach(handlePairApprove(this.deviceDeps(), ws, frame.code, frame.name), "handlePairApprove");

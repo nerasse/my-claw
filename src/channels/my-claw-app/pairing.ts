@@ -62,6 +62,13 @@ export interface PairingSession {
   userAgent?: string;
   /** Set for a CLI ticket: the device already exists and no approval is needed. */
   preApproved?: { deviceId: string; owner: string; name: string; token: string };
+  /**
+   * Set for an invitation made from a paired device: approved already, but nothing is minted
+   * until a client claims it, because only then is it known whether a phone or a browser joins.
+   */
+  invite?: { owner: string; name: string; by: string };
+  /** Told when the invitation is claimed, so the inviting screen can say the device joined. */
+  joined?: (deviceId: string) => void;
   deliver?: (delivery: PairingDelivery) => void;
   reject?: (reason: PairingDenial) => void;
   /** Tells the waiting client that a device is looking at its code, so it can say so. */
@@ -267,6 +274,37 @@ export function createTicket(
   return session;
 }
 
+/**
+ * An invitation from an already paired device (Devices, "Add a device"): the owner approves by
+ * making it, so the first client presenting the code joins, the way a `myclaw device add` ticket
+ * does. The device is minted on the claim, as a phone or a browser by who claims it: an unclaimed
+ * invitation leaves nothing behind in the config.
+ */
+export function createInvite(
+  config: MyClawAppChannelConfig,
+  input: { owner: string; name: string; by: string },
+  joined?: (deviceId: string) => void,
+): { ok: true; session: PairingSession } | { ok: false; reason: string } {
+  if (!pairingEnabled(config)) return { ok: false, reason: "pairing disabled" };
+  sweep();
+  if (sessions.size >= maxSessions(config) && !evictOldestDetached()) {
+    return { ok: false, reason: "too many pairings in flight" };
+  }
+  const session: PairingSession = {
+    code: newCode(),
+    verification: String(randomInt(1000)).padStart(3, "0"),
+    resumeToken: randomBytes(32).toString("base64url"),
+    expiresAt: clock() + claimTtlMs(config),
+    kind: "web",
+    invite: input,
+    joined,
+    attempts: 0,
+  };
+  sessions.set(session.code, session);
+  myClawAppLog("info", "pairing invitation opened", { code: logCode(session.code), by: input.by });
+  return { ok: true, session };
+}
+
 export function closeSession(code: string): void {
   sessions.delete(code);
 }
@@ -337,6 +375,9 @@ export function lookup(
 ): { ok: true; session: PairingSession } | { ok: false; reason: PairingDenial } {
   const session = findSession(code);
   if (!session) return { ok: false, reason: reasonFor(normalizeCode(code)) };
+  // An invitation or a ticket is approved already: it is claimed by the device that joins, never
+  // approved a second time from another one, which would mint a device nobody asked for.
+  if (session.invite || session.preApproved) return { ok: false, reason: "unknown" };
   session.attempts += 1;
   if (session.attempts > MAX_ATTEMPTS) {
     session.reject?.("attempts");
@@ -357,13 +398,16 @@ export async function approve(
   if (!found.ok) return { ok: false, error: found.reason };
   const session = found.session;
 
-  const minted = await mintDevice(config, { name: input.name, owner: input.owner, kind: "web" });
+  // A phone asking from its Join screen is an app device: its id says so, like one minted by the CLI.
+  const native = session.kind === "native";
+  const name = input.name.trim() || (native ? "phone" : "browser");
+  const minted = await mintDevice(config, { name, owner: input.owner, kind: native ? "app" : "web" });
   if (!minted.ok) return { ok: false, error: minted.error };
 
   deliver(session, {
     deviceId: minted.device.deviceId,
     owner: minted.device.owner,
-    name: input.name,
+    name,
     token: minted.device.token,
   });
   myClawAppLog("info", "pairing approved", {
@@ -385,18 +429,36 @@ export function deny(code: string, approver: string): boolean {
   return true;
 }
 
-/** The claim path: a client presents a code for a ticket that was approved when it was created. */
-export function claim(
+/**
+ * The claim path: a client presents a code for a ticket that was approved when it was created,
+ * a CLI ticket (the device exists) or an invitation (the device is minted now, as what claims it).
+ */
+export async function claim(
+  config: MyClawAppChannelConfig,
   code: string,
   kind: PairingKind,
-): { ok: true; delivery: PairingDelivery } | { ok: false; reason: PairingDenial } {
-  const found = lookup(code);
-  if (!found.ok) return { ok: false, reason: found.reason };
-  const session = found.session;
-  if (!session.preApproved) return { ok: false, reason: "unknown" };
-
-  const { deviceId, owner, name, token } = session.preApproved;
+): Promise<{ ok: true; delivery: PairingDelivery } | { ok: false; reason: PairingDenial }> {
+  const session = findSession(code);
+  if (!session) return { ok: false, reason: reasonFor(normalizeCode(code)) };
+  if (!session.preApproved && !session.invite) return { ok: false, reason: "unknown" };
+  // Taken before the mint: two clients racing on one code must not both get a device.
   sessions.delete(session.code);
+
+  let ticket = session.preApproved;
+  if (!ticket && session.invite) {
+    const minted = await mintDevice(config, {
+      name: session.invite.name,
+      owner: session.invite.owner,
+      kind: kind === "native" ? "app" : "web",
+    });
+    if (!minted.ok) {
+      myClawAppLog("warn", "pairing invitation not minted", { code: logCode(session.code), error: minted.error });
+      return { ok: false, reason: "unknown" };
+    }
+    ticket = { deviceId: minted.device.deviceId, owner: minted.device.owner, name: session.invite.name, token: minted.device.token };
+    session.joined?.(ticket.deviceId);
+  }
+  const { deviceId, owner, name, token } = ticket!;
   const delivery: PairingDelivery =
     kind === "web"
       ? { deviceId, owner, name, grant: createGrant(deviceId) }
@@ -451,11 +513,21 @@ export function claimUrl(host: string, code: string, secure: boolean): string {
   return `${secure ? "https" : "http"}://${host}/pair#${code}`;
 }
 
-export async function claimQrSvg(host: string, code: string, secure: boolean): Promise<string> {
+/**
+ * Light modules on nothing suit the pairing page, which is always dark. The app draws its
+ * invitation on a light or a dark theme, so it asks for dark on white: every scanner reads that,
+ * not every one reads a QR inverted.
+ */
+export async function claimQrSvg(
+  host: string,
+  code: string,
+  secure: boolean,
+  color: { dark: string; light: string } = { dark: "#e6e8eb", light: "#0000" },
+): Promise<string> {
   return QRCode.toString(claimUrl(host, code, secure), {
     type: "svg",
     margin: 1,
     errorCorrectionLevel: "M",
-    color: { dark: "#e6e8eb", light: "#0000" },
+    color,
   });
 }

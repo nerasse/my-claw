@@ -57,7 +57,8 @@ function send(ws: PairWs, frame: MyClawAppServerFrame): void {
 export class PairingSockets {
   constructor(private readonly config: () => MyClawAppChannelConfig) {}
 
-  message(ws: PairWs, raw: string): void {
+  /** Settles once the frame is answered: a claim may mint a device first, which writes the config. */
+  async message(ws: PairWs, raw: string): Promise<void> {
     ws.data.lastSeen = Date.now();
     let frame:
       | { type?: unknown; kind?: unknown; code?: unknown; userAgent?: unknown; resume?: unknown }
@@ -85,7 +86,7 @@ export class PairingSockets {
       // browser takes a grant (its assets are fetched with a cookie), a native client takes the
       // token itself. A client that never sent pair.hello is treated as a browser, the previous
       // behaviour.
-      const claimed = claim(frame.code, ws.data.kind ?? "web");
+      const claimed = await claim(this.config(), frame.code, ws.data.kind ?? "web");
       if (!claimed.ok) {
         send(ws, { type: "pair.denied", reason: claimed.reason });
         return;

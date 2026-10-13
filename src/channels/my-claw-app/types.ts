@@ -1084,6 +1084,13 @@ export interface MyClawAppDeviceList {
   type: "device.list";
 }
 
+/** Chat socket: "Add a device". `origin` is where the new device reaches the server. */
+export interface MyClawAppDeviceInvite {
+  type: "device.invite";
+  name?: string;
+  origin: string;
+}
+
 export interface MyClawAppDeviceRevoke {
   type: "device.revoke";
   deviceId: string;
@@ -1212,6 +1219,7 @@ export type MyClawAppClientFrame =
   | MyClawAppDevicePairApprove
   | MyClawAppDevicePairDeny
   | MyClawAppDeviceList
+  | MyClawAppDeviceInvite
   | MyClawAppDeviceRevoke
   | MyClawAppSubAgentsReset
   | MyClawAppSubAgentsCallers
@@ -3906,6 +3914,19 @@ export interface MyClawAppDevicePairInfo {
   ip?: string;
   userAgent?: string;
   expiresAt: number;
+  /** A browser on the pairing page, or a phone asking from its Join screen. */
+  kind: "web" | "native";
+}
+
+/** The invitation the new device claims: the code, the claim URL and its QR. */
+export interface MyClawAppDeviceInviteResult {
+  type: "device.invite.result";
+  ok: boolean;
+  code?: string;
+  expiresAt?: number;
+  url?: string;
+  qrSvg?: string;
+  error?: string;
 }
 
 export interface MyClawAppDevicePairResult {
@@ -4200,6 +4221,7 @@ export type MyClawAppServerFrame =
   | MyClawAppPairGranted
   | MyClawAppPairDenied
   | MyClawAppDevicePairInfo
+  | MyClawAppDeviceInviteResult
   | MyClawAppDevicePairResult
   | MyClawAppDeviceListResult
   | MyClawAppDeviceRevokeResult

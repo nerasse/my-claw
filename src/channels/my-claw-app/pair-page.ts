@@ -82,7 +82,7 @@ const PAGE = String.raw`<!DOCTYPE html>
   <div class="state" id="state">connecting</div>
 
   <form id="claim">
-    <input id="ticket" placeholder="or paste a device add code" autocomplete="off" spellcheck="false" />
+    <input id="ticket" placeholder="or type an invitation code" autocomplete="off" spellcheck="false" />
     <button class="submit" type="submit">Claim</button>
   </form>
 

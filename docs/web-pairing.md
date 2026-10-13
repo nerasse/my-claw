@@ -185,7 +185,7 @@ one place where a wrong value costs an account.
 | Direction | Frame | Payload |
 | --- | --- | --- |
 | client -> | `device.pair.lookup` | `{ code }` |
-| -> client | `device.pair.info` | `{ code, verification, origin, ip, userAgent, expiresAt }` |
+| -> client | `device.pair.info` | `{ code, verification, origin, ip, userAgent, expiresAt, kind }` |
 | client -> | `device.pair.approve` | `{ code, name }` |
 | client -> | `device.pair.deny` | `{ code }` |
 | -> client | `device.pair.result` | `{ ok, deviceId? , error? }` |
@@ -193,6 +193,8 @@ one place where a wrong value costs an account.
 | -> client | `device.list.result` | `{ devices: DeviceRecord[] }` (no tokens, ever) |
 | client -> | `device.revoke` | `{ deviceId }` |
 | -> client | `device.revoke.result` | `{ ok, error? }` |
+| client -> | `device.invite` | `{ name?, origin }` |
+| -> client | `device.invite.result` | `{ ok, code?, expiresAt?, url?, qrSvg?, error? }` |
 
 The new device inherits the **approver's owner**. A browser paired from your phone lands on your
 threads, which is the whole point of the shared `owner` namespace. Method A takes `--owner`,
@@ -201,6 +203,29 @@ defaulting to the single existing owner and refusing to guess when there are sev
 `device.list` and `device.revoke` are what make the two mint paths safe. Two ways to create and
 zero to destroy is a debt that comes due the day a laptop is lost. Revoking a device closes its
 live sockets immediately and drops its browser sessions, it does not wait for the next connect.
+
+### Method C: an invitation from a paired device
+
+`myclaw device add` was the only way to make a code a new phone could claim, and it needs a shell.
+A relative with an old install, no first-run screen and nothing to scan was stuck: Connect only
+ever answered `unauthorized`. Any paired device, the web included, can now invite one
+(Devices, "Add a device"): `device.invite` opens a session that is approved by being made, like a
+CLI ticket, and the first client to claim the code joins the inviter's owner.
+
+- Nothing is minted until the claim, because only then is it known whether a phone (`app-…`,
+  token) or a browser (`web-…`, grant) joins. An invitation nobody uses leaves the config alone.
+- The claim URL is built from the `origin` the client sends, not from the socket's host: the new
+  device may reach the server at another address (a browser behind a sign-in proxy invites a phone
+  on the LAN), so the inviting screen lets the owner change it. Only http(s) origins without
+  credentials are accepted.
+- An invitation or a CLI ticket cannot be looked up or approved from another device: it is
+  approved already, and a second approval would mint a device nobody asked for.
+- A code taken by a claim is gone before the mint is awaited: two clients racing on one code
+  cannot both get a device.
+
+The other direction also serves phones now: the app's Join screen can ask for access
+(`pair.hello { kind: "native" }` and no claim), shows the code and the three digits, and an
+approved request mints an `app-…` device (it used to be minted `web-…` whatever asked).
 
 ### Codes
 
