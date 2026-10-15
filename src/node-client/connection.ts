@@ -74,9 +74,11 @@ export async function runNode(options: RunNodeOptions): Promise<void> {
 /** One connection, from open to close. Resolves when the socket closed; throws on revoke. */
 async function connectOnce(options: RunNodeOptions, facts: NodeFacts): Promise<void> {
   const { log } = options;
+  // `ca` is deliberately not passed: the stored CA is the one the *proxy* verifies this machine
+  // with, not a trust anchor for the server's own certificate, which is a public one.
   const ws = new WebSocket(options.config.server, {
     headers: { Authorization: `Bearer ${options.token}` },
-    ...(options.tls ? { tls: { ca: options.tls.ca, cert: options.tls.cert, key: options.tls.key } } : {}),
+    ...(options.tls ? { tls: { cert: options.tls.cert, key: options.tls.key } } : {}),
   });
 
   const running = new Map<string, AbortController>();
@@ -90,16 +92,33 @@ async function connectOnce(options: RunNodeOptions, facts: NodeFacts): Promise<v
 
   await new Promise<void>((resolve, reject) => {
     let opened = false;
-    const onAbort = (): void => {
+    // `close()` is a no-op on a socket that is still connecting, so an abort in that window
+    // (measured: the server attaches the upgrade a beat before the client's own open event) would
+    // be swallowed and the run would hang on a healthy socket nobody wants any more. The open
+    // handler finishes what the abort asked for.
+    let aborting = false;
+    const closeForAbort = (): void => {
       try {
         ws.close(1000, "shutting down");
       } catch {
-        resolve();
+        // Already gone; the close handler (or its absence) settles the promise.
       }
+    };
+    const onAbort = (): void => {
+      aborting = true;
+      if (ws.readyState === WebSocket.CONNECTING) {
+        resolve();
+        return;
+      }
+      closeForAbort();
     };
     options.signal?.addEventListener("abort", onAbort, { once: true });
     ws.onopen = () => {
       opened = true;
+      if (aborting) {
+        closeForAbort();
+        return;
+      }
       send({ type: "node.hello", protocol: NODE_PROTOCOL, facts });
       log("info", "connected", { server: options.config.server, name: options.config.name ?? facts.hostname });
     };

@@ -58,8 +58,8 @@ let adapter: MyClawAppAdapter;
 let dir: string;
 
 beforeEach(async () => {
+  await resetNodesStore();
   await rm(nodesFilePath(), { force: true });
-  resetNodesStore();
   resetClaims();
   resetNodeHub();
   dir = await mkdtemp(join(tmpdir(), "node-client-e2e-"));
@@ -134,6 +134,69 @@ test("a node pairs, serves a tool call, reconnects after a restart, and is stopp
   await runDone;
   expect(runError).toBeInstanceOf(NodeRevokedError);
   expect(nodeOnline(node.nodeId)).toBe(false);
+});
+
+test("an abort while the socket is still connecting still ends the run", async () => {
+  // Measured race: the server attaches the upgrade a beat before the client's own open event,
+  // and `close()` is a no-op on a CONNECTING socket -- the abort was swallowed and the run hung
+  // on a healthy socket. The fake stays CONNECTING until told, so the window is deterministic.
+  let socket: FakeSocket | undefined;
+  class FakeSocket {
+    static CONNECTING = 0;
+    static OPEN = 1;
+    static CLOSING = 2;
+    static CLOSED = 3;
+    readyState = FakeSocket.CONNECTING;
+    sent: string[] = [];
+    closed: { code?: number; reason?: string } | null = null;
+    onopen: (() => void) | null = null;
+    onclose: ((event: { code: number; reason: string }) => void) | null = null;
+    onmessage: ((event: { data: string }) => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor() {
+      socket = this;
+    }
+    send(data: string): void {
+      this.sent.push(data);
+    }
+    close(code?: number, reason?: string): void {
+      if (this.readyState !== FakeSocket.OPEN) return;
+      this.closed = { code, reason };
+      this.readyState = FakeSocket.CLOSED;
+      this.onclose?.({ code: code ?? 1000, reason: reason ?? "" });
+    }
+    open(): void {
+      this.readyState = FakeSocket.OPEN;
+      this.onopen?.();
+    }
+  }
+
+  const original = globalThis.WebSocket;
+  globalThis.WebSocket = FakeSocket as never;
+  try {
+    const controller = new AbortController();
+    const run = runNode({
+      config: { server: "ws://fake/node" },
+      token: "t",
+      log: () => undefined,
+      signal: controller.signal,
+      backoff: { initialMs: 5, maxMs: 10 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    controller.abort();
+    const settled = await Promise.race([
+      run.then(() => "done"),
+      new Promise((resolve) => setTimeout(() => resolve("timeout"), 2000)),
+    ]);
+    expect(settled).toBe("done");
+
+    // The socket that opens a moment later is closed by the open handler, and no hello is sent.
+    socket?.open();
+    expect(socket?.closed?.code).toBe(1000);
+    expect(socket?.sent).toEqual([]);
+  } finally {
+    globalThis.WebSocket = original;
+  }
 });
 
 test("a node whose call outlives the socket is cancelled, and pairing refuses a bad code", async () => {
