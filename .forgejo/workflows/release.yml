@@ -175,6 +175,29 @@ jobs:
         env:
           FORGEJO_TOKEN: ${{ secrets.GIT_TOKEN }}
 
+      - name: Build node client binaries
+        run: |
+          export PATH="$HOME/.bun/bin:$PATH"
+          bash scripts/build-node-client.sh
+
+      - name: Upload node client binaries to the release
+        run: |
+          FORGEJO_URL="${FORGEJO_URL:-https://git.kssimi.fr}"
+          FORGEJO_USER="${FORGEJO_USER:-neras}"
+          VERSION=$(jq -r '.version' package.json)
+          TAG_NAME="${GITHUB_REF_NAME}"
+          RELEASE_ID=$(curl -fsS --user "${FORGEJO_USER}:${FORGEJO_TOKEN}" -H "Accept: application/json" \
+            "${FORGEJO_URL}/api/v1/repos/claw/my-claw/releases/tags/${TAG_NAME}" | jq -r '.id')
+          for file in dist/node/my-claw-node-"${VERSION}"-*; do
+            name=$(basename "$file")
+            echo "Uploading ${name}..."
+            curl --fail --user "${FORGEJO_USER}:${FORGEJO_TOKEN}" \
+              -F "attachment=@${file}" \
+              "${FORGEJO_URL}/api/v1/repos/claw/my-claw/releases/${RELEASE_ID}/assets?name=${name}"
+          done
+        env:
+          FORGEJO_TOKEN: ${{ secrets.GIT_TOKEN }}
+
       - name: Cleanup old versions
         run: |
           export FORGEJO_URL="${FORGEJO_URL:-https://git.kssimi.fr}"
