@@ -149,11 +149,13 @@ export async function runNodeCli(args: string[], env: Record<string, string | un
     }
     const code = String(opened.body["code"] ?? "");
     const server = nodeServerUrl(flags["url"], env, port);
+    const httpBase = server.replace(/^ws/, "http").replace(/\/node$/, "");
+    const shown = formatCode(code);
     console.log("Pair a node:\n");
-    console.log(`Code    ${formatCode(code)}   (single use, ten minutes)`);
+    console.log(`Code    ${shown}   (single use, ten minutes)`);
     console.log(`Server  ${server}`);
-    console.log("\nOn the machine to add, run the node client with that server and that code");
-    console.log("(the client ships with the next release: docs/remote-nodes.md).");
+    console.log("\nOn the machine to add, run (sudo for an admin install, without for user mode):\n");
+    console.log(`  curl -fsSL '${httpBase}/node/install.sh' | sudo sh -s -- --pair ${shown} --server ${server}`);
     return 0;
   }
 

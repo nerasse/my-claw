@@ -103,6 +103,20 @@ export function openClaim(options: OpenClaimOptions = {}): { ok: true; code: str
 }
 
 /**
+ * Reads a code without taking it, for the download relay: a claim authorises both fetching the
+ * client and pairing it, and only the pairing consumes the code. The per-IP window counts here
+ * too, so the download is not a way around it.
+ */
+export function peekClaim(code: string, ip?: string): { ok: true; name?: string } | { ok: false; reason: ClaimDenial } {
+  sweep();
+  const normalized = normalizeClaimCode(code);
+  if (rateLimited(ip)) return { ok: false, reason: "attempts" };
+  const claim = claims.get(normalized);
+  if (!claim) return { ok: false, reason: reasonFor(normalized) };
+  return { ok: true, ...(claim.name ? { name: claim.name } : {}) };
+}
+
+/**
  * Takes a code, once. The per-IP window counts every attempt, valid code or not: it is what
  * stands against hammering, and a throttled caller is refused without burning the code it
  * presented, which a retry in a minute still finds valid.

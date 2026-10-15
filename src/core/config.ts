@@ -139,6 +139,12 @@ export interface NodesConfig {
   clientCertHeader?: string;
   /** What that header must equal. Defaults to "SUCCESS". */
   clientCertValue?: string;
+  /**
+   * Issue each node a client certificate at pairing (from the CA under $MY_CLAW_DIR/nodes/ca/),
+   * for the mTLS deployment mode. The certificate travels once, in the pair response, and the
+   * node stores it 0600. See docs/remote-nodes.md.
+   */
+  mtls?: boolean;
   /** Life of a claim code minted by `myclaw node add`, in seconds. Defaults to 600. */
   claimTtlSeconds?: number;
 }
