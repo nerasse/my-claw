@@ -155,7 +155,10 @@ export async function runNodeCli(args: string[], env: Record<string, string | un
     console.log(`Code    ${shown}   (single use, ten minutes)`);
     console.log(`Server  ${server}`);
     console.log("\nOn the machine to add, run (sudo for an admin install, without for user mode):\n");
-    console.log(`  curl -fsSL '${httpBase}/node/install.sh' | sudo sh -s -- --pair ${shown} --server ${server}`);
+    console.log("  Linux / macOS");
+    console.log(`    curl -fsSL '${httpBase}/node/install.sh' | sudo sh -s -- --pair ${shown} --server ${server}\n`);
+    console.log("  Windows (PowerShell)");
+    console.log(`    iwr -UseBasicParsing '${httpBase}/node/install.ps1' -OutFile $env:TEMP\\install-node.ps1; & $env:TEMP\\install-node.ps1 -Pair ${shown} -Server ${server}`);
     return 0;
   }
 

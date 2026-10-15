@@ -69,6 +69,15 @@ PAIR_ARGS=(--server "$SERVER" --code "$PAIR_CODE")
 [ -n "$NAME" ] && PAIR_ARGS+=(--name "$NAME")
 [ -n "$WORKDIR" ] && PAIR_ARGS+=(--workdir "$WORKDIR")
 
+# Linux is not only systemd: OpenRC (Alpine, Gentoo), runit (Void), s6 and plain SysVinit are
+# still around, and an install that fails halfway through is worse than one that says what is
+# left to do. MYCLAW_NODE_SYSTEMD=0/1 forces the answer (packagers, tests).
+has_systemd() {
+  if [ "${MYCLAW_NODE_SYSTEMD:-}" = "0" ]; then return 1; fi
+  if [ "${MYCLAW_NODE_SYSTEMD:-}" = "1" ]; then return 0; fi
+  command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]
+}
+
 # wss://host/node -> https://host/node
 HTTP_BASE="$(printf '%s' "$SERVER" | sed -e 's|^wss://|https://|' -e 's|^ws://|http://|')"
 
@@ -114,7 +123,8 @@ install_admin_linux() {
   echo "Pairing..."
   sudo -u myclaw-node env MYCLAW_NODE_DIR="$CONFIG_DIR" "$BIN" pair "${PAIR_ARGS[@]}"
 
-  cat > /etc/systemd/system/my-claw-node.service <<UNIT
+  if has_systemd; then
+    cat > /etc/systemd/system/my-claw-node.service <<UNIT
 [Unit]
 Description=my-claw node (remote hands for a my-claw server)
 After=network-online.target
@@ -133,9 +143,15 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 
-  systemctl daemon-reload
-  systemctl enable --now my-claw-node.service
-  echo "Service: my-claw-node.service (systemctl status my-claw-node)"
+    systemctl daemon-reload
+    systemctl enable --now my-claw-node.service
+    echo "Service: my-claw-node.service (systemctl status my-claw-node)"
+  else
+    echo "No systemd on this machine: the node is installed and paired, but nothing starts it yet."
+    echo "Start it under your init system, as the myclaw-node account:"
+    echo "  sudo -u myclaw-node env MYCLAW_NODE_DIR=${CONFIG_DIR} ${BIN} run"
+    echo "(a systemd unit is what this script writes elsewhere; OpenRC/runit units are not shipped yet)"
+  fi
 }
 
 install_admin_macos() {
@@ -204,9 +220,10 @@ install_user_linux() {
   echo "Pairing..."
   "$BIN" pair "${PAIR_ARGS[@]}" --dir "$CONFIG_DIR"
 
-  UNIT_DIR="$HOME/.config/systemd/user"
-  mkdir -p "$UNIT_DIR"
-  cat > "$UNIT_DIR/my-claw-node.service" <<UNIT
+  if has_systemd; then
+    UNIT_DIR="$HOME/.config/systemd/user"
+    mkdir -p "$UNIT_DIR"
+    cat > "$UNIT_DIR/my-claw-node.service" <<UNIT
 [Unit]
 Description=my-claw node (remote hands for a my-claw server)
 After=network-online.target
@@ -221,12 +238,17 @@ RestartSec=5
 WantedBy=default.target
 UNIT
 
-  systemctl --user daemon-reload
-  systemctl --user enable --now my-claw-node.service
-  # Without linger the service dies with the last session; enabling it may need root.
-  loginctl enable-linger "$USER" >/dev/null 2>&1 || sudo -n loginctl enable-linger "$USER" >/dev/null 2>&1 || \
-    echo "Note: run \`sudo loginctl enable-linger $USER\` so the node survives logout."
-  echo "Service: my-claw-node.service (systemctl --user status my-claw-node)"
+    systemctl --user daemon-reload
+    systemctl --user enable --now my-claw-node.service
+    # Without linger the service dies with the last session; enabling it may need root.
+    loginctl enable-linger "$USER" >/dev/null 2>&1 || sudo -n loginctl enable-linger "$USER" >/dev/null 2>&1 || \
+      echo "Note: run \`sudo loginctl enable-linger $USER\` so the node survives logout."
+    echo "Service: my-claw-node.service (systemctl --user status my-claw-node)"
+  else
+    echo "No systemd on this machine: the node is installed and paired; start it yourself:"
+    echo "  ${BIN} run"
+    echo "(or wire it into your init system)"
+  fi
 }
 
 install_user_macos() {
