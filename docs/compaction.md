@@ -135,8 +135,16 @@ coupées puis jetées). La réponse du résumeur a maintenant deux blocs (`split
   vigueur, la suite, et une ligne par chantier récemment archivé ;
 - `<archive>` : ce qui s'est terminé depuis la frontière précédente, en détail, écrit **une fois**.
 
-Il n'y a **aucune taille cible** (choix de l'owner) : c'est la quantité de travail ouvert qui fait la
-taille, et ce qui se termine en sort à chaque passe. L'archive est stockée sur la frontière
+Il n'y a **aucune taille cible chiffrée** (choix de l'owner), mais depuis le 15/10/2026 le résumé se
+tient à sa propre mesure : « chaque passe le réécrit à taille égale ou moindre, et le compresse s'il
+a grossi sans nouveau travail ouvert ». La dérive était revenue autrement qu'au 04/10 : non plus le
+fini qui reste, mais les mises à jour qui s'empilent (chaînes de versions release après release,
+galeries de citations presque identiques, listes de vérification jamais soldées). Une des deux
+conversations est repassée de 15 811 à 44 039 caractères en neuf jours. Le remède : **une ligne par
+fait**, où un fait qui évolue **remplace** sa ligne au lieu d'en ajouter une ; les chaînes
+d'historique, récaps de release et comptes de passes quittent le résumé (git et l'archive les
+portent) ; et les plus anciennes lignes de Recently Archived tombent à mesure que la liste s'allonge.
+L'archive est stockée sur la frontière
 (`CompactionEntry.archive`, jamais rejouée au modèle) et indexée dans `conversations.db` pour
 `conversation_search` (`source: "archive"`, `docs/conversation-search.md`). La première passe
 après ce changement trouve un résumé qui contient encore toute l'histoire : le serveur le verse
@@ -153,8 +161,10 @@ oh-my-pi 7.
 **Deux prompts, pas un.** `firstSummaryPrompt` pour la première frontière d'une branche,
 `updateSummaryPrompt` dès qu'il y en a une avant. Sans ce second prompt la deuxième compaction était
 une amnésie : le résumé précédent était sauté par le sérialiseur *et* écarté par la projection, donc
-tout ce qui précédait la frontière N−1 quittait le monde du modèle. Le résumé est désormais porté,
-pas recalculé, avec la consigne de faire avancer les items plutôt que de les réécrire.
+tout ce qui précédait la frontière N−1 quittait le monde du modèle. Le résumé est porté, pas
+recalculé, et depuis le 15/10/2026 sa passe de mise à jour le **réécrit sur place** : garder
+l'actif, corriger ce qui a changé, fusionner les doublons, laisser tomber ce que les nouveaux
+messages ont rendu obsolète.
 
 **Deux règles qui viennent de griefs réels** : préserver la demande initiale même quand le travail
 l'a dépassée, et reproduire mot pour mot une question restée sans réponse (une compaction juste
@@ -180,6 +190,11 @@ Conclusion : ni l'un ni l'autre ne résout le budget partagé ; codex l'évite e
 le détecte et refuse sans réessayer. On prend les deux moitiés : **aucun plafond** (comme codex) et
 **refus de tout résumé tronqué** (comme pi), avec le test du plafond qui passe avant celui du
 contenu.
+
+Re-vérifié le 15/10/2026 sur les quatre dépôts : aucun ne met de taille chiffrée dans son prompt
+(tous disent « concise ») ; les bornes vivent dans le code (20 000 de rétention chez codex, 4 096 de
+sortie chez opencode) ou dans les réglages (0,8 × réserve chez pi et oh-my-pi). My-claw suit ce
+partage : la direction dans le texte, aucun nombre.
 
 ### Ce qui est refusé plutôt que stocké
 

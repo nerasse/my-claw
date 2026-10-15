@@ -21,13 +21,19 @@
  * until rewriting it no longer fitted the model's output ceiling (two 128 000-token attempts, both
  * cut). What is finished now leaves the summary for the archive, written once, and the summary keeps
  * a line pointing at it.
+ *
+ * Tightened again on 2026-10-15: the drift had returned as accumulation, not as finished work (a
+ * conversation's summary back at 44 000 characters nine days after the reset: stacked version
+ * lineages, near-identical quote galleries, never-settled verification lists). The rules rewrite in
+ * place now -- one line per fact, no histories -- and the summary answers to the size of the open
+ * work rather than to a number (the owner's choice).
  */
 const SCHEMA = [
   "## Goal",
   "[What the owner is trying to accomplish now. Several items if several tasks are open.]",
   "",
   "## Constraints & Preferences",
-  "- [Standing constraints and preferences the owner stated that still apply, or (none)]",
+  "- [Standing constraints and preferences that still apply, one line per rule, or (none). A procedure the archive or a doc already holds is a pointer, not a copy]",
   "",
   "## In Progress",
   "- [ ] [Work underway: where it stands, what is left]",
@@ -42,7 +48,7 @@ const SCHEMA = [
   "1. [Ordered, concrete]",
   "",
   "## Critical Context",
-  "- [Data, identifiers, references needed to continue]",
+  "- [Data and identifiers needed to continue: current versions (one line per repo), paths, endpoints, ids. No lineages, recaps or release histories -- git and the archive hold them]",
   "",
   "## Recently Archived",
   "- [One line per piece of work that finished, newest first: what it was and its outcome]",
@@ -78,10 +84,15 @@ const OUTPUT = [
  */
 const RULES = [
   "- Keep the active, archive the finished. The summary holds only what the next turn needs to continue: open work, standing constraints, decisions still in force, pending questions, next steps",
+  "- The summary stays the size of the open work: each pass rewrites it at the same size or smaller; if it grows while no new work opened, compress it",
+  "- One line per fact. A fact that moved -- a version, a status, a decision, a procedure -- REPLACES its previous line instead of adding a neighbour; two lines about the same fact are a bug",
+  "- No histories: version lineages (\"above X, Y\"), release recaps, pass counts and superseded details leave the summary; keep the current value and where the history lives (git, the archive)",
   "- Work that finished (done, released, answered, abandoned) leaves the summary: describe it once, in full, in <archive>, and keep one line for it under Recently Archived",
   "- The archive is permanent and searchable (conversation_search, source archive): nothing written there is lost, so the summary does not carry it",
-  "- Under Recently Archived, drop the older lines once no open work refers to them; they stay findable in the archive",
+  "- Under Recently Archived, the oldest lines drop as the list grows: they stay findable in the archive",
+  "- Quote the owner only when the exact words are the rule: one short quote on one line, no galleries of near-identical quotes",
   "- The owner's most recent messages are kept verbatim beside the summary: point to them rather than quoting them at length",
+  "- In Progress and Next Steps describe the work ahead, not its journal: where each item stands, on one line",
   "- Write in the same language as the conversation",
   "- Preserve exact file paths, function names, identifiers and error messages",
   "- If the conversation ends on an unanswered question or a request awaiting the owner's answer, reproduce it verbatim under Critical Context",
@@ -148,9 +159,10 @@ export function updateSummaryPrompt(serialized: string, previousSummary: string,
     focusOf(instructions),
     "",
     "Update rules:",
-    "- Keep from the previous summary what is still active; correct it where the new messages say otherwise",
+    "- REWRITE the summary in place, not by accreting: keep what is still active, correct what changed, MERGE what duplicates, drop what the new messages made obsolete",
+    "- If the previous summary grew while no new work opened, this pass compresses it: shrinking is the expected outcome, not an option",
     "- ADD the new open work, decisions and context from the new messages",
-    "- Work the previous summary had open and the new messages finished: archive it, combining what both say",
+    "- Work the previous summary had open and the new messages finished: archive it, combining what both say, and replace its summary lines with the single Recently Archived pointer",
     "- Work started and finished within the new messages: archive it",
     "- REWRITE Next Steps against what was actually accomplished",
     ...(legacy

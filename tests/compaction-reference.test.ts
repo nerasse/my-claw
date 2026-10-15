@@ -143,7 +143,7 @@ test("a later compaction carries the summary before it, so the first turns never
     const prompt = second.bodies.join("\n");
     assert.ok(prompt.includes("<previous-summary>"), "the previous summary is handed over in its own block");
     assert.ok(prompt.includes("Summary one:"), "and it is the summary that was actually stored");
-    assert.ok(prompt.includes("Keep from the previous summary what is still active"), "with the update rules rather than the first-summary prompt");
+    assert.ok(prompt.includes("REWRITE the summary in place, not by accreting"), "with the update rules rather than the first-summary prompt");
   } finally {
     second.restore();
   }
