@@ -98,8 +98,8 @@ async function spawnIt(runner: SubAgentRunner) {
 }
 
 beforeEach(async () => {
+  await resetNodesStore();
   await rm(nodesFilePath(), { force: true });
-  resetNodesStore();
   resetNodeHub();
 });
 

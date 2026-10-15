@@ -43,7 +43,7 @@ import { resetEnvFileHotReload } from "../src/core/config.ts";
 // per-file reset only ever protects the files that remember to call it. Everything reset here
 // is either a pure cache (clearing it only forces recomputation) or per-run bookkeeping that
 // no test should inherit; nothing semantic is dropped.
-beforeEach(() => {
+beforeEach(async () => {
   // Published at boot only, so a test that registers one would price every later file's rows.
   setSharedPricing(null);
   // An armed background summary outlives its session file: claimed by the next test that
@@ -102,7 +102,7 @@ beforeEach(() => {
   resetPairing();
   // Node records are a file plus an in-memory map loaded once: a file another test wrote would be
   // served to this one under the same ids, and a live socket map would answer nodeOnline wrongly.
-  resetNodesStore();
+  await resetNodesStore();
   resetClaims();
   resetNodeHub();
   resetWebSessions();

@@ -24,8 +24,8 @@ const FACTS: NodeFacts = {
 };
 
 beforeEach(async () => {
+  await resetNodesStore();
   await rm(nodesFilePath(), { force: true });
-  resetNodesStore();
 });
 
 describe("node store", () => {
@@ -99,7 +99,7 @@ describe("node store", () => {
     const { dirname } = await import("node:path");
     await mkdir(dirname(nodesFilePath()), { recursive: true });
     await writeFile(nodesFilePath(), "{ not json");
-    resetNodesStore();
+    await resetNodesStore();
     expect(nodeRecords()).toEqual([]);
   });
 });

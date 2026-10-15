@@ -35,8 +35,8 @@ function connect(nodeId: string): { ws: ServerWebSocket<NodeSocketData>; sent: A
 }
 
 beforeEach(async () => {
+  await resetNodesStore();
   await rm(nodesFilePath(), { force: true });
-  resetNodesStore();
   resetNodeHub();
 });
 

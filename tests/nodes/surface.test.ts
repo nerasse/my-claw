@@ -50,9 +50,9 @@ function post(path: string, body: unknown): Request {
 }
 
 beforeEach(async () => {
+  await resetNodesStore();
   await rm(nodesFilePath(), { force: true });
   await rm(join(MY_CLAW_DIR, "agents"), { recursive: true, force: true });
-  resetNodesStore();
   resetClaims();
   resetNodeHub();
 });

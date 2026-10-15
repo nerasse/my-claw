@@ -135,8 +135,13 @@ export async function touchNode(nodeId: string): Promise<void> {
   await persist();
 }
 
-/** Module-level state, reset between test files and before a fresh read in a test. */
-export function resetNodesStore(): void {
+/**
+ * Module-level state, reset between test files. Pending writes are drained first: a write
+ * enqueued by the file before must not land after the reset, or the next file's first read finds
+ * records nobody minted there (measured: a stray "web01" failing a later pairing, order-dependent).
+ */
+export async function resetNodesStore(): Promise<void> {
+  await writeQueue.catch(() => undefined);
   records = null;
   writeQueue = Promise.resolve();
   lastSeenWritten.clear();

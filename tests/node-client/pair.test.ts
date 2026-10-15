@@ -40,9 +40,9 @@ let dir: string;
 const hasOpenssl = Boolean(Bun.which("openssl"));
 
 beforeEach(async () => {
+  await resetNodesStore();
   await rm(nodesFilePath(), { force: true });
   await rm(`${MY_CLAW_DIR}/nodes/ca`, { recursive: true, force: true });
-  resetNodesStore();
   resetClaims();
   resetNodeHub();
   resetNodeCa();

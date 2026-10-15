@@ -97,9 +97,9 @@ async function until(condition: () => boolean, timeoutMs = 3000): Promise<void> 
 let adapter: MyClawAppAdapter;
 
 beforeEach(async () => {
+  await resetNodesStore();
   await rm(nodesFilePath(), { force: true });
   await rm(join(MY_CLAW_DIR, "agents"), { recursive: true, force: true });
-  resetNodesStore();
   resetClaims();
   resetNodeHub();
   adapter = new MyClawAppAdapter(config, { flushDrafts: async () => undefined } as never);
