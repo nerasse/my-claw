@@ -50,13 +50,17 @@ differs, and the node client only ever takes one URL.
 
 The wildcard certificate already in place covers a dedicated hostname; nothing new to issue.
 
-The two proxy blocks, for the operator's side. Only `/node` and `/node/pair` ever need to be
-reachable: `myclaw node add` and `myclaw node rm` talk to the daemon on loopback directly.
+The two proxy blocks, for the operator's side. Four routes ever need to be reachable -- `/node`
+(the socket), `/node/pair`, `/node/download` and `/node/install.sh` (how a machine joins):
+`myclaw node add` and `myclaw node rm` talk to the daemon on loopback directly, so
+`/node/ticket` and `/node/revoke` stay off the proxy. Each route carries its own credential
+(a claim code or a node token), which is why none of them goes through the SSO gate.
 
 ```nginx
-# Mode 1: the existing vhost, no SSO gate on these two locations.
+# Mode 1: the existing vhost, no SSO gate on these four locations.
 location = /node {
-    proxy_pass http://127.0.0.1:8080;
+    set $claw 127.0.0.1:8080;
+    proxy_pass http://$claw;
     proxy_http_version 1.1;
     proxy_set_header Upgrade $http_upgrade;
     proxy_set_header Connection "upgrade";
@@ -64,7 +68,18 @@ location = /node {
     proxy_read_timeout 3600s;   # idle between calls; the node's keepalive is 30 s
 }
 location = /node/pair {
-    proxy_pass http://127.0.0.1:8080;
+    set $claw 127.0.0.1:8080;
+    proxy_pass http://$claw;
+    proxy_set_header Host $host;
+}
+location = /node/download {
+    set $claw 127.0.0.1:8080;
+    proxy_pass http://$claw;
+    proxy_set_header Host $host;
+}
+location = /node/install.sh {
+    set $claw 127.0.0.1:8080;
+    proxy_pass http://$claw;
     proxy_set_header Host $host;
 }
 ```
@@ -76,12 +91,13 @@ server {
     server_name node-myclaw.example;
     ssl_certificate     /etc/letsencrypt/live/example/fullchain.pem;   # the wildcard
     ssl_certificate_key /etc/letsencrypt/live/example/privkey.pem;
-    ssl_client_certificate /path/to/nodes/ca/ca.crt;   # my-claw's node CA (step 2)
-    ssl_verify_client optional;
+    ssl_client_certificate /path/to/nodes/ca/ca.crt;   # my-claw's node CA, copied from the server
+    ssl_verify_client optional;                        # /node requires it below; the rest cannot
 
     location = /node {
         if ($ssl_client_verify != SUCCESS) { return 403; }
-        proxy_pass http://127.0.0.1:8080;
+        set $claw 127.0.0.1:8080;
+        proxy_pass http://$claw;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -90,9 +106,21 @@ server {
         proxy_read_timeout 3600s;
     }
     location = /node/pair {
-        proxy_pass http://127.0.0.1:8080;
+        set $claw 127.0.0.1:8080;
+        proxy_pass http://$claw;
         proxy_set_header Host $host;
     }
+    location = /node/download {
+        set $claw 127.0.0.1:8080;
+        proxy_pass http://$claw;
+        proxy_set_header Host $host;
+    }
+    location = /node/install.sh {
+        set $claw 127.0.0.1:8080;
+        proxy_pass http://$claw;
+        proxy_set_header Host $host;
+    }
+    location / { return 404; }
 }
 ```
 
