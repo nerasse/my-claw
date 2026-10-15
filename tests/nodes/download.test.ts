@@ -4,7 +4,7 @@ import type { Server } from "bun";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 import { createNodeSurface, nodeFileName, NODE_TARGETS } from "../../src/nodes/surface.ts";
 import { openClaim, resetClaims } from "../../src/nodes/claims.ts";
-import { nodesFilePath, resetNodesStore } from "../../src/nodes/store.ts";
+import { mintNode, nodesFilePath, resetNodesStore } from "../../src/nodes/store.ts";
 import { resetNodeHub, type NodeSocketData } from "../../src/nodes/hub.ts";
 import { resetNodeCa } from "../../src/nodes/ca.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
@@ -162,6 +162,32 @@ describe("the node download relay", () => {
         {},
       );
       expect(invalid?.status).toBe(400);
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("a paired node updates itself with its own token, and a wrong one is refused", async () => {
+    process.env["MY_CLAW_RELEASE_URL"] = "https://hub.test/my-claw";
+    const { mock } = hubMock();
+    try {
+      const minted = await mintNode({ name: "web01", facts: FACTS });
+      if (!minted.ok) throw new Error("mint failed");
+
+      const byToken = await surface().handle(
+        new Request("http://local/node/download?target=linux-x64", { headers: { authorization: `Bearer ${minted.minted.token}` } }),
+        fakeServer(),
+        {},
+      );
+      expect(byToken?.status).toBe(200);
+      expect(await byToken!.text()).toBe("BINARY");
+
+      const wrong = await surface().handle(
+        new Request("http://local/node/download?target=linux-x64", { headers: { authorization: `Bearer ${"x".repeat(43)}` } }),
+        fakeServer(),
+        {},
+      );
+      expect(wrong?.status).toBe(403);
     } finally {
       mock.restore();
     }

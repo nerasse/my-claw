@@ -1,9 +1,10 @@
 import type { ServerWebSocket } from "bun";
 import { randomUUID } from "node:crypto";
 import type { ToolResult } from "../tools/types.ts";
+import { readAppVersion } from "../core/diagnostics.ts";
 import { log } from "../utils/logger.ts";
 import { nodeRecord, setNodeFacts, touchNode } from "./store.ts";
-import { NODE_PROTOCOL, parseNodeFacts, type NodeClientFrame, type NodeFacts, type NodeServerFrame } from "./types.ts";
+import { NODE_PROTOCOL, nodeTargetFor, parseNodeFacts, type NodeClientFrame, type NodeFacts, type NodeServerFrame } from "./types.ts";
 
 /**
  * The live side of the node protocol: one socket per node, tool calls round-tripped on it.
@@ -120,6 +121,7 @@ export function handleNodeFrame(ws: NodeWs, raw: string): void {
     }
     entry.facts = facts;
     void setNodeFacts(entry.nodeId, facts);
+    void offerNodeUpdate(ws, entry.nodeId, facts);
     return;
   }
 
@@ -150,6 +152,23 @@ export function handleNodeFrame(ws: NodeWs, raw: string): void {
 
 export function nodeOnline(nodeId: string): boolean {
   return live.has(nodeId);
+}
+
+/**
+ * A node of another version than this server is offered the build this server runs, on every
+ * connect: the release carries the client beside the tarball, so "aligned" has one answer. The
+ * frame is best-effort -- the node keeps serving from its old binary if the fetch fails, and the
+ * protocol number above is what actually refuses an incompatible client.
+ */
+export async function offerNodeUpdate(ws: NodeWs, nodeId: string, facts: NodeFacts): Promise<void> {
+  const serverVersion = await readAppVersion();
+  if (!/^\d+\.\d+\.\d+$/.test(serverVersion)) return;
+  if (!/^\d+\.\d+\.\d+$/.test(facts.version)) return;
+  if (facts.version === serverVersion) return;
+  const target = nodeTargetFor(facts.os, facts.arch);
+  if (!target) return;
+  void log("info", "node update offered", { nodeId, from: facts.version, to: serverVersion, target });
+  send(ws, { type: "node.update", version: serverVersion, target });
 }
 
 /** The manifest a connected node announced. Absent when it is not connected. */

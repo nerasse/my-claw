@@ -27,6 +27,7 @@ import { resetPairing } from "../src/channels/my-claw-app/pairing.ts";
 import { resetClaims } from "../src/nodes/claims.ts";
 import { resetNodeHub } from "../src/nodes/hub.ts";
 import { resetNodesStore } from "../src/nodes/store.ts";
+import { resetUpdateGuard } from "../src/node-client/update.ts";
 import { resetWebSessions } from "../src/channels/my-claw-app/web-session.ts";
 import { resetDeviceSeenCache } from "../src/channels/my-claw-app/devices.ts";
 import { resetAppUpdateCache } from "../src/channels/my-claw-app/updates.ts";
@@ -105,6 +106,9 @@ beforeEach(async () => {
   await resetNodesStore();
   resetClaims();
   resetNodeHub();
+  // The update guard remembers "already offered, recently": a leaked entry silences a later
+  // file's update test.
+  resetUpdateGuard();
   resetWebSessions();
   // The lastSeen throttle would silently skip the write a later test asserts on.
   resetDeviceSeenCache();

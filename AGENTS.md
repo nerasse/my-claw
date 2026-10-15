@@ -294,6 +294,7 @@ src/
 │   ├── tools.ts           # bash/read/write/apply_patch/search/ls, the machine's ceiling applied
 │   ├── config.ts          # Config dir, token, certs, roots/readOnly ceilings
 │   ├── facts.ts           # What the node announces about itself
+│   ├── update.ts          # Self-update: fetch the server's build, prove it, swap, restart
 │   └── version.ts         # Injected at build (--define)
 ├── media/
 │   ├── image.ts           # Image resize + base64 conversion

@@ -8,10 +8,12 @@ import {
   handleNodeFrame,
   nodeFactsOf,
   nodeOnline,
+  offerNodeUpdate,
   resetNodeHub,
   type NodeSocketData,
 } from "../../src/nodes/hub.ts";
-import type { NodeFacts } from "../../src/nodes/types.ts";
+import { nodeTargetFor, type NodeFacts } from "../../src/nodes/types.ts";
+import { readAppVersion } from "../../src/core/diagnostics.ts";
 
 const FACTS: NodeFacts = {
   os: "linux",
@@ -197,5 +199,54 @@ describe("node hub", () => {
     const stale = fakeSocket("node-1");
     hello(stale, { ...FACTS, hostname: "impostor" });
     expect(nodeFactsOf("node-1")).toBeUndefined();
+  });
+});
+
+describe("the update offer", () => {
+  test("the target follows the machine's facts, and refuses what nothing is built for", () => {
+    expect(nodeTargetFor("linux", "x64")).toBe("linux-x64");
+    expect(nodeTargetFor("linux", "arm64")).toBe("linux-arm64");
+    expect(nodeTargetFor("darwin", "arm64")).toBe("darwin-arm64");
+    expect(nodeTargetFor("win32", "x64")).toBe("windows-x64");
+    expect(nodeTargetFor("win32", "arm64")).toBeNull();
+    expect(nodeTargetFor("freebsd", "x64")).toBeNull();
+    expect(nodeTargetFor("linux", "riscv64")).toBeNull();
+  });
+
+  test("a node of another version is offered the one this server runs", async () => {
+    const serverVersion = await readAppVersion();
+    const socket = fakeSocket("node-1");
+    attachNodeSocket(socket.ws);
+    await offerNodeUpdate(socket.ws, "node-1", { ...FACTS, version: "0.0.1" });
+    const frame = socket.sent.find((f) => f["type"] === "node.update");
+    expect(frame?.["version"]).toBe(serverVersion);
+    expect(frame?.["target"]).toBe("linux-x64");
+  });
+
+  test("an aligned node, a dev version and an unknown platform are left alone", async () => {
+    const serverVersion = await readAppVersion();
+    const aligned = fakeSocket("node-1");
+    await offerNodeUpdate(aligned.ws, "node-1", { ...FACTS, version: serverVersion });
+    expect(aligned.sent).toEqual([]);
+
+    const dev = fakeSocket("node-1");
+    await offerNodeUpdate(dev.ws, "node-1", { ...FACTS, version: "dev" });
+    expect(dev.sent).toEqual([]);
+
+    const exotic = fakeSocket("node-1");
+    await offerNodeUpdate(exotic.ws, "node-1", { ...FACTS, version: "0.0.1", os: "freebsd" });
+    expect(exotic.sent).toEqual([]);
+  });
+
+  test("a hello wires the offer, after the facts are stored", async () => {
+    await readAppVersion();
+    const socket = fakeSocket("node-1");
+    attachNodeSocket(socket.ws);
+    hello(socket, { ...FACTS, version: "0.0.1" });
+    // The offer resolves through a cached promise; flush the microtasks it needs.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(socket.sent.some((f) => f["type"] === "node.update")).toBe(true);
   });
 });

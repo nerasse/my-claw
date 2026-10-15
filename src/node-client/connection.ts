@@ -2,6 +2,7 @@ import { NODE_PROTOCOL, type NodeFacts, type NodeServerFrame } from "../nodes/ty
 import type { ClientTls, NodeClientConfig } from "./config.ts";
 import { buildFacts } from "./facts.ts";
 import { runTool } from "./tools.ts";
+import { applyUpdate, canAttemptUpdate, markUpdateAttempt } from "./update.ts";
 
 /**
  * The node's one socket: dial out, say hello, run what the server asks, reconnect when it drops.
@@ -25,6 +26,8 @@ export interface RunNodeOptions {
   once?: boolean;
   /** Stop the loop: the socket is closed and runNode returns (SIGTERM, tests). */
   signal?: AbortSignal;
+  /** Config dir, handed to the restarted process when an update lands on Windows. */
+  dir?: string;
   backoff?: { initialMs: number; maxMs: number };
 }
 
@@ -155,6 +158,24 @@ async function connectOnce(options: RunNodeOptions, facts: NodeFacts): Promise<v
       }
       if (frame.type === "node.cancel") {
         running.get(frame.callId)?.abort();
+        return;
+      }
+      if (frame.type === "node.update") {
+        // The server runs another version: fetch it through the relay and restart on it. One
+        // attempt per version per window, so a relay that refuses is not hammered.
+        if (!canAttemptUpdate(frame.version)) return;
+        markUpdateAttempt(frame.version);
+        log("info", "update offered", { version: frame.version, target: frame.target });
+        void applyUpdate({
+          server: options.config.server,
+          token: options.token,
+          version: frame.version,
+          target: frame.target,
+          ...(options.dir ? { dir: options.dir } : {}),
+          log,
+        }).then((outcome) => {
+          if (outcome === "failed") log("warn", "update failed; still running the old build", { version: frame.version });
+        });
         return;
       }
       if (frame.type === "node.ping") {

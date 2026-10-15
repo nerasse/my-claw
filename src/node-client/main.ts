@@ -105,6 +105,7 @@ async function runService(flags: Record<string, string>): Promise<number> {
       token,
       tls,
       log: logLine,
+      dir,
       signal: controller.signal,
       ...(flags["once"] !== undefined ? { once: true } : {}),
     });

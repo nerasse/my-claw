@@ -42,9 +42,22 @@ export type NodeServerFrame =
   | { type: "node.call"; callId: string; tool: string; args: Record<string, unknown>; timeoutMs: number }
   | { type: "node.cancel"; callId: string }
   | { type: "node.ping" }
-  | { type: "node.bye"; reason: string };
+  | { type: "node.bye"; reason: string }
+  /** The server runs another version than the node announced: fetch it and restart. */
+  | { type: "node.update"; version: string; target: string };
 
 export const NODE_PROTOCOL = 1;
+
+/**
+ * The build a machine with these facts needs, or null when nothing is published for it. The
+ * release names follow the platform: `win32` is `windows`, the rest keep their own word.
+ */
+export function nodeTargetFor(os: string, arch: string): string | null {
+  if (arch !== "x64" && arch !== "arm64") return null;
+  if (os === "linux" || os === "darwin") return `${os}-${arch}`;
+  if (os === "win32" && arch === "x64") return "windows-x64";
+  return null;
+}
 
 const MAX_TOOLS = 64;
 const MAX_TOOL_NAME = 64;

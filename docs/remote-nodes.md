@@ -227,6 +227,20 @@ the server issued one. The config is the machine's ceiling:
 drops `write` and `apply_patch`. Both are the machine owner's decision, written by hand or at
 install time.
 
+## Updates
+
+The release carries the client beside the server tarball, so "aligned" has one answer: the version
+the server runs. On every connect the server compares the node's hello with its own version and,
+when they differ, offers the build (`node.update { version, target }`). The node fetches it through
+the same relay that installed it -- `/node/download` accepts a paired node's own token, so it needs
+no claim code -- proves the staged binary prints the expected version before it replaces the
+running one, swaps it in and exits. systemd and launchd restart it on the new build; the Windows
+Scheduled Task would not, so there the node hands the new binary its own detached process first.
+
+Best-effort by design: a refused download or a binary that fails its check leaves the old build
+serving (one attempt per version every half hour), and the protocol number in the hello is what
+actually refuses an incompatible client. Re-running the installer stays the manual path.
+
 ## Install
 
 `myclaw node add` prints a single line to run on the machine:

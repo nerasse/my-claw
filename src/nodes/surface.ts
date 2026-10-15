@@ -145,8 +145,14 @@ export function createNodeSurface(deps: NodeSurfaceDeps): NodeSurface {
       return json({ error: `unknown target (${NODE_TARGETS.join(", ")})` }, 400);
     }
     const code = bearer(req) ?? url.searchParams.get("code") ?? "";
-    const claim = code ? peekClaim(code, context.ip) : ({ ok: false, reason: "unknown" } as const);
-    if (!claim.ok) return json({ error: claim.reason }, CLAIM_DENIAL_STATUS[claim.reason]);
+    // A paired node updates itself through this route, so its own token is as good as a claim
+    // code here -- it is what the node presents on every reconnect. The claim path stays for the
+    // first install, which has no token yet.
+    const byToken = code.length > 16 ? findNodeByToken(code) : undefined;
+    if (!byToken) {
+      const claim = code ? peekClaim(code, context.ip) : ({ ok: false, reason: "unknown" } as const);
+      if (!claim.ok) return json({ error: claim.reason }, CLAIM_DENIAL_STATUS[claim.reason]);
+    }
 
     const source = releaseSource();
     if (!source) return json({ error: "no release source on this server: run `myclaw release-key <key>`" }, 503);
