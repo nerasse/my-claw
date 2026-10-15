@@ -90,9 +90,9 @@ resolve_entry() {
   fi
 }
 
-# Forward `myclaw codex|claude|device|setup|web ...` to the app entrypoint. What they write (auth
-# tokens, config.json) must be owned by the service user; a legacy install invoked as root drops
-# to that user (su preserves the TTY for the interactive `claude login`).
+# Forward `myclaw codex|claude|device|setup|web|node ...` to the app entrypoint. What they write
+# (auth tokens, config.json) must be owned by the service user; a legacy install invoked as root
+# drops to that user (su preserves the TTY for the interactive `claude login`).
 run_cli() {
   local provider="$1"; shift
   local entry; entry="$(resolve_entry)"
@@ -120,6 +120,7 @@ usage() {
   echo "  logs      Follow the server log"
   echo "  dev       Stop the service and run development mode (bun --watch) from the current directory"
   echo "  device    Pair and revoke app/browser devices (add, ls, rm, disable, enable)"
+  echo "  node      Remote nodes: give my-claw hands on another machine (add, ls, rm)"
   echo "  setup     Pair the first device of a fresh install (a code, a link, a QR)"
   echo "  web       Install and switch the web client bundle (install, ls, use, rm)"
   echo "  release-key  Set the key (and source) updates come from: myclaw release-key <key>"
@@ -343,6 +344,10 @@ case "$cmd" in
   device)
     shift
     run_cli device "$@"
+    ;;
+  node)
+    shift
+    run_cli node "$@"
     ;;
   setup)
     shift
