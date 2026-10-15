@@ -144,9 +144,11 @@ export async function serveMedia(d: MyClawAppFilesDeps, id: string, owner: strin
   };
   // What the app renders travels inline, so a WebView or an <img> reads a document and not a
   // download; what it saves -- an archive, an Office file, an unknown binary -- stays an
-  // attachment (docs/file-preview.md). A page or a drawing served inline must run nothing,
-  // whatever opens it: the app's own preview turns JavaScript off, this is the fence for every
-  // other reader of the same URL.
+  // attachment (docs/file-preview.md). A PDF belongs to the first group: the web viewer hands it
+  // to the browser's own renderer through an iframe, and as an attachment the iframe downloaded
+  // it and drew an empty stage instead (found in a real Chromium, 2026-10-15). A page or a
+  // drawing served inline must run nothing, whatever opens it: the app's own preview turns
+  // JavaScript off, this is the fence for every other reader of the same URL.
   const rendered = RENDERED_INLINE.test(mimeType);
   if (filename) {
     headers["Content-Disposition"] = `${rendered ? "inline" : "attachment"}; filename="${filename.replace(/["\\]/g, "")}"`;
@@ -173,7 +175,7 @@ export async function serveMedia(d: MyClawAppFilesDeps, id: string, owner: strin
 const ARCHIVE_ENTRY_LIMIT = 2000;
 
 /** The families the app shows rather than saves. Everything else is a download. */
-const RENDERED_INLINE = /^(image|audio|video|text)\//;
+const RENDERED_INLINE = /^(image|audio|video|text)\/|^application\/pdf$/;
 
 /**
  * A single byte range, which is all pdf.js and a video seek ever ask for. A malformed or

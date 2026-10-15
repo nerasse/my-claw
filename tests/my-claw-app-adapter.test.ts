@@ -753,19 +753,23 @@ describe("MyClawAppAdapter", () => {
     const stamp = Date.now();
     const shot = join(tmpDir, `inline-${stamp}.png`);
     const bundle = join(tmpDir, `bundle-${stamp}.zip`);
+    const paper = join(tmpDir, `paper-${stamp}.pdf`);
     await writeFile(shot, "png-bytes");
     await writeFile(bundle, "zip-bytes");
+    await writeFile(paper, "pdf-bytes");
 
     await adapter.send(DEVICE_ID, {
       text: "here",
       attachments: [
         { type: "image", path: shot },
         { type: "file", path: bundle },
+        { type: "file", path: paper },
       ],
     });
     const frame = (await nextFrame(client)) as { attachments: Array<{ id: string; filename: string }> };
     const imageId = frame.attachments.find((a) => a.filename.endsWith(".png"))!.id;
     const zipId = frame.attachments.find((a) => a.filename.endsWith(".zip"))!.id;
+    const pdfId = frame.attachments.find((a) => a.filename.endsWith(".pdf"))!.id;
 
     const image = await fetch(`http://127.0.0.1:${adapter.port}/media/${imageId}?device=${DEVICE_ID}&token=${TOKEN}`);
     assert.equal(image.status, 200);
@@ -773,6 +777,14 @@ describe("MyClawAppAdapter", () => {
     assert.equal(image.headers.get("accept-ranges"), "bytes");
     assert.equal(image.headers.get("x-content-type-options"), "nosniff");
     assert.equal(image.headers.get("content-length"), "9");
+
+    // A PDF renders in the web viewer's iframe: an attachment made the browser download it and
+    // the reader drew an empty stage (a real Chromium, 2026-10-15).
+    const pdf = await fetch(`http://127.0.0.1:${adapter.port}/media/${pdfId}?device=${DEVICE_ID}&token=${TOKEN}`);
+    assert.equal(pdf.status, 200);
+    assert.equal(pdf.headers.get("content-type"), "application/pdf");
+    assert.ok(pdf.headers.get("content-disposition")?.startsWith("inline;"), "a PDF is shown, not saved");
+    assert.equal(pdf.headers.get("accept-ranges"), "bytes");
 
     const saved = await fetch(`http://127.0.0.1:${adapter.port}/media/${zipId}?device=${DEVICE_ID}&token=${TOKEN}`);
     assert.equal(saved.status, 200);

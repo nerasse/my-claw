@@ -63,8 +63,9 @@ Two facts worth writing down, because both are counter-intuitive and both are te
 ## What the server owes the app
 
 - `serveMedia` sends `Content-Disposition: inline` for what the app renders, and keeps
-  `attachment` for what it downloads. Today it always sends `attachment`, which a WebView or an
-  `<img>` reads as a download.
+  `attachment` for what it downloads. The rendered families are pictures, media, text and PDFs;
+  the PDF joined them when the web viewer was checked in a real browser (2026-10-15): as an
+  attachment, the pane's iframe downloaded the file and drew an empty stage instead.
 - **Range** requests. `new Response(Bun.file(path))` ignores them, so nothing can seek in a PDF or
   a video, and a download cannot resume. This is a prerequisite for pdf.js.
 - Conversions the app cannot do: an exotic image (bmp, tiff, avif, ico) to png, an Office document
