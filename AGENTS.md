@@ -287,6 +287,14 @@ src/
 │   ├── agent.ts           # The generated agents/node-<slug>.md, write and remove
 │   ├── surface.ts         # /node, /node/pair, /node/ticket, /node/revoke on the channel port
 │   └── cli.ts             # `myclaw node add|ls|rm`
+├── node-client/           # The client installed on other machines -- docs/remote-nodes.md
+│   ├── main.ts            # pair | run | status
+│   ├── connection.ts      # One socket out: hello, tool calls, reconnect, SIGTERM
+│   ├── pair.ts            # Claim code -> token (+ certificate bundle)
+│   ├── tools.ts           # bash/read/write/apply_patch/search/ls, the machine's ceiling applied
+│   ├── config.ts          # Config dir, token, certs, roots/readOnly ceilings
+│   ├── facts.ts           # What the node announces about itself
+│   └── version.ts         # Injected at build (--define)
 ├── media/
 │   ├── image.ts           # Image resize + base64 conversion
 │   └── video.ts           # Video frame extraction (ffmpeg)

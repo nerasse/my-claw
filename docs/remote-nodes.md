@@ -42,8 +42,8 @@ differs, and the node client only ever takes one URL.
    claim code rate-limited. Five lines of proxy config, nothing else.
 2. **mTLS endpoint.** A hostname of its own where the proxy requires a client certificate on
    `/node` (`ssl_verify_client on`, with the location for `/node/pair` exempted: the first
-   contact has no certificate yet). my-claw signs each node a client certificate at pairing
-   (lands with the client, step 2), from a small CA it keeps under `$MY_CLAW_DIR/nodes/ca/`. The
+   contact has no certificate yet). With `nodes.mtls: true`, my-claw signs each node a client
+   certificate at pairing, from a small CA it keeps under `$MY_CLAW_DIR/nodes/ca/`. The
    certificate is a second gate, checked by the proxy; the token stays the per-node, revocable
    lock. When the proxy forwards the verdict, `nodes.clientCertHeader` names the header my-claw
    itself refuses to do without.
@@ -117,11 +117,14 @@ certificate, since the first contact is what obtains one.
 "nodes": {
   "clientCertHeader": "X-SSL-Client-Verify",
   "clientCertValue": "SUCCESS",
+  "mtls": true,
   "claimTtlSeconds": 600
 }
 ```
 
-All three optional. Absent, the surface is token-only and claim codes live ten minutes.
+All four optional. Absent, the surface is token-only and claim codes live ten minutes.
+`mtls` only issues certificates; the header check above is what enforces them, and both belong
+to the mTLS deployment mode.
 
 ## CLI
 
@@ -139,14 +142,15 @@ logged too.
 ## Handshake
 
 The node announces facts nobody has to type: OS, arch, hostname, user, mode (`admin`/`user`),
-sudo scope, node version, and its tool manifest (name, description, JSON schema, ceiling flags).
+node version, and its tool manifest -- only the tools its config exposes.
 
 ## Two locks on the tools
 
-1. **On the machine** (`node.json`): the ceiling. Tools exposed, allowed roots, read-only. The
-   server cannot widen it; the machine's owner keeps the last word.
+1. **On the machine** (`config.json` under the node's config dir): the ceiling. Tools exposed,
+   allowed roots, read-only. The server cannot widen it; the machine's owner keeps the last word.
 2. **In the app**: the owner narrows further per tool, and marks tools as needing approval
-   (existing approvals flow, default none).
+   (existing approvals flow, default none). The agent file's `tools:` narrows too, exactly like a
+   local baseline.
 
 Every remote call is journaled (node, tool, arguments, outcome). Results are untrusted content.
 
@@ -160,16 +164,71 @@ Every remote call is journaled (node, tool, arguments, outcome). Results are unt
   what the machine is connected to (networks, services, data), what must never be touched, who
   owns it. The prompt is generated from these and stays editable like a file agent.
 
-## Client
+## The client
 
-- One binary per target, `bun build --compile` (linux x64/arm64, darwin x64/arm64, windows x64).
-- v1 tools: `bash` (PowerShell on Windows), `read`, `write`, `apply_patch`, `search`, `ls`, from
-  the server's implementations.
-- Installer picks the mode from its own privileges; `--user` forces user mode.
-- Self-update through dl-hub, like the server.
+One binary per target, cross-compiled from `src/node-client` (`scripts/build-node-client.sh`,
+linux x64/arm64, darwin x64/arm64, windows x64), attached to every release as
+`my-claw-node-<v>-<target>`.
+
+```
+myclaw-node pair --server wss://myclaw.example/node --code ABCD1234 [--name web01] [--workdir /srv]
+myclaw-node run      # what the service runs
+myclaw-node status   # what this machine is paired to
+```
+
+The tools are implemented client-side (`src/node-client/tools.ts`), not imported from the server:
+this runs on someone else's machine, where there is no workspace, no config store and no hooks.
+The schemas and result shapes follow the server's tools. On Windows, `bash` is PowerShell.
+
+Everything lives in one directory (`MYCLAW_NODE_DIR`, default `~/.my-claw-node`; the admin
+install uses `/etc/my-claw-node`): `config.json`, `token` (0600), and the certificate bundle when
+the server issued one. The config is the machine's ceiling:
+
+```json
+{
+  "server": "wss://myclaw.example/node",
+  "name": "web01",
+  "workdir": "/srv",
+  "tools": ["bash", "read", "write", "apply_patch", "search", "ls"],
+  "readOnly": false,
+  "roots": ["/srv", "/etc/nginx"]
+}
+```
+
+`roots` fences the file tools (`bash` is the machine's own shell and stays whole); `readOnly`
+drops `write` and `apply_patch`. Both are the machine owner's decision, written by hand or at
+install time.
+
+## Install
+
+`myclaw node add` prints a single line to run on the machine:
+
+```sh
+curl -fsSL 'https://myclaw.example/node/install.sh' | sudo sh -s -- --pair ABCD1234 --server wss://myclaw.example/node
+```
+
+`sudo` for the admin install (system service, dedicated `myclaw-node` account, passwordless sudo
+for that account); without it, the user install (user service, the user's own rights). macOS uses
+the same script (LaunchDaemon or LaunchAgent); Windows has `install.ps1` (Scheduled Task as SYSTEM
+or at logon). The installer is idempotent -- re-run the same command to update.
+
+The binary and the installer come from the my-claw being joined (`/node/download`,
+`/node/install.sh`), gated by the same claim code, and the my-claw fetches them from the release
+source with its own key: the node machine needs no dl-hub key of its own. For machines that want
+the direct path, dl-hub serves the same files under the `node` component of the my-claw product
+(`/my-claw/node/latest.json`, `/my-claw/node/<v>/<file>`), one key per machine as usual. The
+dl-hub component to declare:
+
+```json
+"node": { "repo": "claw/my-claw", "files": [
+  "my-claw-node-{v}-linux-x64", "my-claw-node-{v}-linux-arm64",
+  "my-claw-node-{v}-darwin-x64", "my-claw-node-{v}-darwin-arm64",
+  "my-claw-node-{v}-windows-x64.exe"] }
+```
 
 ## Lots
 
 1. Protocol, pairing, `/node` endpoint, `node` base, generated agent, journal. **Done.**
-2. Binary, installers (admin and user, three OS), dl-hub publication, client certificates.
+2. Binary, installers (admin and user, three OS), dl-hub publication, client certificates. **Done**
+   (macOS and Windows installers written, not tested here -- no such machine).
 3. App: list, add (code, QR, command), description wizard, tool choice, approvals, revoke.
