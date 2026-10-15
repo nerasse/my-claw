@@ -219,11 +219,91 @@ the direct path, dl-hub serves the same files under the `node` component of the 
 (`/my-claw/node/latest.json`, `/my-claw/node/<v>/<file>`), one key per machine as usual. The
 dl-hub component to declare:
 
+The product block, complete (dl-hub `/admin`, Products, my-claw). `node` is its own component
+and its downloads carry a `Node (...)` label: the app's devices (Android, web) and the remote
+nodes are different things and are named apart.
+
 ```json
-"node": { "repo": "claw/my-claw", "files": [
-  "my-claw-node-{v}-linux-x64", "my-claw-node-{v}-linux-arm64",
-  "my-claw-node-{v}-darwin-x64", "my-claw-node-{v}-darwin-arm64",
-  "my-claw-node-{v}-windows-x64.exe"] }
+{
+  "name": "my-claw",
+  "access": "claw/my-claw",
+  "installer": {
+    "component": "server",
+    "path": "packaging/install-remote.sh"
+  },
+  "instructions": "New install:\ncurl -fsSL -H \"Authorization: Bearer {key}\" {url}/install.sh | sudo bash\n\nAn install that already runs:\nmyclaw release-key {key}\n\nA machine to give my-claw hands on (from a running install):\nmyclaw node add",
+  "components": {
+    "server": {
+      "repo": "claw/my-claw",
+      "files": [
+        "my-claw-{v}-linux-x64.tar.gz"
+      ],
+      "package": {
+        "owner": "claw",
+        "name": "my-claw"
+      }
+    },
+    "app": {
+      "repo": "claw/my-claw-app",
+      "files": [
+        "my-claw-app-v{v}.apk",
+        "dist-web.tar.gz"
+      ]
+    },
+    "node": {
+      "repo": "claw/my-claw",
+      "files": [
+        "my-claw-node-{v}-linux-x64",
+        "my-claw-node-{v}-linux-arm64",
+        "my-claw-node-{v}-darwin-x64",
+        "my-claw-node-{v}-darwin-arm64",
+        "my-claw-node-{v}-windows-x64.exe"
+      ]
+    }
+  },
+  "downloads": {
+    "apk": {
+      "component": "app",
+      "file": "my-claw-app-v{v}.apk",
+      "label": "Android"
+    },
+    "web": {
+      "component": "app",
+      "file": "dist-web.tar.gz",
+      "label": "Client web"
+    },
+    "linux": {
+      "component": "server",
+      "file": "my-claw-{v}-linux-x64.tar.gz",
+      "label": "Serveur (Linux)"
+    },
+    "node-linux-x64": {
+      "component": "node",
+      "file": "my-claw-node-{v}-linux-x64",
+      "label": "Node (Linux x64)"
+    },
+    "node-linux-arm64": {
+      "component": "node",
+      "file": "my-claw-node-{v}-linux-arm64",
+      "label": "Node (Linux arm64)"
+    },
+    "node-darwin-x64": {
+      "component": "node",
+      "file": "my-claw-node-{v}-darwin-x64",
+      "label": "Node (macOS Intel)"
+    },
+    "node-darwin-arm64": {
+      "component": "node",
+      "file": "my-claw-node-{v}-darwin-arm64",
+      "label": "Node (macOS Apple Silicon)"
+    },
+    "node-windows-x64": {
+      "component": "node",
+      "file": "my-claw-node-{v}-windows-x64.exe",
+      "label": "Node (Windows x64)"
+    }
+  }
+}
 ```
 
 ## Lots
