@@ -381,4 +381,18 @@ nodes are different things and are named apart.
 1. Protocol, pairing, `/node` endpoint, `node` base, generated agent, journal. **Done.**
 2. Binary, installers (admin and user, three OS), dl-hub publication, client certificates. **Done**
    (macOS and Windows installers written, not tested here -- no such machine).
-3. App: list, add (code, QR, command), description wizard, tool choice, approvals, revoke.
+3. App: list, add (code and the generated install command), rename, description, tool choice,
+   approvals, revoke. **Done.**
+
+What is left, and who owns it:
+
+- **Forcing an update from the app.** The client tries a version once per half hour; a run stuck
+  mid-download waits for the window. A manual "update now" needs a `force` flag on
+  `node.update`, honoured by the client, and a per-node button -- the owner asked for it
+  (2026-10-15) and it is not built.
+- **The installers on macOS and Windows.** Written, never run here: no such machine. First real
+  install proves them.
+- **mTLS.** The server issues the certificate and reads the proxy's verdict; no deployment uses
+  it yet. The operator's proxy blocks are above.
+- **A real install from the app.** The whole loop -- code from the screen, command pasted on a
+  machine, node online, agent spawning -- has only been exercised with a fake app socket.
