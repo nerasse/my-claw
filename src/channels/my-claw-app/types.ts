@@ -1096,6 +1096,21 @@ export interface MyClawAppDeviceRevoke {
   deviceId: string;
 }
 
+/** Settings > Nodes: the roster, a claim code for a new machine, a revocation. */
+export interface MyClawAppNodesList {
+  type: "nodes.list";
+}
+
+export interface MyClawAppNodesAdd {
+  type: "nodes.add";
+  name?: string;
+}
+
+export interface MyClawAppNodesRevoke {
+  type: "nodes.revoke";
+  nodeId: string;
+}
+
 export type MyClawAppClientFrame =
   | MyClawAppMediaTicketGet
   | MyClawAppBrowserInfo
@@ -1221,6 +1236,9 @@ export type MyClawAppClientFrame =
   | MyClawAppDeviceList
   | MyClawAppDeviceInvite
   | MyClawAppDeviceRevoke
+  | MyClawAppNodesList
+  | MyClawAppNodesAdd
+  | MyClawAppNodesRevoke
   | MyClawAppSubAgentsReset
   | MyClawAppSubAgentsCallers
   | MyClawAppSubAgentsHandoff
@@ -3960,6 +3978,45 @@ export interface MyClawAppDeviceRevokeResult {
   error?: string;
 }
 
+/** One remote node, as the app's Settings lists it. docs/remote-nodes.md. */
+export interface MyClawAppNodeFrame {
+  nodeId: string;
+  name: string;
+  online: boolean;
+  createdAt: string;
+  lastSeenAt?: string;
+  os?: string;
+  arch?: string;
+  hostname?: string;
+  user?: string;
+  mode?: "admin" | "user";
+  version?: string;
+  tools: string[];
+  /** The agent file its sub-agent lives in: where the description is written. */
+  agent?: string;
+}
+
+export interface MyClawAppNodesListResult {
+  type: "nodes.list.result";
+  nodes: MyClawAppNodeFrame[];
+}
+
+/** The claim code a new machine pairs with, and when it stops working. */
+export interface MyClawAppNodesAddResult {
+  type: "nodes.add.result";
+  ok: boolean;
+  code?: string;
+  expiresAt?: number;
+  error?: string;
+}
+
+export interface MyClawAppNodesRevokeResult {
+  type: "nodes.revoke.result";
+  ok: boolean;
+  nodeId: string;
+  error?: string;
+}
+
 /**
  * What a human needs to take the browser over themselves. The VNC password is included: a paired
  * device already runs the agent, and therefore already reads that file through any shell it asks
@@ -4225,6 +4282,9 @@ export type MyClawAppServerFrame =
   | MyClawAppDevicePairResult
   | MyClawAppDeviceListResult
   | MyClawAppDeviceRevokeResult
+  | MyClawAppNodesListResult
+  | MyClawAppNodesAddResult
+  | MyClawAppNodesRevokeResult
   | MyClawAppError;
 
 /**

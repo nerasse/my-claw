@@ -277,6 +277,12 @@ import {
   type MyClawAppDeviceDeps,
 } from "./device-handlers.ts";
 import {
+  handleNodesAdd,
+  handleNodesList,
+  handleNodesRevoke,
+  type MyClawAppNodeDeps,
+} from "./node-handlers.ts";
+import {
   handleUpload,
   registerMedia,
   serveMedia,
@@ -1182,6 +1188,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
     };
   }
 
+  private nodeDeps(): MyClawAppNodeDeps {
+    return {
+      nodes: () => this.nodesConfig?.(),
+      sockets: this.sockets,
+      sendFrame: (ws, frame) => this.sendFrame(ws, frame),
+    };
+  }
+
   private socketsFor(owner: string): ServerWebSocket<MyClawAppSessionData>[] {
     return this.sockets.forOwner(owner);
   }
@@ -1983,6 +1997,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
           type: "device.pair.result",
           ok: deny(frame.code, ws.data.deviceId),
         });
+        break;
+      case "nodes.list":
+        this.detach(handleNodesList(this.nodeDeps(), ws), "handleNodesList");
+        break;
+      case "nodes.add":
+        handleNodesAdd(this.nodeDeps(), ws, frame);
+        break;
+      case "nodes.revoke":
+        this.detach(handleNodesRevoke(this.nodeDeps(), ws, frame.nodeId), "handleNodesRevoke");
         break;
       case "browser.unblock":
         this.detach(handleBrowserUnblock({

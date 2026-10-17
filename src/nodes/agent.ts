@@ -1,5 +1,5 @@
 import { readFile, readdir, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
@@ -95,19 +95,32 @@ export async function writeNodeAgent(record: NodeRecord, facts: NodeFacts): Prom
   return base;
 }
 
-/** Revocation takes the agent with it; only a file declaring this node is ever removed. */
-export async function removeNodeAgent(nodeId: string): Promise<boolean> {
+/** Every agent file declaring this node: the app shows it, a revocation removes it. */
+async function nodeAgentPaths(nodeId: string): Promise<string[]> {
   const dir = nodeAgentsDir();
   const entries = await readdir(dir).catch(() => [] as string[]);
-  let removed = false;
+  const paths: string[] = [];
   for (const entry of entries) {
     if (!entry.startsWith(NODE_AGENT_PREFIX) || !entry.endsWith(".md")) continue;
     const path = join(dir, entry);
     const text = await readFile(path, "utf-8").catch(() => null);
-    if (text === null || !declaresNode(text, nodeId)) continue;
+    if (text !== null && declaresNode(text, nodeId)) paths.push(path);
+  }
+  return paths;
+}
+
+/** The name of the node's agent file, absent once it was removed or renamed away. */
+export async function nodeAgentName(nodeId: string): Promise<string | undefined> {
+  const path = (await nodeAgentPaths(nodeId))[0];
+  return path ? basename(path, ".md") : undefined;
+}
+
+/** Revocation takes the agent with it; only a file declaring this node is ever removed. */
+export async function removeNodeAgent(nodeId: string): Promise<boolean> {
+  const paths = await nodeAgentPaths(nodeId);
+  for (const path of paths) {
     await unlink(path);
-    removed = true;
     void log("info", "node agent removed", { nodeId, path });
   }
-  return removed;
+  return paths.length > 0;
 }
