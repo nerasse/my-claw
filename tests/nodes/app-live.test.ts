@@ -193,3 +193,43 @@ test("a revocation from one window refreshes the owner's other one", async () =>
   const refreshed = second.frames.filter((frame) => frame["type"] === "nodes.list.result").at(-1)!;
   expect(refreshed["nodes"]).toEqual([]);
 });
+
+test("the app renames a node, writes its description and narrows what it may run", async () => {
+  const app = await connect(adapter.port, "/my-claw-app", deviceHeaders);
+
+  app.ws.send(JSON.stringify({ type: "nodes.add", name: "build box" }));
+  const added = await app.next("nodes.add.result");
+  const paired = await fetch(`http://127.0.0.1:${adapter.port}/node/pair`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: added["code"], facts: FACTS }),
+  });
+  const { nodeId } = (await paired.json()) as { nodeId: string };
+
+  app.ws.send(JSON.stringify({ type: "nodes.rename", nodeId, name: "prod build" }));
+  const renamed = await app.next("nodes.rename.result");
+  expect(renamed).toMatchObject({ ok: true, nodeId, name: "prod build", agent: "node-prod-build" });
+  expect(nodeRecord(nodeId)?.name).toBe("prod build");
+
+  app.ws.send(JSON.stringify({ type: "nodes.describe", nodeId, description: "The build box. Never touch /etc." }));
+  const described = await app.next("nodes.describe.result");
+  expect(described).toMatchObject({ ok: true, nodeId });
+
+  app.ws.send(JSON.stringify({ type: "nodes.access.set", nodeId, tools: ["read"], approval: true }));
+  const access = await app.next("nodes.access.set.result");
+  expect(access).toMatchObject({ ok: true, nodeId });
+
+  // The roster carries all three, and the mirror after each write left the last state.
+  app.ws.send(JSON.stringify({ type: "nodes.list" }));
+  const listed = await app.next("nodes.list.result");
+  expect((listed["nodes"] as Array<Record<string, unknown>>)[0]).toMatchObject({
+    nodeId,
+    name: "prod build",
+    agent: "node-prod-build",
+    description: "The build box. Never touch /etc.",
+    exposed: ["read"],
+    approval: true,
+  });
+
+  await rm(join(MY_CLAW_DIR, "agents", "node-prod-build.md"), { force: true });
+});

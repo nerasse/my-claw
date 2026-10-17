@@ -1111,6 +1111,29 @@ export interface MyClawAppNodesRevoke {
   nodeId: string;
 }
 
+/** The roster's label, and the agent file renamed with it. */
+export interface MyClawAppNodesRename {
+  type: "nodes.rename";
+  nodeId: string;
+  name: string;
+}
+
+/** What the orchestrator reads when it picks this node's agent. */
+export interface MyClawAppNodesDescribe {
+  type: "nodes.describe";
+  nodeId: string;
+  description: string;
+}
+
+/** What the node's agent may run there, and whether running it asks first. */
+export interface MyClawAppNodesAccessSet {
+  type: "nodes.access.set";
+  nodeId: string;
+  /** The exposed subset; null removes the narrowing. Absent leaves it as it is. */
+  tools?: string[] | null;
+  approval?: boolean;
+}
+
 export type MyClawAppClientFrame =
   | MyClawAppMediaTicketGet
   | MyClawAppBrowserInfo
@@ -1239,6 +1262,9 @@ export type MyClawAppClientFrame =
   | MyClawAppNodesList
   | MyClawAppNodesAdd
   | MyClawAppNodesRevoke
+  | MyClawAppNodesRename
+  | MyClawAppNodesDescribe
+  | MyClawAppNodesAccessSet
   | MyClawAppSubAgentsReset
   | MyClawAppSubAgentsCallers
   | MyClawAppSubAgentsHandoff
@@ -3994,6 +4020,12 @@ export interface MyClawAppNodeFrame {
   tools: string[];
   /** The agent file its sub-agent lives in: where the description is written. */
   agent?: string;
+  /** What that file tells the orchestrator this machine is for. */
+  description?: string;
+  /** The subset of `tools` this server exposes; absent means all of them. */
+  exposed?: string[];
+  /** Ask before running anything on that machine. */
+  approval?: boolean;
 }
 
 export interface MyClawAppNodesListResult {
@@ -4012,6 +4044,30 @@ export interface MyClawAppNodesAddResult {
 
 export interface MyClawAppNodesRevokeResult {
   type: "nodes.revoke.result";
+  ok: boolean;
+  nodeId: string;
+  error?: string;
+}
+
+export interface MyClawAppNodesRenameResult {
+  type: "nodes.rename.result";
+  ok: boolean;
+  nodeId: string;
+  name?: string;
+  /** The agent file after the rename: it follows the node. */
+  agent?: string;
+  error?: string;
+}
+
+export interface MyClawAppNodesDescribeResult {
+  type: "nodes.describe.result";
+  ok: boolean;
+  nodeId: string;
+  error?: string;
+}
+
+export interface MyClawAppNodesAccessSetResult {
+  type: "nodes.access.set.result";
   ok: boolean;
   nodeId: string;
   error?: string;
@@ -4285,6 +4341,9 @@ export type MyClawAppServerFrame =
   | MyClawAppNodesListResult
   | MyClawAppNodesAddResult
   | MyClawAppNodesRevokeResult
+  | MyClawAppNodesRenameResult
+  | MyClawAppNodesDescribeResult
+  | MyClawAppNodesAccessSetResult
   | MyClawAppError;
 
 /**

@@ -55,8 +55,10 @@ export class ToolApprovalManager {
   async decide(params: {
     session: SessionData;
     request: ToolApprovalRequest;
+    /** The tool asks for the confirmation itself (a remote node's), outside the blacklist. */
+    confirm?: boolean;
   }): Promise<ApprovalDecision> {
-    if (!this.blacklist.requiresConfirmation(params.request.toolName)) {
+    if (!params.confirm && !this.blacklist.requiresConfirmation(params.request.toolName)) {
       return "allow-once";
     }
 

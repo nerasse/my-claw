@@ -18,6 +18,11 @@ export interface Tool {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
+  /**
+   * The tool itself asks for a confirmation the blacklist does not cover: a remote node whose
+   * record says to ask before running anything there. The run's approval manager reads it.
+   */
+  requiresApproval?: boolean;
   /** `onProgress` lets a long-running tool stream output as it is produced rather than only at
    *  EOF (bash today; the others ignore it). The callback fires with stdout/stderr chunks; the
    *  caller is responsible for throttling and appending to the final ToolResult.output. */

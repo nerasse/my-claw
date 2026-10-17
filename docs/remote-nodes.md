@@ -1,7 +1,7 @@
 # Remote nodes
 
-Status: spec, decided 2026-10-13. Step 1 (server side) implemented; the client, its installers
-and the app screens are steps 2 and 3.
+Status: implemented. Server, client, installers and the app's Nodes screen are all in service;
+this file is the reference for all of them.
 
 A **node** is a small client installed on another machine. It gives my-claw hands there: the
 tools the machine's owner chose to expose, run with the rights the node was installed with. Each
@@ -18,7 +18,7 @@ node is reached through a sub-agent of its own; the orchestrator never receives 
 | Admin install | system service under a dedicated account `myclaw-node`, with a targeted sudoers file |
 | User install | user service (`systemd --user` + linger, LaunchAgent, Scheduled Task), the user's rights only |
 | OS in v1 | Linux, macOS, Windows |
-| Approvals | configurable per node and per tool, default none |
+| Approvals | per node, default none; the tools a node exposes are chosen per tool |
 | Distribution | dl-hub, product path `node/` |
 
 ## Transport and identity
@@ -161,6 +161,26 @@ to the mTLS deployment mode.
 through the running daemon (a claim code lives in its memory, a revoke closes a socket) and
 authenticate with a paired device, like `myclaw device add`.
 
+## The Nodes screen
+
+Settings > Nodes, beside Devices: the same operations as the CLI, plus the ones only a screen
+makes usable. Each row is a node -- online dot, OS and arch, mode, user, version, the tools it
+announces, its agent file, when it was last seen -- and opens a page for it:
+
+- **Add a node**: a name, then a single-use code and one install command, generated for the
+  machine it will run on -- Linux/macOS or Windows, as a service (admin) or as the account
+  (user) -- and copied in one tap. The command names the address the app itself reaches the
+  server at, the same rule as `myclaw node add`: whoever knows the address says it.
+- **Rename**: the record and its agent file move together, so `node-<name>` follows the roster.
+  A name another node or another agent file already holds is refused rather than suffixed; the
+  prompt below the header is never rewritten.
+- **Description**: the `description:` line of the agent file, which is what the spawn catalog
+  shows the orchestrator. One line by construction; the prompt below it is the owner's.
+- **What it may run**: per tool, exposed or not, and one switch to ask before running anything
+  there. A tool left out is absent from the agent's set, never added back.
+- **Revoke**: closes the socket at once, drops the record and removes the agent file. The client
+  stays installed on that machine.
+
 ## Journal
 
 Every remote call is journaled in `~/.my-claw/logs/orchestrator-<date>.log`: node, tool,
@@ -176,9 +196,17 @@ node version, and its tool manifest -- only the tools its config exposes.
 
 1. **On the machine** (`config.json` under the node's config dir): the ceiling. Tools exposed,
    allowed roots, read-only. The server cannot widen it; the machine's owner keeps the last word.
-2. **In the app**: the owner narrows further per tool, and marks tools as needing approval
-   (existing approvals flow, default none). The agent file's `tools:` narrows too, exactly like a
-   local baseline.
+   A node announces exactly what its config allows, so a name the record holds and the machine
+   does not offer is never matched.
+2. **In the app**: `nodes.json` holds the node's `tools` (the exposed subset; absent means
+   everything the machine offers, an empty list nothing) and `approval` (ask before running
+   anything there). The agent file's `tools:` narrows the same way, exactly like a local
+   baseline, and the config denylist applies on top. All three are filters: a name outside a set
+   is dropped, never added.
+
+Approval rides the existing flow (`Tool.requiresApproval` on every tool of a node whose record
+asks for it): the sheet appears once per tool and a session grant covers the rest, except for
+the per-invocation tools (`bash`, `memory`) which are reviewed one call at a time. Default none.
 
 Every remote call is journaled (node, tool, arguments, outcome). Results are untrusted content.
 
@@ -188,9 +216,9 @@ Every remote call is journaled (node, tool, arguments, outcome). Results are unt
   tools, executed remotely; no local tool leaks in.
 - The spawn catalog shows name, description and online state. The orchestrator delegates as it
   does to the browser agent.
-- Description: auto facts from the handshake, plus guided fields in the setup wizard: purpose,
-  what the machine is connected to (networks, services, data), what must never be touched, who
-  owns it. The prompt is generated from these and stays editable like a file agent.
+- The generated description carries the facts from the handshake and says what is missing; the
+  Nodes screen writes the `description:` line (one line, the spawn catalog's words), and the
+  prompt below it stays editable like any file agent.
 
 ## The client
 

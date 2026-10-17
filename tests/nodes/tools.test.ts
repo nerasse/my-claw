@@ -2,7 +2,7 @@ import { describe, test, expect, beforeEach } from "bun:test";
 import type { ServerWebSocket } from "bun";
 import { attachNodeSocket, handleNodeFrame, resetNodeHub, type NodeSocketData } from "../../src/nodes/hub.ts";
 import { nodeToolNamesFor, nodeToolsFor } from "../../src/nodes/tools.ts";
-import { mintNode, resetNodesStore, nodesFilePath } from "../../src/nodes/store.ts";
+import { mintNode, resetNodesStore, nodesFilePath, setNodeAccess } from "../../src/nodes/store.ts";
 import type { NodeFacts } from "../../src/nodes/types.ts";
 import { rm } from "node:fs/promises";
 
@@ -67,6 +67,37 @@ describe("node tools", () => {
     expect(nodeToolsFor(nodeId, { allow: ["write"] })?.map((t) => t.name)).toEqual([]);
     expect(nodeToolsFor(nodeId, { disabled: ["bash"] })?.map((t) => t.name)).toEqual(["read"]);
     expect(nodeToolsFor(nodeId, { allow: ["read", "bash"], disabled: ["bash"] })?.map((t) => t.name)).toEqual(["read"]);
+  });
+
+  test("the record's subset narrows the manifest, under the file's own allow", async () => {
+    const minted = await mintNode({ name: "web01", facts: FACTS });
+    if (!minted.ok) throw new Error("mint failed");
+    const nodeId = minted.minted.record.nodeId;
+    connect(nodeId);
+
+    await setNodeAccess(nodeId, { tools: ["read"] });
+    expect(nodeToolsFor(nodeId)?.map((t) => t.name)).toEqual(["read"]);
+    // An empty list is a decision: nothing runs there.
+    await setNodeAccess(nodeId, { tools: [] });
+    expect(nodeToolsFor(nodeId)?.map((t) => t.name)).toEqual([]);
+    // A name the machine does not offer is never matched: the machine stays the ceiling.
+    await setNodeAccess(nodeId, { tools: ["read", "write"] });
+    expect(nodeToolsFor(nodeId)?.map((t) => t.name)).toEqual(["read"]);
+    await setNodeAccess(nodeId, { tools: null });
+    expect(nodeToolsFor(nodeId)?.map((t) => t.name)).toEqual(["read", "bash"]);
+  });
+
+  test("the approval flag rides every tool of the node", async () => {
+    const minted = await mintNode({ name: "web01", facts: FACTS });
+    if (!minted.ok) throw new Error("mint failed");
+    const nodeId = minted.minted.record.nodeId;
+    connect(nodeId);
+
+    expect(nodeToolsFor(nodeId)?.every((t) => t.requiresApproval === undefined)).toBe(true);
+    await setNodeAccess(nodeId, { approval: true });
+    expect(nodeToolsFor(nodeId)?.every((t) => t.requiresApproval === true)).toBe(true);
+    await setNodeAccess(nodeId, { approval: false });
+    expect(nodeToolsFor(nodeId)?.every((t) => t.requiresApproval === undefined)).toBe(true);
   });
 
   test("executing a tool sends the call and returns the answer", async () => {

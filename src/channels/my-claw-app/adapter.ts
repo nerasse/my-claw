@@ -277,8 +277,11 @@ import {
   type MyClawAppDeviceDeps,
 } from "./device-handlers.ts";
 import {
+  handleNodesAccessSet,
   handleNodesAdd,
+  handleNodesDescribe,
   handleNodesList,
+  handleNodesRename,
   handleNodesRevoke,
   type MyClawAppNodeDeps,
 } from "./node-handlers.ts";
@@ -2006,6 +2009,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "nodes.revoke":
         this.detach(handleNodesRevoke(this.nodeDeps(), ws, frame.nodeId), "handleNodesRevoke");
+        break;
+      case "nodes.rename":
+        this.detach(handleNodesRename(this.nodeDeps(), ws, frame), "handleNodesRename");
+        break;
+      case "nodes.describe":
+        this.detach(handleNodesDescribe(this.nodeDeps(), ws, frame), "handleNodesDescribe");
+        break;
+      case "nodes.access.set":
+        this.detach(handleNodesAccessSet(this.nodeDeps(), ws, frame), "handleNodesAccessSet");
         break;
       case "browser.unblock":
         this.detach(handleBrowserUnblock({

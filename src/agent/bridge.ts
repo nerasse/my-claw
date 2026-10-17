@@ -1651,6 +1651,7 @@ export class AgentBridge implements AgentBackend {
 
     const approvalDecision = await this.approvalManager.decide({
       session: params.session,
+      ...(tool.requiresApproval ? { confirm: true } : {}),
       request: {
         id: params.toolCallId,
         platform: params.message.platform,

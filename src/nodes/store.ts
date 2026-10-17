@@ -82,12 +82,23 @@ export interface MintedNode {
   token: string;
 }
 
+/**
+ * Why a name is not usable, or undefined when it is. One place for the rules, so a rename and a
+ * pairing cannot disagree on what a name may be; `nodeId` excludes the node being renamed.
+ */
+export function nodeNameError(nodeId: string, name: string): string | undefined {
+  const trimmed = name.trim();
+  if (!trimmed) return "a node needs a name";
+  if (trimmed.length > 64) return "node names are at most 64 characters";
+  const taken = nodeRecords().some((record) => record.nodeId !== nodeId && record.name.toLowerCase() === trimmed.toLowerCase());
+  if (taken) return `a node named "${trimmed}" already exists`;
+  return undefined;
+}
+
 export async function mintNode(input: { name: string; facts: NodeFacts }): Promise<{ ok: true; minted: MintedNode } | { ok: false; error: string }> {
+  const invalid = nodeNameError("", input.name);
+  if (invalid) return { ok: false, error: invalid };
   const name = input.name.trim();
-  if (!name) return { ok: false, error: "a node needs a name" };
-  if (name.length > 64) return { ok: false, error: "node names are at most 64 characters" };
-  const taken = nodeRecords().some((record) => record.name.toLowerCase() === name.toLowerCase());
-  if (taken) return { ok: false, error: `a node named "${name}" already exists` };
 
   const nodeId = `node-${randomBytes(4).toString("hex")}`;
   const token = newToken();
@@ -123,6 +134,51 @@ export async function setNodeFacts(nodeId: string, facts: NodeFacts): Promise<vo
   lastSeenWritten.set(nodeId, Date.now());
   await persist();
 }
+
+/** The roster's label for a node. The name rules live in `nodeNameError`. */
+export async function setNodeName(nodeId: string, name: string): Promise<{ ok: boolean; error?: string }> {
+  const record = load().get(nodeId);
+  if (!record) return { ok: false, error: "unknown node" };
+  const invalid = nodeNameError(nodeId, name);
+  if (invalid) return { ok: false, error: invalid };
+  const trimmed = name.trim();
+  if (record.name === trimmed) return { ok: true };
+  record.name = trimmed;
+  await persist();
+  void log("info", "node renamed", { nodeId, name: trimmed });
+  return { ok: true };
+}
+
+/**
+ * What the node's agent may run, and whether running it asks first. `tools: null` removes the
+ * narrowing (everything the machine offers), an empty list exposes nothing.
+ */
+export async function setNodeAccess(
+  nodeId: string,
+  access: { tools?: string[] | null; approval?: boolean },
+): Promise<{ ok: boolean; error?: string }> {
+  const record = load().get(nodeId);
+  if (!record) return { ok: false, error: "unknown node" };
+  if (access.tools !== undefined) {
+    if (access.tools === null) {
+      delete record.tools;
+    } else {
+      const names = [...new Set(access.tools.map((name) => name.trim()).filter(Boolean))];
+      if (names.length > MAX_NODE_TOOLS) return { ok: false, error: `at most ${MAX_NODE_TOOLS} tools` };
+      record.tools = names;
+    }
+  }
+  if (access.approval !== undefined) {
+    if (access.approval) record.approval = true;
+    else delete record.approval;
+  }
+  await persist();
+  void log("info", "node access set", { nodeId, tools: record.tools?.length ?? "all", approval: record.approval === true });
+  return { ok: true };
+}
+
+/** The manifest cap, reused here: a record can never hold more names than a machine can offer. */
+const MAX_NODE_TOOLS = 64;
 
 /** A node is alive; written at most once every five minutes (a pong every 30 s is not news). */
 export async function touchNode(nodeId: string): Promise<void> {

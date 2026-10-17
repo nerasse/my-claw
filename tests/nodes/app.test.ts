@@ -6,14 +6,24 @@ import type { SocketRegistry } from "../../src/channels/my-claw-app/socket-regis
 import type { MyClawAppSessionData } from "../../src/channels/my-claw-app/controllers.ts";
 import type { MyClawAppServerFrame } from "../../src/channels/my-claw-app/types.ts";
 import {
+  handleNodesAccessSet,
   handleNodesAdd,
+  handleNodesDescribe,
   handleNodesList,
+  handleNodesRename,
   handleNodesRevoke,
   nodeFrame,
   type MyClawAppNodeDeps,
 } from "../../src/channels/my-claw-app/node-handlers.ts";
 import { nodeAgentName, removeNodeAgent, writeNodeAgent } from "../../src/nodes/agent.ts";
-import { nodeSummaries, openNodeClaim, revokeNodeForApp } from "../../src/nodes/app.ts";
+import {
+  nodeSummaries,
+  openNodeClaim,
+  renameNodeForApp,
+  revokeNodeForApp,
+  setNodeAccessForApp,
+  setNodeDescriptionForApp,
+} from "../../src/nodes/app.ts";
 import { consumeClaim, resetClaims } from "../../src/nodes/claims.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import { attachNodeSocket, handleNodeFrame, resetNodeHub, type NodeSocketData } from "../../src/nodes/hub.ts";
@@ -183,6 +193,116 @@ describe("node revocation", () => {
   });
 });
 
+describe("node rename", () => {
+  test("the record and the agent file move together", async () => {
+    const { nodeId } = await pairNode();
+    const renamed = await renameNodeForApp(nodeId, "prod web");
+    expect(renamed).toEqual({ ok: true, agent: "node-prod-web" });
+    expect(nodeRecord(nodeId)?.name).toBe("prod web");
+    expect(await nodeAgentName(nodeId)).toBe("node-prod-web");
+  });
+
+  test("the prompt below the header survives the move", async () => {
+    const { nodeId } = await pairNode();
+    await renameNodeForApp(nodeId, "prod web");
+    const text = await Bun.file(join(MY_CLAW_DIR, "agents", "node-prod-web.md")).text();
+    expect(text).toContain(`node: ${nodeId}`);
+    expect(text).toContain("You are the agent of the remote node");
+  });
+
+  test("a name another node already holds is refused", async () => {
+    await pairNode("web01");
+    const second = await pairNode("web02");
+    expect(await renameNodeForApp(second.nodeId, "Web01")).toEqual({ ok: false, error: 'a node named "Web01" already exists' });
+  });
+
+  test("a name whose agent file is taken is refused before anything moves", async () => {
+    const first = await pairNode("web01");
+    const second = await pairNode("web02");
+    expect(second.agent).toBe("node-web02");
+    // web02's file is renamed onto web01's name: the file is there, the rename stops.
+    const renamed = await renameNodeForApp(second.nodeId, "web01");
+    expect(renamed.ok).toBe(false);
+    expect(renamed.error).toContain("already exists");
+    expect(nodeRecord(second.nodeId)?.name).toBe("web02");
+    expect(await nodeAgentName(second.nodeId)).toBe("node-web02");
+    expect(nodeRecord(first.nodeId)?.name).toBe("web01");
+  });
+
+  test("renaming to the same name is a no-op, not an error", async () => {
+    const { nodeId, agent } = await pairNode();
+    expect(await renameNodeForApp(nodeId, "  web01  ")).toEqual({ ok: true, agent });
+  });
+
+  test("an unknown node is refused", async () => {
+    expect(await renameNodeForApp("nope", "web01")).toEqual({ ok: false, error: "unknown node" });
+  });
+});
+
+describe("node description", () => {
+  test("only the description line is rewritten", async () => {
+    const { nodeId } = await pairNode();
+    expect(await setNodeDescriptionForApp(nodeId, "The build box. Never touch /etc.")).toEqual({ ok: true });
+    const text = await Bun.file(join(MY_CLAW_DIR, "agents", "node-web01.md")).text();
+    expect(text).toContain('description: The build box. Never touch /etc.');
+    expect(text).toContain("base: node");
+    expect(text).toContain(`node: ${nodeId}`);
+    expect(text).toContain("You are the agent of the remote node");
+    expect((await nodeSummaries())[0]?.description).toBe("The build box. Never touch /etc.");
+  });
+
+  test("a description is one line by construction", async () => {
+    const { nodeId } = await pairNode();
+    await setNodeDescriptionForApp(nodeId, "  two\nlines   here  ");
+    const text = await Bun.file(join(MY_CLAW_DIR, "agents", "node-web01.md")).text();
+    expect(text).toContain("description: two lines here");
+  });
+
+  test("an empty description is refused", async () => {
+    const { nodeId } = await pairNode();
+    expect(await setNodeDescriptionForApp(nodeId, "   ")).toEqual({ ok: false, error: "a description is required" });
+  });
+
+  test("a node without an agent file is refused", async () => {
+    const { nodeId } = await pairNode();
+    await removeNodeAgent(nodeId);
+    expect(await setNodeDescriptionForApp(nodeId, "anything")).toEqual({ ok: false, error: "this node has no agent file" });
+  });
+});
+
+describe("node access", () => {
+  test("an exposed subset and the approval flag are stored, and read back", async () => {
+    const { nodeId } = await pairNode();
+    expect(await setNodeAccessForApp(nodeId, { tools: ["read"], approval: true })).toEqual({ ok: true });
+    const summary = (await nodeSummaries())[0];
+    expect(summary?.exposed).toEqual(["read"]);
+    expect(summary?.approval).toBe(true);
+    const frame = nodeFrame(summary!);
+    expect(frame.exposed).toEqual(["read"]);
+    expect(frame.approval).toBe(true);
+  });
+
+  test("null removes the narrowing, false removes the flag", async () => {
+    const { nodeId } = await pairNode();
+    await setNodeAccessForApp(nodeId, { tools: ["read"], approval: true });
+    await setNodeAccessForApp(nodeId, { tools: null, approval: false });
+    const summary = (await nodeSummaries())[0];
+    expect(summary?.exposed).toBeUndefined();
+    expect(summary?.approval).toBeUndefined();
+    expect(nodeRecord(nodeId)?.tools).toBeUndefined();
+  });
+
+  test("an empty list is a decision: nothing exposed", async () => {
+    const { nodeId } = await pairNode();
+    expect(await setNodeAccessForApp(nodeId, { tools: [] })).toEqual({ ok: true });
+    expect(nodeRecord(nodeId)?.tools).toEqual([]);
+  });
+
+  test("an unknown node is refused", async () => {
+    expect(await setNodeAccessForApp("nope", { approval: true })).toEqual({ ok: false, error: "unknown node" });
+  });
+});
+
 describe("node frames", () => {
   test("the roster answers the list frame", async () => {
     await pairNode();
@@ -222,5 +342,45 @@ describe("node frames", () => {
     const app = fakeAppSocket();
     await handleNodesRevoke(deps(), app.ws, "nope");
     expect(app.frames[0]).toMatchObject({ type: "nodes.revoke.result", ok: false, error: "unknown node" });
+  });
+
+  test("rename answers the new agent name and mirrors the roster", async () => {
+    const { nodeId } = await pairNode();
+    const app = fakeAppSocket();
+    const other = fakeAppSocket();
+    await handleNodesRename(deps({ sockets: [app, other] }), app.ws, { nodeId, name: "prod web" });
+    expect(app.frames[0]).toMatchObject({ type: "nodes.rename.result", ok: true, nodeId, name: "prod web", agent: "node-prod-web" });
+    const mirror = other.frames[0] as { type: string; nodes: Array<{ name: string; agent: string }> };
+    expect(mirror.type).toBe("nodes.list.result");
+    expect(mirror.nodes[0]).toMatchObject({ name: "prod web", agent: "node-prod-web" });
+  });
+
+  test("a refused rename says why and changes nothing", async () => {
+    await pairNode("web01");
+    const second = await pairNode("web02");
+    const app = fakeAppSocket();
+    await handleNodesRename(deps(), app.ws, { nodeId: second.nodeId, name: "web01" });
+    expect(app.frames[0]).toMatchObject({ type: "nodes.rename.result", ok: false, error: 'a node named "web01" already exists' });
+    expect(nodeRecord(second.nodeId)?.name).toBe("web02");
+  });
+
+  test("describe writes the line and mirrors", async () => {
+    const { nodeId } = await pairNode();
+    const app = fakeAppSocket();
+    await handleNodesDescribe(deps(), app.ws, { nodeId, description: "Build box" });
+    expect(app.frames[0]).toMatchObject({ type: "nodes.describe.result", ok: true, nodeId });
+    expect((await nodeSummaries())[0]?.description).toBe("Build box");
+  });
+
+  test("access.set takes the subset and the flag, refusing what is not there", async () => {
+    const { nodeId } = await pairNode();
+    const app = fakeAppSocket();
+    await handleNodesAccessSet(deps(), app.ws, { nodeId, tools: ["read", 42, "read"], approval: true });
+    expect(app.frames[0]).toMatchObject({ type: "nodes.access.set.result", ok: true, nodeId });
+    expect(nodeRecord(nodeId)?.tools).toEqual(["read"]);
+    expect(nodeRecord(nodeId)?.approval).toBe(true);
+    const refused = fakeAppSocket();
+    await handleNodesAccessSet(deps(), refused.ws, { nodeId: "nope", approval: true });
+    expect(refused.frames[0]).toMatchObject({ type: "nodes.access.set.result", ok: false, error: "unknown node" });
   });
 });

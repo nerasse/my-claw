@@ -1,5 +1,6 @@
 import type { Tool } from "../tools/types.ts";
 import { callNodeTool, nodeFactsOf, nodeNameOf } from "./hub.ts";
+import { nodeRecord } from "./store.ts";
 
 /**
  * The tools of a connected node, as the agent of that node sees them.
@@ -14,14 +15,20 @@ export function nodeToolsFor(
 ): Tool[] | null {
   const facts = nodeFactsOf(nodeId);
   if (!facts) return null;
+  const record = nodeRecord(nodeId);
+  const exposed = record?.tools;
+  const approval = record?.approval === true;
   const name = nodeNameOf(nodeId);
 
-  let tools: Tool[] = facts.tools.map((manifest) => ({
-    name: manifest.name,
-    description: `${manifest.description}\n\nThis tool runs on the remote node "${name}", not on this machine.`,
-    parameters: manifest.parameters,
-    execute: (args) => callNodeTool(nodeId, manifest.name, args, { signal: signalOf(args) }),
-  }));
+  let tools: Tool[] = facts.tools
+    .filter((manifest) => !exposed || exposed.includes(manifest.name))
+    .map((manifest) => ({
+      name: manifest.name,
+      description: `${manifest.description}\n\nThis tool runs on the remote node "${name}", not on this machine.`,
+      parameters: manifest.parameters,
+      ...(approval ? { requiresApproval: true } : {}),
+      execute: (args) => callNodeTool(nodeId, manifest.name, args, { signal: signalOf(args) }),
+    }));
 
   // The file's `tools:` narrows the manifest exactly like it narrows a local baseline, and the
   // config denylist applies on top: a name outside the set is dropped, never added.

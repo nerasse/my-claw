@@ -230,3 +230,41 @@ test("bash concurrent prompts are NOT coalesced (per-invocation)", async () => {
   await Promise.all([p1, p2, p3]);
   assert.equal(callCount, 3, "each bash command is reviewed individually");
 });
+
+test("a tool that asks for itself is confirmed without the blacklist naming it", async () => {
+  let called = false;
+  const mgr = new ToolApprovalManager([], async () => {
+    called = true;
+    return "allow-once";
+  });
+  const decision = await mgr.decide({
+    session: createSession(),
+    request: createRequest("read"),
+    confirm: true,
+  });
+  assert.equal(decision, "allow-once");
+  assert.equal(called, true, "the remote node's own lock reaches the sheet");
+});
+
+test("a tool that asks for itself with no handler is denied", async () => {
+  const mgr = new ToolApprovalManager([]);
+  const decision = await mgr.decide({
+    session: createSession(),
+    request: createRequest("read"),
+    confirm: true,
+  });
+  assert.equal(decision, "deny");
+});
+
+test("a session grant covers a tool that asks for itself, and only it", async () => {
+  const session = createSession();
+  let calls = 0;
+  const mgr = new ToolApprovalManager([], async () => {
+    calls += 1;
+    return "allow-session";
+  });
+  assert.equal(await mgr.decide({ session, request: createRequest("read"), confirm: true }), "allow-session");
+  assert.equal(await mgr.decide({ session, request: createRequest("read"), confirm: true }), "allow-session");
+  assert.equal(calls, 1, "the second call rides the grant the first one wrote");
+  assert.deepEqual(session.approvedTools, ["read"]);
+});

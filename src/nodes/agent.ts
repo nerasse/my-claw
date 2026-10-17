@@ -1,7 +1,8 @@
-import { readFile, readdir, unlink } from "node:fs/promises";
+import { readFile, readdir, rename, unlink } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
+import { parseFrontmatter } from "../utils/frontmatter.ts";
 import { log } from "../utils/logger.ts";
 import type { NodeFacts, NodeRecord } from "./types.ts";
 
@@ -95,32 +96,85 @@ export async function writeNodeAgent(record: NodeRecord, facts: NodeFacts): Prom
   return base;
 }
 
-/** Every agent file declaring this node: the app shows it, a revocation removes it. */
-async function nodeAgentPaths(nodeId: string): Promise<string[]> {
+/** An agent file of a node: what the app shows, and what a rename or a description edits. */
+export interface NodeAgentFile {
+  name: string;
+  path: string;
+  description?: string;
+}
+
+/** Every agent file declaring this node: the app shows the first, a revocation removes them all. */
+async function nodeAgentFiles(nodeId: string): Promise<NodeAgentFile[]> {
   const dir = nodeAgentsDir();
   const entries = await readdir(dir).catch(() => [] as string[]);
-  const paths: string[] = [];
+  const files: NodeAgentFile[] = [];
   for (const entry of entries) {
     if (!entry.startsWith(NODE_AGENT_PREFIX) || !entry.endsWith(".md")) continue;
     const path = join(dir, entry);
     const text = await readFile(path, "utf-8").catch(() => null);
-    if (text !== null && declaresNode(text, nodeId)) paths.push(path);
+    if (text === null || !declaresNode(text, nodeId)) continue;
+    const description = parseFrontmatter(text)?.fields["description"];
+    files.push({ name: basename(path, ".md"), path, ...(description ? { description } : {}) });
   }
-  return paths;
+  return files;
+}
+
+/** The agent file of a node, absent once it was removed or renamed away. */
+export async function nodeAgentFile(nodeId: string): Promise<NodeAgentFile | undefined> {
+  return (await nodeAgentFiles(nodeId))[0];
 }
 
 /** The name of the node's agent file, absent once it was removed or renamed away. */
 export async function nodeAgentName(nodeId: string): Promise<string | undefined> {
-  const path = (await nodeAgentPaths(nodeId))[0];
-  return path ? basename(path, ".md") : undefined;
+  return (await nodeAgentFile(nodeId))?.name;
+}
+
+/**
+ * Rewrites the `description:` line of the node's agent file, and nothing else: the prompt below
+ * the header is the owner's, and a description is one line by construction.
+ */
+export async function setNodeAgentDescription(nodeId: string, description: string): Promise<{ ok: boolean; error?: string }> {
+  const file = await nodeAgentFile(nodeId);
+  if (!file) return { ok: false, error: "this node has no agent file" };
+  const text = await readFile(file.path, "utf-8").catch(() => null);
+  if (text === null) return { ok: false, error: "the agent file could not be read" };
+  const value = description.trim().replace(/\s+/g, " ");
+  if (!value) return { ok: false, error: "a description is required" };
+  if (value.length > MAX_DESCRIPTION_CHARS) return { ok: false, error: `descriptions are at most ${MAX_DESCRIPTION_CHARS} characters` };
+  const header = /^---\s*\n([\s\S]*?)\n---\s*\n/.exec(text);
+  if (!header) return { ok: false, error: "the agent file has no frontmatter" };
+  const lines = header[1]!.split("\n");
+  const at = lines.findIndex((line) => /^description\s*:/.test(line));
+  if (at === -1) lines.unshift(`description: ${value}`);
+  else lines[at] = `description: ${value}`;
+  await writeFileAtomically(file.path, `---\n${lines.join("\n")}\n---\n${text.slice(header[0].length)}`);
+  void log("info", "node agent described", { nodeId, agent: file.name, chars: value.length });
+  return { ok: true };
+}
+
+/**
+ * Renames the node's agent file to match a new node name, content untouched. A taken name is
+ * refused rather than suffixed: a rename that quietly lands on `node-web-2` is a surprise.
+ */
+export async function renameNodeAgent(nodeId: string, name: string): Promise<{ ok: true; agent: string } | { ok: false; error: string }> {
+  const file = await nodeAgentFile(nodeId);
+  if (!file) return { ok: false, error: "this node has no agent file" };
+  const target = `${NODE_AGENT_PREFIX}${slugify(name)}`;
+  if (target === file.name) return { ok: true, agent: file.name };
+  const path = join(nodeAgentsDir(), `${target}.md`);
+  const taken = await readFile(path, "utf-8").catch(() => null);
+  if (taken !== null) return { ok: false, error: `an agent file named ${target} already exists` };
+  await rename(file.path, path);
+  void log("info", "node agent renamed", { nodeId, from: file.name, to: target });
+  return { ok: true, agent: target };
 }
 
 /** Revocation takes the agent with it; only a file declaring this node is ever removed. */
 export async function removeNodeAgent(nodeId: string): Promise<boolean> {
-  const paths = await nodeAgentPaths(nodeId);
-  for (const path of paths) {
-    await unlink(path);
-    void log("info", "node agent removed", { nodeId, path });
+  const files = await nodeAgentFiles(nodeId);
+  for (const file of files) {
+    await unlink(file.path);
+    void log("info", "node agent removed", { nodeId, path: file.path });
   }
-  return paths.length > 0;
+  return files.length > 0;
 }

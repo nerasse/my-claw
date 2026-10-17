@@ -29,6 +29,14 @@ export interface NodeRecord {
   createdAt: string;
   lastSeenAt?: string;
   facts?: NodeFacts;
+  /**
+   * The subset of the machine's tools this server exposes to the node's agent. Absent means every
+   * tool the machine announces; a name the machine does not offer is simply never matched, so the
+   * machine's own config stays the ceiling.
+   */
+  tools?: string[];
+  /** Ask before running anything on that machine (the app's second lock). */
+  approval?: boolean;
 }
 
 /** Node -> server frames. */
