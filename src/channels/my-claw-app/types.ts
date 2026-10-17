@@ -1132,6 +1132,14 @@ export interface MyClawAppNodesAccessSet {
   /** The exposed subset; null removes the narrowing. Absent leaves it as it is. */
   tools?: string[] | null;
   approval?: boolean;
+  /** Switches the node's agent off (true) or back on (false); absent leaves it as it is. */
+  disabled?: boolean;
+}
+
+/** The owner asking a connected node to take the server's build now, window or no window. */
+export interface MyClawAppNodesUpdate {
+  type: "nodes.update";
+  nodeId: string;
 }
 
 export type MyClawAppClientFrame =
@@ -1265,6 +1273,7 @@ export type MyClawAppClientFrame =
   | MyClawAppNodesRename
   | MyClawAppNodesDescribe
   | MyClawAppNodesAccessSet
+  | MyClawAppNodesUpdate
   | MyClawAppSubAgentsReset
   | MyClawAppSubAgentsCallers
   | MyClawAppSubAgentsHandoff
@@ -4026,6 +4035,8 @@ export interface MyClawAppNodeFrame {
   exposed?: string[];
   /** Ask before running anything on that machine. */
   approval?: boolean;
+  /** Its agent does not run; the machine stays connected. */
+  disabled?: boolean;
 }
 
 export interface MyClawAppNodesListResult {
@@ -4068,6 +4079,13 @@ export interface MyClawAppNodesDescribeResult {
 
 export interface MyClawAppNodesAccessSetResult {
   type: "nodes.access.set.result";
+  ok: boolean;
+  nodeId: string;
+  error?: string;
+}
+
+export interface MyClawAppNodesUpdateResult {
+  type: "nodes.update.result";
   ok: boolean;
   nodeId: string;
   error?: string;
@@ -4344,6 +4362,7 @@ export type MyClawAppServerFrame =
   | MyClawAppNodesRenameResult
   | MyClawAppNodesDescribeResult
   | MyClawAppNodesAccessSetResult
+  | MyClawAppNodesUpdateResult
   | MyClawAppError;
 
 /**

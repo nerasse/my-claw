@@ -20,7 +20,7 @@ import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
 import type { FileAgent } from "../../src/agents/types.ts";
 import { attachNodeSocket, handleNodeFrame, resetNodeHub, type NodeSocketData } from "../../src/nodes/hub.ts";
-import { mintNode, nodesFilePath, resetNodesStore } from "../../src/nodes/store.ts";
+import { mintNode, nodesFilePath, resetNodesStore, setNodeAccess } from "../../src/nodes/store.ts";
 import type { NodeFacts } from "../../src/nodes/types.ts";
 
 const config: MyClawConfig = {
@@ -153,4 +153,49 @@ test("a connected node runs with its manifest as the tool set", async () => {
   } finally {
     mock.restore();
   }
+});
+
+test("a disabled node refuses the spawn, and says what to do", async () => {
+  const minted = await mintNode({ name: "web01", facts: FACTS });
+  if (!minted.ok) throw new Error("mint failed");
+  const nodeId = minted.minted.record.nodeId;
+  await setNodeAccess(nodeId, { disabled: true });
+  const runner = runnerFor(nodeAgent(nodeId));
+  const before = subagentSessionIdsSync().length;
+
+  const spawned = await spawnIt(runner);
+  expect(spawned.id).toBe("");
+  expect(spawned.result).toContain('node "web01" is disabled');
+  expect(spawned.result).toContain("Settings > Nodes");
+  expect(subagentSessionIdsSync().length).toBe(before);
+});
+
+test("a disabled node stays refused even while its machine is connected", async () => {
+  const minted = await mintNode({ name: "web01", facts: FACTS });
+  if (!minted.ok) throw new Error("mint failed");
+  const nodeId = minted.minted.record.nodeId;
+  const ws = {
+    data: { node: true as const, nodeId, lastSeen: Date.now() },
+    send: () => undefined,
+    close: () => undefined,
+  } as unknown as ServerWebSocket<NodeSocketData>;
+  attachNodeSocket(ws);
+  handleNodeFrame(ws, JSON.stringify({ type: "node.hello", protocol: 1, facts: FACTS }));
+  await setNodeAccess(nodeId, { disabled: true });
+
+  const spawned = await spawnIt(runnerFor(nodeAgent(nodeId)));
+  expect(spawned.result).toContain("is disabled");
+});
+
+test("turning it back on lets the run start again", async () => {
+  const minted = await mintNode({ name: "web01", facts: FACTS });
+  if (!minted.ok) throw new Error("mint failed");
+  const nodeId = minted.minted.record.nodeId;
+  await setNodeAccess(nodeId, { disabled: true });
+  await setNodeAccess(nodeId, { disabled: false });
+  const runner = runnerFor(nodeAgent(nodeId));
+  const spawned = await spawnIt(runner);
+  // Enabled but offline: the refusal is the offline one, not the disabled one.
+  expect(spawned.result).toContain("offline");
+  expect(spawned.result).not.toContain("disabled");
 });

@@ -37,6 +37,11 @@ export interface NodeRecord {
   tools?: string[];
   /** Ask before running anything on that machine (the app's second lock). */
   approval?: boolean;
+  /**
+   * The node's agent does not run. The machine stays connected -- its version, its tools and its
+   * updates are still visible -- but a spawn is refused, and the catalog says so.
+   */
+  disabled?: boolean;
 }
 
 /** Node -> server frames. */
@@ -52,7 +57,7 @@ export type NodeServerFrame =
   | { type: "node.ping" }
   | { type: "node.bye"; reason: string }
   /** The server runs another version than the node announced: fetch it and restart. */
-  | { type: "node.update"; version: string; target: string };
+  | { type: "node.update"; version: string; target: string; force?: boolean };
 
 export const NODE_PROTOCOL = 1;
 

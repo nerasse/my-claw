@@ -374,18 +374,22 @@ export class SubAgentRunner {
   }
 
   /**
-   * The refusal a `base: node` agent gets while its machine is not connected: no run starts, and
-   * the message names the node and when it was last seen. An agent whose node record is gone
-   * entirely (revoked, file left behind) says that instead, so the fix is the right one.
+   * The refusal a `base: node` agent gets while its machine is not usable: no run starts, and the
+   * message names the node and what to do. A disabled node says so; an offline one says when it
+   * was last seen. An agent whose node record is gone entirely (revoked, file left behind) says
+   * that instead, so the fix is the right one.
    */
   private offlineNodeError(type: SubAgentType, layer?: string): string | undefined {
     const meta = this.agentRegistry?.get(type, layer)?.meta;
     if (meta?.base !== "node" || !meta.node) return undefined;
-    if (nodeOnline(meta.node)) return undefined;
     const record = nodeRecord(meta.node);
     if (!record) {
       return `Error: the node this agent belongs to (${meta.node}) is not paired any more. Remove the agent file, or pair the machine again.`;
     }
+    if (record.disabled === true) {
+      return `Error: node "${record.name}" is disabled. Turn it back on in Settings > Nodes to let its agent run.`;
+    }
+    if (nodeOnline(meta.node)) return undefined;
     const seen = record.lastSeenAt ? `, last seen ${record.lastSeenAt}` : ", never seen";
     return `Error: node "${record.name}" is offline${seen}. It reconnects on its own; try again once it is back.`;
   }

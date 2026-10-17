@@ -155,7 +155,7 @@ export async function setNodeName(nodeId: string, name: string): Promise<{ ok: b
  */
 export async function setNodeAccess(
   nodeId: string,
-  access: { tools?: string[] | null; approval?: boolean },
+  access: { tools?: string[] | null; approval?: boolean; disabled?: boolean },
 ): Promise<{ ok: boolean; error?: string }> {
   const record = load().get(nodeId);
   if (!record) return { ok: false, error: "unknown node" };
@@ -172,8 +172,17 @@ export async function setNodeAccess(
     if (access.approval) record.approval = true;
     else delete record.approval;
   }
+  if (access.disabled !== undefined) {
+    if (access.disabled) record.disabled = true;
+    else delete record.disabled;
+  }
   await persist();
-  void log("info", "node access set", { nodeId, tools: record.tools?.length ?? "all", approval: record.approval === true });
+  void log("info", "node access set", {
+    nodeId,
+    tools: record.tools?.length ?? "all",
+    approval: record.approval === true,
+    disabled: record.disabled === true,
+  });
   return { ok: true };
 }
 

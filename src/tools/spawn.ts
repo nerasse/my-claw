@@ -5,7 +5,7 @@ import { SubAgentRegistry } from "../subagents/registry.ts";
 import type { UnifiedMessage } from "../channels/types.ts";
 import { isAbort, rethrowIfAborted } from "../core/aborted.ts";
 import type { AgentInfo } from "../agents/types.ts";
-import { nodeOnline } from "../nodes/hub.ts";
+import { nodeState } from "../nodes/hub.ts";
 
 const SUGGESTIONS = 5;
 
@@ -59,10 +59,14 @@ export function createSpawnTool(
     // which agents exist, and a file dropped in `agents/` must show up without a restart.
     get description() {
       const catalog = agents();
-      // A node agent whose machine is away cannot run; saying so here spares a spawn that would
-      // only come back with the refusal. docs/remote-nodes.md.
+      // A node agent whose machine is away or switched off cannot run; saying so here spares a
+      // spawn that would only come back with the refusal. docs/remote-nodes.md.
       const types = catalog.length > 0
-        ? `Types:\n${catalog.map((a) => `- ${a.name}: ${a.description}${a.node && !nodeOnline(a.node) ? " [offline]" : ""}`).join("\n")}\n`
+        ? `Types:\n${catalog.map((a) => {
+          if (!a.node) return `- ${a.name}: ${a.description}`;
+          const state = nodeState(a.node);
+          return `- ${a.name}: ${a.description}${state === "online" ? "" : ` [${state}]`}`;
+        }).join("\n")}\n`
         : "";
       return "Spawn a sub-agent. mode='run' = one-shot, answers once and is not meant to be driven again. " +
         "mode='session' = persistent on disk: the answer ends with the id to reuse with send(). " +

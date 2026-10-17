@@ -17,6 +17,14 @@ export type NodeLogger = (level: NodeLogLevel, message: string, data?: Record<st
 
 export class NodeRevokedError extends Error {}
 
+/**
+ * Whether an offer is acted on. A normal one waits out the window (one attempt per version per
+ * half hour); a forced one -- the owner pressing update in the app -- always is.
+ */
+export function shouldApplyUpdate(version: string, force: boolean | undefined, now = Date.now()): boolean {
+  return force === true || canAttemptUpdate(version, now);
+}
+
 export interface RunNodeOptions {
   config: NodeClientConfig;
   token: string;
@@ -162,10 +170,11 @@ async function connectOnce(options: RunNodeOptions, facts: NodeFacts): Promise<v
       }
       if (frame.type === "node.update") {
         // The server runs another version: fetch it through the relay and restart on it. One
-        // attempt per version per window, so a relay that refuses is not hammered.
-        if (!canAttemptUpdate(frame.version)) return;
+        // attempt per version per window, so a relay that refuses is not hammered -- `force` is
+        // the owner asking from the app, which lifts the window rather than being refused by it.
+        if (!shouldApplyUpdate(frame.version, frame.force)) return;
         markUpdateAttempt(frame.version);
-        log("info", "update offered", { version: frame.version, target: frame.target });
+        log("info", "update offered", { version: frame.version, target: frame.target, ...(frame.force === true ? { forced: true } : {}) });
         void applyUpdate({
           server: options.config.server,
           token: options.token,

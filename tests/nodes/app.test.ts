@@ -12,6 +12,7 @@ import {
   handleNodesList,
   handleNodesRename,
   handleNodesRevoke,
+  handleNodesUpdate,
   nodeFrame,
   type MyClawAppNodeDeps,
 } from "../../src/channels/my-claw-app/node-handlers.ts";
@@ -23,7 +24,9 @@ import {
   revokeNodeForApp,
   setNodeAccessForApp,
   setNodeDescriptionForApp,
+  updateNodeForApp,
 } from "../../src/nodes/app.ts";
+import { readAppVersion } from "../../src/core/diagnostics.ts";
 import { consumeClaim, resetClaims } from "../../src/nodes/claims.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 import { attachNodeSocket, handleNodeFrame, resetNodeHub, type NodeSocketData } from "../../src/nodes/hub.ts";
@@ -52,19 +55,23 @@ async function pairNode(name = "web01"): Promise<{ nodeId: string; agent: string
 
 interface FakeNodeSocket {
   ws: ServerWebSocket<NodeSocketData>;
+  sent: Array<Record<string, unknown>>;
   closes: Array<{ code?: number; reason?: string }>;
 }
 
 function fakeNodeSocket(nodeId: string): FakeNodeSocket {
+  const sent: Array<Record<string, unknown>> = [];
   const closes: Array<{ code?: number; reason?: string }> = [];
   const ws = {
     data: { node: true as const, nodeId, lastSeen: Date.now() },
-    send: () => {},
+    send: (raw: string) => {
+      sent.push(JSON.parse(raw) as Record<string, unknown>);
+    },
     close: (code?: number, reason?: string) => {
       closes.push({ code, reason });
     },
   };
-  return { ws: ws as unknown as ServerWebSocket<NodeSocketData>, closes };
+  return { ws: ws as unknown as ServerWebSocket<NodeSocketData>, sent, closes };
 }
 
 interface FakeAppSocket {
@@ -382,5 +389,68 @@ describe("node frames", () => {
     const refused = fakeAppSocket();
     await handleNodesAccessSet(deps(), refused.ws, { nodeId: "nope", approval: true });
     expect(refused.frames[0]).toMatchObject({ type: "nodes.access.set.result", ok: false, error: "unknown node" });
+  });
+});
+
+describe("node disabled", () => {
+  test("the flag is stored, and read back on the summary and the frame", async () => {
+    const { nodeId } = await pairNode();
+    expect(await setNodeAccessForApp(nodeId, { disabled: true })).toEqual({ ok: true });
+    const summary = (await nodeSummaries())[0];
+    expect(summary?.disabled).toBe(true);
+    expect(nodeFrame(summary!).disabled).toBe(true);
+    await setNodeAccessForApp(nodeId, { disabled: false });
+    expect((await nodeSummaries())[0]?.disabled).toBeUndefined();
+    expect(nodeRecord(nodeId)?.disabled).toBeUndefined();
+  });
+
+  test("the frame carries it too", async () => {
+    const { nodeId } = await pairNode();
+    const app = fakeAppSocket();
+    await handleNodesAccessSet(deps(), app.ws, { nodeId, disabled: true });
+    expect(app.frames[0]).toMatchObject({ type: "nodes.access.set.result", ok: true, nodeId });
+    expect(nodeRecord(nodeId)?.disabled).toBe(true);
+  });
+});
+
+describe("forcing an update", () => {
+  test("an unknown node is refused", async () => {
+    expect(await updateNodeForApp("nope")).toEqual({ ok: false, error: "unknown node" });
+  });
+
+  test("an offline node is refused", async () => {
+    const { nodeId } = await pairNode();
+    expect(await updateNodeForApp(nodeId)).toEqual({ ok: false, error: "the node is offline" });
+  });
+
+  test("a node already on the server's version is told so", async () => {
+    const version = await readAppVersion();
+    const minted = await mintNode({ name: "web01", facts: { ...FACTS, version } });
+    if (!minted.ok) throw new Error("mint failed");
+    const nodeId = minted.minted.record.nodeId;
+    const socket = fakeNodeSocket(nodeId);
+    attachNodeSocket(socket.ws);
+    handleNodeFrame(socket.ws, JSON.stringify({ type: "node.hello", protocol: 1, facts: { ...FACTS, version } }));
+    expect(await updateNodeForApp(nodeId)).toEqual({ ok: false, error: `the node already runs ${version}` });
+  });
+
+  test("a node behind the server is offered the build, forced", async () => {
+    const { nodeId } = await pairNode();
+    const socket = fakeNodeSocket(nodeId);
+    attachNodeSocket(socket.ws);
+    handleNodeFrame(socket.ws, JSON.stringify({ type: "node.hello", protocol: 1, facts: FACTS }));
+    const offered = await updateNodeForApp(nodeId);
+    expect(offered.ok).toBe(true);
+    // The hello offers the build best-effort, asynchronously and without force: what the owner's
+    // press adds is exactly one forced offer.
+    const forced = socket.sent.filter((frame) => frame["type"] === "node.update" && frame["force"] === true);
+    expect(forced).toHaveLength(1);
+    expect(forced[0]).toMatchObject({ version: await readAppVersion(), target: "linux-x64" });
+  });
+
+  test("the frame answers with the refusal", async () => {
+    const app = fakeAppSocket();
+    await handleNodesUpdate(deps(), app.ws, { nodeId: "nope" });
+    expect(app.frames[0]).toMatchObject({ type: "nodes.update.result", ok: false, error: "unknown node" });
   });
 });

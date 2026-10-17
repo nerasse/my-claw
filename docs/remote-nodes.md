@@ -175,9 +175,17 @@ announces, its agent file, when it was last seen -- and opens a page for it:
   A name another node or another agent file already holds is refused rather than suffixed; the
   prompt below the header is never rewritten.
 - **Description**: the `description:` line of the agent file, which is what the spawn catalog
-  shows the orchestrator. One line by construction; the prompt below it is the owner's.
+  shows the orchestrator. One line by construction; the prompt below it is the owner's. The
+  guided fields (what it is for, what it reaches, what must never be touched) compose that line
+  from three answers, and the result stays editable before it is saved.
+- **Enabled**: off means the node's agent does not run -- a spawn is refused with that reason, and
+  the catalog reads `[disabled]`. The machine stays paired and connected: its version, its tools
+  and its updates are all still visible, and nothing else changes.
 - **What it may run**: per tool, exposed or not, and one switch to ask before running anything
   there. A tool left out is absent from the agent's set, never added back.
+- **Update now**: offered for a connected node behind the server's version. The client retries a
+  version once per half hour; this asks it right away (`node.update { force: true }`), which is
+  the way out of a download that failed mid-flight.
 - **Revoke**: closes the socket at once, drops the record and removes the agent file. The client
   stays installed on that machine.
 
@@ -214,8 +222,8 @@ Every remote call is journaled (node, tool, arguments, outcome). Results are unt
 
 - One generated agent per node, `node-<name>`, with a new base `node`. Its tools are the node's
   tools, executed remotely; no local tool leaks in.
-- The spawn catalog shows name, description and online state. The orchestrator delegates as it
-  does to the browser agent.
+- The spawn catalog shows name, description, online state and `[disabled]`, so the orchestrator
+  does not pick an agent that cannot run.
 - The generated description carries the facts from the handshake and says what is missing; the
   Nodes screen writes the `description:` line (one line, the spawn catalog's words), and the
   prompt below it stays editable like any file agent.
@@ -267,7 +275,9 @@ Scheduled Task would not, so there the node hands the new binary its own detache
 
 Best-effort by design: a refused download or a binary that fails its check leaves the old build
 serving (one attempt per version every half hour), and the protocol number in the hello is what
-actually refuses an incompatible client. Re-running the installer stays the manual path.
+actually refuses an incompatible client. Re-running the installer stays the manual path, and the
+app's per-node "Update now" is the immediate one: it offers the same frame with `force: true`,
+which lifts the client's window for an attempt the owner asked for.
 
 ## Install
 
@@ -386,10 +396,6 @@ nodes are different things and are named apart.
 
 What is left, and who owns it:
 
-- **Forcing an update from the app.** The client tries a version once per half hour; a run stuck
-  mid-download waits for the window. A manual "update now" needs a `force` flag on
-  `node.update`, honoured by the client, and a per-node button -- the owner asked for it
-  (2026-10-15) and it is not built.
 - **The installers on macOS and Windows.** Written, never run here: no such machine. First real
   install proves them.
 - **mTLS.** The server issues the certificate and reads the proxy's verdict; no deployment uses

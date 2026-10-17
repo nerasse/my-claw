@@ -7,6 +7,7 @@ import {
   revokeNodeForApp,
   setNodeAccessForApp,
   setNodeDescriptionForApp,
+  updateNodeForApp,
   type NodeSummary,
 } from "../../nodes/app.ts";
 import type { MyClawAppSessionData } from "./controllers.ts";
@@ -39,6 +40,7 @@ export function nodeFrame(summary: NodeSummary): MyClawAppNodeFrame {
     ...(summary.description ? { description: summary.description } : {}),
     ...(summary.exposed ? { exposed: summary.exposed } : {}),
     ...(summary.approval ? { approval: true } : {}),
+    ...(summary.disabled ? { disabled: true } : {}),
   };
 }
 
@@ -116,14 +118,16 @@ export async function handleNodesDescribe(
 export async function handleNodesAccessSet(
   d: MyClawAppNodeDeps,
   ws: ServerWebSocket<MyClawAppSessionData>,
-  frame: { nodeId?: unknown; tools?: unknown; approval?: unknown },
+  frame: { nodeId?: unknown; tools?: unknown; approval?: unknown; disabled?: unknown },
 ): Promise<void> {
   const nodeId = typeof frame.nodeId === "string" ? frame.nodeId : "";
   const tools = frame.tools === null ? null : Array.isArray(frame.tools) ? frame.tools.filter((name): name is string => typeof name === "string") : undefined;
   const approval = typeof frame.approval === "boolean" ? frame.approval : undefined;
+  const disabled = typeof frame.disabled === "boolean" ? frame.disabled : undefined;
   const written = await setNodeAccessForApp(nodeId, {
     ...(tools !== undefined ? { tools } : {}),
     ...(approval !== undefined ? { approval } : {}),
+    ...(disabled !== undefined ? { disabled } : {}),
   });
   d.sendFrame(ws, {
     type: "nodes.access.set.result",
@@ -132,6 +136,22 @@ export async function handleNodesAccessSet(
     ...(written.error ? { error: written.error } : {}),
   });
   if (written.ok) await mirrorNodesList(d, ws);
+}
+
+/** The owner asking a connected node to take the server's build now, window or no window. */
+export async function handleNodesUpdate(
+  d: MyClawAppNodeDeps,
+  ws: ServerWebSocket<MyClawAppSessionData>,
+  frame: { nodeId?: unknown },
+): Promise<void> {
+  const nodeId = typeof frame.nodeId === "string" ? frame.nodeId : "";
+  const offered = await updateNodeForApp(nodeId);
+  d.sendFrame(ws, {
+    type: "nodes.update.result",
+    ok: offered.ok,
+    nodeId,
+    ...(offered.error ? { error: offered.error } : {}),
+  });
 }
 
 /** The roster after a revocation, to the owner's other windows: the row they show is gone. */

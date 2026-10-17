@@ -7,7 +7,7 @@
 import type { NodesConfig } from "../core/config.ts";
 import { nodeAgentFile, removeNodeAgent, renameNodeAgent, setNodeAgentDescription } from "./agent.ts";
 import { openClaim } from "./claims.ts";
-import { closeNodeSocket, nodeFactsOf, nodeOnline } from "./hub.ts";
+import { closeNodeSocket, nodeFactsOf, nodeOnline, offerNodeUpdateNow } from "./hub.ts";
 import { nodeNameError, nodeRecord, nodeRecords, revokeNode, setNodeAccess, setNodeName } from "./store.ts";
 import type { NodeFacts } from "./types.ts";
 
@@ -27,6 +27,8 @@ export interface NodeSummary {
   exposed?: string[];
   /** Ask before running anything on that machine. */
   approval?: boolean;
+  /** Its agent does not run; the machine stays connected. */
+  disabled?: boolean;
 }
 
 export async function nodeSummaries(): Promise<NodeSummary[]> {
@@ -45,6 +47,7 @@ export async function nodeSummaries(): Promise<NodeSummary[]> {
       ...(file?.description ? { description: file.description } : {}),
       ...(record.tools ? { exposed: record.tools } : {}),
       ...(record.approval ? { approval: true } : {}),
+      ...(record.disabled ? { disabled: true } : {}),
     };
   }));
 }
@@ -84,9 +87,15 @@ export async function setNodeDescriptionForApp(nodeId: string, description: stri
 /** What the node's agent may run, and whether running it asks first. */
 export async function setNodeAccessForApp(
   nodeId: string,
-  access: { tools?: string[] | null; approval?: boolean },
+  access: { tools?: string[] | null; approval?: boolean; disabled?: boolean },
 ): Promise<{ ok: boolean; error?: string }> {
   return setNodeAccess(nodeId, access);
+}
+
+/** The owner asking a connected node to take the server's build now, window or no window. */
+export async function updateNodeForApp(nodeId: string): Promise<{ ok: boolean; error?: string }> {
+  if (!nodeRecord(nodeId)) return { ok: false, error: "unknown node" };
+  return offerNodeUpdateNow(nodeId);
 }
 
 /**

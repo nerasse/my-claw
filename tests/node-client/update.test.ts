@@ -9,6 +9,7 @@ import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { applyUpdate, canAttemptUpdate, markUpdateAttempt, resetUpdateGuard } from "../../src/node-client/update.ts";
+import { shouldApplyUpdate } from "../../src/node-client/connection.ts";
 
 const VERSION = "0.7.114";
 
@@ -126,4 +127,13 @@ describe("node self-update", () => {
     expect(canAttemptUpdate(VERSION, base + 31 * 60_000)).toBe(true);
     expect(canAttemptUpdate("0.7.115", base)).toBe(true);
   });
+});
+
+test("a forced offer is acted on inside the window, a normal one waits it out", () => {
+  resetUpdateGuard();
+  const base = Date.now();
+  markUpdateAttempt(VERSION, base);
+  expect(canAttemptUpdate(VERSION, base + 60_000)).toBe(false);
+  expect(shouldApplyUpdate(VERSION, undefined, base + 60_000)).toBe(false);
+  expect(shouldApplyUpdate(VERSION, true, base + 60_000)).toBe(true);
 });

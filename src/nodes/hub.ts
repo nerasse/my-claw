@@ -155,6 +155,36 @@ export function nodeOnline(nodeId: string): boolean {
 }
 
 /**
+ * How a node reads from the outside, for the catalog and for a spawn: a disabled node stays
+ * connected (its version, its tools, its updates are all still visible) but its agent does not
+ * run. Revoking is the other thing -- that takes the record away entirely.
+ */
+export function nodeState(nodeId: string): "online" | "offline" | "disabled" {
+  if (nodeRecord(nodeId)?.disabled === true) return "disabled";
+  return live.has(nodeId) ? "online" : "offline";
+}
+
+/**
+ * Offers the server's build to a connected node right now, at the owner's request: the retry a
+ * node that failed its download would otherwise wait half an hour for. `force` is what lifts the
+ * node's own window, and the node still proves the new binary before it swaps it in.
+ */
+export async function offerNodeUpdateNow(nodeId: string): Promise<{ ok: boolean; error?: string }> {
+  const entry = live.get(nodeId);
+  if (!entry) return { ok: false, error: "the node is offline" };
+  const facts = entry.facts;
+  if (!facts) return { ok: false, error: "the node has not announced itself yet" };
+  const serverVersion = await readAppVersion();
+  if (!/^\d+\.\d+\.\d+$/.test(serverVersion)) return { ok: false, error: "this server's version is unknown" };
+  if (facts.version === serverVersion) return { ok: false, error: `the node already runs ${serverVersion}` };
+  const target = nodeTargetFor(facts.os, facts.arch);
+  if (!target) return { ok: false, error: `no build is published for ${facts.os} ${facts.arch}` };
+  void log("info", "node update forced", { nodeId, from: facts.version, to: serverVersion, target });
+  send(entry.ws, { type: "node.update", version: serverVersion, target, force: true });
+  return { ok: true };
+}
+
+/**
  * A node of another version than this server is offered the build this server runs, on every
  * connect: the release carries the client beside the tarball, so "aligned" has one answer. The
  * frame is best-effort -- the node keeps serving from its old binary if the fetch fails, and the
