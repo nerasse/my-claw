@@ -85,6 +85,22 @@ cp "${SCRIPT_DIR}/templates/"*.timer "${TAR_DIR}/templates/"
 chmod 644 "${TAR_DIR}/templates/"*.service "${TAR_DIR}/templates/"*.timer
 
 # Build tarball
+#
+# ripgrep rides in the tree: it is the search tool's engine (docs/search.md), and fetching it
+# here rather than at runtime keeps an installed tree answering searches offline and on the
+# pinned version. Where the file is absent (a dev checkout), the tool falls back to PATH, a
+# cached copy, or a checksum-pinned download, then to GNU grep.
+RG_VERSION=14.1.1
+RG_SHA256=4cf9f2741e6c465ffdb7c26f38056a59e2a2544b51f7cc128ef28337eeae4d8e
+RG_ASSET="ripgrep-${RG_VERSION}-x86_64-unknown-linux-musl"
+mkdir -p "${TAR_DIR}/vendor/ripgrep"
+curl -fsSL "https://github.com/BurntSushi/ripgrep/releases/download/${RG_VERSION}/${RG_ASSET}.tar.gz" -o "${BUILD_DIR}/${RG_ASSET}.tar.gz"
+echo "${RG_SHA256}  ${BUILD_DIR}/${RG_ASSET}.tar.gz" | sha256sum -c -
+tar xzf "${BUILD_DIR}/${RG_ASSET}.tar.gz" -C "${BUILD_DIR}"
+cp "${BUILD_DIR}/${RG_ASSET}/rg" "${TAR_DIR}/vendor/ripgrep/rg"
+chmod 755 "${TAR_DIR}/vendor/ripgrep/rg"
+rm -rf "${BUILD_DIR}/${RG_ASSET}" "${BUILD_DIR}/${RG_ASSET}.tar.gz"
+
 cd "${BUILD_DIR}"
 tar czf "${TAR_NAME}.tar.gz" "${TAR_NAME}"
 rm -rf "${TAR_NAME}"

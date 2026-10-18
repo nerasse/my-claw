@@ -3,7 +3,22 @@ import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
 import type { NodeToolManifest } from "../nodes/types.ts";
-import { exposedTools, pathAllowed, type NodeClientConfig } from "./config.ts";
+import {
+  capOutput,
+  DEFAULT_IGNORES,
+  describeQuery,
+  executeQuery,
+  expandBraces,
+  firstMissingRoot,
+  joinBatch,
+  normalizeQuery,
+  renderLines,
+  SEARCH_DEFAULT_LIMIT,
+  SEARCH_MAX_LIMIT,
+  type SearchQuery,
+} from "../tools/search-core.ts";
+import { resolveRipgrep } from "../tools/ripgrep.ts";
+import { exposedTools, nodeDir, pathAllowed, type NodeClientConfig } from "./config.ts";
 
 /**
  * The tools a node offers, implemented here rather than imported from the server: this runs on
@@ -36,9 +51,6 @@ const MAX_OUTPUT_BYTES = 1_048_576;
 const MAX_READ_CHARS = 100_000;
 const MAX_SEARCH_DEPTH = 10;
 const MAX_SEARCH_FILE_BYTES = 2 * 1024 * 1024;
-const SEARCH_IGNORES = new Set([".git", "node_modules"]);
-const SEARCH_DEFAULT_LIMIT = 250;
-const SEARCH_MAX_LIMIT = 2000;
 
 function str(args: Record<string, unknown>, key: string): string {
   const value = args[key];
@@ -315,129 +327,231 @@ const applyPatchTool: NodeTool = {
   },
 };
 
-/** `*` and `?` against a file name, the way `find -name` reads them. */
+/** `*` and `?` against a file name, braces expanded first, `find -name` style. */
 function globToRegExp(glob: string): RegExp {
   const escaped = glob.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]");
   return new RegExp(`^${escaped}$`);
 }
 
-async function walkFiles(root: string, recursive: boolean, out: string[], depth = 0): Promise<void> {
+function nameFilters(globs: string[]): RegExp[] {
+  return globs.flatMap((glob) => expandBraces(glob)).map(globToRegExp);
+}
+
+async function walkFiles(root: string, skipDirs: Set<string>, hidden: boolean, out: string[], depth = 0): Promise<void> {
   if (depth > MAX_SEARCH_DEPTH) return;
   const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
-    if (SEARCH_IGNORES.has(entry.name)) continue;
+    if (skipDirs.has(entry.name)) continue;
+    if (hidden && entry.name.startsWith(".")) continue;
     const path = join(root, entry.name);
-    if (entry.isDirectory()) {
-      if (recursive) await walkFiles(path, recursive, out, depth + 1);
-      continue;
-    }
-    if (entry.isFile()) out.push(path);
+    if (entry.isDirectory()) await walkFiles(path, skipDirs, hidden, out, depth + 1);
+    else if (entry.isFile()) out.push(path);
   }
 }
+
+/**
+ * The node's own engine, for a machine where ripgrep could not be resolved or downloaded. It
+ * answers in the same shapes as the shared engine (headers, skip list, messages) but reads files
+ * itself: JavaScript regex, no .gitignore rules, and the result carries a banner saying so.
+ */
+async function collectWithWalker(
+  root: string,
+  query: SearchQuery,
+  signal: AbortSignal,
+): Promise<{ ok: boolean; error?: string; lines: string[] }> {
+  const skipDirs = new Set<string>([...(query.all ? [] : [".git", ...DEFAULT_IGNORES]), ...query.excludeDirs]);
+  const excludes = nameFilters(query.exclude);
+  const includes = query.glob ? nameFilters([query.glob]) : [];
+  const needed = query.offset + query.limit + 1;
+  const lines: string[] = [];
+  let re: RegExp | null = null;
+  if (query.pattern) re = new RegExp(query.pattern, query.ignoreCase ? "i" : "");
+
+  const processFile = async (file: string, applyFilters: boolean): Promise<void> => {
+    const name = basename(file);
+    if (applyFilters) {
+      if (excludes.some((filter) => filter.test(name))) return;
+      if (includes.length > 0 && !includes.some((filter) => filter.test(name))) return;
+    }
+    if (!re) {
+      lines.push(file);
+      return;
+    }
+    const size = (await stat(file).catch(() => null))?.size ?? 0;
+    if (size > MAX_SEARCH_FILE_BYTES) return;
+    const text = await readFile(file, "utf-8").catch(() => null);
+    if (text === null || text.includes("\u0000")) return;
+    const fileLines = text.split("\n");
+    const selected: number[] = [];
+    for (const [index, line] of fileLines.entries()) {
+      const matches = re.test(line);
+      if (matches !== query.invert) selected.push(index);
+    }
+    if (selected.length === 0) return;
+    if (query.mode === "files") {
+      lines.push(file);
+      return;
+    }
+    if (query.mode === "count") {
+      lines.push(`${file}:${selected.length}`);
+      return;
+    }
+    if (query.extract && !query.invert) {
+      const global = new RegExp(query.pattern, query.ignoreCase ? "gi" : "g");
+      for (const index of selected) {
+        for (const match of fileLines[index]!.matchAll(global)) {
+          lines.push(`${file}:${index + 1}:${match[0]}`);
+          if (lines.length >= needed) return;
+        }
+      }
+      return;
+    }
+    const before = query.before || query.context;
+    const after = query.after || query.context;
+    const shown = new Set<number>();
+    for (const index of selected) {
+      for (let i = Math.max(0, index - before); i <= Math.min(fileLines.length - 1, index + after); i++) shown.add(i);
+    }
+    for (const index of [...shown].sort((a, b) => a - b)) {
+      lines.push(`${file}:${index + 1}:${fileLines[index] ?? ""}`);
+      if (lines.length >= needed) return;
+    }
+  };
+
+  try {
+    const info = await stat(root);
+    if (info.isFile()) {
+      await processFile(root, false);
+    } else {
+      const files: string[] = [];
+      await walkFiles(root, skipDirs, !query.all, files);
+      files.sort();
+      for (const file of files) {
+        if (signal.aborted) break;
+        if (lines.length >= needed) break;
+        await processFile(file, true);
+      }
+    }
+  } catch (error) {
+    return { ok: false, error: describeError(error), lines: [] };
+  }
+  return { ok: true, lines };
+}
+
+async function ripgrepForNode(): Promise<string | null> {
+  if (process.env["MY_CLAW_SEARCH_ENGINE"] === "grep") return null;
+  const resolution = await resolveRipgrep({
+    cacheDir: join(nodeDir(), "tools", "ripgrep"),
+    allowDownload: process.env["MY_CLAW_RG_NO_DOWNLOAD"] !== "1",
+  });
+  return resolution?.path ?? null;
+}
+
+const WALKER_BANNER = "[engine: local fallback (ripgrep unavailable): JavaScript regex, no .gitignore rules]\n";
+
+async function runNodeQuery(query: SearchQuery, signal: AbortSignal): Promise<{ ok: boolean; text: string }> {
+  const rgPath = await ripgrepForNode();
+  if (rgPath) return executeQuery(query, { rgPath });
+  const collected: string[] = [];
+  for (const root of query.roots) {
+    const result = await collectWithWalker(root, query, signal);
+    if (!result.ok) return { ok: false, text: result.error ?? "search failed" };
+    collected.push(...result.lines);
+  }
+  return { ok: true, text: WALKER_BANNER + renderLines(query, collected) };
+}
+
+const SINGLE_QUERY_KEYS = [
+  "path", "paths", "pattern", "glob", "mode", "context", "after", "before",
+  "limit", "offset", "ignoreCase", "extract", "invert", "all", "exclude", "excludeDirs",
+] as const;
 
 const searchTool: NodeTool = {
   name: "search",
   description:
-    "Search this machine's files: a JavaScript regex against file contents, or a glob against file " +
-    "names. .git and node_modules are skipped.",
+    "Search this machine's files, ripgrep-backed when available. `pattern` matches file contents " +
+    "(Rust regex with ripgrep; JavaScript regex in the local fallback); `glob` filters file paths " +
+    "(braces like *.{ts,tsx} work) or lists files when `pattern` is omitted.\n" +
+    "Skipped by default: hidden files, .gitignore rules of the machine, and node_modules, " +
+    "__pycache__, vendor, target, dist, build, coverage; `all: true` searches everything.\n" +
+    "Modes: `files` (default) paths only, `count` per-file counts, `content` the matching lines " +
+    "with `context` or `after`/`before`. `paths` searches several roots, `searches` batches " +
+    "queries, `offset` pages through results.",
   parameters: {
     type: "object",
     properties: {
-      path: { type: "string", description: "Directory or file to search in" },
+      path: { type: "string", description: "Directory or file to search in. Defaults to the working directory." },
+      paths: { type: "array", items: { type: "string" }, description: "Extra roots to search in the same call." },
       pattern: { type: "string", description: "Regular expression matched against file contents. Omit to list files by name." },
-      glob: { type: "string", description: "File name pattern (e.g. *.log): filters a content search, or lists files when alone" },
+      glob: { type: "string", description: "File path glob (e.g. *.ts, *.{ts,tsx}): filters a content search, or lists files when pattern is omitted." },
       mode: { type: "string", enum: ["files", "count", "content"], description: "files (default): matching paths only. count: matches per file. content: the matching lines." },
-      limit: { type: "number", description: `Entries returned before the result is cut (default ${SEARCH_DEFAULT_LIMIT}, max ${SEARCH_MAX_LIMIT})` },
-      context: { type: "number", description: "Lines of context around each match, content mode only (max 40)" },
+      context: { type: "number", description: "Symmetric lines of context, content mode only (max 40). Cannot be combined with after/before." },
+      after: { type: "number", description: "Lines shown after each match, content mode only (max 40)." },
+      before: { type: "number", description: "Lines shown before each match, content mode only (max 40)." },
+      limit: { type: "number", description: `Entries (files or lines) returned per query (default ${SEARCH_DEFAULT_LIMIT}, max ${SEARCH_MAX_LIMIT}).` },
+      offset: { type: "number", description: "Entries to skip before the page: pairs with the continuation hint of a cut result." },
       ignoreCase: { type: "boolean", description: "Case-insensitive match" },
-      recursive: { type: "boolean", description: "Search subdirectories (default true)" },
+      extract: { type: "boolean", description: "Content mode only: return just the matched text (-o)." },
+      invert: { type: "boolean", description: "Return non-matching entries instead (-v)." },
+      all: { type: "boolean", description: "Search everything: gitignore rules, hidden files and the default-skipped directories included." },
+      exclude: { type: "array", items: { type: "string" }, description: "Glob patterns of files to skip (e.g. *.log)." },
+      excludeDirs: { type: "array", items: { type: "string" }, description: "Directory names to skip (e.g. node_modules, __pycache__)." },
+      searches: {
+        type: "array",
+        items: { type: "object" },
+        description: "Batch of queries run in one call, each with the same fields as a single search. Results carry one header per query; the shared output budget cuts the batch with a named marker when reached.",
+      },
     },
-    required: ["path"],
   },
-  async execute(args, { config }) {
-    const input = str(args, "path");
-    const pattern = str(args, "pattern").trim();
-    const glob = str(args, "glob").trim();
-    if (!input.trim()) return { ok: false, output: "path is required and cannot be empty." };
-    if (!pattern && !glob) return { ok: false, output: "pattern (file contents) or glob (file names) is required." };
-    const resolved = resolvePath(config, input);
-    if (!pathAllowed(config, resolved)) return { ok: false, output: "", error: `Path outside the allowed roots: ${resolved}` };
-    try {
-      await stat(resolved);
-    } catch {
-      return { ok: false, output: `Path not found: ${resolved}. Check the path exists.` };
-    }
+  async execute(args, { config, signal }) {
+    const resolveRoot = (input: string) => resolvePath(config, input);
+    const defaultRoot = resolvePath(config, ".");
 
-    let regex: RegExp | undefined;
-    if (pattern) {
-      try {
-        regex = new RegExp(pattern, bool(args, "ignoreCase", false) ? "i" : "");
-      } catch (error) {
-        return { ok: false, output: "", error: `Invalid pattern: ${describeError(error)}` };
+    const checkRoots = (query: SearchQuery): string | null => {
+      for (const root of query.roots) {
+        if (!pathAllowed(config, root)) return `Path outside the allowed roots: ${root}`;
       }
-    }
-    const nameFilter = glob ? globToRegExp(glob) : undefined;
-    const mode = (str(args, "mode") || "files") as "files" | "count" | "content";
-    const limit = Math.min(Math.max(1, Math.floor(num(args, "limit", SEARCH_DEFAULT_LIMIT))), SEARCH_MAX_LIMIT);
-    const context = Math.min(Math.max(0, Math.floor(num(args, "context", 0))), 40);
-    const recursive = bool(args, "recursive", true);
+      return null;
+    };
 
-    let files: string[];
-    const info = await stat(resolved);
-    if (info.isFile()) {
-      files = [resolved];
-    } else {
-      files = [];
-      await walkFiles(resolved, recursive, files);
-    }
-    if (nameFilter) files = files.filter((file) => nameFilter.test(basename(file)));
-
-    if (!regex) {
-      const shown = files.slice(0, limit);
-      return { ok: true, output: shown.join("\n") || `No files matching ${JSON.stringify(glob)} under ${resolved}` };
-    }
-
-    const lines: string[] = [];
-    let entries = 0;
-    for (const file of files) {
-      if (entries >= limit) break;
-      const size = (await stat(file).catch(() => null))?.size ?? 0;
-      if (size > MAX_SEARCH_FILE_BYTES) continue;
-      const text = await readFile(file, "utf-8").catch(() => null);
-      if (text === null || text.includes("\u0000")) continue;
-      const fileLines = text.split("\n");
-      const hits: number[] = [];
-      for (const [index, line] of fileLines.entries()) {
-        regex.lastIndex = 0;
-        if (regex.test(line)) hits.push(index);
+    const batchRaw = args["searches"];
+    if (batchRaw !== undefined) {
+      const misuse = SINGLE_QUERY_KEYS.find((key) => args[key] !== undefined);
+      if (misuse) return { ok: false, output: `searches replaces the single-query fields: remove ${JSON.stringify(misuse)}.` };
+      if (!Array.isArray(batchRaw) || batchRaw.length === 0) {
+        return { ok: false, output: "searches must be a non-empty array of query objects." };
       }
-      if (hits.length === 0) continue;
-      if (mode === "files") {
-        lines.push(file);
-        entries += 1;
-        continue;
-      }
-      if (mode === "count") {
-        lines.push(`${file}:${hits.length}`);
-        entries += 1;
-        continue;
-      }
-      const shownLines = new Set<number>();
-      for (const hit of hits) {
-        for (let offset = -context; offset <= context; offset++) {
-          const index = hit + offset;
-          if (index >= 0 && index < fileLines.length) shownLines.add(index);
+      const queries: SearchQuery[] = [];
+      for (const [index, entry] of batchRaw.entries()) {
+        if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+          return { ok: false, output: `searches[${index}] must be an object.` };
         }
+        const normalized = normalizeQuery(entry as Record<string, unknown>, { resolveRoot, defaultRoot });
+        if ("error" in normalized) return { ok: false, output: `searches[${index}]: ${normalized.error}` };
+        const outside = checkRoots(normalized.query);
+        if (outside) return { ok: false, output: "", error: outside };
+        const missing = await firstMissingRoot(normalized.query.roots);
+        if (missing) return { ok: false, output: `searches[${index}]: Path not found: ${missing}. Check the path exists.` };
+        queries.push(normalized.query);
       }
-      for (const index of [...shownLines].sort((a, b) => a - b)) {
-        if (entries >= limit) break;
-        lines.push(`${file}:${index + 1}:${fileLines[index]}`);
-        entries += 1;
+      const parts: { header: string; text: string }[] = [];
+      for (const [index, query] of queries.entries()) {
+        const outcome = await runNodeQuery(query, signal);
+        parts.push({ header: `── [${index + 1}/${queries.length}] ${describeQuery(query)}`, text: outcome.text });
       }
+      return { ok: true, output: joinBatch(parts) };
     }
-    if (lines.length === 0) return { ok: true, output: `No matches for ${JSON.stringify(pattern)} under ${resolved}` };
-    const capped = lines.length >= limit ? `${lines.join("\n")}\n[cut at ${limit} entries]` : lines.join("\n");
-    return { ok: true, output: capped };
+
+    const normalized = normalizeQuery(args, { resolveRoot, defaultRoot });
+    if ("error" in normalized) return { ok: false, output: normalized.error };
+    const query = normalized.query;
+    const outside = checkRoots(query);
+    if (outside) return { ok: false, output: "", error: outside };
+    const missing = await firstMissingRoot(query.roots);
+    if (missing) return { ok: false, output: `Path not found: ${missing}. Check the path exists.` };
+    const outcome = await runNodeQuery(query, signal);
+    if (!outcome.ok) return { ok: false, output: "", error: outcome.text };
+    return { ok: true, output: capOutput(outcome.text) };
   },
 };
 

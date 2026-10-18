@@ -117,7 +117,8 @@ describe("node client tools", () => {
     expect(counts.output).toContain("b.txt:1");
 
     const files = await runTool(config, "search", { path: dir, pattern: "alpha", mode: "files" }, signal());
-    expect(files.output.split("\n").sort()).toEqual([join(dir, "src", "a.ts"), join(dir, "src", "b.txt")]);
+    const fileLines = files.output.split("\n").filter((line) => line.startsWith(dir)).sort();
+    expect(fileLines).toEqual([join(dir, "src", "a.ts"), join(dir, "src", "b.txt")]);
 
     const byGlob = await runTool(config, "search", { path: dir, glob: "*.ts" }, signal());
     expect(byGlob.output).toContain("a.ts");
@@ -134,7 +135,26 @@ describe("node client tools", () => {
     expect(none.output).toContain("No matches");
     const bad = await runTool(config, "search", { path: dir, pattern: "(" }, signal());
     expect(bad.ok).toBe(false);
-    expect(bad.error).toContain("Invalid pattern");
+    expect(bad.error).toMatch(/regex parse error|Rust regex|Invalid pattern/);
+  });
+
+  test("search falls back to the local walker when ripgrep is ruled out", async () => {
+    await mkdir(join(dir, "src"));
+    await mkdir(join(dir, "node_modules"));
+    await writeFile(join(dir, "src", "w.ts"), "const omega = 1;\n");
+    await writeFile(join(dir, "node_modules", "dep.js"), "const omega = 2;\n");
+    const previous = process.env["MY_CLAW_SEARCH_ENGINE"];
+    process.env["MY_CLAW_SEARCH_ENGINE"] = "grep";
+    try {
+      const result = await runTool(config, "search", { path: dir, pattern: "omega", mode: "content" }, signal());
+      expect(result.ok).toBe(true);
+      expect(result.output).toContain("local fallback");
+      expect(result.output).toContain("w.ts:1:const omega = 1;");
+      expect(result.output).not.toContain("node_modules");
+    } finally {
+      if (previous === undefined) delete process.env["MY_CLAW_SEARCH_ENGINE"];
+      else process.env["MY_CLAW_SEARCH_ENGINE"] = previous;
+    }
   });
 
   test("ls lists a directory, read refuses binaries", async () => {

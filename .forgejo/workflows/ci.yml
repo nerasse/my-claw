@@ -67,7 +67,9 @@ jobs:
           # BtbN rolling "latest" GPL build silently broke CI: a republished binary
           # that would not run on the runner, masked by "ffmpeg -version | head -1"
           # (pipe exit is head's 0), left ffmpeg unusable and only the media tests failed.
-          apt-get install -y jq curl ffmpeg
+          # ripgrep is the search tool's engine (docs/search.md): the suite exercises the
+          # real engine here, and the grep fallback when the tool is ruled out.
+          apt-get install -y jq curl ffmpeg ripgrep
           ffmpeg -version
 
       - name: Install Bun

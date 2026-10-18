@@ -58,6 +58,10 @@ try {
 // file exists, so a developer's real token would otherwise turn a mocked-fetch test into a live
 // call against the provider (and make the suite pass or fail depending on the shell it ran in).
 delete process.env["CLAUDE_CODE_OAUTH_TOKEN"];
+
+// The search tool acquires a pinned ripgrep on first use when none is installed; a unit test
+// must never reach the network for it (a machine without rg exercises the grep fallback).
+process.env["MY_CLAW_RG_NO_DOWNLOAD"] = "1";
 delete process.env["GEOAPIFY_API_KEY"];
 delete process.env["GEMINI_API_KEY"];
 
