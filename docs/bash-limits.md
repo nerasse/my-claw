@@ -55,6 +55,14 @@ Three deaths end in SIGKILL and only two are ours to name:
 | `swapMaxBytes` | `2147483648` (2 GiB) | swap one call may use. `0` = none |
 | `tasksMax` | `512` | fork-bomb guard. `0` = none |
 | `cgroup` | `true` | `false` runs the bare spawn of always |
+| `timeoutMs` | `300000` (5 min) | the wall for one call when it passes no `timeout` of its own, clamped to [1000, 3600000] |
+
+One call is killed after its wall unless it passed a `timeout` of its own. The timeout error
+names the wall and the ways past it: re-run with a larger `timeout` (up to 3600000 ms), or detach
+the job with `setsid` and poll its log. The default moved from two minutes to five on
+2026-10-18: builds and test suites outgrew it (278 kills in two months, 182 of them in the
+heaviest September), while detaching stays the pattern for anything that must outlive the call,
+and the tool description now says so.
 
 Zero is two different things on purpose: `memoryMaxBytes: 0` removes a ceiling (systemd spells it
 `infinity`), `swapMaxBytes: 0` forbids swap (systemd spells it `0`). Hot-reloaded with the rest of

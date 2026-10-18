@@ -102,6 +102,12 @@ export interface VoiceConfig {
 /** The box one bash tool call runs in -- docs/bash-limits.md. */
 export interface BashConfig {
   /**
+   * Default wall for one call, in milliseconds, when the tool call passes no `timeout` of its
+   * own (default 300000, clamped to [1000, 3600000]). Builds and test runs outgrow two minutes;
+   * a detached job (setsid) is the way past it entirely.
+   */
+  timeoutMs?: number;
+  /**
    * Memory ceiling for the command and everything it spawns (a cargo build, its rustc children),
    * enforced as a cgroup: the call dies at the ceiling instead of taking the server with it.
    * `0` disables the ceiling (the scope's other limits still apply).

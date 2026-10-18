@@ -6,7 +6,13 @@ import { rethrowIfAborted } from "../core/aborted.ts";
 import { hooks } from "../hooks/index.ts";
 import type { BashConfig } from "../core/config.ts";
 
-const DEFAULT_TIMEOUT_MS = 120_000;
+const DEFAULT_TIMEOUT_MS = 300_000;
+const MAX_TIMEOUT_MS = 3_600_000;
+
+/** A tiny timeout is a 'kill fast' probe; one below a second races the spawn itself. */
+function clampTimeout(value: number): number {
+  return Math.min(Math.max(Math.floor(value), 1_000), MAX_TIMEOUT_MS);
+}
 const MAX_OUTPUT_BYTES = 1_048_576;
 const KILL_GRACE_MS = 2_000;
 
@@ -63,6 +69,8 @@ export interface BashLimits {
   swapMaxBytes: number;
   tasksMax: number;
   cgroup: boolean;
+  /** The wall when a call passes no `timeout` of its own: builds and test runs outgrow two minutes. */
+  timeoutMs: number;
 }
 
 const DEFAULT_MEMORY_MAX_BYTES = 8 * 1024 * 1024 * 1024;
@@ -74,6 +82,7 @@ let limits: BashLimits = {
   swapMaxBytes: DEFAULT_SWAP_MAX_BYTES,
   tasksMax: DEFAULT_TASKS_MAX,
   cgroup: true,
+  timeoutMs: DEFAULT_TIMEOUT_MS,
 };
 
 /** Follows a hot-reloaded `tools.bash`, like the env passthrough above. */
@@ -83,6 +92,7 @@ export function setBashLimits(config?: BashConfig): void {
     swapMaxBytes: config?.swapMaxBytes ?? DEFAULT_SWAP_MAX_BYTES,
     tasksMax: config?.tasksMax ?? DEFAULT_TASKS_MAX,
     cgroup: config?.cgroup ?? true,
+    timeoutMs: config?.timeoutMs && config.timeoutMs > 0 ? clampTimeout(config.timeoutMs) : DEFAULT_TIMEOUT_MS,
   };
 }
 
@@ -170,7 +180,10 @@ export function bashEnv(
 
 export const bashTool: Tool = {
   name: "bash",
-  description: "Execute a shell command",
+  description:
+    "Execute a shell command. The call is killed after a wall (default 5 minutes): pass " +
+    "`timeout` in milliseconds (up to 3600000) for long builds and test runs, and detach with " +
+    "setsid for a job that must outlive the call.",
   parameters: {
     type: "object",
     properties: {
@@ -193,7 +206,7 @@ export const bashTool: Tool = {
     }
     const signal = args["__signal"] as AbortSignal | undefined;
     rethrowIfAborted(undefined, signal);
-    const timeoutMs = num(args, "timeout", DEFAULT_TIMEOUT_MS);
+    const timeoutMs = clampTimeout(num(args, "timeout", limits.timeoutMs));
     const workspaceDir = strOpt(args, "__workspaceDir") ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd();
     const workdirArg = strOpt(args, "workdir");
     let cwd = workspaceDir;
@@ -302,7 +315,13 @@ export const bashTool: Tool = {
       // ours to explain, and saying "memory limit" for a 45-minute timeout would be a lie.
       if (wallHit) {
         const waited = timeoutMs < 60_000 ? `${Math.round(timeoutMs / 1000)} s` : `${Math.round(timeoutMs / 60_000)} min`;
-        return { success: false, output, error: `Command timed out after ${waited} and was killed.` };
+        return {
+          success: false,
+          output,
+          error:
+            `Command timed out after ${waited} and was killed. Long commands: re-run with a larger ` +
+            `timeout (up to ${MAX_TIMEOUT_MS} ms), or detach the job (setsid) and poll its log.`,
+        };
       }
       if (proc.signalCode === "SIGKILL" || exitCode === 137) {
         const ceiling =

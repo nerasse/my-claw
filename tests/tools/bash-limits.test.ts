@@ -14,6 +14,7 @@ const LIMITS: BashLimits = {
   swapMaxBytes: 2 * 1024 * 1024 * 1024,
   tasksMax: 512,
   cgroup: true,
+  timeoutMs: 300_000,
 };
 
 describe("bashArgvFor", () => {
@@ -65,9 +66,11 @@ describe("what a killed call says", () => {
   });
 
   test("the wall says timeout, never memory", async () => {
+    // 400 clamps up to the 1 s floor: a wall shorter than the spawn it guards races itself.
     const result = await bashTool.execute({ command: "sleep 5", timeout: 400 });
     expect(result.success).toBe(false);
-    expect(result.error).toContain("Command timed out after 0 s");
+    expect(result.error).toContain("Command timed out after 1 s");
+    expect(result.error).toContain("setsid");
     expect(result.error).not.toContain("memory limit");
   });
 });
