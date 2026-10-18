@@ -51,7 +51,7 @@ test("read: an absolute path outside workspaceDir is read as asked", async () =>
   }
 });
 
-test("read: caps output at 100KB with a truncation notice", async () => {
+test("read: caps output at 100KB with a truncation notice and a continuation", async () => {
   const { readTool } = await import("../../src/tools/read.ts");
   const { writeFile, mkdir, rm } = await import("node:fs/promises");
   const { join } = await import("node:path");
@@ -62,7 +62,19 @@ test("read: caps output at 100KB with a truncation notice", async () => {
   const result = await readTool.execute({ path: file, __workspaceDir: dir });
   assert.equal(result.success, true);
   assert.ok(result.output.length < 250_000, "output should be capped");
-  assert.match(result.output, /truncated at 100000 chars/);
+  assert.match(result.output, /showing chars 0-100000 of 250000/);
+  assert.match(result.output, /continue with offset: 100000/);
+
+  const page = await readTool.execute({ path: file, __workspaceDir: dir, offset: 100_000 });
+  assert.equal(page.success, true);
+  assert.match(page.output, /showing chars 100000-200000 of 250000/);
+  const tail = await readTool.execute({ path: file, __workspaceDir: dir, offset: 200_000 });
+  assert.equal(tail.success, true);
+  assert.doesNotMatch(tail.output, /showing chars/);
+  assert.equal(tail.output.length, 50_000);
+  const past = await readTool.execute({ path: file, __workspaceDir: dir, offset: 999_999 });
+  assert.equal(past.success, true);
+  assert.match(past.output, /past the end/);
   await rm(dir, { recursive: true, force: true });
 });
 

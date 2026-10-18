@@ -8,7 +8,7 @@ import {
   type ConversationMessage,
 } from "../conversations/store.ts";
 
-const MAX_OUTPUT_CHARS = 32_000;
+const MAX_OUTPUT_CHARS = 64_000;
 
 function stringArg(args: Record<string, unknown>, key: string): string {
   return typeof args[key] === "string" ? args[key] as string : "";

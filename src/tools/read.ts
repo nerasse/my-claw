@@ -1,10 +1,12 @@
 import { readFile, access } from "node:fs/promises";
-import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
+import { type Tool, type ToolResult, str, strOpt, numOpt } from "./types.ts";
 import { resolveWorkspacePath } from "./workspace.ts";
 import { formatError } from "../utils/errors.ts";
 import { hooks } from "../hooks/index.ts";
 
 const MAX_READ_CHARS = 100_000;
+/** Past this, a single text result stops being a read and starts being a context incident. */
+const MAX_READ_LIMIT = 1_000_000;
 
 // The four formats every vision endpoint accepts, sniffed by magic bytes: a screenshot pasted
 // under a name with no extension is still an image, and extension trust is how a text file named
@@ -34,6 +36,14 @@ export const readTool: Tool = {
     type: "object",
     properties: {
       path: { type: "string", description: "Absolute path to the file" },
+      offset: {
+        type: "number",
+        description: "Text files: character offset to start from. A cut read names the offset to continue with.",
+      },
+      limit: {
+        type: "number",
+        description: `Text files: characters to return (default ${MAX_READ_CHARS}, max ${MAX_READ_LIMIT}). Images ignore both.`,
+      },
     },
     required: ["path"],
   },
@@ -67,10 +77,20 @@ export const readTool: Tool = {
       const content = raw.toString("utf-8");
       hooks.emit("tool:file:read", { path: resolved, size: content.length });
       // Cap like the other text tools: one read of a huge log/file must not poison the session.
-      if (content.length > MAX_READ_CHARS) {
-        return { success: true, output: `${content.slice(0, MAX_READ_CHARS)}\n[output truncated at ${MAX_READ_CHARS} chars; file is ${content.length} chars]` };
+      // The truncation hands the caller the exact continuation, so a big file pages instead of
+      // pushing the whole read back into bash sed (owner, 2026-10-18: full flexibility, no errors).
+      const offset = Math.max(0, Math.floor(numOpt(args, "offset") ?? 0));
+      const limit = Math.min(Math.max(1, Math.floor(numOpt(args, "limit") ?? MAX_READ_CHARS)), MAX_READ_LIMIT);
+      if (offset >= content.length && offset > 0) {
+        return { success: true, output: `[offset ${offset} is past the end: the file is ${content.length} chars]` };
       }
-      return { success: true, output: content };
+      if (content.length > offset + limit) {
+        return {
+          success: true,
+          output: `${content.slice(offset, offset + limit)}\n[showing chars ${offset}-${offset + limit} of ${content.length}; continue with offset: ${offset + limit}]`,
+        };
+      }
+      return { success: true, output: content.slice(offset) };
     } catch (e) {
       return { success: false, output: "", error: formatError(`Failed to read "${resolved}"`, e) };
     }
