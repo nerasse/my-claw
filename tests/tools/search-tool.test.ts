@@ -10,7 +10,8 @@ import { expandBraces, joinBatch } from "../../src/tools/search-core.ts";
 // A fixed path under the shared /tmp is one directory for every process on the machine:
 // two concurrent runs (two CI jobs on one runner) delete each other's fixtures mid-test.
 const TMP = mkdtempSync(join(tmpdir(), "my-claw-search-"));
-const HAS_RG = Bun.which("rg") !== null;
+/** Resolved per test: MY_CLAW_SEARCH_ENGINE=grep forces the fallback even where rg exists. */
+const rgActive = () => Bun.which("rg") !== null && process.env["MY_CLAW_SEARCH_ENGINE"] !== "grep";
 
 async function fixture(): Promise<string> {
   await rm(TMP, { recursive: true, force: true });
@@ -27,7 +28,8 @@ async function fixture(): Promise<string> {
   return TMP;
 }
 
-/** The grep fallback is a real configuration (a machine without ripgrep), not an error path. */
+/** The grep fallback is a real configuration (a machine without ripgrep); its banner prefixes
+ *  every result, so a "leads with the count" assertion reads under it. */
 async function withFallback<T>(fn: () => Promise<T>): Promise<T> {
   const previous = process.env["MY_CLAW_SEARCH_ENGINE"];
   process.env["MY_CLAW_SEARCH_ENGINE"] = "grep";
@@ -38,6 +40,8 @@ async function withFallback<T>(fn: () => Promise<T>): Promise<T> {
     else process.env["MY_CLAW_SEARCH_ENGINE"] = previous;
   }
 }
+
+const underBanner = (output: string) => output.replace(/^\[engine: grep fallback[^\n]*\]\n/, "");
 
 test("search: finds a pattern in a file", async () => {
   const dir = await fixture();
@@ -114,7 +118,7 @@ test("search: brace globs work in both engines", async () => {
 test("search: a path glob reads relative to the root", async () => {
   const dir = await fixture();
   const result = await searchTool.execute({ pattern: "beta", path: dir, glob: "src/**/*.ts", mode: "files" });
-  if (!HAS_RG) {
+  if (!rgActive()) {
     // The grep fallback cannot express path globs and says so instead of answering wrong.
     assert.equal(result.success, false);
     assert.match(result.output, /need ripgrep/);
@@ -134,7 +138,7 @@ test("search: a glob alone lists files by name", async () => {
 });
 
 test("search: the defaults skip node_modules and hidden files; all reaches them", async () => {
-  if (!HAS_RG) return;
+  if (!rgActive()) return;
   const dir = await fixture();
   const defaults = await searchTool.execute({ pattern: "beta", path: dir, mode: "files" });
   assert.equal(defaults.success, true);
@@ -177,7 +181,7 @@ test("search: a cut result leads with the count and names the continuation", asy
   await writeFile(join(dir, "many.txt"), ["beta 1", "beta 2", "beta 3", "beta 4"].join("\n") + "\n");
   const result = await searchTool.execute({ pattern: "beta", path: dir, mode: "content", limit: 3 });
   assert.equal(result.success, true);
-  assert.match(result.output, /^\d+ matching line/);
+  assert.match(underBanner(result.output), /^\d+ matching line/);
   assert.match(result.output, /showing results 1-3 of \d+/);
   assert.match(result.output, /offset 3/);
   const page = await searchTool.execute({ pattern: "beta", path: dir, mode: "content", limit: 3, offset: 3 });
@@ -188,9 +192,11 @@ test("search: a cut result leads with the count and names the continuation", asy
 test("search: every mode leads with a count, so a partial answer is visible as partial", async () => {
   const dir = await fixture();
   const files = await searchTool.execute({ pattern: "beta", path: dir, mode: "files" });
-  assert.match(files.output, /^\d+ file\(s\) contain/);
+  assert.match(underBanner(files.output), /^\d+ file\(s\) contain/);
   const count = await searchTool.execute({ pattern: "beta", path: dir, mode: "count" });
-  assert.match(count.output, /^4 match\(es\) in 4 file\(s\)/);
+  // The exact totals assume ripgrep's defaults; the fallback searches hidden files, so only the
+  // shape is guaranteed there (the fallback's own tests pin its behavior).
+  assert.match(underBanner(count.output), rgActive() ? /^4 match\(es\) in 4 file\(s\)/ : /^\d+ match\(es\) in \d+ file\(s\)/);
 });
 
 test("search: extract returns only the matched text", async () => {
@@ -218,7 +224,7 @@ test("search: a miss names what was searched, so a repeat is visible as a repeat
 });
 
 test("search: a miss says what the defaults skipped", async () => {
-  if (!HAS_RG) return;
+  if (!rgActive()) return;
   const dir = await fixture();
   const result = await searchTool.execute({ pattern: "zeta", path: dir, mode: "files" });
   assert.match(result.output, /skipped by default: node_modules/);
@@ -256,7 +262,7 @@ test("search: an invalid regex fails loudly and names the dialect", async () => 
   const dir = await fixture();
   const result = await searchTool.execute({ pattern: "beta(", path: dir, mode: "content" });
   assert.equal(result.success, false);
-  if (HAS_RG) assert.match(result.output, /Rust regex/);
+  if (rgActive()) assert.match(result.output, /Rust regex/);
   await withFallback(async () => {
     const fallback = await searchTool.execute({ pattern: "beta(", path: dir, mode: "content" });
     assert.equal(fallback.success, false);

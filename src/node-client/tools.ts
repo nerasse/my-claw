@@ -452,6 +452,14 @@ const WALKER_BANNER = "[engine: local fallback (ripgrep unavailable): JavaScript
 async function runNodeQuery(query: SearchQuery, signal: AbortSignal): Promise<{ ok: boolean; text: string }> {
   const rgPath = await ripgrepForNode();
   if (rgPath) return executeQuery(query, { rgPath });
+  if (query.pattern) {
+    try {
+      new RegExp(query.pattern);
+    } catch (error) {
+      // ripgrep names its own dialect; the walker's regex is JavaScript and says so the same way.
+      return { ok: false, text: `Invalid pattern: ${describeError(error)}` };
+    }
+  }
   const collected: string[] = [];
   for (const root of query.roots) {
     const result = await collectWithWalker(root, query, signal);
