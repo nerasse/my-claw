@@ -34,6 +34,25 @@ function readBody(req) {
   });
 }
 
+/**
+ * One replay for the races a live page creates: a click that lost its execution context to a
+ * navigation, a target that closed under the action. These fail before the action takes
+ * effect, so a single retry is the difference between an error the agent must reason about
+ * and an answer (measured: 60 "Execution context was destroyed" a month, 2026-10-18).
+ */
+const TRANSIENT_ACTION = /Execution context was destroyed|Cannot find context with specified id|Target (?:page|closed)|frame was detached/i;
+
+async function runHandler(handler, body) {
+  try {
+    return await handler(body);
+  } catch (error) {
+    const message = String(error instanceof Error ? error.message : error);
+    if (!TRANSIENT_ACTION.test(message)) throw error;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    return await handler(body);
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   const path = (req.url || "").replace(/^\//, "").split("?")[0];
   const handler = handlers[path];
@@ -44,7 +63,7 @@ const server = http.createServer(async (req, res) => {
   }
   try {
     const body = req.method === "GET" ? {} : await readBody(req);
-    const result = await handler(body);
+    const result = await runHandler(handler, body);
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify(result ?? {}));
   } catch (e) {

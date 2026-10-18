@@ -70,6 +70,8 @@ function stampFrame({ start }) {
   ];
 
   const lines = [];
+  const entries = [];
+  const seq = new Map();
   let ref = start - 1;
   for (const { el, inViewport } of ordered) {
     ref += 1;
@@ -84,18 +86,45 @@ function stampFrame({ start }) {
       el.getAttribute("name") ||
       ""
     ).replace(/\s+/g, " ").trim().slice(0, 80);
+    // The fingerprint survives renumbering: role, name, and which same-named element this was.
+    const base = `${role}|${name}`;
+    const nth = (seq.get(base) || 0) + 1;
+    seq.set(base, nth);
+    entries.push({ ref, key: `${base}|${nth}` });
     lines.push(`[__ref="${ref}"] ${role} "${name}"${inViewport ? "" : " (offscreen — scroll to reach)"}`);
   }
-  return { lines: lines.join("\n"), used: lines.length };
+  return { lines: lines.join("\n"), used: lines.length, entries };
 }
 
 /** Snapshots every frame of the page with ONE global ref counter, so a ref is unique
  *  across the main document and all iframes. Content inside an iframe is otherwise
  *  invisible to the agent: it lives in a separate JS context. */
-export async function snapshotPage(page) {
+export async function snapshotPage(page, pageId) {
   const ariaTree = await page.locator("body").ariaSnapshot().catch(() => "");
 
+  const { interactive, entries } = await stampFrames(page);
+  rememberRefs(pageId, entries);
+  const raw = interactive
+    ? `${ariaTree}\n\nInteractive elements (click/type by ref):\n${interactive}`
+    : ariaTree;
+  return { raw, refs: extractRefs(raw) };
+}
+
+/** pageId -> (ref -> fingerprint), refreshed on every stamp; small, bounded, per sidecar life. */
+const refKeys = new Map();
+
+function rememberRefs(pageId, entries) {
+  if (!pageId) return;
+  if (!refKeys.has(pageId) && refKeys.size >= 64) {
+    const oldest = refKeys.keys().next().value;
+    if (oldest !== undefined) refKeys.delete(oldest);
+  }
+  refKeys.set(pageId, new Map(entries.map((entry) => [entry.ref, entry.key])));
+}
+
+async function stampFrames(page) {
   const blocks = [];
+  const entries = [];
   let next = 1;
   for (const frame of page.frames()) {
     const result = await frame
@@ -104,14 +133,25 @@ export async function snapshotPage(page) {
     if (!result?.lines) continue;
     const label = frame === page.mainFrame() ? "" : `\n[iframe ${frame.url().slice(0, 120)}]\n`;
     blocks.push(`${label}${result.lines}`);
+    for (const entry of result.entries || []) entries.push(entry);
     next += result.used;
   }
+  return { interactive: blocks.join("\n"), entries };
+}
 
-  const interactive = blocks.join("\n");
-  const raw = interactive
-    ? `${ariaTree}\n\nInteractive elements (click/type by ref):\n${interactive}`
-    : ariaTree;
-  return { raw, refs: extractRefs(raw) };
+/**
+ * A ref that no longer resolves: restamp the page and find the element carrying the same
+ * fingerprint (role, name, nth of that pair). One unique match means the element survived a
+ * re-render under a new number, and the caller retries on it; no match (or a different page)
+ * leaves the caller's stale-ref error untouched. Nothing else on the page is acted on.
+ */
+export async function healRef(page, pageId, ref) {
+  const known = refKeys.get(pageId)?.get(ref);
+  if (!known) return null;
+  const { entries } = await stampFrames(page);
+  rememberRefs(pageId, entries);
+  const matches = entries.filter((entry) => entry.key === known);
+  return matches.length === 1 ? matches[0].ref : null;
 }
 
 /** Locator for a ref plus the frame that owns it, searched across every frame. Playwright

@@ -218,6 +218,13 @@ systemd and Playwright only attaches over CDP, never launches it.
 - **Cross-frame refs**: refs are stamped per frame with ONE global counter and resolved by
   searching every frame, so iframe content is both visible and actionable. Shadow roots are
   walked explicitly when stamping (Playwright's CSS already pierces them when acting).
+- **Self-healing, up to a point** (2026-10-18): a ref that no longer resolves is looked up by
+  its fingerprint (role, name, nth of that pair) after a silent restamp, and the action is
+  retried on the element's new number when the match is unique; an ambiguous or absent match
+  throws the plain stale-ref error. A handler that died on a destroyed execution context or a
+  closed target is replayed once (these fail before the action takes effect). A window another
+  task holds yields to one of the asking run's own windows instead of burning a round-trip on
+  the refusal; a run with no window of its own still gets the refusal and its advice.
 - **Fractional coordinates**: `browser_click_at` takes fractions of the viewport, never pixels.
   Screenshots may be downscaled before reaching the model, which would silently shift pixel
   coordinates; fractions survive any resize. Each screenshot reports the viewport it used.

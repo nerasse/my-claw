@@ -28,7 +28,23 @@ import {
   withFocus,
 } from "./browser.mjs";
 import { OFFSTAGE, go, input, stage, stagedWindows } from "./live.mjs";
-import { injectRefLabels, removeRefLabels, resolveRef, screenshotPath, snapshotPage } from "./snapshot.mjs";
+import { healRef, injectRefLabels, removeRefLabels, resolveRef, screenshotPath, snapshotPage } from "./snapshot.mjs";
+
+/**
+ * Resolve a ref, healing one stale miss first: a re-render renumbers elements, and the
+ * fingerprint (role, name, nth) recovers the same element under its new number. It never
+ * guesses: no unique match throws the original stale-ref error.
+ */
+async function refTarget(pageId, ref) {
+  const page = await getPage(pageId);
+  try {
+    return await resolveRef(page, ref);
+  } catch (error) {
+    const healed = await healRef(page, pageId, ref);
+    if (healed === null) throw error;
+    return await resolveRef(page, healed);
+  }
+}
 
 // Hard floor, independent of config: these would expose the browser session's credentials
 // (cookies, storage, auth headers via request interception) or let the agent escape its own
@@ -95,7 +111,7 @@ export const handlers = {
     }
     const pageId = await adopt(page);
     await settle(page, body.url);
-    return { pageId, snapshot: await snapshotPage(page), url: page.url() };
+    return { pageId, snapshot: await snapshotPage(page, pageId), url: page.url() };
   },
 
   // A real window, in the one context: same profile, same logins, its own tabs and focus.
@@ -111,7 +127,7 @@ export const handlers = {
     const windowId = await windowOf(targetId);
     if (body.onStage === true || (await stagedWindows()).size === 0) await stage(windowId);
     await settle(page, body.url);
-    return { windowId, pageId: targetId, snapshot: await snapshotPage(page), url: page.url() };
+    return { windowId, pageId: targetId, snapshot: await snapshotPage(page, targetId), url: page.url() };
   },
 
   // Asked of the browser, never of the pages: a tab stuck in its own JavaScript answers nothing,
@@ -210,11 +226,12 @@ export const handlers = {
     const page = await getPage(body.pageId);
     await page.reload({ waitUntil: "domcontentloaded", timeout: 30000 });
     await page.waitForLoadState("load", { timeout: 8000 }).catch(() => undefined);
-    return { snapshot: await snapshotPage(page), url: page.url() };
+    return { snapshot: await snapshotPage(page, body.pageId), url: page.url() };
   },
 
   async snapshot(body) {
-    const snapshot = await snapshotPage(await getPage(body.pageId));
+    const page = await getPage(body.pageId);
+    const snapshot = await snapshotPage(page, body.pageId);
     if (!hasChooser(body.pageId)) return snapshot;
     return {
       ...snapshot,
@@ -302,7 +319,7 @@ export const handlers = {
     const query = String(body.query ?? "").toLowerCase();
     if (!query) throw new Error("find needs a query");
     const page = await getPage(body.pageId);
-    const { raw } = await snapshotPage(page);
+    const { raw } = await snapshotPage(page, body.pageId);
     const hits = raw.split("\n").filter((line) => line.toLowerCase().includes(query));
     return {
       query: body.query,
@@ -313,27 +330,26 @@ export const handlers = {
   },
 
   async click(body) {
-    const { locator } = await resolveRef(await getPage(body.pageId), body.ref);
+    const { locator } = await refTarget(body.pageId, body.ref);
     await locator.click();
     return {};
   },
 
   async type(body) {
-    const { locator } = await resolveRef(await getPage(body.pageId), body.ref);
+    const { locator } = await refTarget(body.pageId, body.ref);
     await locator.fill(body.text);
     return {};
   },
 
   async hover(body) {
-    const { locator } = await resolveRef(await getPage(body.pageId), body.ref);
+    const { locator } = await refTarget(body.pageId, body.ref);
     await locator.hover();
     return {};
   },
 
   async drag(body) {
-    const page = await getPage(body.pageId);
-    const from = await resolveRef(page, body.fromRef);
-    const to = await resolveRef(page, body.toRef);
+    const from = await refTarget(body.pageId, body.fromRef);
+    const to = await refTarget(body.pageId, body.toRef);
     await from.locator.dragTo(to.locator);
     return {};
   },
@@ -365,7 +381,7 @@ export const handlers = {
       return { waited: "text" };
     }
     if (body.ref !== undefined && body.ref !== null) {
-      const { locator } = await resolveRef(page, body.ref);
+      const { locator } = await refTarget(body.pageId, body.ref);
       await locator.waitFor({ state: "visible", timeout });
       return { waited: "ref" };
     }
@@ -389,7 +405,7 @@ export const handlers = {
     }
 
     if (body.ref !== undefined && body.ref !== null) {
-      const { locator: target } = await resolveRef(page, body.ref);
+      const { locator: target } = await refTarget(body.pageId, body.ref);
       const kind = await target
         .evaluate((el) => `${el.tagName.toLowerCase()}|${el.getAttribute("type") || ""}`)
         .catch(() => "");
@@ -426,7 +442,7 @@ export const handlers = {
   // Native <select> and custom comboboxes are two different problems wearing the same hat.
   async "select-option"(body) {
     const page = await getPage(body.pageId);
-    const { locator: target, frame } = await resolveRef(page, body.ref);
+    const { locator: target, frame } = await refTarget(body.pageId, body.ref);
     const value = String(body.value);
     const tag = await target.evaluate((el) => el.tagName.toLowerCase()).catch(() => "");
 
@@ -467,7 +483,7 @@ export const handlers = {
   async "press-key"(body) {
     const page = await getPage(body.pageId);
     if (body.ref !== undefined && body.ref !== null) {
-      const { locator } = await resolveRef(page, body.ref);
+      const { locator } = await refTarget(body.pageId, body.ref);
       await locator.press(String(body.key));
     } else {
       await page.keyboard.press(String(body.key));
@@ -478,7 +494,7 @@ export const handlers = {
   async scroll(body) {
     const page = await getPage(body.pageId);
     if (body.ref !== undefined && body.ref !== null) {
-      const { locator } = await resolveRef(page, body.ref);
+      const { locator } = await refTarget(body.pageId, body.ref);
       await locator.scrollIntoViewIfNeeded();
     } else {
       const amount = Number(body.amount ?? 600);

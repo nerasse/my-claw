@@ -429,8 +429,40 @@ export class BrowserWindows {
     if (windowId === undefined || !this.isOpen(windowId)) {
       throw new Error(`There is no window ${alias}. browser_list_windows shows the open ones; browser_new_window opens one.`);
     }
-    this.acquire(sessionOf(args), windowId);
-    return windowId;
+    const session = sessionOf(args);
+    try {
+      this.acquire(session, windowId);
+      return windowId;
+    } catch (error) {
+      // The window it named is another task's (or kept for another conversation). Before
+      // refusing, hand back one of the run's OWN windows: its page and its refs live there, so
+      // an action aimed at "my window" lands on the element it looked at, and the other task's
+      // window is never touched (owner, 2026-10-18: the error already tells the agent to take
+      // a free window; the code now does it). `acquire` stays the judge of what is takeable.
+      for (const candidate of this.windowsOfRun(session)) {
+        if (candidate === windowId) continue;
+        try {
+          this.acquire(session, candidate);
+          return candidate;
+        } catch {
+          // Locked by someone else or held: try the next of its windows.
+        }
+      }
+      throw error;
+    }
+  }
+
+  /** The windows the run already works in, most recently used first: the fallback above. */
+  private windowsOfRun(session: string): number[] {
+    const run = this.runs.get(session);
+    if (!run) return [];
+    return [...run.current.keys()]
+      .filter((windowId) => this.isOpen(windowId))
+      .sort((a, b) => {
+        const pageA = run.current.get(a);
+        const pageB = run.current.get(b);
+        return (this.lastUsed.get(pageB ?? "") ?? 0) - (this.lastUsed.get(pageA ?? "") ?? 0);
+      });
   }
 
   /** A navigation landed on `pageId`: it is the run's page in that window from now on. */

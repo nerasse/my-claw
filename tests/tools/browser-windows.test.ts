@@ -93,6 +93,20 @@ describe("BrowserWindows: holding", () => {
     expect([a, bb]).toEqual(["r1", "r2"]);
   });
 
+  test("the asking run's own free window is the fallback when the named one is another task's", async () => {
+    const b = fakeBrowser([reddit(11, "r1"), reddit(12, "r2")]);
+    const w = new BrowserWindows(b.backend);
+    w.beginRun("A");
+    w.beginRun("B");
+    expect(await w.page(run("A", 1))).toBe("r1");
+    expect(await w.page(run("B", 2))).toBe("r2");
+    // B names A's window: it keeps working in its own window 2, where its page and its refs
+    // live, instead of failing on a number it cannot use (owner, 2026-10-18).
+    expect(await w.page(run("B", 1))).toBe("r2");
+    // A still owns window 1: the fallback took nothing that was not already B's.
+    expect(await w.page(run("A", 1))).toBe("r1");
+  });
+
   test("two runs racing for the same free window: exactly one gets it", async () => {
     const b = fakeBrowser([reddit(11, "r1")]);
     const w = new BrowserWindows(b.backend);
@@ -206,11 +220,15 @@ describe("BrowserWindows: windows and tabs", () => {
     w.beginRun("A");
     w.beginRun("B");
     for (let i = 0; i < 30; i++) await w.newWindow(run(i % 2 ? "A" : "B"), `https://site-${i}.test`);
-    const { alias } = await w.newWindow(run("A"), "https://one-more.test");
-    expect(await w.page(run("A", alias))).toBeTruthy();
+    const opened = await w.newWindow(run("A"), "https://one-more.test");
+    expect(await w.page(run("A", opened.alias))).toBe(opened.result.pageId);
     expect(b.windows.length).toBe(34);
-    const refusal = await w.page(run("B", alias)).catch((e: Error) => e.message);
-    expect(refusal).toContain("in use by another task");
+    // B names A's window: it lands in one of its OWN windows, where its refs live, and A's
+    // window is never touched. The old behavior was a refusal and a wasted round-trip; the
+    // refusal stands only for a run with no window of its own (owner, 2026-10-18).
+    const landed = await w.page(run("B", opened.alias));
+    expect(landed).not.toBe(opened.result.pageId);
+    expect(await w.page(run("A", opened.alias))).toBe(opened.result.pageId);
   });
 
   test("a window a site opened is not free: it follows its opener", async () => {
