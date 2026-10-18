@@ -58,7 +58,9 @@ jobs:
       - name: Install system deps
         run: |
           apt-get update
-          apt-get install -y jq curl ffmpeg
+          # ripgrep is the search tool's engine (docs/search.md): the suite exercises the real
+          # engine here, and the grep fallback when the tool is ruled out.
+          apt-get install -y jq curl ffmpeg ripgrep
           ffmpeg -version
 
       - name: Install project deps
