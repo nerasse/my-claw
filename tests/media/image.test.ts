@@ -1,10 +1,14 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { imageToBase64 } from "../../src/media/image.ts";
-import { unlink, stat, readdir } from "node:fs/promises";
+import { imageToBase64, readImageDimensions } from "../../src/media/image.ts";
+import { unlink, stat, readdir, readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp, rm } from "node:fs/promises";
 import { genPpmImage } from "../helpers/gen-test-image.ts";
+
+const execFileAsync = promisify(execFile);
 
 let smallImagePath: string;
 let largeImagePath: string;
@@ -79,5 +83,49 @@ describe("imageToBase64", () => {
     } finally {
       await unlink(pngPath).catch(() => {});
     }
+  });
+
+  test("a small file with an oversize dimension is pulled under the provider ceiling", async () => {
+    // The measured failure (2026-10-18): a full-page screenshot of a long page stays small in
+    // bytes while clearing 8000 px, which the size rule never saw; the provider answered 400.
+    const tallPath = join(tmpDir, "tall.png");
+    await execFileAsync("ffmpeg", ["-y", "-f", "lavfi", "-i", "color=c=red:s=64x9000", "-frames:v", "1", tallPath]);
+    try {
+      const bytes = await readFile(tallPath);
+      expect(readImageDimensions(bytes)).toEqual({ width: 64, height: 9000 });
+      expect(bytes.length).toBeLessThan(2 * 1024 * 1024); // the byte rule alone would not have fired
+
+      const result = await imageToBase64(tallPath);
+      expect(result.wasResized).toBe(true);
+      const out = Buffer.from(result.dataUrl.split(",")[1]!, "base64");
+      const dims = readImageDimensions(out);
+      expect(dims).not.toBeNull();
+      expect(dims!.height).toBeLessThanOrEqual(7600);
+      expect(dims!.width).toBeLessThanOrEqual(64);
+    } finally {
+      await unlink(tallPath).catch(() => {});
+    }
+  });
+});
+
+describe("readImageDimensions", () => {
+  test("reads PNG, GIF and JPEG headers; unknown bytes are null", () => {
+    const png = Buffer.alloc(24);
+    png.write("PNG", 1, "latin1");
+    png.writeUInt32BE(1200, 16);
+    png.writeUInt32BE(3400, 20);
+    expect(readImageDimensions(png)).toEqual({ width: 1200, height: 3400 });
+
+    const gif = Buffer.alloc(10);
+    gif.write("GIF89a", 0, "latin1");
+    gif.writeUInt16LE(320, 6);
+    gif.writeUInt16LE(200, 8);
+    expect(readImageDimensions(gif)).toEqual({ width: 320, height: 200 });
+
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08, 0x03, 0x84, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+    expect(readImageDimensions(jpeg)).toEqual({ width: 1280, height: 900 });
+
+    expect(readImageDimensions(Buffer.from("not an image at all, honestly"))).toBeNull();
+    expect(readImageDimensions(Buffer.alloc(3))).toBeNull();
   });
 });

@@ -809,6 +809,12 @@ async function runAnthropic(
         const detail = (await response.text().catch(() => "")).slice(0, 500);
         const err = new Error(`Anthropic request failed: HTTP ${response.status} — ${detail}`) as Error & { status?: number };
         err.status = response.status;
+        // A body this side never built: JSON.stringify cannot end a string inside a \u escape,
+        // so a provider reporting one received a truncated request (network, proxy, relay).
+        // Record the size made the next occurrence diagnosable (measured 13x, clustered 2026-10-02).
+        if (response.status === 400 && /not valid JSON/i.test(detail) && /hex escape/i.test(detail)) {
+          await log("warn", "provider rejected the request body as invalid JSON", { model: config.model, payloadChars: payload.length });
+        }
         // The one 400 worth replaying: this model refuses to have thinking turned off. Remember it
         // and rebuild the body with thinking left on, so the turn answers instead of failing.
         if (response.status === 400 && DISABLE_REFUSED.test(detail) && wantsThinkingOff(config)) {
