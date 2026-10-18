@@ -9,6 +9,7 @@ import { MY_CLAW_DIR } from "../src/core/config.ts";
 import { resetCircuitBreaker } from "../src/llm/provider.ts";
 import { resetLearnedRepairs } from "../src/llm/request-repair.ts";
 import { resetBashScopeProbe, setBashLimits } from "../src/tools/bash.ts";
+import { resetFetchToolCaches } from "../src/tools/fetch.ts";
 import { resetPromptFileCache } from "../src/agent/prompt/loader.ts";
 import { resetSkillVectorCache } from "../src/skills/retrieval.ts";
 import { clearRecallCache } from "../src/memory/cache.ts";
@@ -127,6 +128,9 @@ beforeEach(async () => {
   // The .env hot-reload mtime cache would carry one file's edit over the next one: a later test
   // would see its own .env already "applied" and never re-read it.
   resetEnvFileHotReload();
+  // A cached GET answer is keyed by URL, and URLs repeat across files: a leftover body would be
+  // served to a later test without its mock ever being called.
+  resetFetchToolCaches();
 });
 
 // The bash scope probe and its limits are module state shared by every test file.

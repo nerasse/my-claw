@@ -139,16 +139,57 @@ export function isAllowedScheme(raw: string): boolean {
 export interface FetchToolOptions {
   /** The wall of one hop. Injectable so the timeout path can be tested without waiting 30s. */
   timeoutMs?: number;
+  /** The pause before the single retry of a transient failure. Injectable for tests. */
+  retryDelayMs?: number;
+  /** How long a successful GET answer stays reusable. Injectable for tests. */
+  cacheTtlMs?: number;
+}
+
+/** 429 and the transient 5xx: the statuses where one retry is worth more than a guess. */
+const RETRY_STATUSES = new Set([429, 500, 502, 503, 504]);
+const RETRY_DELAY_CAP_MS = 10_000;
+const CACHE_TTL_MS = 10 * 60_000;
+const CACHE_MAX_ENTRIES = 50;
+const CACHE_MAX_ENTRY_CHARS = 2_000_000;
+
+interface CachedFetch {
+  raw: string;
+  contentType: string | null;
+  shell: boolean;
+  at: number;
+}
+
+/** Every tool instance's cache, so a test run can blank them between files (tests/setup-globals.ts). */
+const caches = new Set<Map<string, CachedFetch>>();
+
+export function resetFetchToolCaches(): void {
+  for (const cache of caches) cache.clear();
+}
+
+/** `Retry-After` in either of its two spellings, capped: a host does not get to hold the run. */
+export function retryDelayFor(header: string | null, base: number): number {
+  if (!header) return base;
+  const seconds = Number(header.trim());
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, RETRY_DELAY_CAP_MS);
+  const date = Date.parse(header);
+  if (!Number.isNaN(date)) return Math.min(Math.max(0, date - Date.now()), RETRY_DELAY_CAP_MS);
+  return base;
 }
 
 export function createFetchTool(options: FetchToolOptions = {}): Tool {
   const timeoutMs = options.timeoutMs ?? FETCH_TIMEOUT_MS;
+  const retryDelayMs = options.retryDelayMs ?? 1_500;
+  const cacheTtlMs = options.cacheTtlMs ?? CACHE_TTL_MS;
+  const cache = new Map<string, CachedFetch>();
+  caches.add(cache);
   return {
   name: "fetch",
   description:
     "Make an HTTP request. HTML responses are converted to readable text. Large responses " +
     `are returned in windows of up to ${MAX_FETCH_CHARS} characters; if content remains, the ` +
-    "output ends with the exact `offset` to pass on a follow-up call to read the next window.",
+    "output ends with the exact `offset` to pass on a follow-up call to read the next window. " +
+    "A GET that hits a transient 429/5xx is retried once (honoring Retry-After), and a successful " +
+    "GET answer is reusable for a few minutes, so re-reading the same URL costs nothing.",
   parameters: {
     type: "object",
     properties: {
@@ -179,20 +220,45 @@ export function createFetchTool(options: FetchToolOptions = {}): Tool {
     let currentBody = strOpt(args, "body");
     // The wall of the hop that failed, so the catch can say which of the two ended it.
     let wall: RequestWall | undefined;
+
+    const cacheable = currentMethod === "GET" && !currentBody;
+    if (cacheable) {
+      const hit = cache.get(url);
+      if (hit && Date.now() - hit.at < cacheTtlMs) {
+        let text = processFetchBody(hit.raw, hit.contentType, num(args, "offset", 0));
+        if (hit.shell) text += JS_SHELL_HINT;
+        hooks.emit("tool:fetch:request", { url, method: currentMethod, status: 200, cached: true });
+        return { success: true, output: text };
+      }
+    }
+
     try {
       const MAX_REDIRECTS = 5;
 
       for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
         // One wall per hop, and it names itself: a Stop and this budget abort the same request,
         // and telling them apart is the whole verdict of the run (docs/stop.md).
-        wall = requestWall(signal, timeoutMs);
-        const response = await fetch(currentUrl, {
-          method: currentMethod,
-          body: currentBody,
-          redirect: "manual",
-          signal: wall.signal,
-        });
-        wall.clear();
+        const attempt = async (): Promise<Response> => {
+          wall = requestWall(signal, timeoutMs);
+          const response = await fetch(currentUrl, {
+            method: currentMethod,
+            body: currentBody,
+            redirect: "manual",
+            signal: wall.signal,
+          });
+          wall.clear();
+          return response;
+        };
+
+        let response = await attempt();
+        // A side-effecting method is never replayed; a GET that hit a transient wall twice in a
+        // row is the host's answer, and gets reported as one.
+        if (currentMethod === "GET" && !signal?.aborted && RETRY_STATUSES.has(response.status)) {
+          await response.body?.cancel().catch(() => undefined);
+          const delay = retryDelayFor(response.headers.get("retry-after"), retryDelayMs);
+          if (delay > 0) await Bun.sleep(delay);
+          response = await attempt();
+        }
 
         if (response.status >= 300 && response.status < 400) {
           const location = response.headers.get("location");
@@ -213,12 +279,20 @@ export function createFetchTool(options: FetchToolOptions = {}): Tool {
 
         const rawText = await readCapped(response);
         const contentType = response.headers.get("content-type");
+        const shell = isJsRenderedShell(rawText, contentType);
         let text = processFetchBody(rawText, contentType, num(args, "offset", 0));
-        if (isJsRenderedShell(rawText, contentType)) {
+        if (shell) {
           text += JS_SHELL_HINT;
         }
         hooks.emit("tool:fetch:request", { url: currentUrl, method: currentMethod, status: response.status });
         if (response.ok) {
+          if (cacheable && rawText.length <= CACHE_MAX_ENTRY_CHARS) {
+            if (cache.size >= CACHE_MAX_ENTRIES) {
+              const oldest = cache.keys().next().value;
+              if (oldest !== undefined) cache.delete(oldest);
+            }
+            cache.set(url, { raw: rawText, contentType, shell, at: Date.now() });
+          }
           return { success: true, output: text };
         }
         return {

@@ -199,6 +199,8 @@ export interface HookEventMap {
     url: string;
     method: string;
     status?: number;
+    /** Served from the short-lived GET cache instead of the network. */
+    cached?: boolean;
   };
 
   // === SESSION LIFECYCLE ===

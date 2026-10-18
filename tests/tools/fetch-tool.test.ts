@@ -286,3 +286,118 @@ test("fetch: a real Stop still cuts the request and leaves as an abort", async (
     mock.restore();
   }
 });
+
+test("fetch: retryDelayFor reads seconds, dates, and caps a host's ask", async () => {
+  const { retryDelayFor } = await import("../../src/tools/fetch.ts");
+  assert.equal(retryDelayFor(null, 1500), 1500);
+  assert.equal(retryDelayFor("2", 1500), 2000);
+  assert.equal(retryDelayFor("9999", 1500), 10_000);
+  const past = new Date(Date.now() - 60_000).toUTCString();
+  assert.equal(retryDelayFor(past, 1500), 0);
+});
+
+test("fetch: a transient 503 on GET is retried once, honoring Retry-After", async () => {
+  let calls = 0;
+  const mock = mockFetch(async () => {
+    calls += 1;
+    if (calls === 1) return new Response("busy", { status: 503, headers: { "retry-after": "0" } });
+    return new Response("ok now", { status: 200 });
+  });
+  try {
+    const tool = createFetchTool({ retryDelayMs: 1 });
+    const result = await tool.execute({ url: "https://retry.example.com/page" });
+    assert.equal(result.success, true);
+    assert.equal(result.output, "ok now");
+    assert.equal(calls, 2);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("fetch: the retry happens once, then the failure is the answer", async () => {
+  let calls = 0;
+  const mock = mockFetch(async () => {
+    calls += 1;
+    return new Response("still busy", { status: 503 });
+  });
+  try {
+    const tool = createFetchTool({ retryDelayMs: 1 });
+    const result = await tool.execute({ url: "https://busy.example.com/page" });
+    assert.equal(result.success, false);
+    assert.match(result.error ?? "", /HTTP 503/);
+    assert.equal(calls, 2);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("fetch: a side-effecting method is never replayed", async () => {
+  let calls = 0;
+  const mock = mockFetch(async () => {
+    calls += 1;
+    return new Response("nope", { status: 429 });
+  });
+  try {
+    const tool = createFetchTool({ retryDelayMs: 1 });
+    const result = await tool.execute({ url: "https://busy.example.com/order", method: "POST", body: "{}" });
+    assert.equal(result.success, false);
+    assert.equal(calls, 1);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("fetch: a successful GET is reused, and pages from the cache", async () => {
+  const body = "x".repeat(120_000);
+  let calls = 0;
+  const mock = mockFetch(async () => {
+    calls += 1;
+    return new Response(body, { status: 200, headers: { "content-type": "text/plain" } });
+  });
+  try {
+    const tool = createFetchTool();
+    const first = await tool.execute({ url: "https://cache.example.com/big" });
+    assert.equal(first.success, true);
+    assert.equal(calls, 1);
+    const second = await tool.execute({ url: "https://cache.example.com/big", offset: 50_000 });
+    assert.equal(second.success, true);
+    assert.match(second.output, /caractères 50000–100000 sur 120000/);
+    assert.equal(calls, 1, "the second read never left the cache");
+  } finally {
+    mock.restore();
+  }
+});
+
+test("fetch: an expired cache entry is fetched again", async () => {
+  let calls = 0;
+  const mock = mockFetch(async () => {
+    calls += 1;
+    return new Response("fresh", { status: 200 });
+  });
+  try {
+    const tool = createFetchTool({ cacheTtlMs: -1 });
+    await tool.execute({ url: "https://ttl.example.com/" });
+    await tool.execute({ url: "https://ttl.example.com/" });
+    assert.equal(calls, 2);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("fetch: a failed GET is never cached", async () => {
+  let calls = 0;
+  const mock = mockFetch(async () => {
+    calls += 1;
+    return new Response("boom", { status: 500 });
+  });
+  try {
+    const tool = createFetchTool({ retryDelayMs: 1 });
+    const first = await tool.execute({ url: "https://fail.example.com/" });
+    assert.equal(first.success, false);
+    const second = await tool.execute({ url: "https://fail.example.com/" });
+    assert.equal(second.success, false);
+    assert.equal(calls, 4, "two calls, each retried once");
+  } finally {
+    mock.restore();
+  }
+});
