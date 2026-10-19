@@ -140,15 +140,32 @@ holds exactly what the server last knew**, and never while a change of ours is w
 debounce. Anything else is text typed here and not acknowledged, and reopening a conversation
 must never hand back yesterday's sentence over the one being written.
 
-## Attachments do not sync
+## Attachments: the bytes cross, the file stays local to its device
 
-The local draft also holds `PendingAttachment[]`: local URIs (`content://` on Android, blob handles
-on the web) and upload state. A phone's URI means nothing in a browser, so text is what crosses.
-Attachments stay device-local, exactly as they are today.
+A staged file is two things, and they travel differently. The bytes are on the server from the
+moment it is picked (`startUpload`), and the *claim* that they belong to an unsent message is a
+row in the same draft store, next to the text. What never crosses is the device's own handle:
+`content://` on Android, a blob on the web. Another window gets the server's description (name,
+type, size, or its thumbnail) and sends the id the upload answered.
+
+- `draft.file.add` / `draft.file.remove` change the list; the id is resolved against the thread's
+  file store first, so a client cannot announce a file the server does not hold.
+- `draft.files.changed` is the resolved list, broadcast to **every** window of the owner, the one
+  that asked included. Unlike the text, there is no keystroke to protect: the list is idempotent,
+  and one ordered authority is what settles an upload finishing while another device removes the
+  same chip.
+- The page that replaces a thread carries `files` beside `draft`; a delta carries neither.
+- A send prunes only the ids its message carried. A photo staged on another device while the
+  message was being written is still unsent and stays on the list.
+- `files.delete` removes the chip from every composer, and a session delete takes the whole entry
+  (and the bytes) with it. Orphan entries age out like drafts.
+- A chip whose upload failed keeps its place and offers a retry: a refused request is not a reason
+  to lose a take and record it again.
 
 ## Privacy
 
-A draft is unsent text that now lives on the server. Two guarantees:
+A draft is unsent text, and the list of files the composer holds, that now lives on the server.
+Two guarantees:
 
 - **It never reaches a model.** It is not in `SessionData`, so no prompt builder can see it: the
   guarantee is structural, not a filter someone has to remember.
@@ -168,6 +185,9 @@ Server:
   paginated page does not; `session.list` reports `hasDraft`.
 - the sync: a fresh window, an `unknown-cursor` and a `branch-switch` carry the draft, a delta
   never does, and a thread with no session yet still replays its draft through the sync.
+- the composer's files: `draft.file.add` / `draft.file.remove` broadcast the resolved list to every
+  window, an id the server does not hold is dropped, a send prunes only the ids it carried, and
+  `files.delete` empties the chip; the page and the sync carry the files, a delta does not.
 - the leak test: a stored draft is absent from the prompt built for that thread.
 
 App:
@@ -180,3 +200,6 @@ App:
   both ways; a send clears it; a draft consumed without a send (`/new`, `/tag`) is cleared on the
   server explicitly.
 - switching threads keeps both drafts apart.
+- the composer's files: a page fills an empty device and never removes, the server's list is
+  authoritative and keeps an upload with no id yet, and a chip that came from the server carries
+  no local uri.
