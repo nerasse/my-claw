@@ -212,9 +212,9 @@ whenever prompt caching was off, so `providerMeta` was serialized straight onto 
 `toWireMessage` was the fence and that path walked around it. Both paths now go through it, and a
 test asserts the two produce the same fields.
 
-Because the old state is dropped at the current-turn boundary, it never crosses a compaction
-boundary and there is nothing to invalidate at `promptBase`: the state the prompt carries simply
-does not outlive the turn that made it.
+Because only the current turn's state is replayed, the prompt carries at most the chain the last
+user message opened. It no longer accumulates across the session, and an old turn's reasoning
+never comes back as assistant text.
 
 ## What the neighbours do
 
