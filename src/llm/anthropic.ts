@@ -145,6 +145,7 @@ interface AnthropicTextBlock {
 interface AnthropicImageBlock {
   type: "image";
   source: { type: "base64"; media_type: string; data: string } | { type: "url"; url: string };
+  cache_control?: typeof CACHE_1H;
 }
 interface AnthropicToolUseBlock {
   type: "tool_use";
@@ -346,9 +347,27 @@ function buildRequest(messages: ChatMessage[], self?: ReplayIdentity): { system:
 
   // Cache the whole conversation, not just the system prefix: without a breakpoint on the final
   // turn, every agent iteration re-sends the entire history as fresh input tokens. The system
-  // breakpoints alone cost ~12M input tokens on one observed 54-iteration run. Total breakpoint
-  // count stays at three (2 system + 1 final), under Anthropic's cap of four.
+  // breakpoints alone cost ~12M input tokens on one observed 54-iteration run.
+  //
+  // The fourth breakpoint goes on the owner's last text turn. It is the one point that survives
+  // into the next run unchanged: the log persists what the model read (`promptText`), while the
+  // turn that answered it is new. Without it, a run boundary can only match the system prefix, so
+  // the whole history is rewritten on every user message even when the system prompt is stable.
   const lastTurn = turns[turns.length - 1];
+  let ownerTurn: (typeof turns)[number] | undefined;
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i]!;
+    if (turn.role !== "user") continue;
+    if (!turn.content.some((block) => block.type === "text" || block.type === "image")) continue;
+    ownerTurn = turn;
+    break;
+  }
+  if (ownerTurn && ownerTurn !== lastTurn) {
+    const lastBlock = ownerTurn.content[ownerTurn.content.length - 1];
+    if (lastBlock && (lastBlock.type === "text" || lastBlock.type === "image")) {
+      lastBlock.cache_control = CACHE_1H;
+    }
+  }
   if (lastTurn) {
     const lastBlock = lastTurn.content[lastTurn.content.length - 1];
     if (lastBlock && (lastBlock.type === "text" || lastBlock.type === "tool_result")) {

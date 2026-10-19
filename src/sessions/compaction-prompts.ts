@@ -190,6 +190,63 @@ export function updateSummaryPrompt(serialized: string, previousSummary: string,
 }
 
 /**
+ * The summarizer prompt when the conversation itself is the prefix.
+ *
+ * The old prompts carry the serialized middle because the summarizer had no conversation to read.
+ * This one is sent after the conversation messages, so the model reads the history and the
+ * instruction that follows it. The instruction names the boundary kept verbatim instead of
+ * restating the recent turns, and the previous summary is already in the history (a compaction
+ * entry projects to a user turn) rather than copied into the prompt a second time.
+ */
+export function conversationSummaryPrompt(input: {
+  update: boolean;
+  legacy?: boolean;
+  instructions?: string;
+  keptTurn?: string;
+}): string {
+  const updateRules = input.update
+    ? [
+        "- The previous summary appears above as a user turn wrapped in [Prior context summarized]: REWRITE it in place, keep what is still active, correct what changed, MERGE what duplicates, drop what the new messages made obsolete",
+        "- If it grew while no new work opened, this pass compresses it: shrinking is the expected outcome, not an option",
+        "- ADD the new open work, decisions and context from the messages above",
+        "- Work the previous summary had open and the messages above finished: archive it, combining what both say, and replace its summary lines with the single Recently Archived pointer",
+        "- Work started and finished within the messages above: archive it",
+        "- REWRITE Next Steps against what was actually accomplished",
+        ...(input.legacy
+          ? [
+              "- The previous summary predates the archive and has been archived as it is, in full. Do not copy its finished work into <archive>: archive only what finished in the messages above, and keep from it only what is still active",
+            ]
+          : ["- Items already listed under Recently Archived are archived: never archive them again"]),
+      ].join("\n")
+    : [
+        "- This is the first compaction of this conversation: there is no previous summary to carry",
+      ].join("\n");
+  return [
+    "The conversation above is to be summarized into a structured context checkpoint another model will use to continue the work, and the work it finished archived.",
+    focusOf(input.instructions),
+    "",
+    ...(input.keptTurn
+      ? [
+          "The most recent turns, beginning with the message below, are kept verbatim beside your summary. Do not restate them; point to them instead.",
+          "<<<",
+          input.keptTurn,
+          ">>>",
+          "",
+        ]
+      : []),
+    "Rules for this pass:",
+    updateRules,
+    "",
+    OUTPUT,
+    "",
+    "Rules:",
+    RULES,
+  ]
+    .filter((part) => part !== "")
+    .join("\n");
+}
+
+/**
  * The turn that asks for the rest of a summary the output ceiling cut.
  *
  * A new user turn after the partial answer, never a prefill of the assistant's message: Anthropic

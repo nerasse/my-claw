@@ -192,8 +192,10 @@ test("SubAgentRunner queues concurrent sends in FIFO order", async () => {
     assert.equal(r1, "reply-2");
     assert.equal(r2, "reply-3");
 
-    // Messages should execute in FIFO order
-    assert.deepEqual(executionOrder, ["init", "msg1", "msg2"]);
+    // Messages should execute in FIFO order. The inbound turn carries the per-turn context block
+    // (`turn-context.ts`); the owner's words are its tail.
+    const ownerText = (text: string): string => text.replace(/^<context>[\s\S]*?<\/context>\n\n/, "");
+    assert.deepEqual(executionOrder.map(ownerText), ["init", "msg1", "msg2"]);
 
     // Both user messages should be in the log
     const log = await openSessionLog(id);

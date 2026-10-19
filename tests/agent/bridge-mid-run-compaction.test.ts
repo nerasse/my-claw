@@ -113,8 +113,8 @@ async function run(opts: { summary: string | null }): Promise<{ sent: Sent[]; se
   let rounds = 0;
   const mock = mockFetch(async (_url, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as Sent["messages"] extends never ? never : { messages: Sent["messages"] };
-    const system = String(body.messages[0]?.content ?? "");
-    if (system.includes("You summarize a conversation")) {
+    const last = String(body.messages[body.messages.length - 1]?.content ?? "");
+    if (last.includes("You summarize a conversation")) {
       sent.push({ kind: "compaction", messages: body.messages });
       return sseResponse(opts.summary ?? "");
     }
@@ -307,7 +307,7 @@ test("a sub-agent run is compacted mid-flight", async () => {
   const mock = mockFetch(async (_url, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ role: string; content: unknown }> };
     const promptTokens = Math.round(JSON.stringify(body.messages).length / 4);
-    if (String(body.messages[0]?.content ?? "").includes("You summarize a conversation")) {
+    if (String(body.messages[body.messages.length - 1]?.content ?? "").includes("You summarize a conversation")) {
       compactions += 1;
       return sseResponse(SUMMARY);
     }
@@ -359,7 +359,7 @@ test("a cron run is compacted mid-flight too", async () => {
   const mock = mockFetch(async (_url, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ role: string; content: unknown }> };
     const promptTokens = Math.round(JSON.stringify(body.messages).length / 4);
-    if (String(body.messages[0]?.content ?? "").includes("You summarize a conversation")) {
+    if (String(body.messages[body.messages.length - 1]?.content ?? "").includes("You summarize a conversation")) {
       compactions += 1;
       return sseResponse(SUMMARY);
     }

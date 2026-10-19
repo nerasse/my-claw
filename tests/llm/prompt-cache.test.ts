@@ -8,7 +8,7 @@ import { sseResponse } from "../helpers/sse.ts";
 const EPHEMERAL = { type: "ephemeral" };
 
 describe("applyPromptCache", () => {
-  test("marks the system message and the last message", () => {
+  test("marks the system message, the last user turn and the last message", () => {
     const messages: ChatMessage[] = [
       { role: "system", content: "SYS" },
       { role: "user", content: "hi" },
@@ -19,8 +19,8 @@ describe("applyPromptCache", () => {
 
     // System (index 0): string promoted to a text part carrying the breakpoint.
     expect(wire[0]!["content"]).toEqual([{ type: "text", text: "SYS", cache_control: EPHEMERAL }]);
-    // Middle messages untouched (still plain strings).
-    expect(wire[1]!["content"]).toBe("hi");
+    // The owner's turn: the point the next request still shares.
+    expect(wire[1]!["content"]).toEqual([{ type: "text", text: "hi", cache_control: EPHEMERAL }]);
     expect(wire[2]!["content"]).toBe("reply");
     // Last message (tool result) carries the rolling breakpoint + keeps tool_call_id.
     expect(wire[3]!["content"]).toEqual([{ type: "text", text: "result", cache_control: EPHEMERAL }]);

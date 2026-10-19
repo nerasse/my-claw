@@ -109,7 +109,8 @@ test("bridge: auto-compaction triggers above the threshold and shrinks the promp
   let sawCompactionCall = false;
   const mock = mockFetch(async (_u, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ role: string; content: string }> };
-    if (typeof body.messages[0]?.content === "string" && body.messages[0].content.includes("You summarize a conversation")) {
+    const last = body.messages[body.messages.length - 1];
+    if (typeof last?.content === "string" && last.content.includes("You summarize a conversation")) {
       sawCompactionCall = true;
       return sseResponse("Summary of the prior work: steps 0-9 executed bash and completed successfully.");
     }
@@ -191,7 +192,8 @@ async function runAndCountCompactions(
   let llmCalls = 0;
   const mock = mockFetch(async (_u, init) => {
     const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Array<{ role: string; content: string }> };
-    if (typeof body.messages[0]?.content === "string" && body.messages[0].content.includes("You summarize a conversation")) {
+    const last = body.messages[body.messages.length - 1];
+    if (typeof last?.content === "string" && last.content.includes("You summarize a conversation")) {
       compactionCalls += 1;
       return sseResponse("Summary of the prior work: steps 0-9 executed bash and completed successfully.");
     }

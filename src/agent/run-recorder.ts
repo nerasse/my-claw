@@ -174,6 +174,8 @@ export class RunRecorder {
     /** The channel bubble id, when this turn was already drawn before persistence. */
     id?: string;
     text: string;
+    /** What the model reads, when the prompt carries more than the owner's words. */
+    promptText?: string;
     attachments?: SessionAttachment[];
     location?: ChatLocation;
     transcripts?: Record<string, string>;
@@ -183,6 +185,7 @@ export class RunRecorder {
       type: "user",
       prompt: true,
       text: input.text,
+      ...(input.promptText !== undefined && input.promptText !== input.text ? { promptText: input.promptText } : {}),
       ...(input.attachments?.length ? { attachments: input.attachments } : {}),
       ...(input.location ? { location: input.location } : {}),
       ...(input.transcripts && Object.keys(input.transcripts).length > 0 ? { transcripts: input.transcripts } : {}),

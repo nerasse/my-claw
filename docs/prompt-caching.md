@@ -30,11 +30,13 @@ unknown fields inside message content — so we never send it unless the owner d
 ## How it works
 
 `applyPromptCache()` in `src/llm/provider.ts` (called from `buildRequestBody` only when
-`config.promptCache` is set) adds two `cache_control: { type: "ephemeral" }` breakpoints — well
+`config.promptCache` is set) adds three `cache_control: { type: "ephemeral" }` breakpoints — well
 under Anthropic's max of 4:
 
 1. **The system message** — the large stable prefix, constant across a run's iterations.
-2. **The last message** — so the growing conversation (tool results, assistant turns) is cached
+2. **The owner's last user turn** — the one point the next run still shares: the log persists what
+   the model read (`promptText`), so the previous turn is a prefix of the new request.
+3. **The last message** — so the growing conversation (tool results, assistant turns) is cached
    incrementally as the run progresses.
 
 `cache_control` attaches to a content *part*, so a string body is promoted to a single text part
@@ -57,9 +59,12 @@ and ignore the field. Either way the request stays valid.
 
 ## Notes / limits
 
-- The breakpoints are only useful when the cached prefix is byte-stable. The system prompt's
-  trailing runtime line carries a timestamp, but it is fixed for the whole run (built once), so it
-  does not bust intra-run caching. Cross-run reuse (within the ~5 min TTL) is a bonus, not relied on.
+- The breakpoints are only useful when the cached prefix is byte-stable. Nothing per-turn may enter
+  the system prompt: the current time and the suggested skills travel at the top of the inbound
+  user turn (`agent/prompt/turn-context.ts`). Measured 2026-10-19: a clock in the runtime line made
+  every turn a new prefix -- 6 % read / 87 % written at the first call of a turn -- and the whole
+  conversation was rewritten into the 1 h cache on each message. A workspace file edit or a tool
+  change still invalidates the prefix; that is accepted, and hot reload wins over the cache.
 - Tools are a top-level field in the OpenAI schema, not a message; whether they are cached is up to
   the proxy's mapping. We cache them implicitly via the system-message breakpoint where the proxy
   supports it.

@@ -353,6 +353,16 @@ plus par `normalizeUntrusted` (caractères invisibles retirés, `docs/untrusted-
 oh-my-pi a durci son prompt après l'issue #8727, Claude Code en août 2026. Ce n'est pas une frontière
 de sécurité, c'est la moitié qui manquait.
 
+### Le préfixe de la conversation
+
+Quand l'appelant l'a -- compactage automatique en début de run, en cours de run, ou après un
+overflow -- le résumeur reçoit le **system prompt et les tools exacts du run**, puis l'historique
+projeté, puis la consigne en dernier message utilisateur. Le préfixe est celui que la conversation
+vient de chauffer : le résumé lit le cache au lieu de réécrire son propre prompt. `SUMMARIZER_SYSTEM`
+est préfixé à la consigne utilisateur, jamais au system, pour ne pas changer les octets du préfixe.
+Un `/compact` manuel et la passe spéculative n'ont pas ce préfixe sous la main et gardent le prompt
+sérialisé.
+
 ### Quel modèle
 
 Celui de la session, pin d'agent et tag inclus (`tryResolveRunModel` puis

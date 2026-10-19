@@ -93,7 +93,7 @@ export function messagesOf(context: readonly Entry[]): ChatMessage[] {
     const entry = context[i]!;
 
     if (entry.type === "user") {
-      out.push({ role: "user", content: entry.text });
+      out.push({ role: "user", content: entry.promptText ?? entry.text });
       continue;
     }
 

@@ -466,11 +466,12 @@ function markCacheBreakpoint(w: WireMessage): void {
 
 /**
  * Add Anthropic-style prompt-cache breakpoints for proxies that honor them (LiteLLM, OpenRouter).
- * Two breakpoints (well under Anthropic's max of 4): the first system message — the big stable
+ * Three breakpoints (under Anthropic's max of 4): the first system message — the big stable
  * prefix (core + skills + tool list), built once per run so it is identical across every tool
- * iteration — and the last message, so the growing conversation is cached incrementally. Endpoints
- * that don't support caching ignore the extra `cache_control` field; gate it per provider because
- * some strict ones reject unknown fields in content.
+ * iteration — the owner's last user turn, the one point the next run still shares, and the last
+ * message, so the growing conversation is cached incrementally. Endpoints that don't support
+ * caching ignore the extra `cache_control` field; gate it per provider because some strict ones
+ * reject unknown fields in content.
  */
 export function applyPromptCache(
   messages: ChatMessage[],
@@ -480,6 +481,13 @@ export function applyPromptCache(
   const wire = messages.map((m) => toWireMessage(m, self, forceReasoning));
   const sysIdx = wire.findIndex((m) => m["role"] === "system");
   if (sysIdx >= 0) markCacheBreakpoint(wire[sysIdx]!);
+  // The owner's last user turn is the point the next run still shares; without it a run boundary
+  // can only match the system prefix (see the Anthropic transport's fourth breakpoint).
+  for (let i = wire.length - 2; i >= 0; i--) {
+    if (wire[i]?.["role"] !== "user") continue;
+    markCacheBreakpoint(wire[i]!);
+    break;
+  }
   const lastIdx = wire.length - 1;
   if (lastIdx >= 0 && lastIdx !== sysIdx) markCacheBreakpoint(wire[lastIdx]!);
   return wire;

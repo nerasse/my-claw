@@ -19,9 +19,6 @@ export interface PromptContext {
   workspaces?: Record<string, string>;
   /** config.workspacePrompts: per-workspace per-file prompt policies. */
   workspacePrompts?: Record<string, WorkspacePromptPolicy>;
-  // Skills the retrieval layer flagged as likely relevant to this message; rendered as a soft
-  // reminder at the very end so it never mutates the cacheable prefix (see docs/skill-suggestions.md).
-  suggestedSkills?: SkillInfo[];
   /** The running agent's own instructions, from its `agents/` file. See docs/file-agents.md. */
   agentPrompt?: string;
   /**
@@ -41,7 +38,7 @@ export interface PromptContext {
 /** A layer of the composed prompt, kept apart so a reader can be shown what each one contributed. */
 export interface PromptPart {
   /** Stable across builds: the four files use their layer name, the derived ones their own. */
-  id: PromptLayerName | "agent" | "skills" | "platform" | "runtime" | "suggested";
+  id: PromptLayerName | "agent" | "skills" | "platform" | "runtime";
   label: string;
   text: string;
   /** The prompt file this layer was read from, absent for a derived layer. */
@@ -125,29 +122,15 @@ export async function composeSystemPrompt(ctx: PromptContext): Promise<PromptPar
     parts.push({ id: "platform", label: "Platform hints", text: hint });
   }
 
-  // Layer 8: Runtime
+  // Layer 8: Runtime. No timestamp here: this is the cached prefix, and a clock in it invalidates
+  // the whole conversation on every turn. The current time travels in the inbound turn instead
+  // (`turn-context.ts`). Model, channel and session are stable for a session; a model switch is a
+  // full reset on its own.
   if (!layerOff("runtime")) {
-    const now = new Date().toISOString();
     parts.push({
       id: "runtime",
       label: "Runtime",
-      text: `Runtime: date=${now} | model=${ctx.model} | channel=${ctx.platform} | session=${ctx.sessionId}`,
-    });
-  }
-
-  // Layer 9: Soft skill reminder. Placed last (after the already-dynamic runtime line) so it
-  // never busts the cacheable prefix. Complements, not overrides, the "MUST call skills" catalog.
-  if (ctx.suggestedSkills && ctx.suggestedSkills.length > 0 && !layerOff("suggested")) {
-    const hints = ctx.suggestedSkills
-      .map((s) => `- ${s.name}: ${s.description}`)
-      .join("\n");
-    parts.push({
-      id: "suggested",
-      label: "Suggested skills",
-      text:
-        `# Skills possibly relevant to this request\n\n${hints}\n\n` +
-        `These look related to the current request. If one fits, call skills(name) to load ` +
-        `its full instructions. Treat this as a hint, not an order.`,
+      text: `Runtime: model=${ctx.model} | channel=${ctx.platform} | session=${ctx.sessionId}`,
     });
   }
 

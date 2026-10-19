@@ -129,23 +129,14 @@ test("layers are ordered: core before skills before runtime", async () => {
   assert.ok(skillsIdx < runtimeIdx, "skills before runtime");
 });
 
-test("suggested skills render a soft reminder after the runtime line", async () => {
-  const result = await buildSystemPrompt(
-    makeCtx({
-      skills: [makeSkill("deploy"), makeSkill("video")],
-      suggestedSkills: [makeSkill("video")],
-    }),
-  );
-  const runtimeIdx = result.indexOf("Runtime:");
-  const suggestIdx = result.indexOf("# Skills possibly relevant to this request");
-  assert.ok(suggestIdx >= 0, "soft reminder present");
-  assert.ok(runtimeIdx < suggestIdx, "reminder comes after runtime (keeps cacheable prefix stable)");
-  assert.match(result, /Treat this as a hint, not an order/);
-});
-
-test("no suggested skills means no reminder section", async () => {
-  const result = await buildSystemPrompt(makeCtx({ skills: [makeSkill("deploy")] }));
-  assert.ok(!result.includes("# Skills possibly relevant to this request"));
+test("the system prompt carries no clock: two builds are byte-identical", async () => {
+  // The fix for the cross-turn cache: a timestamp in the cached prefix invalidation measured at
+  // 6 % read / 87 % written on the first call of every turn (2026-10-19).
+  const first = await buildSystemPrompt(makeCtx());
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const second = await buildSystemPrompt(makeCtx());
+  assert.equal(first, second);
+  assert.doesNotMatch(first, /\d{4}-\d{2}-\d{2}T/);
 });
 
 test("an instructions list selects which workspace layers reach the prompt", async () => {

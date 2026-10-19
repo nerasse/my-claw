@@ -65,6 +65,12 @@ export interface UserEntry extends EntryBase {
   type: "user";
   prompt: true;
   text: string;
+  /**
+   * What the model actually read for this turn, when it differs from the owner's words: the
+   * per-turn context block and the recalled-memory block are prompt-only. Persisted so the next
+   * run reconstructs the same bytes and the prefix cache is not broken at the previous turn.
+   */
+  promptText?: string;
   attachments?: SessionAttachment[];
   location?: ChatLocation;
   transcripts?: Record<string, string>;

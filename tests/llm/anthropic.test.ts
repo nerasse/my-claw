@@ -346,7 +346,7 @@ test("the stream re-arms the request timeout on every line, thinking included", 
   assert.ok(beats >= 4, `expected one beat per line, got ${beats}`);
 });
 
-test("the final turn carries the conversation cache breakpoint, not the middle ones", () => {
+test("the final turn and the owner's last text turn carry the two conversation breakpoints", () => {
   const messages: ChatMessage[] = [
     { role: "system", content: "sys" },
     { role: "user", content: "question one" },
@@ -356,16 +356,17 @@ test("the final turn carries the conversation cache breakpoint, not the middle o
     { role: "tool", tool_call_id: "t1", content: "output" },
   ];
   const { turns } = buildRequest(messages);
-  // Only the last block of the last turn is a breakpoint; every earlier turn must stay clean so
-  // the cache prefix can only grow at the tail.
+  // The owner's turn is the point the next run still shares with this one: the prefix can grow
+  // there without rewriting the history. The final tool result is the intra-run breakpoint.
   for (const [i, turn] of turns.entries()) {
     for (const [j, block] of turn.content.entries()) {
-      const isLast = i === turns.length - 1 && j === turn.content.length - 1;
-      if (isLast) {
+      const isOwner = i === 2 && j === turn.content.length - 1;
+      const isFinal = i === turns.length - 1 && j === turn.content.length - 1;
+      if (isOwner || isFinal) {
         assert.deepEqual(
           (block as { cache_control?: unknown }).cache_control,
           { type: "ephemeral", ttl: "1h" },
-          `turn ${i} block ${j} should be the conversation breakpoint`,
+          `turn ${i} block ${j} should carry a conversation breakpoint`,
         );
       } else {
         assert.equal(

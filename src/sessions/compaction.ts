@@ -20,7 +20,7 @@ import { cutByOutputCeiling } from "../llm/truncation.ts";
 import type { ChatMessage, LlmResponse } from "../llm/provider.ts";
 import { messagesOf, promptOf } from "./projection.ts";
 import { normalizeUntrusted } from "../agent/prompt/normalize-untrusted.ts";
-import { CONTINUE_SUMMARY, firstSummaryPrompt, splitSummaryOutput, updateSummaryPrompt, SUMMARIZER_SYSTEM } from "./compaction-prompts.ts";
+import { CONTINUE_SUMMARY, conversationSummaryPrompt, firstSummaryPrompt, splitSummaryOutput, updateSummaryPrompt, SUMMARIZER_SYSTEM } from "./compaction-prompts.ts";
 import { fileAnchorOf } from "./compaction-files.ts";
 import { newEntryId, type SessionLog } from "./log.ts";
 import { isAbort, rethrowIfAborted } from "../core/aborted.ts";
@@ -231,6 +231,19 @@ export interface CompactionPlan {
 }
 
 export type CompactionPlanResult = { ok: true; plan: CompactionPlan } | { ok: false; reason: string; count: number };
+
+/**
+ * The conversation's own prefix, when the caller has it.
+ *
+ * A run builds the system prompt and the tool definitions before it can compact, so the summarizer
+ * can send the exact prefix the conversation already warmed: same system bytes, same tools, then
+ * the history and the summary instruction as the last user turn. Absent (a manual `/compact`, the
+ * speculative pass), the summarizer falls back to its own system prompt and the serialized middle.
+ */
+export interface CompactionPrefix {
+  systemPrompt: string;
+  tools: unknown[];
+}
 
 /** A message cut to `tokens`, its head and its end kept, the middle named rather than lost. */
 function cutToTokens(text: string, tokens: number): string {
@@ -456,6 +469,20 @@ function classifySummaryResponse(
 }
 
 /**
+ * The opening of the first turn the boundary keeps verbatim, short enough to name it in one line.
+ * The summarizer reads the whole history above; this tells it where to stop, since the kept tail is
+ * beside the summary rather than inside it.
+ */
+function keptTurnText(plan: CompactionPlan): string | undefined {
+  if (!plan.firstKeptEntryId) return undefined;
+  const entry = plan.entries.find((candidate) => candidate.id === plan.firstKeptEntryId);
+  if (!entry || (entry.type !== "user" && entry.type !== "phase")) return undefined;
+  const text = entry.text.trim();
+  if (!text) return undefined;
+  return text.length > 400 ? `${text.slice(0, 400)}…` : text;
+}
+
+/**
  * Run the summarizer for a plan.
  *
  * The model is the one the session actually runs, agent pin and tag included -- not the raw session
@@ -472,11 +499,20 @@ export async function summarizeForCompaction(
   signal?: AbortSignal,
   caller: "compaction" | "compaction-speculative" = "compaction",
   now: () => number = Date.now,
+  prefix?: CompactionPrefix,
 ): Promise<SummaryResult> {
-  const serialized = serializeEntriesForCompaction(plan.middle);
-  const prompt = plan.previousSummary
-    ? updateSummaryPrompt(serialized, plan.previousSummary, instructions, plan.previousIsLegacy === true)
-    : firstSummaryPrompt(serialized, instructions);
+  const serialized = prefix ? undefined : serializeEntriesForCompaction(plan.middle);
+  const keptTurn = prefix ? keptTurnText(plan) : undefined;
+  const prompt = prefix
+    ? conversationSummaryPrompt({
+        update: plan.previousSummary !== undefined,
+        ...(plan.previousIsLegacy === true ? { legacy: true } : {}),
+        ...(instructions ? { instructions } : {}),
+        ...(keptTurn ? { keptTurn } : {}),
+      })
+    : plan.previousSummary
+      ? updateSummaryPrompt(serialized!, plan.previousSummary, instructions, plan.previousIsLegacy === true)
+      : firstSummaryPrompt(serialized!, instructions);
 
   const runModel = tryResolveRunModel(
     config,
@@ -522,7 +558,7 @@ export async function summarizeForCompaction(
       llmConfig,
       messages,
       (chunk: string) => progress.push(chunk),
-      undefined,
+      prefix?.tools,
       signal,
       { onText: async (delta: string) => void thinking.push(delta) },
     );
@@ -567,10 +603,16 @@ export async function summarizeForCompaction(
    */
   const attemptOnce = async (): Promise<SummaryAttempt> => {
     const attemptStartedAt = now();
-    const base: ChatMessage[] = [
-      { role: "system", content: SUMMARIZER_SYSTEM },
-      { role: "user", content: prompt },
-    ];
+    const base: ChatMessage[] = prefix
+      ? [
+          { role: "system", content: prefix.systemPrompt },
+          ...messagesOf(plan.entries),
+          { role: "user", content: `${SUMMARIZER_SYSTEM}\n\n${prompt}` },
+        ]
+      : [
+          { role: "system", content: SUMMARIZER_SYSTEM },
+          { role: "user", content: prompt },
+        ];
     let response = await callOnce(base);
     let written = response.content;
     for (let round = 0; round < MAX_CONTINUATIONS && cutAfterWriting(response); round++) {
@@ -724,8 +766,9 @@ export async function compactSession(
   instructions?: string,
   signal?: AbortSignal,
   now: () => number = Date.now,
+  prefix?: CompactionPrefix,
 ): Promise<CompactionResult> {
-  return await runCompactionPass(config, session, retainedBudgetFor(config, session), instructions, signal, now);
+  return await runCompactionPass(config, session, retainedBudgetFor(config, session), instructions, signal, now, prefix);
 }
 
 async function runCompactionPass(
@@ -735,6 +778,7 @@ async function runCompactionPass(
   instructions?: string,
   signal?: AbortSignal,
   now: () => number = Date.now,
+  prefix?: CompactionPrefix,
 ): Promise<CompactionResult> {
   const log = await sessionLogOf(session.id);
   const planned = planCompaction(log, tailBudget);
@@ -754,7 +798,7 @@ async function runCompactionPass(
 
     const passStartedAt = now();
     try {
-      const summarized = await summarizeForCompaction(config, session, plan, instructions, signal, "compaction", now);
+      const summarized = await summarizeForCompaction(config, session, plan, instructions, signal, "compaction", now, prefix);
       if (!summarized.ok) {
         return { ok: false, reason: summarized.reason, beforeCount, afterCount: beforeCount };
       }

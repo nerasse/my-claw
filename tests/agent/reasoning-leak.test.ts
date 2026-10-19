@@ -172,9 +172,11 @@ describe("the source id of a turn is display-only too", () => {
       expect(helloEntry).toBeDefined();
 
       const sent = JSON.parse(sentBody) as { messages: Array<Record<string, unknown>> };
-      const asked = sent.messages.filter((m) => m["content"] === "hello");
-      expect(asked).toHaveLength(1);
-      expect("sourceId" in asked[0]!).toBe(false);
+      // The inbound turn carries the per-turn context block; the owner's words are the tail of it.
+      const userMessages = sent.messages.filter((m) => m["role"] === "user");
+      const asked = userMessages[userMessages.length - 1];
+      expect(String(asked?.["content"])).toContain("hello");
+      expect("sourceId" in (asked ?? {})).toBe(false);
     } finally {
       fetchMock.restore();
       end();

@@ -2,24 +2,29 @@
 
 A mini-RAG over the skill registry. On top of the always-present skill catalog (Layer 5 of the
 system prompt, which lists every skill and instructs the model to call `skills` when one fits), a
-short **soft reminder** is appended at the very end of the system prompt highlighting the skills
-that best match the incoming message.
+short **soft reminder** is prepended to the inbound user turn, highlighting the skills that best
+match that message.
 
 Goal: cut the skill discovery latency by pointing at the likely-relevant skill(s), without
 removing the model's freedom to ignore them. It is a hint, never an order.
 
 ## What gets injected
 
-Rendered as the last layer, after the runtime line:
+Rendered as a `<context>` block at the top of the inbound user message (the system prompt carries
+no per-turn byte, or every turn would be a new cache prefix):
 
 ```
-# Skills possibly relevant to this request
+<context>
+Current time: 2026-10-19T20:18:36.172Z
 
+Skills possibly relevant to this request:
 - video: convert and edit video files
 - media: process media assets
 
-These look related to the current request. If one fits, call skills(name) to load its full
-instructions. Treat this as a hint, not an order.
+Treat this as a hint, not an order.
+</context>
+
+<the owner's message>
 ```
 
 Layer 5 (the full catalog + the `MUST call skills` instruction) is unchanged; this only adds a

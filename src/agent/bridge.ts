@@ -19,6 +19,7 @@ import type { Entry, SessionLog, ToolEntry } from "../sessions/log.ts";
 import { continuable, CUT_OFF_NUDGE, endsOnOwnText, interruptedOutput, interruptedSubagents, orphanCalls, subagentOfCall } from "../sessions/resume.ts";
 import { RunRecorder } from "./run-recorder.ts";
 import { buildSystemPrompt } from "./prompt/builder.ts";
+import { turnContextBlock } from "./prompt/turn-context.ts";
 import { selectRelevantSkills } from "../skills/retrieval.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ProviderMeta } from "../llm/provider.ts";
 import { llmComplete, llmCompleteStream } from "../llm/transport.ts";
@@ -32,7 +33,7 @@ import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
 import { usageModelOf } from "../llm/model-ref.ts";
 import { resolveContextWindow, occupiedContextTokens, measuredPrompt } from "../llm/context-window.ts";
 import type { ToolCallResult } from "./tool-status.ts";
-import { compactSession, type CompactionResult } from "../sessions/compaction.ts";
+import { compactSession, type CompactionResult, type CompactionPrefix } from "../sessions/compaction.ts";
 import {
   cancelSpeculation,
   claimSpeculation,
@@ -479,6 +480,7 @@ export class AgentBridge implements AgentBackend {
       tools = remote;
       nodeRemoteNames = new Set(remote.map((tool) => tool.name));
     }
+    const openaiTools = toOpenAiToolDefinitions(tools);
     // The same resolution the dispatcher used to pick this engine: calling a different chain
     // here is how a run ended up on an engine chosen for another model.
     // Resolved into its own binding so the run's chain keeps its type: an override from the
@@ -574,18 +576,18 @@ export class AgentBridge implements AgentBackend {
     }
 
     try {
-      // Every agent, not only the orchestrator: a research sub-agent reading documents is exactly
-      // the profile that fills a window, and it used to have nothing but the hard trim.
-      if (autoCompactEnabled(this.config)) {
-        await this.maybeAutoCompact(session, llmConfig, agentToolType, entries, signal);
-      }
-
       // Scoped, not the full store: layer 5 tells the agent it MUST load (`skills`) anything listed, so
       // a catalog wider than the scope would advertise skills the tool then refuses.
       const allSkills = this.skillRegistry.list(agent.skills, session.workspace);
       const skillsOff = session.skillsOff ?? [];
       const skills = skillsOff.length > 0 ? allSkills.filter((s) => !skillsOff.includes(s.name)) : allSkills;
       const runWorkspace = this.workspaceFor(session);
+      const suggestedSkills = await selectRelevantSkills(
+        skills,
+        message.text,
+        this.config.memory?.embedding,
+        this.config.skills?.suggest,
+      );
       let systemPrompt = await buildSystemPrompt({
         platform: message.platform,
         model: llmConfig.model,
@@ -599,15 +601,17 @@ export class AgentBridge implements AgentBackend {
         ...(agent.prompt ? { agentPrompt: agent.prompt } : {}),
         instructions: agent.instructions,
         layersOff: session.promptLayersOff,
-        suggestedSkills: await selectRelevantSkills(
-          skills,
-          message.text,
-          this.config.memory?.embedding,
-          this.config.skills?.suggest,
-        ),
       });
       hooks.emit("agent:prompt:built", { sessionId: session.id, model: llmConfig.model, systemPromptLength: systemPrompt.length });
       systemPrompt = (await hooks.transform("transform:system:prompt", { prompt: systemPrompt, sessionId: session.id, model: llmConfig.model })).prompt;
+
+      // Every agent, not only the orchestrator: a research sub-agent reading documents is exactly
+      // the profile that fills a window, and it used to have nothing but the hard trim. The prefix
+      // goes in so the summary reads the cache the conversation already warmed instead of writing
+      // its own prompt from scratch.
+      if (autoCompactEnabled(this.config)) {
+        await this.maybeAutoCompact(session, llmConfig, agentToolType, entries, signal, { systemPrompt, tools: openaiTools });
+      }
 
       const userContent = this.preprocessor.buildUserContent(message);
       const transformedContent = (await hooks.transform("transform:user:content", { content: userContent, sessionId: session.id })).content;
@@ -625,12 +629,20 @@ export class AgentBridge implements AgentBackend {
         const state = continuable(entries.entries(), entries.leaf());
         if (!state.ok) return state.reason;
       }
+      const turnContext = turnContextBlock({
+        now: new Date(startedAt),
+        suggested: session.promptLayersOff?.includes("suggested") ? [] : suggestedSkills,
+      });
+      // A Continue adds no turn: the prompt it resumes is the one already on the log, block and all.
+      const memoryBlock = resuming ? undefined : await this.memoryContext(message, session);
+      const promptText = [turnContext, memoryBlock, transformedContent].filter(Boolean).join("\n\n");
       if (!userEntryWritten && !resuming && !entries.get(message.id)) {
         recorder.user({
           // The app has already drawn this bubble from chat.send. Reuse that id so a later sync
           // replaces it instead of appending a second copy.
           id: message.id,
           text: transformedContent,
+          ...(promptText !== transformedContent ? { promptText } : {}),
           ...(images.length > 0 ? { attachments: images } : {}),
           ...(message.location ? { location: message.location } : {}),
           ...(transcripts.length > 0 ? { transcripts: Object.fromEntries(transcripts.map((t) => [t.path, t.text])) } : {}),
@@ -706,8 +718,6 @@ export class AgentBridge implements AgentBackend {
         recorder.nextTurn();
       }
 
-      const openaiTools = toOpenAiToolDefinitions(tools);
-
       // Thinking blocks are only needed to span the tool iterations of the turn that produced
       // them; older ones are a conversation's worth of signatures on every request, and the API
       // lets a client drop them from the start of the history -- docs/reasoning-replay.md.
@@ -726,7 +736,13 @@ export class AgentBridge implements AgentBackend {
         void log("warn", "image dropped: the resolved model has no vision", { sessionId: session.id, model: llmConfig.model });
       }
 
-      await this.injectMemory(message, chatMessages, session);
+      // A sub-agent's user entry was written by the runner before this run, without the per-turn
+      // block. The main path persists the block on the entry itself (`promptText`), so the next run
+      // rebuilds the same bytes; only this path needs the in-memory injection.
+      if (userEntryWritten) {
+        const preamble = [turnContext, memoryBlock].filter(Boolean).join("\n\n");
+        if (preamble) this.injectTurnContext(chatMessages, preamble);
+      }
 
       // Cut off mid-answer, the model restarts its answer from the top two times in three when
       // handed it alone; told where it stopped, it carries on mid-sentence (four in four, measured).
@@ -809,7 +825,7 @@ export class AgentBridge implements AgentBackend {
         // and the alternative is trimToContextWindow dropping the oldest turns for good.
         const currentEntryCount = contextEntries(entries.entries(), entries.leaf()).length;
         if (autoCompactEnabled(this.config) && currentEntryCount >= midRunCompactRetryAt) {
-          const outcome = await this.compactMidRun(session, llmConfig, agentToolType, iteration, entries, signal);
+          const outcome = await this.compactMidRun(session, llmConfig, agentToolType, iteration, entries, signal, { systemPrompt, tools: openaiTools });
           if (outcome === "compacted") {
             await rebuildPrompt();
           } else if (outcome === "skipped") {
@@ -855,7 +871,7 @@ export class AgentBridge implements AgentBackend {
             iteration,
             ...why,
           });
-          const outcome = await this.runCompaction(session, signal, { sessionId: session.id, iteration, reason: "overflow" });
+          const outcome = await this.runCompaction(session, signal, { sessionId: session.id, iteration, reason: "overflow" }, { systemPrompt, tools: openaiTools });
           if (outcome !== "compacted") return false;
           await rebuildPrompt();
           // Correction, not work: the iteration is given back so a run cannot spend its budget on
@@ -1600,31 +1616,43 @@ export class AgentBridge implements AgentBackend {
   }
 
   /**
-   * Inject relevant long-term memory into the current turn only (not session history),
-   * so it never accumulates and stays out of cached prefixes. Main agent only.
+   * The time and the skill hint travel with the inbound turn, never in the system prompt: the
+   * system prompt is the cached prefix, and a per-turn byte in it invalidates the conversation
+   * cache (docs/prompt-caching.md). Every agent gets it, sub-agents included.
    */
-  private async injectMemory(message: UnifiedMessage, chatMessages: ChatMessage[], session: SessionData): Promise<void> {
-    if (this.depth !== 0) return;
-    if (this.config.memory?.enabled === false) return;
-    if (session.memoryRecallOff) return;
+  private injectTurnContext(chatMessages: ChatMessage[], block: string): void {
+    const last = chatMessages[chatMessages.length - 1];
+    // Only the inbound turn. A Continue ends on the assistant's cut answer, and prefixing an
+    // older user message would rewrite history the cache already holds.
+    if (!last || last.role !== "user") return;
+    if (typeof last.content === "string") {
+      chatMessages[chatMessages.length - 1] = { role: "user", content: `${block}\n\n${last.content}` };
+    } else {
+      chatMessages[chatMessages.length - 1] = { role: "user", content: [{ type: "text", text: block }, ...last.content] };
+    }
+  }
+
+  /**
+   * The recalled-memory block for the inbound turn, or nothing. Main agent only, and only when the
+   * session has not switched recall off. Prompt-only: the caller persists it on the user entry so
+   * the next run reconstructs the same prefix instead of rewriting the previous turn.
+   */
+  private async memoryContext(message: UnifiedMessage, session: SessionData): Promise<string | undefined> {
+    if (this.depth !== 0) return undefined;
+    if (this.config.memory?.enabled === false) return undefined;
+    if (session.memoryRecallOff) return undefined;
     try {
       const mem = await recall(message.text, this.config.memory);
-      if (!mem.text) return;
-      const block =
+      if (!mem.text) return undefined;
+      return (
         "<memory-context>\n" +
         "Relevant long-term memory (may be outdated; verify before relying on it):\n" +
         `${mem.text}\n` +
-        "</memory-context>";
-      const lastIdx = chatMessages.length - 1;
-      const last = chatMessages[lastIdx];
-      if (!last || last.role !== "user") return;
-      if (typeof last.content === "string") {
-        chatMessages[lastIdx] = { role: "user", content: `${block}\n\n${last.content}` };
-      } else {
-        chatMessages[lastIdx] = { role: "user", content: [{ type: "text", text: block }, ...last.content] };
-      }
+        "</memory-context>"
+      );
     } catch (err) {
       void log("warn", "memory recall failed", { error: String(err) });
+      return undefined;
     }
   }
 
@@ -1806,6 +1834,7 @@ export class AgentBridge implements AgentBackend {
     session: SessionData,
     signal: AbortSignal | undefined,
     logData: Record<string, unknown>,
+    prefix?: CompactionPrefix,
   ): Promise<"skipped" | "compacted"> {
     // No `message:queued` here, deliberately. The hook marks a send that is waiting for a run to
     // become possible, and it is lifted when that run starts. A mid-run compaction has no such
@@ -1828,7 +1857,7 @@ export class AgentBridge implements AgentBackend {
       }
       // Anything still in flight was planned against the branch this pass is about to rewrite.
       cancelSpeculation(session.id);
-      const result = await compactSession(this.config, session, undefined, signal);
+      const result = await compactSession(this.config, session, undefined, signal, undefined, prefix);
       if (!result.ok) {
         void log("warn", "auto-compaction skipped", { ...logData, reason: result.reason });
         return "skipped";
@@ -1868,12 +1897,12 @@ export class AgentBridge implements AgentBackend {
 
   // Soft gate: estimation is a chars/4 heuristic, trimToContextWindow stays the hard
   // fallback at the limit. A compaction failure must never block the run.
-  private async maybeAutoCompact(session: SessionData, llmConfig: ResolvedLlmConfig, agent: AgentToolType, entries: { entries: () => readonly Entry[]; leaf: () => string | null }, signal?: AbortSignal): Promise<void> {
+  private async maybeAutoCompact(session: SessionData, llmConfig: ResolvedLlmConfig, agent: AgentToolType, entries: { entries: () => readonly Entry[]; leaf: () => string | null }, signal?: AbortSignal, prefix?: CompactionPrefix): Promise<void> {
     const gate = this.contextGate(session, llmConfig, agent, entries);
     if (!gate.over) return;
 
     void log("info", "auto-compaction triggered", gate.data);
-    await this.runCompaction(session, signal, { sessionId: session.id });
+    await this.runCompaction(session, signal, { sessionId: session.id }, prefix);
   }
 
   /**
@@ -1897,12 +1926,13 @@ export class AgentBridge implements AgentBackend {
     iteration: number,
     entries: { entries: () => readonly Entry[]; leaf: () => string | null },
     signal?: AbortSignal,
+    prefix?: CompactionPrefix,
   ): Promise<"under" | "skipped" | "compacted"> {
     const gate = this.contextGate(session, llmConfig, agent, entries);
     if (!gate.over) return "under";
 
     void log("info", "auto-compaction triggered mid-run", { ...gate.data, iteration });
-    return await this.runCompaction(session, signal, { sessionId: session.id, iteration });
+    return await this.runCompaction(session, signal, { sessionId: session.id, iteration }, prefix);
   }
 
   /**
@@ -1935,7 +1965,7 @@ export class AgentBridge implements AgentBackend {
       if (chatIndex === undefined) break;
       if (entry.type !== "user") continue;
       const paths = (entry.attachments ?? []).filter((a) => a.type === "image").map((a) => a.path);
-      if (paths.length > 0) withImages.push({ chatIndex, text: entry.text, paths });
+      if (paths.length > 0) withImages.push({ chatIndex, text: entry.promptText ?? entry.text, paths });
     }
 
     let budget = MAX_HISTORY_IMAGES;

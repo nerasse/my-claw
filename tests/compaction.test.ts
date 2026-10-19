@@ -1,6 +1,6 @@
 import { test, beforeEach, afterEach } from "bun:test";
 import assert from "node:assert/strict";
-import { compactSession, planCompaction, summaryBodyOf, retainedBudgetFor } from "../src/sessions/compaction.ts";
+import { compactSession, planCompaction, summarizeForCompaction, summaryBodyOf, retainedBudgetFor } from "../src/sessions/compaction.ts";
 import { type LegacySessionData, type SessionMessage } from "../src/sessions/store.ts";
 import { deleteSession } from "../src/sessions/store.ts";
 import type { MyClawConfig } from "../src/core/config.ts";
@@ -183,6 +183,51 @@ test("a second compaction summarizes only what is past the previous boundary", a
     assert.ok(!secondPrompt.includes("User: Message 3\n"), "Message 3 should be behind the first boundary");
     // But the tail from the first compaction should be there (Message 9-12)
     assert.ok(secondPrompt.includes("User: Message 9"), "Message 9 should be in second prompt");
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+test("a prefixed compaction sends the conversation's system, history and tools", async () => {
+  appendMessages(log, makeMessages(12));
+  await log.flush();
+  const planned = planCompaction(log, 40);
+  assert.equal(planned.ok, true);
+  if (!planned.ok) return;
+
+  let body: Record<string, any> = {};
+  const fetchMock = mockFetch(async (_url, init) => {
+    const raw = init?.body;
+    body = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw as Uint8Array));
+    return sseFromCompletion({ choices: [{ message: { content: "A summary long enough to pass the fifty character floor and nothing else at all." } }] }) as never;
+  });
+
+  try {
+    const out = await summarizeForCompaction(
+      makeConfig(),
+      session,
+      planned.plan,
+      undefined,
+      undefined,
+      "compaction",
+      Date.now,
+      {
+        systemPrompt: "SYS PROMPT",
+        tools: [{ type: "function", function: { name: "read", description: "read", parameters: { type: "object", properties: {} } } }],
+      },
+    );
+    assert.equal(out.ok, true);
+    assert.equal(body["messages"][0].role, "system");
+    assert.equal(body["messages"][0].content, "SYS PROMPT");
+    assert.ok(
+      body["messages"].some((message: any) => message.role === "user" && String(message.content).includes("Message 1")),
+      "the conversation history is the prefix",
+    );
+    const last = body["messages"][body["messages"].length - 1];
+    assert.equal(last.role, "user");
+    assert.match(last.content, /You summarize a conversation/);
+    assert.match(last.content, /The conversation above is to be summarized/);
+    assert.equal(body["tools"].length, 1);
   } finally {
     fetchMock.restore();
   }

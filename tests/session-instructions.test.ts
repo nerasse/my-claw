@@ -175,10 +175,11 @@ test("the report reflects layers, skills and memory recall the session turned of
   assert.deepEqual(report.layersOff, ["runtime", "suggested"]);
   assert.deepEqual(report.skillsOff, ["voice"]);
   assert.equal(report.memoryRecallOff, true);
-  // The off layers are gone from the composed prompt: runtime and suggested are not layers.
+  // The off layers are gone from the composed prompt: runtime is not a layer. `suggested` is no
+  // longer one either: the hint is injected into the inbound turn, not the system prompt.
   const ids = report.layers.map((l) => l.id);
   assert.equal(ids.includes("runtime"), false);
-  assert.equal(ids.includes("suggested"), false);
+  assert.equal(report.layers.every((layer) => String(layer.id) !== "suggested"), true);
 });
 
 test("the report marks disabled nested files", async () => {

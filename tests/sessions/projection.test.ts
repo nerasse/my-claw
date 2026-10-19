@@ -43,6 +43,17 @@ describe("promptOf: what the model is handed", () => {
     ]);
   });
 
+  test("a user turn projects the prompt text, not the bubble text", () => {
+    const { entries, leaf } = chain([
+      { type: "user", prompt: true, text: "bonjour", promptText: "<context>\nCurrent time: now\n</context>\n\nbonjour" } as Provisioned<UserEntry>,
+      phase("salut"),
+    ]);
+    expect(promptOf(entries, leaf)[0]).toEqual({
+      role: "user",
+      content: "<context>\nCurrent time: now\n</context>\n\nbonjour",
+    });
+  });
+
   test("an empty branch is an empty prompt, not a crash", () => {
     expect(promptOf([], null)).toEqual([]);
     expect(promptOf([], "gone")).toEqual([]);

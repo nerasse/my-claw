@@ -40,8 +40,8 @@ a case that is normally empty.
 
 ### What the page cannot show, and says so
 
-- **Suggested skills** depend on the text of the message, so the layer only exists during a real
-  run (docs/skill-suggestions.md).
+- **Suggested skills** are injected into the inbound message, not into the system prompt, for the
+  same cache reason as recalled memories (docs/skill-suggestions.md).
 - **Recalled memories** are injected into the message, not into the system prompt.
 - **Nested `AGENTS.md`** are appended to tool results, once per run, for the directories the tools
   touch. They are listed separately, from the session's own trace.

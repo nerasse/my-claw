@@ -3324,7 +3324,7 @@ export interface MyClawAppSessionInstructionPatch {
   kind: "nested.toggle" | "nested.unload" | "layer.toggle" | "skill.toggle" | "memory.toggle";
   /** For nested.*: the absolute resolved path as returned by the report. */
   path?: string;
-  /** For layer.toggle: the layer id (agent, skills, platform, runtime, suggested). */
+  /** For layer.toggle: the layer id (agent, skills, platform, runtime). */
   layer?: string;
   /** For skill.toggle: the skill name. */
   skill?: string;
@@ -3340,7 +3340,7 @@ export interface MyClawAppSessionInstructionsResult {
 
 /** One layer of the composed system prompt, in build order. */
 export interface MyClawAppInstructionLayer {
-  /** Stable id: CORE, SOUL, AGENTS, USER, agent, skills, tools, platform, runtime, suggested. */
+  /** Stable id: CORE, SOUL, AGENTS, USER, agent, skills, platform, runtime. */
   id: string;
   label: string;
   bytes: number;
@@ -3376,7 +3376,8 @@ export interface MyClawAppSessionInstructions {
   totalBytes: number;
   layers: MyClawAppInstructionLayer[];
   nested: MyClawAppInstructionNested[];
-  /** Layer ids the session turned off (agent, skills, tools, platform, runtime, suggested). */
+  /** Layer ids the session turned off (agent, skills, platform, runtime; `tools` and `suggested`
+   *  remain accepted on sessions that were switched off before those layers left the prompt). */
   layersOff: string[];
   /** Skill names the session filtered out of the catalog. */
   skillsOff: string[];
