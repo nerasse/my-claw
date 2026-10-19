@@ -1,7 +1,7 @@
 import { describe, test, expect } from "bun:test";
-import { promptOf, contextEntries, SUMMARY_OPEN } from "../../src/sessions/projection.ts";
+import { promptOf, contextEntries, keepCurrentTurnReasoning, SUMMARY_OPEN } from "../../src/sessions/projection.ts";
 import type { Entry, Provisioned, UserEntry, PhaseEntry, ToolEntry, CompactionEntry } from "../../src/sessions/log.ts";
-import type { ChatMessage } from "../../src/llm/provider.ts";
+import type { ChatMessage, ProviderMeta } from "../../src/llm/provider.ts";
 
 /**
  * Entries built by hand rather than through a log: the projection is pure, so it must be testable
@@ -311,5 +311,43 @@ describe("a filed report reaches the model as context, and never parts a call fr
   test("filed inside a turn that turns out empty: the turn goes, the report stays", () => {
     const { entries, leaf } = chain([user("go"), phase("", "r1"), filed("rapport")]);
     expect(promptOf(entries, leaf)).toEqual([{ role: "user", content: "go" }, asContext("rapport")]);
+  });
+});
+
+describe("keepCurrentTurnReasoning: the reasoning a request may carry", () => {
+  const meta: ProviderMeta = { backend: "anthropic", model: "claude-opus-5-5", thinking: [{ type: "thinking", thinking: "why", signature: "SIG" }] };
+  const assistant = (content: string, providerMeta = meta): ChatMessage => ({ role: "assistant", content, providerMeta });
+
+  test("an earlier turn loses its reasoning, the current turn keeps its own", () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: "first" },
+      assistant("old answer"),
+      { role: "user", content: "second" },
+      assistant("current answer"),
+    ];
+    const kept = keepCurrentTurnReasoning(messages);
+    expect(kept[1]).not.toHaveProperty("providerMeta");
+    expect(kept[3]!.role === "assistant" && kept[3]!.providerMeta).toEqual(meta);
+    expect(messages[1]).toHaveProperty("providerMeta");
+  });
+
+  test("tool results do not move the floor: the whole tool-use chain is kept", () => {
+    const messages: ChatMessage[] = [
+      { role: "user", content: "go" },
+      assistant("calling"),
+      { role: "tool", tool_call_id: "c1", content: "out" },
+      assistant("done"),
+    ];
+    expect(keepCurrentTurnReasoning(messages).filter((m) => m.role === "assistant" && m.providerMeta)).toHaveLength(2);
+  });
+
+  test("a prompt ending on the user turn carries no earlier reasoning", () => {
+    const messages: ChatMessage[] = [assistant("old"), { role: "user", content: "new" }];
+    expect(keepCurrentTurnReasoning(messages)[0]).not.toHaveProperty("providerMeta");
+  });
+
+  test("no user turn at all leaves the messages untouched", () => {
+    const messages: ChatMessage[] = [assistant("one"), assistant("two")];
+    expect(keepCurrentTurnReasoning(messages)).toEqual(messages);
   });
 });

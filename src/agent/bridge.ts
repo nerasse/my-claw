@@ -14,7 +14,7 @@ import type { ToolApprovalHandler, UnifiedMessage, OutgoingMessage, Attachment }
 import type { SessionData, SessionAttachment } from "../sessions/store.ts";
 import { agentTypeOf, attributionParent, markSessionDirty, usageFolderOf, usageWorkspaceOf } from "../sessions/store.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
-import { promptOf, contextEntries } from "../sessions/projection.ts";
+import { promptOf, contextEntries, keepCurrentTurnReasoning } from "../sessions/projection.ts";
 import type { Entry, SessionLog, ToolEntry } from "../sessions/log.ts";
 import { continuable, CUT_OFF_NUDGE, endsOnOwnText, interruptedOutput, interruptedSubagents, orphanCalls, subagentOfCall } from "../sessions/resume.ts";
 import { RunRecorder } from "./run-recorder.ts";
@@ -708,9 +708,13 @@ export class AgentBridge implements AgentBackend {
 
       const openaiTools = toOpenAiToolDefinitions(tools);
 
+      // Thinking blocks are only needed to span the tool iterations of the turn that produced
+      // them; older ones are a conversation's worth of signatures on every request, and the API
+      // lets a client drop them from the start of the history -- docs/reasoning-replay.md.
+      const history = promptOf(entries.entries(), entries.leaf());
       const chatMessages: ChatMessage[] = [
         { role: "system", content: systemPrompt },
-        ...promptOf(entries.entries(), entries.leaf()),
+        ...(llmConfig.backend === "anthropic" ? keepCurrentTurnReasoning(history) : history),
       ];
 
       // Vision is resolved per model (resolver merges the model entry over the global flag):
@@ -766,6 +770,11 @@ export class AgentBridge implements AgentBackend {
             const meta = id ? carried.get(id) : undefined;
             if (meta) msg.providerMeta = meta;
           }
+        }
+        if (llmConfig.backend === "anthropic") {
+          const bounded = keepCurrentTurnReasoning(chatMessages);
+          chatMessages.length = 0;
+          chatMessages.push(...bounded);
         }
         if (llmConfig.vision) await this.attachImages(chatMessages, contextEntries(entries.entries(), entries.leaf()));
       };

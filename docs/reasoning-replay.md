@@ -56,10 +56,22 @@ is why this only ever applies inside the loop.
 - `redacted_thinking` blocks are captured too. They carry an opaque `data` payload and no readable
   text, so replay is the only thing they are good for.
 - On replay the blocks lead the assistant turn, ahead of `text` and `tool_use`.
-- **A block with no signature is never sent as thinking.** Anthropic verifies the signature against
-  the block and rejects an unsigned one, so a block whose `signature_delta` never arrived (an
-  aborted stream) degrades to a plain text block instead. pi-mono carries the same note: "real
-  Anthropic rejects empty thinking signatures".
+- **A block with no signature is never sent.** Anthropic verifies the signature against the block
+  and rejects an unsigned one, so a block whose `signature_delta` never arrived (an aborted
+  stream) is dropped. It is never turned into an assistant text block: a model that reads its own
+  reasoning as something it said goes on writing reasoning as text, which is the bug this rule
+  exists to prevent (see *Why the reasoning is not demoted*). pi-mono carries the same note about
+  empty signatures: "real Anthropic rejects empty thinking signatures".
+- **The identity is the wire model, not the provider reference.** A provider reference also names
+  the account (`claude-2/claude-opus-5-5`), and an account is not a model: two subscriptions
+  serving the same `claude-opus-5-5` must not invalidate each other's signatures. The replay
+  identity compares `backend` and `apiModel`, as the chat and Codex transports already did.
+- **Across models and accounts, send the blocks and let the API filter.** Anthropic: "Keep sending
+  the full history on every request, thinking blocks included, and let the API drop what the
+  current model can't read." A block the target model cannot read is dropped server-side, without
+  an error and without being billed. The transport therefore does not guess compatibility; the
+  only fence is the backend, because another transport's opaque state is not a signature this API
+  can verify.
 - **Merging two assistant turns drops the incoming thinking.** Consecutive same-role messages are
   merged for the tool_result grouping, and appending a second signed sequence behind the first
   one's text gives `thinking, text, thinking, text` -- rejected, because a message's consecutive
@@ -69,6 +81,27 @@ is why this only ever applies inside the loop.
   display, on the assumption that the signature covered the raw thinking rather than the summary.
   That was wrong: "The `signature` field is identical whether `display` is `"summarized"` or
   `"omitted"`." An omitted block round-trips exactly as well.
+
+### Why the reasoning is not demoted
+
+Until 2026-10-19 a block from another model was replayed as a plain **text** block, on the theory
+that the reasoning was still worth something to the model. It is not worth that. The text channel
+is what the model treats as things it said, so after a Stop + Continue that switched Claude
+accounts, the whole history's thinking arrived as assistant prose -- including the interrupted
+turn, `"my reasoning" + tool_use` -- and the model went on writing its next reasoning as text.
+Measured on `monday-com`: four Continue events, leak exactly on the three that switched accounts,
+9,136 characters of pure reasoning in one phase. The API's own filter is the right place to decide
+what a model can read; the client's job is to keep the channel truthful.
+
+### How much of it rides along
+
+The replay is bounded to the **current turn**: `keepCurrentTurnReasoning` drops the provider state
+of every assistant turn before the last user message. Anthropic allows removing thinking blocks
+from the start of the history, and the blocks that remain must be an unbroken run of the original
+sequence, which dropping the oldest keeps. The rest is a conversation's worth of signatures on
+every request: measured on `monday-com`, 101,289 characters of thinking and 315,640 characters of
+signatures, roughly 104k tokens in a 364k-token prompt. The chat transport keeps its own window:
+DeepSeek documents `reasoning_content` as required for previous turns once tools are present.
 
 ### OpenAI-compatible chat (`provider.ts`) — on by default, per model
 
@@ -146,8 +179,8 @@ there is a measurement to bound it against.
   that emit thinking blocks with empty signatures and expect them back; real Anthropic rejects
   those. `config.baseUrl` can point an `anthropic`-type provider at such an endpoint, so the case is
   reachable, but nothing here is configured that way. Until something is, the current behaviour is
-  safe everywhere -- an unsigned block degrades to text, which never fails -- and the symptom on
-  such a proxy would be visible reasoning that stops being replayed, not an error. Deliberately not
+  safe everywhere -- an unsigned block is dropped, which never fails -- and the symptom on such a
+  proxy would be visible reasoning that stops being replayed, not an error. Deliberately not
   configured rather than guessed at.
 - **Surrogate sanitising.** pi-mono scrubs lone UTF-16 surrogates out of thinking text before
   sending it. Not reproduced here, and not observed.
@@ -157,19 +190,19 @@ there is a measurement to bound it against.
 `ProviderMeta` is opaque, signed for one model, and often large. Three rules, each with a test in
 `tests/llm/provider-meta-containment.test.ts`:
 
-1. **It is never persisted.** `SessionMessage` has no field for it. The bridge attaches it to the
-   in-memory `chatMessages` entry and *not* to `persistedAssistant`, a few lines below in the same
-   block. Its whole value is spanning the tool iterations of the run in progress; across runs it
-   would be a session file full of megabytes of base64, replayed months later at a model that
-   never produced it.
+1. **It is persisted on the phase, and bounded on the way back.** `PhaseEntry.providerMeta` keeps
+   the blobs (annexe B, decision 2) so a run that spans a restart can still replay its chain. What
+   crosses runs is bounded: only the current turn's state is sent (`keepCurrentTurnReasoning`),
+   which is the part the protocol needs. The log stays the source of truth for display, and an old
+   turn's reasoning never comes back as assistant text.
 2. **It never crosses protocols.** All three transports build their payload field by field —
    `toWireMessage` for chat completions, `buildInput` for Responses, `buildRequest` for Anthropic —
    so a field none of them names cannot leak into a protocol with no slot for it.
-3. **It is tagged and checked, on all three transports.** Every blob carries the `backend` and
-   `model` that produced it. A `rs_` item handed to another model is a 400, and Anthropic documents
-   the same rule ("Thinking blocks are tied to the model that produced them... strip them when you
-   switch"). On Anthropic the readable thinking survives a switch as plain text, because only the
-   signature went stale; encrypted and redacted state has nothing to degrade to and is dropped.
+3. **It is tagged with the wire model.** Every blob carries the `backend` and the `apiModel` that
+   produced it. Anthropic documents that a signature is bound to the model, not to the account or
+   the platform ("signature values are compatible across platforms"), and that the API drops the
+   blocks the target model cannot read. A provider reference would name the account and turn an
+   account switch into a model switch, which is what produced the text-channel leak above.
 4. **An incomplete turn contributes nothing.** A truncated response can carry a half-formed
    reasoning item, and handing that back is how a signed chain is refused for the rest of the run.
    The visible text is kept either way.
@@ -179,8 +212,9 @@ whenever prompt caching was off, so `providerMeta` was serialized straight onto 
 `toWireMessage` was the fence and that path walked around it. Both paths now go through it, and a
 test asserts the two produce the same fields.
 
-Because it never reaches the session store, it never crosses a compaction boundary and there is
-nothing to invalidate at `promptBase`: the state simply does not outlive the run that made it.
+Because the old state is dropped at the current-turn boundary, it never crosses a compaction
+boundary and there is nothing to invalidate at `promptBase`: the state the prompt carries simply
+does not outlive the turn that made it.
 
 ## What the neighbours do
 

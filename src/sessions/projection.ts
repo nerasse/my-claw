@@ -181,6 +181,34 @@ export function messagesOf(context: readonly Entry[]): ChatMessage[] {
 }
 
 /**
+ * The reasoning a request may carry: the current turn's, and nothing older.
+ *
+ * Anthropic lets a client drop thinking blocks from the start of the history; the blocks kept must
+ * be an unbroken run of the original sequence, and everything before the last user message is an
+ * earlier turn by definition. Dropping those keeps the run unbroken while sparing every request a
+ * conversation's worth of signatures -- docs/reasoning-replay.md.
+ *
+ * Applied to the Anthropic transport only: DeepSeek requires `reasoning_content` for previous
+ * turns once tools are present, so the chat transport keeps its own window.
+ */
+export function keepCurrentTurnReasoning(messages: readonly ChatMessage[]): ChatMessage[] {
+  let floor = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]!.role === "user") {
+      floor = i;
+      break;
+    }
+  }
+
+  return messages.map((message, index) => {
+    if (index >= floor || message.role !== "assistant" || !message.providerMeta) return message;
+    const copy = { ...message };
+    delete copy.providerMeta;
+    return copy;
+  });
+}
+
+/**
  * A filed report as the model reads it: a user-role turn, marked as context so it is not taken
  * for the owner asking something. The same role a compaction summary arrives in, for the same
  * reason.

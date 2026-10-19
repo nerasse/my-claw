@@ -45,21 +45,41 @@ describe("Anthropic thinking replay", () => {
     expect(body).not.toContain("weighing it");
   });
 
-  test("a block from another model keeps its text and loses its signature", () => {
-    // "Thinking blocks are tied to the model that produced them" -- the signature is worthless
-    // after a switch, the reasoning is not.
-    const foreign: ProviderMeta = { backend: "anthropic", model: "claude-something-else", thinking: META.thinking! };
-    const blocks = assistantBlocks(turn(foreign));
-    expect(JSON.stringify(blocks)).not.toContain("SIG-1");
-    expect(blocks.map((b) => b["type"])).toEqual(["text", "text", "tool_use"]);
-    expect(blocks[0]).toEqual({ type: "text", text: "weighing it" });
+  test("the replay identity is the wire model, not the provider reference", () => {
+    // Two subscriptions serving the same model must not invalidate each other's signatures: the
+    // reference names the account (`claude-2/...`), the signature is bound to the model.
+    expect(anthropic.replayIdentity({ model: "claude-2/claude-opus-5-5", apiModel: "claude-opus-5-5" })).toEqual({
+      backend: "anthropic",
+      model: "claude-opus-5-5",
+      replay: true,
+    });
+    expect(anthropic.replayIdentity({ model: "claude-2/claude-opus-5-5" }).model).toBe("claude-2/claude-opus-5-5");
+    expect(anthropic.replayIdentity({ model: "m", reasoningReplay: false }).replay).toBe(false);
   });
 
-  test("a redacted block from another model is dropped: nothing readable to keep", () => {
+  test("a block from another model is replayed as thinking, not as text", () => {
+    // "Keep passing thinking blocks back unchanged when you switch models": the API drops the
+    // blocks the target model cannot read, and keeps the ones it can. Writing the reasoning into
+    // an assistant text block would show the model its own thoughts as something it said.
+    const foreign: ProviderMeta = { backend: "anthropic", model: "claude-something-else", thinking: META.thinking! };
+    const blocks = assistantBlocks(turn(foreign));
+    expect(blocks.map((b) => b["type"])).toEqual(["thinking", "text", "tool_use"]);
+    expect(blocks[0]).toEqual({ type: "thinking", thinking: "weighing it", signature: "SIG-1" });
+    expect(JSON.stringify(blocks).match(/weighing it/g)).toHaveLength(1);
+  });
+
+  test("a redacted block from another model is replayed as-is", () => {
     const foreign: ProviderMeta = { backend: "anthropic", model: "other", thinking: [{ type: "redacted_thinking", data: "OPAQUE" }] };
     const blocks = assistantBlocks(turn(foreign));
-    expect(JSON.stringify(blocks)).not.toContain("OPAQUE");
+    expect(blocks.map((b) => b["type"])).toEqual(["redacted_thinking", "text", "tool_use"]);
+    expect(blocks[0]).toEqual({ type: "redacted_thinking", data: "OPAQUE" });
+  });
+
+  test("state from another transport is dropped: it is not a thinking block", () => {
+    const foreign: ProviderMeta = { backend: "codex", model: SELF.model, thinking: META.thinking! };
+    const blocks = assistantBlocks(turn(foreign));
     expect(blocks.map((b) => b["type"])).toEqual(["text", "tool_use"]);
+    expect(JSON.stringify(blocks)).not.toContain("weighing it");
   });
 
   test("a redacted block is replayed as-is, opaque payload and all", () => {
@@ -73,11 +93,11 @@ describe("Anthropic thinking replay", () => {
    * whose `signature_delta` never arrived (aborted stream) cannot go back as thinking. pi-mono
    * learned the same thing: "real Anthropic rejects empty thinking signatures".
    */
-  test("a block with no signature degrades to text, it is not sent as thinking", () => {
+  test("a block with no signature is dropped, never sent as assistant text", () => {
     const meta: ProviderMeta = { backend: SELF.backend, model: SELF.model, thinking: [{ type: "thinking", thinking: "unsigned thought" }] };
     const blocks = assistantBlocks(turn(meta));
-    expect(blocks.map((b) => b["type"])).toEqual(["text", "text", "tool_use"]);
-    expect(blocks[0]).toEqual({ type: "text", text: "unsigned thought" });
+    expect(blocks.map((b) => b["type"])).toEqual(["text", "tool_use"]);
+    expect(JSON.stringify(blocks)).not.toContain("unsigned thought");
   });
 
   test("an unsigned block with no text at all is dropped", () => {

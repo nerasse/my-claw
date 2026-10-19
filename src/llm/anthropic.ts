@@ -210,35 +210,33 @@ function safeJson(raw: string): Record<string, unknown> {
 }
 
 /**
- * One stored thinking block, as the wire wants it -- or as text, or not at all.
+ * One stored thinking block, as the wire wants it -- or nothing.
  *
  * A signature is not optional on the way back in. Anthropic verifies it against the block and
  * rejects an unsigned one, so a block whose signature never arrived (an aborted stream, a provider
- * that streams the text and not the `signature_delta`) cannot be replayed as thinking. Its text is
- * still worth something to the model, so it degrades to a plain text block rather than vanishing.
- * A `redacted_thinking` block with no payload has nothing to degrade to and is dropped.
+ * that streams the text and not the `signature_delta`) cannot be replayed as thinking. It is
+ * dropped: its text must never become an assistant text block, because a model that reads its own
+ * reasoning as something it said goes on writing reasoning as text -- docs/reasoning-replay.md.
+ * A `redacted_thinking` block with no payload has nothing to replay and is dropped too.
  */
 function thinkingBlock(t: ThinkingBlock): AnthropicBlock[] {
   if (t.type === "redacted_thinking") return t.data ? [{ type: "redacted_thinking", data: t.data }] : [];
-  if (!t.signature) return t.thinking ? [{ type: "text", text: t.thinking }] : [];
+  if (!t.signature) return [];
   return [{ type: "thinking", thinking: t.thinking ?? "", signature: t.signature }];
-}
-
-/** A thinking block from another model: readable text survives, the opaque parts do not. */
-function demotedThinking(t: ThinkingBlock): AnthropicBlock[] {
-  if (t.type === "redacted_thinking" || !t.thinking) return [];
-  return [{ type: "text", text: t.thinking }];
 }
 
 /**
  * Who this request is, and whether it may hand reasoning back.
  *
- * Anthropic documents the replay as mandatory rather than optional: "within a tool-use turn, pass
- * thinking blocks back... complete and unmodified", and omitting them fails the request with
- * `thinking or redacted_thinking blocks in the latest assistant message cannot be modified`. So it
- * is on unless the owner turns the provider's `reasoningReplay` off, which is the escape hatch for
- * an endpoint that misbehaves -- and unlike the env var it replaces, that switch is hot-reloadable
- * and sits in the app. See docs/reasoning-replay.md.
+ * Anthropic documents the replay as mandatory rather than optional within a tool-use turn:
+ * "pass thinking blocks back... complete and unmodified". It also says to keep sending them when
+ * the conversation switches models, because the API drops the blocks the target model cannot read
+ * instead of failing the request. So the transport replays every signed block of this backend and
+ * lets the API filter, rather than guessing compatibility itself -- docs/reasoning-replay.md.
+ *
+ * `model` is the wire model (`apiModel`), the same identity the chat and Codex transports tag
+ * their state with. The provider reference also names the account, and an account is not a model:
+ * two subscriptions serving `claude-opus-5-5` must not invalidate each other's signatures.
  *
  * Note it is deliberately *not* tied to `streamThinking()`: the signature is identical whether the
  * display is summarized or omitted, so an omitted block round-trips exactly as well.
@@ -250,7 +248,7 @@ interface ReplayIdentity {
 }
 
 function replayIdentity(config: Partial<ResolvedLlmConfig>): ReplayIdentity {
-  return { backend: "anthropic", model: config.model ?? "", replay: config.reasoningReplay !== false };
+  return { backend: "anthropic", model: config.apiModel ?? config.model ?? "", replay: config.reasoningReplay !== false };
 }
 
 /**
@@ -309,15 +307,11 @@ function buildRequest(messages: ChatMessage[], self?: ReplayIdentity): { system:
       case "assistant": {
         const blocks: AnthropicBlock[] = [];
         // First in the turn, which is where the model put them and the only position the API
-        // accepts. Same-model check as on the Codex transport: a signature is not portable.
+        // accepts. Only state this transport produced can be a thinking block; a foreign transport
+        // has no signature this API would accept.
         const meta = msg.providerMeta;
-        if (self?.replay && meta?.thinking?.length) {
-          const mine = meta.backend === self.backend && meta.model === self.model;
-          // After a model switch the signature is worthless -- Anthropic: "thinking blocks are tied
-          // to the model that produced them... strip them when you switch". The reasoning itself is
-          // not worthless, though, so it stays as plain text rather than being thrown away. Same
-          // call pi-mono makes.
-          for (const t of meta.thinking) blocks.push(...(mine ? thinkingBlock(t) : demotedThinking(t)));
+        if (self?.replay && meta?.backend === self.backend && meta.thinking?.length) {
+          for (const t of meta.thinking) blocks.push(...thinkingBlock(t));
         }
         if (msg.content) blocks.push({ type: "text", text: msg.content });
         for (const tc of msg.tool_calls ?? []) {
@@ -896,6 +890,7 @@ export const __testing = {
   buildSystem,
   maxTokensFor,
   thinkingFor,
+  replayIdentity,
   wireToolName,
   localToolName,
   normalizeUsage,
