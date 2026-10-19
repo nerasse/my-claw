@@ -3156,6 +3156,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
         ...(page.hasMore !== undefined && page.nextBefore !== undefined
           ? { hasMore: page.hasMore, nextBefore: page.nextBefore }
           : {}),
+        // Only on the answer that replaces the client's thread; a delta carries none.
+        ...(page.draft ? { draft: page.draft } : {}),
         ...(this.runActive ? { activeRun: this.runActive(this.store.resolveSessionId(ws.data.owner, threadId)) } : {}),
         ...(page.lastRun ? { lastRun: page.lastRun } : {}),
       };

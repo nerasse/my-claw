@@ -35,6 +35,11 @@ export interface MyClawAppSyncPage {
   nextBefore?: number;
   /** The branch's last run, as `runFold` reads it now. */
   lastRun?: MyClawAppRunMeta;
+  /**
+   * The conversation's unsent draft, on the window that replaces the client's thread (fresh open
+   * or reset) -- docs/draft-sync.md.
+   */
+  draft?: string;
 }
 
 /** The return value of `runItems`: the work a folded row stood for -- docs/run-hydration.md. */
@@ -588,10 +593,14 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     lazyReasoning = false,
   ): Promise<MyClawAppSyncPage> {
     const sessionId = this.resolveSessionId(owner, threadId);
+    // One map read behind an already-resolved promise, paid on every sync so the code has a
+    // single shape: only the window that replaces the client's thread ever spreads it.
+    const draft = await this.drafts.textOf(sessionId);
     const session = await this.sessionManager.read(sessionId);
     if (!session) {
-      // No session yet: nothing to sync
-      return { entries: [], leaf: null, head: null };
+      // No session yet: nothing to sync. A thread the owner wrote in before its first message
+      // still has a draft, and an empty answer that dropped it would lose it for good.
+      return { entries: [], leaf: null, head: null, ...(draft ? { draft } : {}) };
     }
 
     const log = await sessionLogOf(sessionId);
@@ -685,6 +694,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         ? { hasMore: windowLength < branchLength, nextBefore: branchLength - windowLength }
         : {}),
       ...(lastRun ? { lastRun } : {}),
+      // The window that replaces the client's thread is where its draft comes back: a delta is
+      // work the client is watching arrive, and it must never overwrite text typed here.
+      ...(freshWindow && draft ? { draft } : {}),
     };
   }
 

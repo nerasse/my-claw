@@ -99,11 +99,20 @@ type it does not know (`parseServerFrame` is a whitelist), and an older server n
 { type: "draft.changed"; threadId: string; text: string; ts: number }
 ```
 
-- `MyClawAppChatHistory` gains `draft?: string`, on the newest page only. Opening a thread is
-  exactly when its draft is wanted, `resume.ts` already refetches the open thread's history on every
-  reconnect, and a paginated page reaching backwards has no business carrying it.
+- `MyClawAppChatHistory` gains `draft?: string`, on the newest page only, and
+  `MyClawAppSessionSyncResult` gains the same field on the answer that replaces the thread (a
+  fresh open, `unknown-cursor`, `branch-switch`).
+
+  It is one rule, not two: **the frame that replaces the client's thread carries its draft, a
+  delta never does.** It used to live on `chat.history` alone, which was true only while opening
+  a thread asked for a history page. The delta sync (2026-08-25) made opening a thread a
+  `session.sync`, so the drawer kept announcing unsent text that no frame ever handed back: the
+  composer opened empty, and the first send dropped the draft on the server. Nothing caught it
+  because both halves were tested and neither was the path opening a thread took (2026-10-19).
 - `MyClawAppSessionSummary` gains `hasDraft?: boolean`. One bit, so the thread list can mark a
-  conversation with unsent text without shipping every draft in every listing.
+  conversation with unsent text without shipping every draft in every listing. The device keeps
+  that bit in step with its own draft store afterwards: typing sets it, sending clears it, and a
+  `draft.changed` moves it both ways, because the listing is a snapshot from a round trip ago.
 
 `ts` is the server's clock, assigned on write. Device clocks drift, and last-write-wins on a drifting
 clock loses the wrong write.
@@ -121,6 +130,14 @@ the phone left on the desk catches up, and the window being typed in is never in
 
 There is no merge, no conflict UI and no operational transform. Last write wins, per conversation.
 A draft is one person's unsent sentence on two screens, not a shared document.
+
+### Pages are not keystrokes
+
+Two frames arrive with a whole page: `chat.history` (the newest page, and the refresh after a
+branch switch) and `session.sync` when it replaces the thread. Those fill a gap; they are not a
+keystroke from another device. So a page is applied **only when the local map is empty, or still
+holds exactly what the server last knew**. Anything else is text typed here and not acknowledged,
+and reopening a conversation must never hand back yesterday's sentence over the one being written.
 
 ## Attachments do not sync
 
@@ -148,10 +165,17 @@ Server:
 - the adapter: `draft.set` reaches the other socket and never the sender; `chat.send` clears the
   draft and broadcasts the clear; `chat.history` on the newest page carries the draft and a
   paginated page does not; `session.list` reports `hasDraft`.
+- the sync: a fresh window, an `unknown-cursor` and a `branch-switch` carry the draft, a delta
+  never does, and a thread with no session yet still replays its draft through the sync.
 - the leak test: a stored draft is absent from the prompt built for that thread.
 
 App:
 
 - the store: a remote draft is applied when the composer is empty, and is not applied when it holds
   text; the debounce sends once for a burst; an identical text sends nothing.
-- `chat.history` seeds the draft; switching threads keeps both drafts apart.
+- a page fills an empty device, never overwrites text typed here and not acknowledged, and does
+  replace a copy that came from the server.
+- `session.sync.result` puts the draft in the composer; a `draft.changed` moves the drawer's bit
+  both ways; a send clears it; a draft consumed without a send (`/new`, `/tag`) is cleared on the
+  server explicitly.
+- switching threads keeps both drafts apart.

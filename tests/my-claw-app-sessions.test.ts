@@ -1822,6 +1822,7 @@ describe("MyClawAppSessionStoreImpl drafts", () => {
   let store: MyClawAppSessionStoreImpl;
   let drafts: DraftStore;
   let sessionId: string;
+  let logSetup: SessionLogSetup | null = null;
 
   beforeEach(async () => {
     const dir = await mkdtemp(join(tmpdir(), "session-drafts-"));
@@ -1831,7 +1832,13 @@ describe("MyClawAppSessionStoreImpl drafts", () => {
     await deleteSession(sessionId);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    if (logSetup) {
+      await logSetup.log.flush();
+      logSetup.cleanup();
+      logSetup = null;
+    }
+    resetSessionLogResolver();
     drafts.close();
   });
 
@@ -1874,6 +1881,34 @@ describe("MyClawAppSessionStoreImpl drafts", () => {
     const page = await store.history(DEVICE, "brand-new");
     assert.deepEqual(page.entries, []);
     assert.equal(page.draft, "premier message, long");
+
+    // Opening a thread syncs; it no longer asks for a history page. The same draft has to ride
+    // the answer that seeds the screen, or the drawer's badge points at text nothing returns.
+    const synced = await store.sync(DEVICE, "brand-new");
+    assert.deepEqual(synced.entries, []);
+    assert.equal(synced.draft, "premier message, long");
+  });
+
+  test("the sync that replaces the thread carries the draft, a delta does not", async () => {
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "premiere", timestamp: "2026-01-01T00:00:01.000Z" },
+      { role: "assistant", content: "reponse", timestamp: "2026-01-01T00:00:02.000Z" },
+    ]));
+    await store.setDraft(DEVICE, THREAD, "en cours d'ecriture");
+
+    const opened = await store.sync(DEVICE, THREAD, null);
+    assert.equal(opened.entries.length, 2);
+    assert.equal(opened.draft, "en cours d'ecriture");
+
+    // The other half of the contract: a delta is work arriving under the owner's eyes, and
+    // overwriting what is typed here with it is the failure this rule exists to prevent.
+    const delta = await store.sync(DEVICE, THREAD, opened.head);
+    assert.equal(delta.draft, undefined);
+
+    // An unknown cursor is a reset: the client replaces its thread, so it gets the draft again.
+    const reset = await store.sync(DEVICE, THREAD, "entry-that-never-existed");
+    assert.equal(reset.reset, "unknown-cursor");
+    assert.equal(reset.draft, "en cours d'ecriture");
   });
 
   test("a draft never enters the session file, so no prompt can ever read it", async () => {

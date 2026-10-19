@@ -2027,6 +2027,15 @@ export interface MyClawAppSessionSyncResult {
   hasMore?: boolean;
   /** What the client requests next to get the page just older than the window. */
   nextBefore?: number;
+  /**
+   * The conversation's unsent draft, on the answer that replaces the client's thread: a fresh
+   * open, `unknown-cursor` or `branch-switch`. A delta carries none.
+   *
+   * Opening a conversation is the moment its draft is wanted, and opening one no longer asks for
+   * a history page -- it syncs. Without this field the badge of `session.list` announced unsent
+   * text that no frame ever handed back -- docs/draft-sync.md.
+   */
+  draft?: string;
 }
 
 /**
