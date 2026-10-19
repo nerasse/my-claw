@@ -449,7 +449,7 @@ export class ModelCatalog {
   /** True when any provider opts into discovery (otherwise refresh is a no-op). */
   enabled(): boolean {
     const providers = this.getConfig().providers ?? {};
-    return Object.values(providers).some((p) => p.discover);
+    return Object.values(providers).some((p) => p.discover && !p.disabled);
   }
 
   private notify(): void {
@@ -513,7 +513,9 @@ export class ModelCatalog {
     let anyFailed = false;
 
     for (const [name, provider] of Object.entries(providers)) {
-      if (!provider.discover) continue;
+      // A disabled provider is not queried at all: no discovery call goes out for something the
+      // picker will not offer back (docs/providers-admin.md).
+      if (!provider.discover || provider.disabled) continue;
       const before = next.length;
       let complete = true;
       try {

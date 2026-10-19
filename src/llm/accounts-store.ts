@@ -1,5 +1,5 @@
 import { mkdirSync } from "node:fs";
-import { readFile, rename, rm } from "node:fs/promises";
+import { readFile, readdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { MY_CLAW_DIR, type LlmProviderConfig } from "../core/config.ts";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
@@ -82,6 +82,16 @@ export async function readAccount<T>(provider: string): Promise<T | null> {
     return parsed && typeof parsed === "object" && Object.keys(parsed).length > 0 ? (parsed as T) : null;
   } catch {
     return null;
+  }
+}
+
+/** The provider keys that hold a sign-in file, whatever kind. For identity scans. */
+export async function accountKeys(): Promise<string[]> {
+  try {
+    const entries = await readdir(ACCOUNTS_DIR);
+    return entries.filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)).filter((key) => KEY_RE.test(key));
+  } catch {
+    return [];
   }
 }
 

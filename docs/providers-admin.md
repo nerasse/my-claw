@@ -26,6 +26,7 @@ Fields the app can write (`providers.upsert`, one payload for create and edit):
 | `baseUrl` | openai (required) and anthropic (optional, defaults to api.anthropic.com). |
 | `apiKeyEnv` | openai and anthropic: the *name* of the env var, never the value. On anthropic, absent means the Claude subscription (docs/anthropic-backend.md). |
 | `group` | picker group label (docs/model-discovery.md). |
+| `disabled` | switched off: discovery skips it, the picker hides its models, tags route past its candidates and session pins fall through the chain. The sign-in stays -- disabling is not a sign-out. Refused when the provider carries the global default (see below). |
 | `discover` | auto-discover this provider's models. |
 | `promptCache` | openai only (docs/prompt-caching.md). |
 | `reasoningReplay` | all engines. Hand the model its own reasoning back across tool iterations. Absent means **on**; set it false only for an endpoint that emits reasoning and rejects it on input (docs/reasoning-replay.md). |
@@ -72,6 +73,53 @@ left there. Rules:
 
 Every provider mutation calls `reloadConfigNow()` then refreshes the model catalog: a provider
 that just gained a key (or just appeared) discovers its models now, not at the next 6h cycle.
+A hand-edited `"disabled": true` in config.json lands the same way: the config watcher reloads,
+the catalog re-projects, and the picker reflects it without a restart.
+
+## Renaming a key
+
+The key is an address, not a name: it prefixes every model reference (`claude-2/claude-opus-5-5`),
+it names the sign-in file, and it sits in tags, agent pins, cron jobs, session overrides and agent
+files. `providers.rename` therefore rewrites **every place the key is written**, in one operation
+(`renameProviderEverywhere`, `src/core/provider-rename.ts`):
+
+- `config.json`, one atomic write: the entry, `defaultProvider`, a qualified `defaultModel`,
+  every declared model's `provider` and qualified `id`, every provider's `fallbackModel`, the
+  tags' routes (and legacy `model`), every agent's `llm` pin, `visionFallback`;
+- each session's stored `modelOverride` (`sessions/**/meta.json`);
+- each cron job's `model` (`cron/jobs.json`);
+- each agent file's `model:` frontmatter (every editable tier);
+- the sign-in file (`accounts/<old>.json` -> `accounts/<new>.json`); a file already sitting on the
+  target refuses the rename before anything moves.
+
+Only a reference that *names* the provider travels (`<key>/...`): a bare id resolves by provider
+order, which a rename does not change. `providers.rename.preview` answers the same walk read-only
+(the app shows its counts before asking to confirm). New accounts get short keys by convention
+(`claude`, `claude-2` -- `accountKeyFor`), so renames stay rare; the operation exists because a
+key that has to change must not leave a tag silently falling back to the global default.
+
+## Disabling a provider
+
+`disabled: true` is the off switch that deletes nothing: `{ "key": "...", "disabled": true }`
+on one `providers.upsert` frame, no other field required. Re-enabling removes the field (off is
+the default state; the file carries settings, not affirmations).
+
+What it changes, everywhere:
+
+- **discovery** does not query it at all, and its silence is not evidence about its models
+  (`ModelCatalog.enabled()` ignores it);
+- **availability** answers `disabled` before any key or sign-in question, so the picker hides its
+  models and the management view lists them with the reason;
+- **routing** needs nothing new: a tag route skips the candidate, and a session pinned on one of
+  its models is skipped to the next step of the chain -- routing past an unavailable provider is
+  the chain's job;
+- **the sign-in stays**: disabling is not a sign-out, and re-enabling brings the models straight
+  back.
+
+**Refusal**: the provider that carries the global default (its `defaultProvider`, or the model
+`defaultModel` names -- qualified, or declared bare under it) cannot be disabled. Every run that
+inherits the default would have nothing left below it. Pick another default first; the refusal
+says so.
 
 ## Refusals
 
@@ -81,11 +129,21 @@ that just gained a key (or just appeared) discovers its models now, not at the n
 - The tag case is the one that used to pass unseen, and it is the quietest: a route that loses its
   model does not fail, it falls back to the global default, so the tag goes on claiming to mean
   what it says (2026-09-12, the owner's `Cheap` route into `opencode_go`).
-- **`withModels: true` accepts the cascade** instead of being refused: the provider leaves, and so do
-  the curated models declared under it (and the default-provider role, when it holds it), in the same
-  write. A tag route drops the candidates that named it, keeps the rest, and the whole tag goes when
-  nothing is left to try -- an empty route is a trap, not a route. The app's confirmation sheet
-  offers this when it counts either kind of reference, naming the ids and the tags.
+- **`withModels: true` accepts the cascade** instead of being refused: the provider leaves, the
+  curated models declared under it go with it, and **every reference that named one of its models
+  is repointed at the default model** (owner, 2026-10-19: "on remplace par le modèle par défaut"):
+  - a tag route candidate becomes the default's concrete model (a route cannot carry a tag
+    reference itself); if that collides with a candidate already in the route, the duplicate is
+    dropped;
+  - a legacy single-model tag takes `defaultModel` as it is, tag references included;
+  - an agent's `llm.defaultModel` pin moves to the default; its `llm.defaultProvider` is cleared;
+  - `llm.visionFallback` is **dropped** rather than repointed -- a vision slot needs a model that
+    sees, and pointing it at one that may not would silently disable the reroute anyway;
+  - when the default itself cannot leave the removed provider, the old behaviour stands: the
+    candidate is dropped and an emptied tag or route goes with it.
+  - Session pins, cron jobs and agent files are not rewritten: their stale reference is healed by
+    the resolver at the next run, which lands on the default -- the same place this cascade points
+    at.
   The plain refusal stays for a caller that did not ask for it -- dropping an owner's declarations is
   never something a provider removal does on its own.
 - Why the cascade exists at all: the refusal alone was a dead end. The app offers the delete, the

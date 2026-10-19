@@ -392,3 +392,45 @@ describe("availability stays hot", () => {
     expect(resolveRunModel(c, { agent: "main", sessionModel: "brand-new" }, world()).model).toBe("brand-new");
   });
 });
+
+describe("a provider switched off", () => {
+  test("its models read as disabled -- before any key or sign-in question -- and are not offered", () => {
+    const base = config();
+    const c = config({
+      agents: { orchestrator: { llm: { defaultModel: "mimo-v2.5-pro" } } },
+      llm: {
+        ...base.llm,
+        defaultProvider: "litellm",
+        defaultModel: "mimo-v2.5-pro",
+        providers: { ...base.llm.providers!, anthropic: { type: "anthropic", disabled: true } },
+      },
+    });
+    expect(availabilityOf(c.llm, "claude-opus-5", world())).toEqual({ state: "disabled", provider: "anthropic" });
+    // The state outranks the sign-in question: off is off, whatever the token store says.
+    expect(availabilityOf(c.llm, "claude-opus-5", world({ signedIn: () => false }))).toEqual({ state: "disabled", provider: "anthropic" });
+    expect(runnableModels(c.llm, world()).map((m) => m.id)).toEqual(["gpt-5.6-sol", "mimo-v2.5-pro", "qwen"]);
+
+    // A session pinned on one of its models is skipped like any dead source, and the chain runs.
+    const run = resolveRunModel(c, { agent: "main", sessionModel: "claude-opus-5" }, world());
+    expect(run.model).toBe("mimo-v2.5-pro");
+    expect(run.source).toBe("agent");
+    expect(run.skipped[0]).toMatchObject({ source: "session", availability: { state: "disabled" } });
+  });
+
+  test("a tag route walks past a disabled candidate to the next one", () => {
+    const base = config();
+    const tags = { Fast: { route: [{ model: "claude-opus-5" }, { model: "qwen" }] } };
+    const c = config({
+      tags,
+      llm: {
+        ...base.llm,
+        tags,
+        providers: { ...base.llm.providers!, anthropic: { type: "anthropic", disabled: true } },
+      },
+    });
+    const run = resolveRunModel(c, { agent: "main", sessionModel: "tag:Fast" }, world());
+    expect(run.model).toBe("qwen");
+    expect(run.route?.selectedIndex).toBe(1);
+    expect(run.route?.unavailableIndices).toEqual([0]);
+  });
+});

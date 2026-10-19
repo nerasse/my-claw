@@ -1,5 +1,5 @@
 import { log } from "../utils/logger.ts";
-import { readAccount, removeAccount, writeAccount } from "./accounts-store.ts";
+import { accountKeys, readAccount, removeAccount, writeAccount } from "./accounts-store.ts";
 
 // Public OAuth client id of the official `codex` CLI. Using it is what lets a ChatGPT
 // Plus/Pro subscription drive the Codex backend without a per-token API key.
@@ -11,6 +11,7 @@ const DEVICE_TOKEN_URL = `${AUTH_BASE_URL}/api/accounts/deviceauth/token`;
 const DEVICE_VERIFICATION_URI = `${AUTH_BASE_URL}/codex/device`;
 const DEVICE_REDIRECT_URI = `${AUTH_BASE_URL}/deviceauth/callback`;
 const JWT_CLAIM_PATH = "https://api.openai.com/auth";
+const PROFILE_CLAIM_PATH = "https://api.openai.com/profile";
 
 const DEVICE_CODE_TIMEOUT_MS = 15 * 60 * 1000;
 const DEFAULT_POLL_INTERVAL_MS = 5000;
@@ -76,6 +77,26 @@ function credentialFromTokenResponse(json: TokenResponse): CodexCredential {
     expires: Date.now() + json.expires_in * 1000,
     accountId,
   };
+}
+
+/**
+ * Refuses a ChatGPT sign-in whose email is already connected on another provider: the device code
+ * can be approved in a browser signed in to the other account, and the opaque tokens would never
+ * say so. The email rides in the access token, so the check costs no request.
+ */
+async function assertCodexIdentityFree(provider: string, cred: CodexCredential): Promise<void> {
+  const email = decodeJwtClaim(cred.access)?.[PROFILE_CLAIM_PATH];
+  const want = typeof email === "string" && email ? email.trim().toLowerCase() : undefined;
+  if (!want) return;
+  for (const key of await accountKeys()) {
+    if (key === provider) continue;
+    const other = await readAccount<Partial<CodexCredential>>(key);
+    if (!other?.access) continue;
+    const otherEmail = decodeJwtClaim(other.access)?.[PROFILE_CLAIM_PATH];
+    if (typeof otherEmail === "string" && otherEmail.trim().toLowerCase() === want) {
+      throw new Error(`This account (${email}) is already connected on provider "${key}". Sign it out there first.`);
+    }
+  }
 }
 
 // ============================================================================
@@ -275,6 +296,7 @@ export async function codexLoginDeviceCode(
     client_id: CLIENT_ID,
   }, signal);
   const cred = credentialFromTokenResponse(json);
+  await assertCodexIdentityFree(provider, cred);
   await writeCredential(provider, cred);
   return cred;
 }

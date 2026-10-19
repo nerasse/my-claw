@@ -57,6 +57,7 @@ import type {
   MyClawAppProviderEnvSet,
   MyClawAppProviderRemove,
   MyClawAppProviderRename,
+  MyClawAppProviderRenamePreview,
   MyClawAppProviderUpsert,
   MyClawAppModelUpsert,
   MyClawAppModelRemove,
@@ -526,6 +527,23 @@ export async function handleProviderRename(
     d.broadcastFrame(ws.data.owner, await d.providers.rename(frame.from, frame.to));
   } catch (err) {
     await d.refuse(ws, "providers", "providers.rename failed", { from: frame.from, to: frame.to, error: String(err) });
+  }
+}
+
+/** Read-only: what a rename would touch. The app shows it before asking to confirm. */
+export async function handleProviderRenamePreview(
+  d: MyClawAppSettingsDeps,
+  ws: ServerWebSocket<MyClawAppSessionData>,
+  frame: MyClawAppProviderRenamePreview,
+): Promise<void> {
+  if (!d.providers) {
+    await d.refuse(ws, "providers", "provider config unavailable");
+    return;
+  }
+  try {
+    d.sendFrame(ws, { type: "providers.rename.preview.result", from: frame.from, to: frame.to, refs: await d.providers.renamePreview(frame.from, frame.to) });
+  } catch (err) {
+    await d.refuse(ws, "providers", "providers.rename.preview failed", { from: frame.from, to: frame.to, error: String(err) });
   }
 }
 

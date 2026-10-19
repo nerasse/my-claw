@@ -26,7 +26,8 @@ export type Availability =
   | { state: "ready" }
   | { state: "stale"; provider: string }
   | { state: "no-key"; provider: string; env: string }
-  | { state: "no-auth"; provider: string };
+  | { state: "no-auth"; provider: string }
+  | { state: "disabled"; provider: string };
 
 /**
  * What the resolver needs to know about the world outside the config: what each provider last
@@ -115,6 +116,8 @@ export function describe(availability: Availability): string {
       return `${availability.env} is not set`;
     case "no-auth":
       return `the ${availability.provider} subscription is not connected`;
+    case "disabled":
+      return `the provider ${availability.provider} is disabled`;
   }
 }
 
@@ -139,6 +142,10 @@ export function availabilityOf(
   const provider = config.providers?.[providerName];
   // An id declared without a provider, in a config that names none: same single-provider case.
   if (!provider) return config.providers === undefined ? { state: "ready" } : undefined;
+
+  // Before the type branches: a disabled provider is not judged by its key or its sign-in, it is
+  // simply off. The state is what makes tags route past it and a session pin fall through.
+  if (provider.disabled) return { state: "disabled", provider: providerName };
 
   if (provider.type === "codex") {
     return world.signedIn(providerName) ? { state: "ready" } : { state: "no-auth", provider: providerName };

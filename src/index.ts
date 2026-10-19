@@ -163,7 +163,6 @@ import {
   adoptLegacyAccounts,
   freeProviderKey,
   freeProviderName,
-  moveAccount,
   PLAN_PROVIDER,
   watchAccounts,
   removeAccount,
@@ -221,11 +220,11 @@ import {
   deleteTag,
   upsertProvider,
   removeProvider,
-  renameProvider,
   repointEnvKey,
   upsertModel,
   removeModel,
 } from "./core/config-edit.ts";
+import { previewProviderRename, renameProviderEverywhere } from "./core/provider-rename.ts";
 import type { ConfigEditResult } from "./core/config-edit.ts";
 import { envKeys, setEnvValue, renameEnvKey, removeEnvKey } from "./core/env-edit.ts";
 import { runReleaseKeyCli } from "./core/release-key.ts";
@@ -506,7 +505,9 @@ async function main() {
   hooks.on("models:discovered", () => void sampleSubscriptionAuth());
   // A config.json edit can add a provider or a key env name, both of which change what is runnable.
   // A plan declared now adopts a sign-in left for it (the Claude token of .env on a fresh install).
-  hooks.on("config:reloaded", () => void adoptSignIns().then(sampleSubscriptionAuth));
+  // The projection runs after: a hand-edited `disabled` flips availability and must reach the
+  // picker without waiting for the next sign-in change or discovery pass (docs/providers-admin.md).
+  hooks.on("config:reloaded", () => void adoptSignIns().then(sampleSubscriptionAuth).then(() => applyModelCatalog()));
 
   modelCatalog.onUpdate(applyModelCatalog);
   // Load the OpenRouter catalogue before the first projection. It fails closed to an empty cache,
@@ -1413,6 +1414,7 @@ async function main() {
             ...(provider.reasoningReplay !== undefined ? { reasoningReplay: provider.reasoningReplay } : {}),
             ...(provider.pricingProvider ? { pricingProvider: provider.pricingProvider } : {}),
             ...(provider.fallbackModel ? { fallbackModel: provider.fallbackModel } : {}),
+            ...(provider.disabled ? { disabled: true } : {}),
             discover: provider.discover === true,
             models: providerCountOf(key),
             // How its last discovery went: what the page that just added it reads as "N models"
@@ -1732,8 +1734,8 @@ async function main() {
     };
     myClawApp.onProvidersController({
       upsert: async (patch) => {
-        const { key, providerType, baseUrl, apiKeyEnv, group, discover, promptCache, reasoningReplay, pricingProvider, fallbackModel } = patch;
-        const result = await upsertProvider(key, { type: providerType, baseUrl, apiKeyEnv, group, discover, promptCache, reasoningReplay, pricingProvider, fallbackModel });
+        const { key, providerType, baseUrl, apiKeyEnv, group, discover, promptCache, reasoningReplay, pricingProvider, fallbackModel, disabled } = patch;
+        const result = await upsertProvider(key, { type: providerType, baseUrl, apiKeyEnv, group, discover, promptCache, reasoningReplay, pricingProvider, fallbackModel, disabled });
         if (!result.ok) throw new Error(result.error);
         return writeProvidersConfig(`provider ${patch.key}`);
       },
@@ -1745,11 +1747,11 @@ async function main() {
         return writeProvidersConfig(`retrait provider ${key}`);
       },
       rename: async (from, to) => {
-        const result = await renameProvider(from, to);
+        const result = await renameProviderEverywhere(from, to, editableAgentTierDirs(agentsDirs()));
         if (!result.ok) throw new Error(result.error);
-        await moveAccount(from, to);
-        return writeProvidersConfig(`renommage provider ${from}`);
+        return writeProvidersConfig(`renommage provider ${from} → ${to}`);
       },
+      renamePreview: (from, to) => previewProviderRename(from, to, editableAgentTierDirs(agentsDirs())),
       envSet: async (name, value) => {
         const result = await setEnvValue(name, value);
         if (!result.ok) throw new Error(result.error);

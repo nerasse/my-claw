@@ -199,8 +199,11 @@ export interface MyClawAppProvidersController {
    * in the same write.
    */
   remove(key: string, withModels?: boolean): Promise<MyClawAppAgentsConfigResult>;
-  /** Renames the entry key, rewriting references in the same file. */
+  /** Renames the entry key, rewriting references everywhere they live (config, sessions, cron,
+   *  agent files, the sign-in file) in one operation. */
   rename(from: string, to: string): Promise<MyClawAppAgentsConfigResult>;
+  /** What a rename would touch, read-only: the confirmation sheet's counts. */
+  renamePreview(from: string, to: string): Promise<{ models: string[]; tags: string[]; agents: string[]; sessions: string[]; cron: string[]; files: string[]; account: boolean }>;
   /** Writes one `NAME=value` line in .env. The one operation that carries a secret value. */
   envSet(name: string, value: string): Promise<void>;
   /** Renames a line in .env and repoints the providers that read the old name. */

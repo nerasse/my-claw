@@ -562,3 +562,27 @@ test("an output limit declared alone survives the context fill", () => {
   const out = applyModelWindows([{ id: "known", label: "Known", limit: { output: 8192 } }], {}, windowTable);
   assert.deepEqual(out[0]?.limit, { output: 8192, context: 400_000 });
 });
+
+test("a disabled provider is not queried, and does not keep discovery enabled", async () => {
+  const token = withClaudeToken();
+  const mock = mockFetch(anthropicAwareFetch({ versions: VERSIONED_FIXTURE, openai: ["mimo", "qwen-72b"] }));
+  try {
+    const config = makeConfig();
+    config.providers!.litellm!.disabled = true;
+    const catalog = new ModelCatalog(() => config);
+    await catalog.refresh();
+    const ids = catalog.discovered().map((m) => m.id);
+    assert.ok(ids.includes("anthropic/claude-opus-4-8"));
+    // Nothing was asked of the disabled provider, so nothing is attributed to it and it is not
+    // evidence about anything: `answered` stays false.
+    assert.ok(!ids.some((id) => id.startsWith("litellm/")));
+    assert.equal(catalog.answered("litellm"), false);
+
+    // With every discovering provider off, a refresh is a no-op and says so.
+    config.providers!.anthropic!.disabled = true;
+    assert.equal(catalog.enabled(), false);
+  } finally {
+    mock.restore();
+    token.restore();
+  }
+});

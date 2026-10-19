@@ -1,4 +1,4 @@
-import { test, afterEach } from "bun:test";
+import { test, afterEach, beforeEach } from "bun:test";
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -17,8 +17,37 @@ import { mockFetch } from "../helpers/mock-fetch.ts";
 
 const ENV = "CLAUDE_CODE_OAUTH_TOKEN";
 const P = "anthropic";
+
+/**
+ * The identity endpoint's canned answer. Every sign-in reads it (the account's own name, and the
+ * duplicate check), so a test that reaches a sign-in without its own mock must still never touch
+ * the network: this default answers it, and a test-specific mock stacks on top. The email follows
+ * the token, so two different sign-ins read as two different accounts -- which is exactly what the
+ * duplicate check has to tell apart.
+ */
+function profileReply(email: string): Response {
+  return new Response(
+    JSON.stringify({ account: { uuid: "acc-1", full_name: "Owner", email }, organization: { uuid: "org-1", name: "Org" } }),
+    { status: 200, headers: { "content-type": "application/json" } },
+  );
+}
+
+function emailForToken(init?: RequestInit): string {
+  const token = String((init?.headers as Record<string, string> | undefined)?.["authorization"] ?? "").replace(/^Bearer\s+/i, "");
+  return `${token.slice(-8) || "anonymous"}@example.com`;
+}
+
+let profileDefault: { restore(): void } | undefined;
+beforeEach(() => {
+  profileDefault = mockFetch(async (input, init) =>
+    String(input).endsWith("/api/oauth/profile") ? profileReply(emailForToken(init)) : new Response("unexpected", { status: 500 }),
+  );
+});
+
 const savedEnv = process.env[ENV];
 afterEach(async () => {
+  profileDefault?.restore();
+  profileDefault = undefined;
   if (savedEnv === undefined) delete process.env[ENV];
   else process.env[ENV] = savedEnv;
   await clearClaudeToken(P);
@@ -41,6 +70,27 @@ async function setStoredExpiryInThePast(): Promise<void> {
 test("setClaudeToken then loadClaudeToken round-trips the token", async () => {
   await setClaudeToken(P, "sk-ant-oat01-abcdefghij-XYZ");
   assert.equal(await loadClaudeToken(P), "sk-ant-oat01-abcdefghij-XYZ");
+  // The sign-in carries who it is: the Accounts page has nothing else to show, and the duplicate
+  // check has nothing else to compare.
+  assert.match((await claudeTokenStatus(P)).profile?.email ?? "", /@example\.com$/);
+});
+
+test("an identity already connected on another provider is refused, and nothing is written", async () => {
+  await setClaudeToken("claude-work", "sk-ant-oat01-dup-AAAAAA");
+  await assert.rejects(setClaudeToken(P, "sk-ant-oat01-dup-AAAAAA"), /already connected on provider "claude-work"/);
+  assert.equal((await claudeTokenStatus(P)).present, false);
+});
+
+test("a token the profile endpoint refuses is not stored", async () => {
+  const mock = mockFetch(async (input) =>
+    String(input).endsWith("/api/oauth/profile") ? new Response("nope", { status: 401 }) : new Response("unexpected", { status: 500 }),
+  );
+  try {
+    await assert.rejects(setClaudeToken(P, "sk-ant-oat01-refused"), /refused this token/);
+  } finally {
+    mock.restore();
+  }
+  assert.equal((await claudeTokenStatus(P)).present, false);
 });
 
 test("setClaudeToken rejects an empty token", async () => {
@@ -92,6 +142,10 @@ function tokenEndpoint(reply: (body: Record<string, unknown>) => Response): {
 } {
   const calls: Array<{ url: string; body: Record<string, unknown>; headers: Record<string, string> }> = [];
   const mock = mockFetch(async (input, init) => {
+    // The identity read rides along after an exchange. It answers the profile endpoint and is not
+    // a token call, so it is answered here and not recorded: `calls` stays "what the token
+    // endpoint was asked".
+    if (String(input).endsWith("/api/oauth/profile")) return profileReply(emailForToken(init));
     const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
     const headers: Record<string, string> = {};
     for (const [k, v] of Object.entries((init?.headers ?? {}) as Record<string, string>)) headers[k] = v;

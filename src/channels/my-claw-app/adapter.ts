@@ -231,6 +231,7 @@ import {
   handleProviderEnvSet,
   handleProviderRemove,
   handleProviderRename,
+  handleProviderRenamePreview,
   handleProviderUpsert,
   handleSkillsList,
   handleSkillsTransfer,
@@ -1871,6 +1872,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "providers.rename":
         this.detach(handleProviderRename(this.settingsDeps(), ws, frame), "handleProviderRename");
+        break;
+      case "providers.rename.preview":
+        this.detach(handleProviderRenamePreview(this.settingsDeps(), ws, frame), "handleProviderRenamePreview");
         break;
       case "providers.env.set":
         this.detach(handleProviderEnvSet(this.settingsDeps(), ws, frame), "handleProviderEnvSet");

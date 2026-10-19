@@ -1,6 +1,6 @@
 import type { LlmProviderConfig } from "../core/config.ts";
 import { codexLoginDeviceCode, codexLogout, loadCodexCredential, type DeviceCodePrompt } from "./codex-auth.ts";
-import { claudeLoginComplete, claudeLoginStart, claudeTokenStatus, clearClaudeToken, setClaudeToken } from "./claude-auth.ts";
+import { claudeLoginComplete, claudeLoginStart, claudeTokenStatus, clearClaudeToken, ensureClaudeProfile, setClaudeToken } from "./claude-auth.ts";
 import { subscriptionProviders, type AccountKind } from "./accounts-store.ts";
 
 // The ChatGPT and Claude plans, signed in from the app (docs/subscription-accounts.md). A plan is a
@@ -26,6 +26,8 @@ export interface AccountView {
   email?: string;
   plan?: string;
   source?: "oauth" | "token";
+  /** The organization the account belongs to, when the profile named one. */
+  org?: string;
   login?: AccountLogin;
 }
 
@@ -78,19 +80,14 @@ function field(claim: unknown, key: string): string | undefined {
 }
 
 /**
- * The key a new account gets, from the name the owner typed: "ChatGPT boulot" -> `chatgpt-boulot`.
- * A key already taken (by any provider) gets a number, so a second account never overwrites the
- * first one's sign-in.
+ * The key a new account gets: the kind's short base (`claude`, `chatgpt`), numbered when taken.
+ * The key is the account's id -- it names the sign-in file and prefixes every model reference --
+ * so it stays short and never follows the owner's name, which is free to change whenever (`group`
+ * is the name). A reference like `claude-2/claude-opus-5-5` is what a session pins; the name only
+ * reads in the picker and on the Accounts page (docs/subscription-accounts.md).
  */
-export function accountKeyFor(name: string, kind: AccountKind, taken: ReadonlySet<string>): string {
-  const slug = name
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, NAME_MAX);
-  const base = slug || (kind === "codex" ? "chatgpt" : "claude");
+export function accountKeyFor(kind: AccountKind, taken: ReadonlySet<string>): string {
+  const base = kind === "codex" ? "chatgpt" : "claude";
   if (!taken.has(base)) return base;
   for (let n = 2; ; n++) if (!taken.has(`${base}-${n}`)) return `${base}-${n}`;
 }
@@ -132,10 +129,16 @@ export function createAccounts(deps: AccountsDeps): AccountsController {
       return { ...base, connected: cred !== null, ...(email ? { email } : {}), ...(plan ? { plan } : {}), ...(login ? { login } : {}) };
     }
     const claude = await claudeTokenStatus(account.key);
+    // Who it is, not just that it is: with two accounts of one kind the sign-in alone says
+    // nothing, and an approval made in the wrong browser tab is invisible without the email.
+    const profile = claude.present && !claude.profile ? await ensureClaudeProfile(account.key).catch(() => null) : null;
+    const email = claude.profile?.email ?? profile?.email;
     const login = claudeLogin?.provider === account.key ? live(claudeLogin.view) : undefined;
     return {
       ...base,
       connected: claude.present,
+      ...(email ? { email } : {}),
+      ...(claude.profile?.org ? { org: claude.profile.org } : {}),
       ...(claude.present ? { source: claude.source === "my-claw" ? ("token" as const) : ("oauth" as const) } : {}),
       ...(login ? { login } : {}),
     };
@@ -225,7 +228,7 @@ export function createAccounts(deps: AccountsDeps): AccountsController {
     },
     async add(kind, name) {
       const trimmed = name.trim().slice(0, NAME_MAX);
-      const key = accountKeyFor(trimmed, kind, new Set(Object.keys(deps.providers() ?? {})));
+      const key = accountKeyFor(kind, new Set(Object.keys(deps.providers() ?? {})));
       await deps.addProvider(key, kind, trimmed || key);
       return { ...(await status()), added: key };
     },

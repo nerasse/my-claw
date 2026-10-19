@@ -960,6 +960,8 @@ export interface MyClawAppProviderUpsert {
   reasoningReplay?: boolean;
   pricingProvider?: string;
   fallbackModel?: string;
+  /** true switches the provider off, false (or absent) leaves it on. */
+  disabled?: boolean;
 }
 
 /**
@@ -978,6 +980,31 @@ export interface MyClawAppProviderRename {
   type: "providers.rename";
   from: string;
   to: string;
+}
+
+/**
+ * What a rename would touch, before it runs: the confirmation sheet's counts. Read-only, so it is
+ * safe to ask on every keystroke of the key field.
+ */
+export interface MyClawAppProviderRenamePreview {
+  type: "providers.rename.preview";
+  from: string;
+  to: string;
+}
+
+export interface MyClawAppProviderRenamePreviewResult {
+  type: "providers.rename.preview.result";
+  from: string;
+  to: string;
+  refs: {
+    models: string[];
+    tags: string[];
+    agents: string[];
+    sessions: string[];
+    cron: string[];
+    files: string[];
+    account: boolean;
+  };
 }
 
 /** Writes one `NAME=value` line in ~/.my-claw/.env. The one frame that carries a secret value. */
@@ -1244,6 +1271,7 @@ export type MyClawAppClientFrame =
   | MyClawAppProviderUpsert
   | MyClawAppProviderRemove
   | MyClawAppProviderRename
+  | MyClawAppProviderRenamePreview
   | MyClawAppProviderEnvSet
   | MyClawAppProviderEnvRename
   | MyClawAppProviderEnvRemove
@@ -2256,7 +2284,7 @@ export interface MyClawAppUnavailableModel {
   declared?: boolean;
   discovered?: boolean;
   /** The availability verdict of run-model.ts. */
-  state: "stale" | "no-key" | "no-auth";
+  state: "stale" | "no-key" | "no-auth" | "disabled";
   /** Ready to print: "litellm no longer lists it", "LITELLM_API_KEY is not set". */
   reason: string;
 }
@@ -2632,6 +2660,8 @@ export interface MyClawAppProviderInfo {
   keyEnv?: string;
   /** A ChatGPT or Claude plan: its credential is its sign-in, and `keyPresent` says it is signed in. */
   account?: MyClawAppAccountKind;
+  /** Switched off from its page: hidden from the picker, skipped by discovery and routing. */
+  disabled?: boolean;
   keyPresent: boolean;
 }
 
@@ -4333,6 +4363,7 @@ export type MyClawAppServerFrame =
   | MyClawAppChatCleared
   | MyClawAppChatTranscript
   | MyClawAppAgentsConfigResult
+  | MyClawAppProviderRenamePreviewResult
   | MyClawAppAgentFileResult
   | MyClawAppAgentFileSaved
   | MyClawAppConfigResult

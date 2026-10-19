@@ -359,3 +359,119 @@ describe("removeProvider with tags routing through it", () => {
     expect(file.llm.providers.litellm).toBeDefined();
   });
 });
+
+describe("a provider switched off", () => {
+  test("disabled is written as a decision, and re-enabling drops the field", async () => {
+    await writeConfigFile({ ...FILE, llm: { ...FILE.llm, defaultProvider: "anthropic", defaultModel: "anthropic/opus" } });
+    await upsertProvider("litellm", { disabled: true });
+    let file = await readConfigFile();
+    expect(file.llm.providers.litellm.disabled).toBe(true);
+    // The rest of the entry is untouched: disabling is not an edit of anything else.
+    expect(file.llm.providers.litellm.baseUrl).toBe("https://litellm.test/v1");
+    await upsertProvider("litellm", { disabled: false });
+    file = await readConfigFile();
+    expect(file.llm.providers.litellm.disabled).toBeUndefined();
+  });
+
+  test("refuses the provider that carries the default: as the role, a qualified model, or a declared bare one", async () => {
+    await writeConfigFile();
+    const asProvider = await upsertProvider("litellm", { disabled: true });
+    expect(asProvider.ok).toBe(false);
+    expect(String(asProvider.ok === false && asProvider.error)).toContain("default provider");
+
+    await writeConfigFile({ ...FILE, llm: { ...FILE.llm, defaultProvider: "anthropic", defaultModel: "litellm/mimo" } });
+    const asModel = await upsertProvider("litellm", { disabled: true });
+    expect(asModel.ok).toBe(false);
+    expect(String(asModel.ok === false && asModel.error)).toContain("default model");
+
+    await writeConfigFile({ ...FILE, llm: { ...FILE.llm, defaultProvider: "anthropic", defaultModel: "mimo" } });
+    expect((await upsertProvider("litellm", { disabled: true })).ok).toBe(false);
+  });
+
+  test("a provider that carries nothing may go dark, and only the switch changes", async () => {
+    await writeConfigFile({ ...FILE, llm: { ...FILE.llm, defaultProvider: "anthropic", defaultModel: "anthropic/opus" } });
+    const result = await upsertProvider("litellm", { disabled: true });
+    expect(result.ok).toBe(true);
+    const file = await readConfigFile();
+    expect(file.llm.providers.litellm.disabled).toBe(true);
+    expect(file.llm.providers.litellm.baseUrl).toBe("https://litellm.test/v1");
+    expect(file.llm.providers.litellm.apiKeyEnv).toBe("LITELLM_API_KEY");
+  });
+});
+
+describe("renameProvider swaps every in-file reference", () => {
+  test("tags, agent pins, visionFallback, a qualified default and a qualified model id follow", async () => {
+    await writeConfigFile({
+      llm: {
+        defaultProvider: "litellm",
+        defaultModel: "litellm/mimo",
+        visionFallback: "litellm/mimo",
+        providers: {
+          litellm: { baseUrl: "https://litellm.test/v1" },
+          anthropic: { type: "anthropic" },
+        },
+        models: [
+          { id: "litellm/mimo", label: "MiMo", provider: "litellm" },
+          { id: "opus", label: "Opus", provider: "anthropic" },
+        ],
+      },
+      agents: {
+        orchestrator: { llm: { defaultModel: "litellm/mimo", defaultProvider: "litellm" } },
+        cron: { llm: { defaultModel: "tag:Cheap" } },
+      },
+      tags: TAGGED.tags,
+    });
+    const result = await renameProvider("litellm", "llm");
+    expect(result.ok).toBe(true);
+    const file = await readConfigFile();
+    expect(file.llm.defaultModel).toBe("llm/mimo");
+    expect(file.llm.visionFallback).toBe("llm/mimo");
+    expect(file.llm.models[0].id).toBe("llm/mimo");
+    expect(file.llm.models[0].provider).toBe("llm");
+    expect(file.agents.orchestrator.llm).toEqual({ defaultModel: "llm/mimo", defaultProvider: "llm" });
+    expect(file.agents.cron.llm.defaultModel).toBe("tag:Cheap");
+    expect(file.tags.Cheap.route[0].model).toBe("llm/mimo");
+    // A route that named another provider is untouched.
+    expect(file.tags.Smart.route[0].model).toBe("anthropic/opus");
+  });
+});
+
+describe("removeProvider repoints references at the default", () => {
+  test("a route candidate takes the default's concrete model, deduped against what was already there", async () => {
+    await writeConfigFile({
+      ...TAGGED,
+      llm: { ...TAGGED.llm, defaultProvider: "anthropic", defaultModel: "tag:Smart" },
+    });
+    const result = await removeProvider("litellm", { withModels: true });
+    expect(result.ok).toBe(true);
+    const file = await readConfigFile();
+    expect(file.llm.defaultModel).toBe("tag:Smart");
+    // `tag:Smart` resolves to anthropic/opus, which the route already carried: the slot keeps its
+    // effort and the second copy is dropped rather than duplicated.
+    expect(file.tags.Cheap.route).toEqual([{ model: "anthropic/opus", effort: "max" }]);
+  });
+
+  test("an agent pin moves to the default, its provider role is cleared, visionFallback is dropped", async () => {
+    await writeConfigFile({
+      llm: { ...FILE.llm, defaultProvider: "anthropic", defaultModel: "anthropic/opus", visionFallback: "litellm/mimo" },
+      agents: { general: { llm: { defaultModel: "litellm/mimo", defaultProvider: "litellm" } } },
+    });
+    const result = await removeProvider("litellm", { withModels: true });
+    expect(result.ok).toBe(true);
+    const file = await readConfigFile();
+    expect(file.agents.general.llm).toEqual({ defaultModel: "anthropic/opus" });
+    expect(file.llm.visionFallback).toBeUndefined();
+  });
+
+  test("the legacy single-model tag takes the default as it is, tag references included", async () => {
+    await writeConfigFile({
+      ...FILE,
+      llm: { ...FILE.llm, defaultProvider: "anthropic", defaultModel: "tag:Smart" },
+      tags: { Legacy: { model: "litellm/mimo", effort: "low" }, Smart: { route: [{ model: "anthropic/opus" }] } },
+    });
+    const result = await removeProvider("litellm", { withModels: true });
+    expect(result.ok).toBe(true);
+    const file = await readConfigFile();
+    expect(file.tags.Legacy).toEqual({ model: "tag:Smart", effort: "low" });
+  });
+});

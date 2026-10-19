@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { log } from "../utils/logger.ts";
-import { readAccount, removeAccount, writeAccount } from "./accounts-store.ts";
+import { accountKeys, readAccount, removeAccount, writeAccount } from "./accounts-store.ts";
 import { claudeUserAgent } from "./anthropic-release.ts";
 
 // The Claude subscription credentials, one 0600 file per provider (accounts-store.ts). Two kinds:
@@ -43,6 +43,65 @@ export interface ClaudeOAuthCredential {
 interface ClaudeAuthFile {
   token?: string;
   oauth?: ClaudeOAuthCredential;
+  /** Who the sign-in actually is, read from the token (see fetchClaudeProfile). */
+  profile?: ClaudeProfile;
+}
+
+/**
+ * The account behind an access token. The PKCE flow never says which account was approved -- an
+ * approval in a browser signed in to the other Claude account is invisible -- so this is what
+ * makes "which account is this?" answerable, and what lets a second sign-in of the same email be
+ * refused (docs/subscription-accounts.md).
+ */
+export interface ClaudeProfile {
+  email?: string;
+  name?: string;
+  org?: string;
+  checkedAt: number;
+}
+
+const PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
+const OAUTH_BETA = "oauth-2025-04-20";
+const PROFILE_TIMEOUT_MS = 10_000;
+
+/** The one call that turns a sign-in into a name. Throws on a refused call (a 401 is a bad token). */
+export async function fetchClaudeProfile(access: string): Promise<ClaudeProfile> {
+  const res = await fetch(PROFILE_URL, {
+    headers: { authorization: `Bearer ${access}`, "anthropic-beta": OAUTH_BETA, "user-agent": claudeUserAgent() },
+    signal: AbortSignal.timeout(PROFILE_TIMEOUT_MS),
+  });
+  if (!res.ok) throw new Error(`Claude profile request failed (${res.status})`);
+  const json = (await res.json().catch(() => null)) as
+    | { account?: { email?: unknown; full_name?: unknown }; organization?: { name?: unknown } }
+    | null;
+  const email = json?.account?.email;
+  const name = json?.account?.full_name;
+  const org = json?.organization?.name;
+  return {
+    ...(typeof email === "string" && email ? { email } : {}),
+    ...(typeof name === "string" && name ? { name } : {}),
+    ...(typeof org === "string" && org ? { org } : {}),
+    checkedAt: Date.now(),
+  };
+}
+
+/**
+ * Refuses a sign-in whose email is already connected on another provider. With two accounts of
+ * one kind, approving the page in a browser signed in to the other account silently binds the
+ * wrong identity; no downstream code could tell, since the tokens are opaque. The email is the
+ * only signal that exists, and it exists before anything is written.
+ */
+async function assertClaudeIdentityFree(provider: string, profile: ClaudeProfile): Promise<void> {
+  if (!profile.email) return;
+  const want = profile.email.trim().toLowerCase();
+  for (const key of await accountKeys()) {
+    if (key === provider) continue;
+    const other = await readAccount<ClaudeAuthFile>(key);
+    const email = other?.profile?.email?.trim().toLowerCase();
+    if (email && email === want) {
+      throw new Error(`This account (${profile.email}) is already connected on provider "${key}". Sign it out there first.`);
+    }
+  }
 }
 
 async function readAuthFile(provider: string): Promise<ClaudeAuthFile> {
@@ -77,12 +136,22 @@ export async function loadClaudeToken(provider: string): Promise<string | null> 
 /**
  * Store a pasted long-lived token. It clears the OAuth credential on purpose: pasting a token is
  * an explicit choice of which authentication to use, and leaving a credential that outranks it
- * would make the paste look like it did nothing.
+ * would make the paste look like it did nothing. The identity is read first: a 401 refuses the
+ * token itself, and the profile is what the duplicate-account check runs on.
  */
 export async function setClaudeToken(provider: string, token: string): Promise<void> {
   const trimmed = token.trim();
   if (!trimmed) throw new Error("empty token");
-  await writeAuthFile(provider, { token: trimmed });
+  let profile: ClaudeProfile | null = null;
+  try {
+    profile = await fetchClaudeProfile(trimmed);
+  } catch (err) {
+    if (/\b40[13]\b/.test(String(err))) throw new Error("Anthropic refused this token.");
+  }
+  if (profile) await assertClaudeIdentityFree(provider, profile);
+  const file = await readAuthFile(provider);
+  const kept = profile ?? file.profile;
+  await writeAuthFile(provider, { ...(kept ? { profile: kept } : {}), token: trimmed });
 }
 
 export async function clearClaudeToken(provider: string): Promise<void> {
@@ -97,6 +166,8 @@ export interface ClaudeTokenStatus {
   expiresInMin?: number;
   /** A long-lived token is stored behind the OAuth credential, so a refresh outage is survivable. */
   hasFallbackToken?: boolean;
+  /** Who the account is, when it has been read. The Accounts page shows it. */
+  profile?: { email?: string; name?: string; org?: string };
 }
 
 function mask(token: string): string {
@@ -105,6 +176,7 @@ function mask(token: string): string {
 
 export async function claudeTokenStatus(provider: string): Promise<ClaudeTokenStatus> {
   const file = await readAuthFile(provider);
+  const profile = file.profile ? { ...(file.profile.email ? { email: file.profile.email } : {}), ...(file.profile.name ? { name: file.profile.name } : {}), ...(file.profile.org ? { org: file.profile.org } : {}) } : undefined;
   if (file.oauth) {
     return {
       present: true,
@@ -112,10 +184,38 @@ export async function claudeTokenStatus(provider: string): Promise<ClaudeTokenSt
       masked: mask(file.oauth.access),
       expiresInMin: Math.round((file.oauth.expires - Date.now()) / 60_000),
       hasFallbackToken: Boolean(file.token),
+      ...(profile ? { profile } : {}),
     };
   }
-  if (file.token) return { present: true, source: "my-claw", masked: mask(file.token) };
+  if (file.token) return { present: true, source: "my-claw", masked: mask(file.token), ...(profile ? { profile } : {}) };
   return { present: false, source: "none" };
+}
+
+const profileAttemptAt = new Map<string, number>();
+const PROFILE_RETRY_MS = 60_000;
+
+/**
+ * Best-effort fill-in of a stored profile that predates this feature: read the token and call the
+ * profile endpoint, at most once a minute per provider. A failure answers null and changes
+ * nothing -- an offline box must not turn "connected" into an error page.
+ */
+export async function ensureClaudeProfile(provider: string): Promise<ClaudeProfile | null> {
+  const file = await readAuthFile(provider);
+  if (file.profile) return file.profile;
+  const last = profileAttemptAt.get(provider) ?? 0;
+  if (Date.now() - last < PROFILE_RETRY_MS) return null;
+  profileAttemptAt.set(provider, Date.now());
+  const token = file.oauth
+    ? await validAccessToken(provider, file.oauth).catch(() => file.token ?? null)
+    : file.token ?? null;
+  if (!token) return null;
+  try {
+    const profile = await fetchClaudeProfile(token);
+    await writeAuthFile(provider, { ...file, profile });
+    return profile;
+  } catch {
+    return null;
+  }
 }
 
 // ============================================================================
@@ -272,8 +372,12 @@ export async function claudeLoginComplete(provider: string, input: string): Prom
   });
   if (!json.refresh_token) throw new Error("Claude OAuth response carried no refresh token");
   const cred = credentialFrom(json, json.refresh_token);
+  // Read who the sign-in is before it lands anywhere: a profile call that fails (offline) must not
+  // block a sign-in, but a readable email that is already connected elsewhere must.
+  const profile = await fetchClaudeProfile(cred.access).catch(() => null);
+  if (profile) await assertClaudeIdentityFree(provider, profile);
   const file = await readAuthFile(provider);
-  await writeAuthFile(provider, { ...file, oauth: cred });
+  await writeAuthFile(provider, { ...file, oauth: cred, ...(profile ? { profile } : {}) });
   pending = null;
   return { expiresInMin: Math.round((cred.expires - Date.now()) / 60_000) };
 }
@@ -287,6 +391,7 @@ export function claudeLoginPending(provider: string): boolean {
 export function resetClaudeAuthState(): void {
   pending = null;
   refreshInFlight.clear();
+  profileAttemptAt.clear();
 }
 
 /**

@@ -899,6 +899,7 @@ export interface ProviderPatch {
   reasoningReplay?: boolean;
   pricingProvider?: string;
   fallbackModel?: string;
+  disabled?: boolean;
 }
 
 const PROVIDER_TYPES = ["openai", "codex", "anthropic"] as const;
@@ -927,6 +928,33 @@ function providerShapeError(spec: Record<string, unknown>): string | null {
 
 function providersAt(data: Record<string, unknown>): Record<string, unknown> {
   return objectAt(objectAt(data, "llm"), "providers");
+}
+
+/**
+ * Why a provider cannot be disabled, or null. Only the global default refuses: every run that
+ * inherits it would have nothing left to fall to, so the owner picks another default first --
+ * the same spirit as the removal refusal (docs/providers-admin.md). Tags and session pins need
+ * no refusal: routing past an unavailable candidate is exactly the chain's job.
+ */
+function disableRefusal(data: Record<string, unknown>, key: string): string | null {
+  const llm = objectAt(data, "llm");
+  if (llm["defaultProvider"] === key) {
+    return `Provider "${key}" carries the default provider; pick another default model before disabling it`;
+  }
+  const defaultModel = llm["defaultModel"];
+  if (typeof defaultModel !== "string" || !defaultModel) return null;
+  const ref = parseModelRef(defaultModel, Object.keys(providersAt(data)));
+  if (ref.provider === key) {
+    return `Provider "${key}" carries the default model (${defaultModel}); pick another default before disabling it`;
+  }
+  const models = llm["models"];
+  if (Array.isArray(models)) {
+    const declared = models.find((m) => m && typeof m === "object" && (m as Record<string, unknown>)["id"] === defaultModel);
+    if (declared && (declared as Record<string, unknown>)["provider"] === key) {
+      return `Provider "${key}" carries the default model (${defaultModel}); pick another default before disabling it`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -967,6 +995,16 @@ export function upsertProvider(key: string, patch: ProviderPatch): Promise<Confi
     if (patch.discover !== undefined) spec["discover"] = patch.discover;
     if (patch.promptCache !== undefined) spec["promptCache"] = patch.promptCache;
     if (patch.reasoningReplay !== undefined) spec["reasoningReplay"] = patch.reasoningReplay;
+    if (patch.disabled !== undefined) {
+      // Off is the default state, so re-enabling drops the field instead of writing `false`:
+      // the file carries settings, not affirmations.
+      if (!patch.disabled) delete spec["disabled"];
+      else {
+        const refusal = disableRefusal(read.data, key);
+        if (refusal) return { ok: false, error: refusal };
+        spec["disabled"] = true;
+      }
+    }
     const shapeError = providerShapeError(spec);
     if (shapeError) return { ok: false, error: shapeError };
     // A name is how a provider reads in the picker and in Stats: two that read alike cannot be told
@@ -1030,12 +1068,42 @@ export function repointEnvKey(from: string, to: string): Promise<ConfigEditResul
  */
 export interface RemoveProviderOptions {
   /**
-   * Drop what points at the entry instead of refusing: the curated models declared under it, and
-   * the default-provider role when it holds it. The refusal alone was a dead end -- the app offers
-   * the delete, the server always says no, and hand-editing the file left the declarations behind,
-   * pointing at a provider that no longer exists.
+   * Repoint what references the entry at the default model instead of refusing: the tag routes
+   * and agent pins that named one of its models, plus the default-provider role. The curated
+   * models declared under it are dropped -- they cannot outlive their provider. The refusal
+   * alone was a dead end -- the app offers the delete, the server always says no, and hand-editing
+   * the file left the declarations behind, pointing at a provider that no longer exists.
    */
   withModels?: boolean;
+}
+
+/**
+ * The concrete model a route candidate may carry when the default is a tag: routes cannot nest
+ * tags (directRouteOf refuses them), so a tag is expanded by hand -- its first candidate, else
+ * the legacy single model -- a few hops at most. Anything not concrete answers undefined.
+ */
+function concreteModelFor(data: Record<string, unknown>, model: string): string | undefined {
+  let current = model;
+  const seen = new Set<string>();
+  for (let hop = 0; hop < 4; hop++) {
+    const name = tagNameOf(current);
+    if (name === undefined) return current;
+    if (seen.has(name)) return undefined;
+    seen.add(name);
+    const tags = data["tags"];
+    if (tags === null || typeof tags !== "object" || Array.isArray(tags)) return undefined;
+    const tag = (tags as Record<string, unknown>)[name];
+    if (tag === null || typeof tag !== "object" || Array.isArray(tag)) return undefined;
+    const cast = tag as Record<string, unknown>;
+    const route = cast["route"];
+    const first =
+      Array.isArray(route) && route.length > 0 && route[0] !== null && typeof route[0] === "object"
+        ? (route[0] as Record<string, unknown>)["model"]
+        : cast["model"];
+    if (typeof first !== "string" || first === "") return undefined;
+    current = first;
+  }
+  return undefined;
 }
 
 export function removeProvider(key: string, options: RemoveProviderOptions = {}): Promise<ConfigEditResult> {
@@ -1089,14 +1157,36 @@ export function removeProvider(key: string, options: RemoveProviderOptions = {})
         llm["models"] = entries.filter((model) => !declared.includes(model as Record<string, unknown>));
       }
       if (llm["defaultProvider"] === key) delete llm["defaultProvider"];
+
+      // What references move to: the model the owner already picked as the default. A dropped
+      // candidate used to leave a tag quietly falling back to the global default while still
+      // claiming its model, and a dropped agent pin silently widened its scope. Repointing is
+      // never a suggestion per reference -- it is the same answer everywhere (owner, 2026-10-19).
+      const defaultModel = typeof llm["defaultModel"] === "string" ? llm["defaultModel"] : "";
+      const defaultUsable = defaultModel !== "" && parseModelRef(defaultModel, providerNames).provider !== key;
+      const routeReplacement = defaultUsable ? concreteModelFor(read.data, defaultModel) : undefined;
+      const usableRoute =
+        routeReplacement !== undefined && parseModelRef(routeReplacement, providerNames).provider !== key
+          ? routeReplacement
+          : undefined;
       for (const { name, tag, route } of tagHits) {
-        const kept = route.filter((candidate) => parseModelRef(candidate.model, providerNames).provider !== key);
         const legacy = typeof tag.model === "string" && parseModelRef(tag.model, providerNames).provider === key;
         if (legacy && !Array.isArray(tag.route)) {
-          // The pre-route shape holds one model: dropping it leaves a tag with nothing to resolve.
-          delete tags[name];
+          // The pre-route shape may hold a tag reference, so the default goes in as it is; a
+          // default that cannot leave the removed provider leaves the tag gone, as before.
+          if (defaultUsable) tags[name] = { ...tag, model: defaultModel };
+          else delete tags[name];
           continue;
         }
+        const replaced = route
+          .map((candidate) =>
+            usableRoute !== undefined && parseModelRef(candidate.model, providerNames).provider === key
+              ? { ...candidate, model: usableRoute }
+              : candidate,
+          )
+          .filter((candidate) => parseModelRef(candidate.model, providerNames).provider !== key);
+        const seen = new Set<string>();
+        const kept = replaced.filter((candidate) => (seen.has(candidate.model) ? false : (seen.add(candidate.model), true)));
         if (kept.length === 0) {
           // Nothing left to try: a tag with an empty route is a trap, not a route.
           delete tags[name];
@@ -1108,6 +1198,30 @@ export function removeProvider(key: string, options: RemoveProviderOptions = {})
         if (legacy) delete (tags[name] as TagConfig).model;
       }
       if (Object.keys(tags).length === 0) delete read.data["tags"];
+
+      // Agent pins that named the provider move to the default too: left alone, the pin resolves
+      // to nothing and the agent silently runs on whatever the chain falls to.
+      const agentSection = read.data["agents"];
+      if (agentSection && typeof agentSection === "object" && !Array.isArray(agentSection)) {
+        for (const entry of Object.values(agentSection as Record<string, unknown>)) {
+          if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+          const pin = (entry as Record<string, unknown>)["llm"];
+          if (!pin || typeof pin !== "object" || Array.isArray(pin)) continue;
+          const cast = pin as Record<string, unknown>;
+          if (cast["defaultProvider"] === key) delete cast["defaultProvider"];
+          const ref = typeof cast["defaultModel"] === "string" ? cast["defaultModel"] : "";
+          if (ref !== "" && parseModelRef(ref, providerNames).provider === key) {
+            if (defaultUsable) cast["defaultModel"] = defaultModel;
+            else delete cast["defaultModel"];
+          }
+        }
+      }
+
+      // A vision fallback is a capability slot, not a preference: it is dropped rather than pointed
+      // at a model that may not see, which would silently disable the reroute anyway.
+      if (typeof llm["visionFallback"] === "string" && parseModelRef(llm["visionFallback"] as string, providerNames).provider === key) {
+        delete llm["visionFallback"];
+      }
     }
     delete providers[key];
     if (Object.keys(providers).length === 0) delete llm["providers"];
@@ -1119,9 +1233,14 @@ export function removeProvider(key: string, options: RemoveProviderOptions = {})
 }
 
 /**
- * Renames a provider key, same entry. Every reference in the same file follows in one write --
- * curated models and the default provider -- so the rename never leaves a dangling default,
- * exactly like `renameWorkspace` rewrites the agent pins it would otherwise break.
+ * Renames a provider key, same entry. Every reference in the same file follows in one write:
+ * curated models (their `provider` and a qualified `id`), the default provider and a qualified
+ * `defaultModel`, each agent's `llm` pin, the tags' routes and `visionFallback`, plus any
+ * provider's own `fallbackModel`. A reference left behind reads as a deleted model: a tag route
+ * silently falls back to the global default while still claiming its model, and an agent pin
+ * resolves to nothing. The stores outside config.json (sessions, cron, agent files, the sign-in
+ * file) follow in the same operation -- see provider-rename.ts -- so one rename rewrites
+ * everything that names the key.
  */
 export function renameProvider(from: string, to: string): Promise<ConfigEditResult> {
   return oneEditAtATime(async () => {
@@ -1142,14 +1261,61 @@ export function renameProvider(from: string, to: string): Promise<ConfigEditResu
     providers[to] = providers[from];
     delete providers[from];
 
+    // Only a reference that names the provider travels: a bare id (`claude-opus-5-5`) resolves
+    // by where it sits in the provider order, which a rename does not change.
+    const retarget = (value: unknown): string | undefined =>
+      typeof value === "string" && value.startsWith(`${from}/`) ? `${to}/${value.slice(from.length + 1)}` : undefined;
+
     const llm = objectAt(read.data, "llm");
     if (llm["defaultProvider"] === from) llm["defaultProvider"] = to;
+    const defaultModel = retarget(llm["defaultModel"]);
+    if (defaultModel) llm["defaultModel"] = defaultModel;
+    const visionFallback = retarget(llm["visionFallback"]);
+    if (visionFallback) llm["visionFallback"] = visionFallback;
     const models = llm["models"];
     if (Array.isArray(models)) {
       for (const model of models) {
-        if (model && typeof model === "object" && (model as Record<string, unknown>)["provider"] === from) {
-          (model as Record<string, unknown>)["provider"] = to;
+        if (!model || typeof model !== "object") continue;
+        const entry = model as Record<string, unknown>;
+        if (entry["provider"] === from) entry["provider"] = to;
+        const id = retarget(entry["id"]);
+        if (id) entry["id"] = id;
+      }
+    }
+    for (const entry of Object.values(providers)) {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+      const fallback = retarget((entry as Record<string, unknown>)["fallbackModel"]);
+      if (fallback) (entry as Record<string, unknown>)["fallbackModel"] = fallback;
+    }
+
+    const tags = read.data["tags"];
+    if (tags && typeof tags === "object" && !Array.isArray(tags)) {
+      for (const entry of Object.values(tags as Record<string, unknown>)) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+        const tag = entry as Record<string, unknown>;
+        const route = tag["route"];
+        if (Array.isArray(route)) {
+          for (const candidate of route) {
+            if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+            const rewritten = retarget((candidate as Record<string, unknown>)["model"]);
+            if (rewritten) (candidate as Record<string, unknown>)["model"] = rewritten;
+          }
         }
+        const legacy = retarget(tag["model"]);
+        if (legacy) tag["model"] = legacy;
+      }
+    }
+
+    const agents = read.data["agents"];
+    if (agents && typeof agents === "object" && !Array.isArray(agents)) {
+      for (const entry of Object.values(agents as Record<string, unknown>)) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+        const pin = (entry as Record<string, unknown>)["llm"];
+        if (!pin || typeof pin !== "object" || Array.isArray(pin)) continue;
+        const cast = pin as Record<string, unknown>;
+        if (cast["defaultProvider"] === from) cast["defaultProvider"] = to;
+        const model = retarget(cast["defaultModel"]);
+        if (model) cast["defaultModel"] = model;
       }
     }
 

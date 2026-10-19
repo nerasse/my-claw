@@ -215,6 +215,10 @@ export interface LlmProviderConfig {
   discover?: boolean;
   // Submenu group label applied to this provider's discovered models in the picker.
   group?: string;
+  // Off without deleting anything: discovery skips it, the picker hides its models, tags route
+  // past its candidates and a session pinned to one of them falls through the chain. The sign-in
+  // stays -- disabling is not a sign-out (docs/providers-admin.md).
+  disabled?: boolean;
   // OpenAI-compatible providers only: send Anthropic-style `cache_control` breakpoints so
   // proxies that support it (LiteLLM, OpenRouter) cache the stable system+tools prefix.
   // Opt-in per provider: some strict endpoints reject unknown fields in message content.

@@ -7,8 +7,14 @@ import { join } from "node:path";
 const ENTRY = join(import.meta.dir, "..", "..", "src", "index.ts");
 const TOKEN = `sk-ant-oat01-${"c".repeat(40)}`;
 
+/**
+ * Preloaded into the child so a sign-in's identity read (which the in-process fetch mock cannot
+ * reach across processes) answers without the network. See the stub for what it covers.
+ */
+const FETCH_STUB = join(import.meta.dir, "..", "helpers", "cli-profile-stub.ts");
+
 function claudeCli(dir: string, ...args: string[]): { code: number; out: string } {
-  const run = Bun.spawnSync([process.execPath, ENTRY, "claude", ...args], { env: { ...process.env, MY_CLAW_DIR: dir } });
+  const run = Bun.spawnSync([process.execPath, "--preload", FETCH_STUB, ENTRY, "claude", ...args], { env: { ...process.env, MY_CLAW_DIR: dir } });
   return { code: run.exitCode, out: run.stdout.toString() + run.stderr.toString() };
 }
 

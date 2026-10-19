@@ -17,10 +17,18 @@ config.llm.providers                       ~/.my-claw/accounts/   (0600 files)
 
 - **Which providers hold a sign-in** (`accountKindOf`): `codex` always; `anthropic` when it
   declares neither `apiKeyEnv` nor `baseUrl` (a keyed or relayed Anthropic is judged by its key).
-- **Id, kind, name**: the provider key is the id (models are `chatgpt-boulot/gpt-6-sol`, the
-  sign-in is `accounts/chatgpt-boulot.json`); the type is the kind; `group` is the owner's name,
-  renamed at will. A new account's key comes from its name (`accountKeyFor`: accents and spaces
-  folded, a taken key numbered), so a second account never lands on the first one's sign-in.
+- **Id, kind, name**: the provider key is the id (models are `claude-2/claude-opus-5-5`, the
+  sign-in is `accounts/claude-2.json`); the type is the kind; `group` is the owner's name,
+  renamed at will. A new account's key is the kind's short id -- `claude`, `chatgpt`, numbered
+  when taken (`claude-2`) -- and never follows the name: the key is what every reference carries,
+  the name is free to change (`accountKeyFor`).
+- **Identity**: each sign-in reads who it is (`/api/oauth/profile` with the subscription token,
+  the JWT claims for ChatGPT) and stores the email beside the credential, so the Accounts page
+  shows the account rather than just "Connected" -- the PKCE flow alone cannot say which account
+  was approved. A sign-in whose email is already connected on another provider is **refused**
+  ("already connected on provider X"): approving the page in a browser signed in to the other
+  account is otherwise invisible, and nothing downstream could tell. A profile call that fails
+  (offline) never blocks a sign-in; the identity is retried on the next visit to the page.
 - **Runnable** (`run-model.ts`): a plan's models are offered while *that* provider is signed in
   (`AvailabilityWorld.signedIn(provider)`), sampled on boot, on every config reload, after
   discovery and after each sign-in change. Signing a second account out hides only its models.
@@ -64,10 +72,9 @@ picker without a restart.
 | `accounts.logout {provider}` | removes that provider's sign-in |
 
 `accounts.result` carries `accounts`: per plan provider, `provider`, `kind`, `name`, `connected`,
-ChatGPT's `email` and `plan` (read from the access token's claims, no request), Claude's `source`
-(`oauth` or `token`), and `login` (`url`, ChatGPT's `code`, `expiresAt`) while a sign-in is in
-flight. It also carries `codex` and `claude`, the first account of each kind in the shape an app
-older than 0.6.129 reads: without them that page throws on the missing field during the window
+ChatGPT's `email` and `plan` (read from the access token's claims, no request), Claude's `email`
+(from the stored profile) and `source` (`oauth` or `token`), and `login` (`url`, ChatGPT's `code`,
+`expiresAt`) while a sign-in is in flight. It also carries `codex` and `claude`, the first account of each kind in the shape an app older than 0.6.129 reads: without them that page throws on the missing field during the window
 between the server's update and the APK's. Changes answer every window of the owner. The providers
 list (`agents.config.result`) marks a plan with `account: "codex" | "claude"`, and its `keyPresent`
 says whether it is signed in.
@@ -79,11 +86,14 @@ says whether it is signed in.
   expired) to every device when it ends. The code lives in memory: a restart mid-sign-in costs a
   new one. Device-code sign-in must be allowed in ChatGPT → Settings → Security. A second account
   is approved in a browser signed in to *that* ChatGPT account (a private window, or sign out of
-  the first one there): the page says so.
+  the first one there): the page says so. The email that lands is checked against the other
+  connected accounts, and a duplicate is refused before the credential is written.
 - **Claude**: PKCE with a pasted code. The page opens `platform.claude.com/oauth/authorize`, the
   owner approves and pastes back what the page shows (`code#state`, the full URL, or the bare
   code). One Claude sign-in at a time: the verifier, in memory for 10 minutes, belongs to the
-  provider it was started for, and a code pasted on another account's page is refused.
+  provider it was started for, and a code pasted on another account's page is refused. Once the
+tokens are exchanged, the account's identity is read and a duplicate refused; a pasted long-lived
+token is read the same way.
 
 `/codex` and `/claude` act on the first account of their kind (declared if there is none); the CLI
 takes `--provider <key>`. Secrets travel only client → server, are never logged, and a refusal

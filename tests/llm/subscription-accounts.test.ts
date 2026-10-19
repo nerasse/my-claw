@@ -115,6 +115,13 @@ test("ChatGPT: a cancel drops the code, a new sign-in asks a fresh one; sign-out
 });
 
 test("Claude: sign-in gives the page to open; a long-lived token connects it; sign-out disconnects", async () => {
+  // The token paste reads the account's identity (the Accounts page shows it, and the duplicate
+  // check runs on it): answered here, so the test never touches the network.
+  mock = mockFetch(async (input) =>
+    String(input).endsWith("/api/oauth/profile")
+      ? Response.json({ account: { email: "claude@example.com", full_name: "Owner" }, organization: { name: "Org" } })
+      : new Response("unexpected", { status: 500 }),
+  );
   const { accounts, changed } = harness();
   const started = await accounts.login("anthropic");
   assert.match(view(started, "anthropic")?.login?.url ?? "", /^https:\/\/platform\.claude\.com\/oauth\/authorize\?/);
@@ -134,28 +141,31 @@ test("Claude: sign-in gives the page to open; a long-lived token connects it; si
 test("two ChatGPT accounts, named by the owner, each with its own sign-in", async () => {
   openAi();
   const { accounts, providers } = harness();
+  // The key is the kind's short id, never the name: the name is free to change, and references
+  // (`chatgpt-2/gpt-6-sol`) must stay stable across a rename.
   const added = await accounts.add("codex", "ChatGPT boulot");
-  assert.equal(added.added, "chatgpt-boulot");
-  assert.deepEqual(providers["chatgpt-boulot"], { type: "codex", group: "ChatGPT boulot" });
-  // A second one of the same name never lands on the first one's key, nor its sign-in.
-  assert.equal((await accounts.add("codex", "ChatGPT boulot")).added, "chatgpt-boulot-2");
+  assert.equal(added.added, "chatgpt-2");
+  assert.deepEqual(providers["chatgpt-2"], { type: "codex", group: "ChatGPT boulot" });
+  // A second one never lands on the first one's key, nor its sign-in.
+  assert.equal((await accounts.add("codex", "ChatGPT perso")).added, "chatgpt-3");
 
   mkdirSync(join(MY_CLAW_DIR, "accounts"), { recursive: true });
-  writeFileSync(join(MY_CLAW_DIR, "accounts", "chatgpt-boulot.json"), JSON.stringify({ access: ACCESS, refresh: "r", expires: Date.now() + 3_600_000, accountId: "acc-1" }));
+  writeFileSync(join(MY_CLAW_DIR, "accounts", "chatgpt-2.json"), JSON.stringify({ access: ACCESS, refresh: "r", expires: Date.now() + 3_600_000, accountId: "acc-1" }));
   const state = await accounts.status();
-  assert.equal(view(state, "chatgpt-boulot")?.connected, true);
+  assert.equal(view(state, "chatgpt-2")?.connected, true);
   assert.equal(view(state, "chatgpt")?.connected, false);
-  assert.equal(view(state, "chatgpt-boulot")?.name, "ChatGPT boulot");
+  assert.equal(view(state, "chatgpt-2")?.name, "ChatGPT boulot");
 
-  const renamed = await accounts.rename("chatgpt-boulot", "Work");
-  assert.equal(view(renamed, "chatgpt-boulot")?.name, "Work");
-  await assert.rejects(accounts.rename("chatgpt-boulot", "   "), /cannot be empty/);
+  const renamed = await accounts.rename("chatgpt-2", "Work");
+  assert.equal(view(renamed, "chatgpt-2")?.name, "Work");
+  await assert.rejects(accounts.rename("chatgpt-2", "   "), /cannot be empty/);
 });
 
-test("a key from a name: accents and spaces folded, a taken one numbered, an empty one by kind", () => {
-  assert.equal(accountKeyFor("Claude Équipe", "claude", new Set()), "claude-equipe");
-  assert.equal(accountKeyFor("perso", "codex", new Set(["perso", "perso-2"])), "perso-3");
-  assert.equal(accountKeyFor("  !!! ", "codex", new Set()), "chatgpt");
+test("a key is the kind's short id, numbered when taken", () => {
+  assert.equal(accountKeyFor("claude", new Set()), "claude");
+  assert.equal(accountKeyFor("codex", new Set(["claude"])), "chatgpt");
+  assert.equal(accountKeyFor("codex", new Set(["chatgpt"])), "chatgpt-2");
+  assert.equal(accountKeyFor("claude", new Set(["claude", "claude-2"])), "claude-3");
 });
 
 test("an action names an account that exists: a provider that is not a plan is refused", async () => {
