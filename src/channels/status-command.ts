@@ -321,7 +321,11 @@ function statusLine(status: MyClawAppStatusPayload): string {
   if (status.session) {
     const pct = status.model.contextLimit > 0 ? ((status.context.occupied / status.model.contextLimit) * 100).toFixed(1) : "0.0";
     parts.push(`context ${pct}%`);
-    if (status.usage) parts.push(`${status.usage.total.calls} calls`, money(status.usage.total.billedUsd + status.usage.total.referenceUsd));
+    if (status.usage) {
+      parts.push(`${status.usage.total.calls} calls`, money(status.usage.total.billedUsd + status.usage.total.referenceUsd));
+      const total = status.usage.total;
+      if (total.promptTokens > 0) parts.push(`cache ${((total.cacheReadTokens / total.promptTokens) * 100).toFixed(1)}%`);
+    }
   } else {
     parts.push("no session yet");
   }

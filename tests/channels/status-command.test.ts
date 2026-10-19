@@ -314,13 +314,14 @@ test("statusReport hands the payload over as `status`, the field the app channel
   // The app channel's command output types `status` as optional, so a rename here is assignable
   // and only shows up in production as "status unavailable". Pin the field name.
   const sessionId = "my-claw-app/thread/o/report";
-  call(sessionId);
+  call(sessionId, { cacheReadTokens: 366 });
   const out = await statusReport({ config, sessionId, session: session(sessionId), liveRuns: [], pricing: pricing() });
 
   expect(out.status.model.current).toBe("claude-opus-5");
   expect("payload" in out).toBe(false);
-  // The page is the report; the text is the one line a chat bubble would show.
-  expect(out.text).toMatch(/^Status: claude-opus-5 · context \d+\.\d% · 1 calls · <\$0\.01$/);
+  // The page is the report; the text is the one line a chat bubble would show. The cache share
+  // is computed here, not left to the reader: 366 of the 1000 prompt tokens came from cache.
+  expect(out.text).toMatch(/^Status: claude-opus-5 · context \d+\.\d% · 1 calls · <\$0\.01 · cache 36\.6%$/);
   expect(out.text.split("\n")).toHaveLength(1);
 });
 

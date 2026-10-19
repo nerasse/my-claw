@@ -194,7 +194,8 @@ the purge only removes rows older than 90 days, so a bounded window and the roll
 the same call. `all` adds the rollup.
 
 1. **Totals** -- calls, tokens (prompt, completion, cache read, cache write), billed and reference
-   money, unpriced calls, cumulative API time.
+   money, unpriced calls, cumulative API time. The cache share is drawn as a percentage, not left to
+   the reader: read and write shares on the overview, `cached (n%)` on every ranking row.
 2. **Models and providers** -- ranked by spend. `provider` is the endpoint pin when the model
    reference carries one (`z-ai/glm-5.2@streamlake/fp8` -> `streamlake`, variant `fp8`), else the
    host. Same `routeOf` as `/status`, now in `src/channels/usage-route.ts` so the two screens cannot

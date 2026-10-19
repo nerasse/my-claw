@@ -27,7 +27,8 @@ What the page shows, in order, and what was taken out of it when it was redrawn 
 - **Context.** Occupied over the effective window, the auto-compaction threshold, the last measured
   prompt. The only figure that needs a glance.
 - **Usage.** One card, leading with the **total**: money, tokens (in, cached, out) and calls, the
-  conversation's own calls and every sub-agent it drove added together. Under it, three blocks: the
+  conversation's own calls and every sub-agent it drove added together, and the **cache share** as
+  a percentage under the token line. Under it, three blocks: the
   conversation's own row, always open, with the models it ran on under it; the sub-agents summed
   into **one** figure (calls, tokens, money) with the models they all ran on merged by id; and
   `by sub-agent`, folded, where the per-agent rows live (name, type, a live mark while it runs), a
