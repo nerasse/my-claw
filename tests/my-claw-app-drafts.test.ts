@@ -175,3 +175,80 @@ describe("DraftStore", () => {
     assert.equal(await readFile(path, "utf-8"), first);
   });
 });
+
+describe("DraftStore files", () => {
+  let path: string;
+  let store: DraftStore;
+
+  beforeEach(async () => {
+    const dir = await mkdtemp(join(tmpdir(), "drafts-files-"));
+    path = join(dir, "drafts.json");
+    store = new DraftStore(path);
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  test("a file with no text is still a draft", async () => {
+    const id = sessionIdFor("t-files");
+    assert.equal(await store.addFile(id, { id: "media-1" }), true);
+    assert.equal(await store.textOf(id), "");
+    assert.deepEqual((await store.filesOf(id)).map((file) => file.id), ["media-1"]);
+    assert.equal((await store.drafted()).has(id), true, "the drawer's bit counts files");
+  });
+
+  test("the same file twice is one chip", async () => {
+    const id = sessionIdFor("t-files");
+    await store.addFile(id, { id: "media-1" });
+    assert.equal(await store.addFile(id, { id: "media-1" }), false);
+    assert.equal((await store.filesOf(id)).length, 1);
+  });
+
+  test("emptying the text keeps the files", async () => {
+    const id = sessionIdFor("t-files");
+    await store.set(id, "avec une photo");
+    await store.addFile(id, { id: "media-1" });
+    await store.set(id, "");
+    assert.equal(await store.textOf(id), "");
+    assert.deepEqual((await store.filesOf(id)).map((file) => file.id), ["media-1"]);
+  });
+
+  test("removing the last file of a textless draft drops the entry", async () => {
+    const id = sessionIdFor("t-files");
+    await store.addFile(id, { id: "media-1" });
+    assert.equal(await store.removeFile(id, "media-1"), true);
+    assert.equal((await store.drafted()).has(id), false);
+  });
+
+  test("a send takes the files it carried and leaves the others", async () => {
+    const id = sessionIdFor("t-files");
+    await store.addFile(id, { id: "sent" });
+    await store.addFile(id, { id: "staged-elsewhere" });
+    assert.equal(await store.removeFiles(id, ["sent"]), true);
+    assert.deepEqual((await store.filesOf(id)).map((file) => file.id), ["staged-elsewhere"]);
+    assert.equal(await store.removeFiles(id, ["never-there"]), false);
+  });
+
+  test("files survive a restart, and a voice note keeps its flag", async () => {
+    const id = sessionIdFor("t-files");
+    await store.addFile(id, { id: "voice-1", audioAsVoice: true, durationMs: 4200 });
+    await store.flush();
+    store.close();
+
+    const reopened = new DraftStore(path);
+    try {
+      const files = await reopened.filesOf(id);
+      assert.deepEqual(files.map((file) => [file.id, file.audioAsVoice, file.durationMs]), [["voice-1", true, 4200]]);
+    } finally {
+      reopened.close();
+    }
+  });
+
+  test("the session:deleted hook takes the staged files with it", async () => {
+    const id = sessionIdFor("t-deleted");
+    await store.addFile(id, { id: "media-1" });
+    hooks.emit("session:deleted", { sessionId: id });
+    assert.equal((await store.drafted()).has(id), false);
+  });
+});

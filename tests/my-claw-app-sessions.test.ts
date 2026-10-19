@@ -1821,13 +1821,15 @@ describe("MyClawAppSessionStoreImpl thinking counts", () => {
 describe("MyClawAppSessionStoreImpl drafts", () => {
   let store: MyClawAppSessionStoreImpl;
   let drafts: DraftStore;
+  let files: SessionFileStore;
   let sessionId: string;
   let logSetup: SessionLogSetup | null = null;
 
   beforeEach(async () => {
     const dir = await mkdtemp(join(tmpdir(), "session-drafts-"));
     drafts = new DraftStore(join(dir, "drafts.json"));
-    store = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore(), undefined, undefined, drafts);
+    files = new SessionFileStore();
+    store = new MyClawAppSessionStoreImpl(new SessionManager(), files, undefined, undefined, drafts);
     sessionId = store.resolveSessionId(DEVICE, THREAD);
     await deleteSession(sessionId);
   });
@@ -1838,6 +1840,7 @@ describe("MyClawAppSessionStoreImpl drafts", () => {
       logSetup.cleanup();
       logSetup = null;
     }
+    await files.removeSessionFiles(DEVICE, THREAD);
     resetSessionLogResolver();
     drafts.close();
   });
@@ -1872,6 +1875,34 @@ describe("MyClawAppSessionStoreImpl drafts", () => {
 
     const older = await store.history(DEVICE, THREAD, 1, 1);
     assert.equal(older.draft, undefined);
+  });
+
+  test("the files of the composer ride the page and the sync against the file store", async () => {
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "regarde", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    const photo = await files.save(DEVICE, THREAD, "photo.png", new Uint8Array([1, 2, 3]));
+    const voice = await files.save(DEVICE, THREAD, "note.m4a", new Uint8Array([4, 5]));
+    await store.addDraftFile(DEVICE, THREAD, { id: photo.id });
+    await store.addDraftFile(DEVICE, THREAD, { id: voice.id, audioAsVoice: true, durationMs: 4200 });
+
+    const page = await store.history(DEVICE, THREAD);
+    assert.deepEqual(page.files?.map((file) => [file.filename, file.type, file.audioAsVoice]), [
+      ["photo.png", "image", undefined],
+      ["note.m4a", "audio", true],
+    ]);
+    assert.equal(page.files?.[1]?.durationMs, 4200);
+
+    const synced = await store.sync(DEVICE, THREAD, null);
+    assert.deepEqual(synced.files?.map((file) => file.id), [photo.id, voice.id]);
+    assert.equal((await store.sync(DEVICE, THREAD, synced.head)).files, undefined);
+
+    // An older page carries no composer at all.
+    assert.equal((await store.history(DEVICE, THREAD, 1, 1)).files, undefined);
+
+    // The bytes are the truth: a file deleted behind the store's back is not offered any more.
+    await files.remove(DEVICE, THREAD, photo.id);
+    assert.deepEqual((await store.pendingFiles(DEVICE, THREAD)).map((file) => file.id), [voice.id]);
   });
 
   test("a thread with no session yet still replays its draft", async () => {

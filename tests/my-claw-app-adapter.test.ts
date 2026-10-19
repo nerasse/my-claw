@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MyClawAppAdapter } from "../src/channels/my-claw-app/adapter.ts";
 import { FsWatchRegistry } from "../src/channels/my-claw-app/fs-ops.ts";
-import type { MyClawAppAgentsConfigResult, MyClawAppJobEntry, MyClawAppMcpEntry, MyClawAppSessionInstructionPatch, MyClawAppToolEntry } from "../src/channels/my-claw-app/types.ts";
+import type { MyClawAppAgentsConfigResult, MyClawAppJobEntry, MyClawAppMcpEntry, MyClawAppPendingFile, MyClawAppSessionInstructionPatch, MyClawAppToolEntry } from "../src/channels/my-claw-app/types.ts";
 import type { MyClawAppChannelConfig } from "../src/core/config.ts";
 import { runRegistry } from "../src/core/run-registry.ts";
 import { withRunContext } from "../src/utils/run-context.ts";
@@ -394,6 +394,49 @@ class FakeSessionStore {
 
   async flushDrafts(): Promise<void> {
     this.draftFlushes += 1;
+  }
+
+  /** The composer's files, per `device/thread`, with their voice flags. */
+  stagedFiles = new Map<string, Array<{ id: string; audioAsVoice?: boolean; durationMs?: number }>>();
+  private readonly fileStore = new SessionFileStore();
+
+  async addDraftFile(deviceId: string, threadId: string, file: { id: string; audioAsVoice?: boolean; durationMs?: number }): Promise<void> {
+    const key = `${deviceId}/${threadId}`;
+    const staged = this.stagedFiles.get(key) ?? [];
+    if (!staged.some((entry) => entry.id === file.id)) this.stagedFiles.set(key, [...staged, file]);
+  }
+
+  async removeDraftFile(deviceId: string, threadId: string, id: string): Promise<boolean> {
+    return this.removeSentDraftFiles(deviceId, threadId, [id]);
+  }
+
+  async removeSentDraftFiles(deviceId: string, threadId: string, ids: readonly string[]): Promise<boolean> {
+    const key = `${deviceId}/${threadId}`;
+    const staged = this.stagedFiles.get(key) ?? [];
+    const kept = staged.filter((entry) => !ids.includes(entry.id));
+    if (kept.length === staged.length) return false;
+    if (kept.length) this.stagedFiles.set(key, kept);
+    else this.stagedFiles.delete(key);
+    return true;
+  }
+
+  async pendingFiles(deviceId: string, threadId: string): Promise<MyClawAppPendingFile[]> {
+    const staged = this.stagedFiles.get(`${deviceId}/${threadId}`) ?? [];
+    const stored = new Map((await this.fileStore.list(deviceId, threadId)).map((file) => [file.id, file]));
+    return staged.flatMap((entry) => {
+      const file = stored.get(entry.id);
+      if (!file) return [];
+      return [{
+        id: file.id,
+        filename: file.filename,
+        type: file.type,
+        mimeType: file.mimeType,
+        sizeBytes: file.sizeBytes,
+        ts: file.ts,
+        ...(entry.audioAsVoice ? { audioAsVoice: true } : {}),
+        ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
+      }];
+    });
   }
 
   workspaceByThread = new Map<string, string>();
@@ -2736,6 +2779,95 @@ describe("MyClawAppAdapter owners", () => {
       await adapter.send(OWNER, { text: "marker", threadId: "t-1" });
       assert.equal((await nextFrame(browser))["type"], "chat.message");
       assert.equal(store.drafts.size, 0);
+    } finally {
+      phone.ws.close();
+      browser.ws.close();
+    }
+  });
+
+  test("a file staged in a composer reaches every window of the owner", async () => {
+    const local = new SessionFileStore();
+    const photo = await local.save(OWNER, "t-files", "photo.png", new Uint8Array([1, 2, 3]));
+    const phone = await connectClient(adapter.port, "phone");
+    const browser = await connectClient(adapter.port, "browser");
+    try {
+      phone.ws.send(JSON.stringify({ type: "draft.file.add", threadId: "t-files", id: photo.id }));
+
+      // Every window, the one that uploaded included: the list is authoritative and idempotent,
+      // and the order it arrives in is what settles an upload racing a removal.
+      for (const socket of [phone, browser]) {
+        const frame = (await nextFrame(socket)) as { type: string; files: Array<Record<string, unknown>> };
+        assert.equal(frame.type, "draft.files.changed");
+        assert.deepEqual(frame.files.map((file) => [file["id"], file["filename"], file["type"]]), [
+          [photo.id, "photo.png", "image"],
+        ]);
+      }
+    } finally {
+      phone.ws.close();
+      browser.ws.close();
+    }
+  });
+
+  test("a file id the server does not hold never enters a composer", async () => {
+    const phone = await connectClient(adapter.port, "phone");
+    const browser = await connectClient(adapter.port, "browser");
+    try {
+      phone.ws.send(JSON.stringify({ type: "draft.file.add", threadId: "t-files", id: "not-a-file" }));
+      await adapter.send(OWNER, { text: "marker", threadId: "t-files" });
+      assert.equal((await nextFrame(browser))["type"], "chat.message");
+      assert.equal(store.stagedFiles.size, 0);
+    } finally {
+      phone.ws.close();
+      browser.ws.close();
+    }
+  });
+
+  test("a send takes the files it carried and leaves the others staged", async () => {
+    const local = new SessionFileStore();
+    const photo = await local.save(OWNER, "t-send", "photo.png", new Uint8Array([1, 2, 3]));
+    const note = await local.save(OWNER, "t-send", "note.m4a", new Uint8Array([4, 5]));
+    const phone = await connectClient(adapter.port, "phone");
+    const browser = await connectClient(adapter.port, "browser");
+    try {
+      phone.ws.send(JSON.stringify({ type: "draft.file.add", threadId: "t-send", id: photo.id }));
+      await nextFrame(browser);
+      phone.ws.send(JSON.stringify({ type: "draft.file.add", threadId: "t-send", id: note.id, audioAsVoice: true }));
+      await nextFrame(browser);
+
+      phone.ws.send(JSON.stringify({
+        type: "chat.send",
+        id: "m-files",
+        text: "regarde",
+        threadId: "t-send",
+        attachments: [{ id: photo.id, type: "image" }],
+      }));
+
+      const after = (await nextFrame(browser)) as { type: string; files: Array<Record<string, unknown>> };
+      assert.equal(after.type, "draft.files.changed");
+      assert.deepEqual(after.files.map((file) => [file["id"], file["audioAsVoice"]]), [[note.id, true]]);
+      assert.deepEqual([...store.stagedFiles.values()][0]?.map((file) => file.id), [note.id]);
+    } finally {
+      phone.ws.close();
+      browser.ws.close();
+    }
+  });
+
+  test("deleting a staged file from the files page empties its chip everywhere", async () => {
+    const local = new SessionFileStore();
+    const photo = await local.save(OWNER, "t-delete", "photo.png", new Uint8Array([1, 2, 3]));
+    const phone = await connectClient(adapter.port, "phone");
+    const browser = await connectClient(adapter.port, "browser");
+    try {
+      phone.ws.send(JSON.stringify({ type: "draft.file.add", threadId: "t-delete", id: photo.id }));
+      await nextFrame(browser);
+
+      phone.ws.send(JSON.stringify({ type: "files.delete", threadId: "t-delete", id: photo.id }));
+
+      const cleared = (await nextFrame(browser)) as { type: string; files: unknown[] };
+      assert.equal(cleared.type, "draft.files.changed");
+      assert.deepEqual(cleared.files, []);
+      assert.equal((await nextFrame(browser))["type"], "files.list.result");
+      assert.equal(store.stagedFiles.size, 0);
     } finally {
       phone.ws.close();
       browser.ws.close();

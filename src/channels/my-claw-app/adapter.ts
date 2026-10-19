@@ -129,6 +129,8 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppSessionArchive,
   MyClawAppSessionUnarchive,
   MyClawAppDraftSet,
+  MyClawAppDraftFileAdd,
+  MyClawAppDraftFileRemove,
   MyClawAppSessionDelete,
   MyClawAppFolderCreate,
   MyClawAppFolderRename,
@@ -2145,6 +2147,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "draft.set":
         this.detach(this.handleDraftSet(ws, frame), "handleDraftSet");
         break;
+      case "draft.file.add":
+        this.detach(this.handleDraftFileAdd(ws, frame), "handleDraftFileAdd");
+        break;
+      case "draft.file.remove":
+        this.detach(this.handleDraftFileRemove(ws, frame), "handleDraftFileRemove");
+        break;
     }
   }
 
@@ -2178,6 +2186,52 @@ export class MyClawAppAdapter implements ChannelAdapter {
     } catch (err) {
       await myClawAppLog("warn", "draft clear failed", { error: String(err) });
     }
+  }
+
+  /**
+   * A file staged in a composer: the bytes are already in the thread's store (the app uploads at
+   * pick), this says they belong to a message nobody has sent.
+   *
+   * The id is checked against the file store, never trusted: an id the server does not hold for
+   * that thread is dropped in silence, like every other draft frame -- a chip that cannot be sent
+   * is not worth an error the owner has to dismiss.
+   */
+  private async handleDraftFileAdd(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppDraftFileAdd): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId ?? "");
+    if (!threadId || typeof frame.id !== "string" || !frame.id) return;
+    try {
+      const stored = await this.files.list(ws.data.owner, threadId);
+      if (!stored.some((file) => file.id === frame.id)) return;
+      await this.store.addDraftFile(ws.data.owner, threadId, {
+        id: frame.id,
+        ...(frame.audioAsVoice === true ? { audioAsVoice: true } : {}),
+        ...(typeof frame.durationMs === "number" ? { durationMs: frame.durationMs } : {}),
+      });
+      await this.broadcastDraftFiles(ws.data.owner, threadId);
+    } catch (err) {
+      await myClawAppLog("warn", "draft file add failed", { error: String(err) });
+    }
+  }
+
+  private async handleDraftFileRemove(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppDraftFileRemove): Promise<void> {
+    const threadId = sanitizeThreadId(frame.threadId ?? "");
+    if (!threadId || typeof frame.id !== "string" || !frame.id) return;
+    try {
+      if (!(await this.store.removeDraftFile(ws.data.owner, threadId, frame.id))) return;
+      await this.broadcastDraftFiles(ws.data.owner, threadId);
+    } catch (err) {
+      await myClawAppLog("warn", "draft file remove failed", { error: String(err) });
+    }
+  }
+
+  /**
+   * The composer's files as they stand now, to every window of the owner -- the one that asked
+   * included. Unlike the text, a file list is not a race with a keystroke: it is idempotent, and
+   * the ordering is what settles an upload finishing while another device removes the same chip.
+   */
+  private async broadcastDraftFiles(owner: string, threadId: string): Promise<void> {
+    const files = await this.store.pendingFiles(owner, threadId);
+    this.broadcast(owner, { type: "draft.files.changed", threadId, files, ts: Date.now() });
   }
 
   /**
@@ -2353,6 +2407,16 @@ export class MyClawAppAdapter implements ChannelAdapter {
     // while its own composer still held the same text, showing it twice for a frame. Memory work
     // only, the disk write is on its own timer.
     await this.dropDraft(ws, threadId);
+    // The files this message carries leave the composer with it. Only those: a photo staged on
+    // another device while this message was being written is still unsent.
+    try {
+      const sent = (frame.attachments ?? []).map((attachment) => attachment.id).filter(Boolean);
+      if (await this.store.removeSentDraftFiles(ws.data.owner, threadId, sent)) {
+        await this.broadcastDraftFiles(ws.data.owner, threadId);
+      }
+    } catch (err) {
+      await myClawAppLog("warn", "draft files not pruned after send", { error: String(err) });
+    }
 
     // Slash commands run on the server, exactly as they do on the other channels: a command
     // sent to the model as a plain question would be answered from nothing. The user's own
@@ -3113,6 +3177,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
         hasMore: page.hasMore,
         nextBefore: page.nextBefore,
         ...(page.draft ? { draft: page.draft } : {}),
+        ...(page.files ? { files: page.files } : {}),
         // Echoed so the app can tell an older page, which it prepends, from the newest one,
         // which replaces the thread. The two arrive on the same frame type.
         ...(frame.before ? { before: frame.before } : {}),
@@ -3156,8 +3221,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         ...(page.hasMore !== undefined && page.nextBefore !== undefined
           ? { hasMore: page.hasMore, nextBefore: page.nextBefore }
           : {}),
-        // Only on the answer that replaces the client's thread; a delta carries none.
+        // Only on the answer that replaces the client's thread; a delta carries neither.
         ...(page.draft ? { draft: page.draft } : {}),
+        ...(page.files ? { files: page.files } : {}),
         ...(this.runActive ? { activeRun: this.runActive(this.store.resolveSessionId(ws.data.owner, threadId)) } : {}),
         ...(page.lastRun ? { lastRun: page.lastRun } : {}),
       };
@@ -3389,6 +3455,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
     try {
       const removed = await this.files.remove(ws.data.owner, threadId, frame.id);
       if (removed) {
+        // A staged chip whose bytes are gone must leave every composer too, or the next send
+        // references a file that no longer exists.
+        if (await this.store.removeDraftFile(ws.data.owner, threadId, frame.id)) {
+          await this.broadcastDraftFiles(ws.data.owner, threadId);
+        }
         this.broadcast(ws.data.owner, await this.filesListFrame(ws.data.owner, threadId));
       } else {
         await this.refuse(ws, "files", "file not found", { threadId, id: frame.id });

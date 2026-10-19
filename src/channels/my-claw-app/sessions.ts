@@ -18,7 +18,7 @@ import { FolderStore, type Folder } from "./folders.ts";
 import { parseStoredName, type SessionFile, type SessionFileStore } from "./files.ts";
 import { TOOL_OUTPUT_LIMIT } from "./stream.ts";
 import { toolCardId } from "./types.ts";
-import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppHistoryPage, MyClawAppRunMeta, MyClawAppSessionSummary, MyClawAppSessionInstructionPatch } from "./types.ts";
+import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppHistoryPage, MyClawAppRunMeta, MyClawAppSessionSummary, MyClawAppSessionInstructionPatch, MyClawAppPendingFile } from "./types.ts";
 
 const THREAD_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 
@@ -40,6 +40,8 @@ export interface MyClawAppSyncPage {
    * or reset) -- docs/draft-sync.md.
    */
   draft?: string;
+  /** The files the composer holds, on the same window as `draft`. */
+  files?: MyClawAppPendingFile[];
 }
 
 /** The return value of `runItems`: the work a folded row stood for -- docs/run-hydration.md. */
@@ -102,6 +104,13 @@ export interface MyClawAppSessionStore {
    */
   setDraft(owner: string, threadId: string, text: string): Promise<DraftWrite>;
   clearDraft(owner: string, threadId: string): Promise<boolean>;
+  /** Stages an uploaded file in the composer: unsent, so another device shows its chip. */
+  addDraftFile(owner: string, threadId: string, file: { id: string; audioAsVoice?: boolean; durationMs?: number }): Promise<void>;
+  removeDraftFile(owner: string, threadId: string, id: string): Promise<boolean>;
+  /** The files a sent message carried leave the composer; the ones it did not are still unsent. */
+  removeSentDraftFiles(owner: string, threadId: string, ids: readonly string[]): Promise<boolean>;
+  /** The composer's files, resolved against the thread's own file store. */
+  pendingFiles(owner: string, threadId: string): Promise<MyClawAppPendingFile[]>;
   /** Writes the pending drafts. Awaited by the adapter's shutdown, which runs before the exit. */
   flushDrafts(): Promise<void>;
   /**
@@ -391,6 +400,45 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     return this.drafts.clear(this.resolveSessionId(owner, threadId));
   }
 
+  /** Stages a file the device just uploaded: its bytes are in the thread's file store. */
+  async addDraftFile(owner: string, threadId: string, file: { id: string; audioAsVoice?: boolean; durationMs?: number }): Promise<void> {
+    await this.drafts.addFile(this.resolveSessionId(owner, threadId), file);
+  }
+
+  async removeDraftFile(owner: string, threadId: string, id: string): Promise<boolean> {
+    return this.drafts.removeFile(this.resolveSessionId(owner, threadId), id);
+  }
+
+  /** The files a sent message carried leave the composer; the ones it did not are still unsent. */
+  async removeSentDraftFiles(owner: string, threadId: string, ids: readonly string[]): Promise<boolean> {
+    if (ids.length === 0) return false;
+    return this.drafts.removeFiles(this.resolveSessionId(owner, threadId), ids);
+  }
+
+  /**
+   * The files the composer holds, as the wire shows them: the pending claim resolved against the
+   * session's own file store, so a name, a type and a size always describe bytes that exist.
+   */
+  async pendingFiles(owner: string, threadId: string): Promise<MyClawAppPendingFile[]> {
+    const refs = await this.drafts.filesOf(this.resolveSessionId(owner, threadId));
+    if (refs.length === 0) return [];
+    const stored = new Map((await this.files.list(owner, threadId)).map((file) => [file.id, file]));
+    return refs.flatMap((ref): MyClawAppPendingFile[] => {
+      const file = stored.get(ref.id);
+      if (!file) return [];
+      return [{
+        id: file.id,
+        filename: file.filename,
+        type: file.type,
+        mimeType: file.mimeType,
+        sizeBytes: file.sizeBytes,
+        ts: file.ts,
+        ...(ref.audioAsVoice ? { audioAsVoice: true } : {}),
+        ...(ref.durationMs === undefined ? {} : { durationMs: ref.durationMs }),
+      }];
+    });
+  }
+
   async flushDrafts(): Promise<void> {
     return this.drafts.flush();
   }
@@ -545,13 +593,34 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // The newest page only, and even when there is no session yet: a thread whose first message is
     // still being written is exactly where a draft matters most.
     const draft = before ? "" : await this.drafts.textOf(sessionId);
+    // Same page rule as the text: the files ride the newest page, and a page reaching backwards
+    // has no business carrying a composer.
+    const staged = before ? [] : await this.pendingFiles(owner, threadId);
     const session = await this.sessionManager.read(sessionId);
-    if (!session) return { entries: [], hasMore: false, nextBefore: before, ...(draft ? { draft } : {}) };
+    if (!session) {
+      return {
+        entries: [],
+        hasMore: false,
+        nextBefore: before,
+        ...(draft ? { draft } : {}),
+        ...(staged.length ? { files: staged } : {}),
+      };
+    }
 
     // Get the log and compute the full path (display shows everything, including pre-compaction entries)
     const log = await sessionLogOf(sessionId);
     const path = pathOf(log.entries(), log.leaf());
-    if (path.length === 0) return { entries: [], hasMore: false, nextBefore: before, ...(draft ? { draft } : {}) };
+    // A thread whose first message is still being written has no log yet: nothing to page over,
+    // but the composer is still there.
+    if (path.length === 0) {
+      return {
+        entries: [],
+        hasMore: false,
+        nextBefore: before,
+        ...(draft ? { draft } : {}),
+        ...(staged.length ? { files: staged } : {}),
+      };
+    }
 
     // Pagination: pageOf aligns on turn boundaries. `beforeId` is the client's oldest held
     // entry (or a tool call id, which the client owns on tool cards): the page ends right before
@@ -576,7 +645,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // is a message wherever the page boundary fell.
     const plan = fold ? runFoldPlan(window, runs) : undefined;
     const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnView(log.entries(), this.runActive), files, runs, plan, lazyReasoning);
-    return { entries, hasMore, nextBefore, ...(draft ? { draft } : {}) };
+    return { entries, hasMore, nextBefore, ...(draft ? { draft } : {}), ...(staged.length ? { files: staged } : {}) };
   }
 
   /**
@@ -600,7 +669,14 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     if (!session) {
       // No session yet: nothing to sync. A thread the owner wrote in before its first message
       // still has a draft, and an empty answer that dropped it would lose it for good.
-      return { entries: [], leaf: null, head: null, ...(draft ? { draft } : {}) };
+      const staged = await this.pendingFiles(owner, threadId);
+      return {
+        entries: [],
+        leaf: null,
+        head: null,
+        ...(draft ? { draft } : {}),
+        ...(staged.length ? { files: staged } : {}),
+      };
     }
 
     const log = await sessionLogOf(sessionId);
@@ -680,6 +756,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const lastRun = lastRunOf(path, runs);
 
     const branchLength = path.length;
+    // The files of the composer come back with the same answer as its text, and only with that
+    // one: a delta is work arriving, not a page.
+    const staged = freshWindow ? await this.pendingFiles(owner, threadId) : [];
     return {
       entries,
       leaf: serverLeaf,
@@ -697,6 +776,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       // The window that replaces the client's thread is where its draft comes back: a delta is
       // work the client is watching arrive, and it must never overwrite text typed here.
       ...(freshWindow && draft ? { draft } : {}),
+      ...(staged.length ? { files: staged } : {}),
     };
   }
 

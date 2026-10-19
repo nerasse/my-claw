@@ -40,10 +40,26 @@ const ORPHAN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const SESSION_PREFIX = "my-claw-app/thread/";
 
+/**
+ * One file the composer holds and has not sent. The bytes are in the session's file store; this is
+ * only the claim that they belong to a message nobody has sent yet, so another device can show the
+ * chip and the send can reference the id.
+ */
+export interface PendingFileEntry {
+  /** The id the upload answered. */
+  id: string;
+  /** Server clock of when it entered the composer; what eviction and the boot sweep read. */
+  ts: number;
+  audioAsVoice?: boolean;
+  durationMs?: number;
+}
+
 interface DraftEntry {
   text: string;
   /** Server clock. Device clocks drift, and last-write-wins on a drifting clock loses the wrong write. */
   ts: number;
+  /** Staged, uploaded, not sent. Ordered as the composer shows them; absent when there are none. */
+  files?: PendingFileEntry[];
 }
 
 interface DraftFile {
@@ -72,7 +88,7 @@ export class DraftStore {
     hooks.on("session:deleted", this.onSessionDeleted);
   }
 
-  /** The session ids holding a draft. One await for a caller that then tests many ids. */
+  /** The session ids holding unsent text or a staged file. One await for a caller that tests many. */
   async drafted(): Promise<ReadonlySet<string>> {
     await this.ready();
     return new Set(this.entries.keys());
@@ -81,6 +97,55 @@ export class DraftStore {
   async textOf(sessionId: string): Promise<string> {
     await this.ready();
     return this.entries.get(sessionId)?.text ?? "";
+  }
+
+  /** The files staged in this conversation, in the order they were picked. */
+  async filesOf(sessionId: string): Promise<PendingFileEntry[]> {
+    await this.ready();
+    return [...(this.entries.get(sessionId)?.files ?? [])];
+  }
+
+  /**
+   * Stages a file the device just uploaded, or reports it was already there. Creates the entry when
+   * the composer holds no text yet: a photo with no words is a draft, and the badge says so.
+   */
+  async addFile(sessionId: string, file: Omit<PendingFileEntry, "ts">): Promise<boolean> {
+    await this.ready();
+    const existing = this.entries.get(sessionId);
+    const files = existing?.files ?? [];
+    if (files.some((entry) => entry.id === file.id)) return false;
+    const ts = Date.now();
+    this.entries.set(sessionId, { text: existing?.text ?? "", ts, files: [...files, { ...file, ts }] });
+    this.evict();
+    this.markDirty();
+    return true;
+  }
+
+  /** Drops one staged file. The bytes are the caller's business: `files.delete` removes them. */
+  async removeFile(sessionId: string, id: string): Promise<boolean> {
+    await this.ready();
+    return this.removeFiles(sessionId, [id]);
+  }
+
+  /**
+   * Drops the files a sent message carried, keeping the ones it did not. A send consumes what it
+   * references and nothing else: a photo staged on another device while this message was being
+   * written is still unsent, and clearing the list wholesale would lose it.
+   */
+  async removeFiles(sessionId: string, ids: readonly string[]): Promise<boolean> {
+    await this.ready();
+    const existing = this.entries.get(sessionId);
+    if (!existing?.files?.length) return false;
+    const kept = existing.files.filter((file) => !ids.includes(file.id));
+    if (kept.length === existing.files.length) return false;
+    if (kept.length === 0 && !existing.text) this.entries.delete(sessionId);
+    else {
+      const next: DraftEntry = { text: existing.text, ts: Date.now() };
+      if (kept.length) next.files = kept;
+      this.entries.set(sessionId, next);
+    }
+    this.markDirty();
+    return true;
   }
 
   /**
@@ -95,18 +160,27 @@ export class DraftStore {
       void log("warn", "draft over the wire limit ignored", { chars: text.length, limit: DRAFT_TEXT_LIMIT });
       return { changed: false, ts: existing?.ts ?? 0 };
     }
-    if (!text) return { changed: this.clearEntry(sessionId), ts: Date.now() };
+    if (!text) return { changed: await this.clear(sessionId), ts: Date.now() };
     if (existing?.text === text) return { changed: false, ts: existing.ts };
     const ts = Date.now();
-    this.entries.set(sessionId, { text, ts });
+    this.entries.set(sessionId, { ...existing, text, ts });
     this.evict();
     this.markDirty();
     return { changed: true, ts };
   }
 
+  /**
+   * Empties the text. The staged files stay: they are a separate decision, each removed on its own
+   * (`draft.file.remove`), and a send prunes only the ids its message carried.
+   */
   async clear(sessionId: string): Promise<boolean> {
     await this.ready();
-    return this.clearEntry(sessionId);
+    const existing = this.entries.get(sessionId);
+    if (!existing?.text) return false;
+    if (existing.files?.length) this.entries.set(sessionId, { ...existing, text: "", ts: Date.now() });
+    else this.entries.delete(sessionId);
+    this.markDirty();
+    return true;
   }
 
   /** Writes what is pending and cancels the timer. Awaited by the adapter's own shutdown. */
@@ -129,12 +203,6 @@ export class DraftStore {
     hooks.off("session:deleted", this.onSessionDeleted);
     if (this.timer) clearTimeout(this.timer);
     this.timer = undefined;
-  }
-
-  private clearEntry(sessionId: string): boolean {
-    if (!this.entries.delete(sessionId)) return false;
-    this.markDirty();
-    return true;
   }
 
   private markDirty(): void {
@@ -171,13 +239,19 @@ export class DraftStore {
     const cutoff = Date.now() - ORPHAN_TTL_MS;
     let swept = 0;
     for (const [sessionId, entry] of Object.entries(parsed.drafts)) {
-      if (typeof entry?.text !== "string" || !entry.text) continue;
+      const text = typeof entry?.text === "string" ? entry.text : "";
+      const files = Array.isArray(entry?.files)
+        ? entry.files
+            .filter((file): file is PendingFileEntry => typeof file?.id === "string" && Boolean(file.id))
+            .map((file) => ({ ...file, ts: typeof file.ts === "number" ? file.ts : Date.now() }))
+        : [];
+      if (!text && files.length === 0) continue;
       const ts = typeof entry.ts === "number" ? entry.ts : Date.now();
       if (!live.has(sessionId) && ts < cutoff) {
         swept += 1;
         continue;
       }
-      this.entries.set(sessionId, { text: entry.text, ts });
+      this.entries.set(sessionId, { text, ts, ...(files.length ? { files } : {}) });
     }
     this.evict();
     if (swept > 0) {

@@ -277,6 +277,27 @@ export interface MyClawAppDraftSet {
   text: string;
 }
 
+/**
+ * A file the composer holds and has not sent: the bytes are already there, this says the message
+ * they belong to is not. `id` is the one the upload answered. Carries no filename or size, which
+ * the server resolves from its own file store -- the device must not be the source of what another
+ * device displays.
+ */
+export interface MyClawAppDraftFileAdd {
+  type: "draft.file.add";
+  threadId: string;
+  id: string;
+  /** A held-the-mic take, carried so another device sends it under the same STT policy. */
+  audioAsVoice?: boolean;
+  durationMs?: number;
+}
+
+export interface MyClawAppDraftFileRemove {
+  type: "draft.file.remove";
+  threadId: string;
+  id: string;
+}
+
 export interface MyClawAppApprovalResponse {
   type: "approval.response";
   id: string;
@@ -1205,6 +1226,8 @@ export type MyClawAppClientFrame =
   | MyClawAppFolderOrder
   | MyClawAppSessionFolder
   | MyClawAppDraftSet
+  | MyClawAppDraftFileAdd
+  | MyClawAppDraftFileRemove
   | MyClawAppModelRefresh
   | MyClawAppApprovalResponse
   | MyClawAppApprovalHistory
@@ -1549,6 +1572,8 @@ export interface MyClawAppHistoryPage {
   hasMore: boolean;
   /** The thread's unsent draft, filled on the newest page only. */
   draft?: string;
+  /** The files the composer holds, on the newest page only. Same rule as `draft`. */
+  files?: MyClawAppPendingFile[];
   /**
    * The cursor for the page before this one. The app cannot compute it: one stored message can
    * become two bubbles (an assistant turn plus its tool card) and a `role:"tool"` message becomes
@@ -1972,6 +1997,8 @@ export interface MyClawAppChatHistory {
    * draft is wanted, and a page reaching backwards has no business carrying it -- docs/draft-sync.md.
    */
   draft?: string;
+  /** The files the composer holds and has not sent, newest page only. Same rule as `draft`. */
+  files?: MyClawAppPendingFile[];
   /**
    * Whether a run is in flight for this conversation, as of this page. Carried on the page rather
    * than read from `session.list`: the two are separate round trips, and the app decides what of
@@ -2036,6 +2063,8 @@ export interface MyClawAppSessionSyncResult {
    * text that no frame ever handed back -- docs/draft-sync.md.
    */
   draft?: string;
+  /** The files the composer holds and has not sent, on the same answer as `draft`. */
+  files?: MyClawAppPendingFile[];
 }
 
 /**
@@ -2090,6 +2119,34 @@ export interface MyClawAppDraftChanged {
   threadId: string;
   text: string;
   /** Server clock: device clocks drift, and last-write-wins on a drifting clock loses the wrong write. */
+  ts: number;
+}
+
+/** One file a composer holds and has not sent, as the server resolves it from its file store. */
+export interface MyClawAppPendingFile {
+  /** The id the upload answered: what the send will reference. */
+  id: string;
+  filename: string;
+  type: "image" | "audio" | "video" | "file";
+  mimeType: string;
+  sizeBytes: number;
+  ts: string;
+  audioAsVoice?: boolean;
+  durationMs?: number;
+}
+
+/**
+ * The files the composer of this thread holds right now.
+ *
+ * Authoritative and idempotent: a device replaces its list with this one, keeping the chips whose
+ * upload it has not finished (they have no id yet, so the server has never heard of them). Sent to
+ * every window of the owner, the one that asked included -- an upload finishing on one device and a
+ * removal from another are ordered here, and a page alone cannot express a removal.
+ */
+export interface MyClawAppDraftFilesChanged {
+  type: "draft.files.changed";
+  threadId: string;
+  files: MyClawAppPendingFile[];
   ts: number;
 }
 
@@ -4331,6 +4388,7 @@ export type MyClawAppServerFrame =
   | MyClawAppSessionListResult
   | MyClawAppSessionWorkspaceSetResult
   | MyClawAppDraftChanged
+  | MyClawAppDraftFilesChanged
   | MyClawAppCommandsResult
   | MyClawAppFilesListResult
   | MyClawAppFsListResult
