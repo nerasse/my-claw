@@ -136,8 +136,9 @@ A draft is one person's unsent sentence on two screens, not a shared document.
 Two frames arrive with a whole page: `chat.history` (the newest page, and the refresh after a
 branch switch) and `session.sync` when it replaces the thread. Those fill a gap; they are not a
 keystroke from another device. So a page is applied **only when the local map is empty, or still
-holds exactly what the server last knew**. Anything else is text typed here and not acknowledged,
-and reopening a conversation must never hand back yesterday's sentence over the one being written.
+holds exactly what the server last knew**, and never while a change of ours is waiting for its
+debounce. Anything else is text typed here and not acknowledged, and reopening a conversation
+must never hand back yesterday's sentence over the one being written.
 
 ## Attachments do not sync
 
