@@ -10,6 +10,7 @@ import {
   handleNodesAdd,
   handleNodesDescribe,
   handleNodesList,
+  handleNodesMcpSet,
   handleNodesRename,
   handleNodesRevoke,
   handleNodesUpdate,
@@ -17,6 +18,7 @@ import {
   type MyClawAppNodeDeps,
 } from "../../src/channels/my-claw-app/node-handlers.ts";
 import { nodeAgentName, removeNodeAgent, writeNodeAgent } from "../../src/nodes/agent.ts";
+import { setNodeMcp } from "../../src/nodes/store.ts";
 import {
   nodeSummaries,
   openNodeClaim,
@@ -452,5 +454,59 @@ describe("forcing an update", () => {
     const app = fakeAppSocket();
     await handleNodesUpdate(deps(), app.ws, { nodeId: "nope" });
     expect(app.frames[0]).toMatchObject({ type: "nodes.update.result", ok: false, error: "unknown node" });
+  });
+});
+
+
+describe("node MCP", () => {
+  const GODOT = { transport: "stdio" as const, command: "godot-mcp", args: ["--headless"] };
+
+  test("the list is stored, pushed to the machine, and mirrored", async () => {
+    const { nodeId } = await pairNode();
+    const socket = fakeNodeSocket(nodeId);
+    attachNodeSocket(socket.ws);
+    handleNodeFrame(socket.ws, JSON.stringify({ type: "node.hello", protocol: 1, facts: FACTS }));
+    socket.sent.length = 0;
+    const app = fakeAppSocket();
+    await handleNodesMcpSet(deps(), app.ws, { nodeId, mcp: { godot: GODOT } });
+    expect(app.frames[0]).toMatchObject({ type: "nodes.mcp.set.result", ok: true, nodeId });
+    expect(nodeRecord(nodeId)?.mcp).toEqual({ godot: GODOT });
+    expect(socket.sent.find((frame) => frame["type"] === "node.config")).toEqual({ type: "node.config", mcp: { godot: GODOT } });
+  });
+
+  test("a malformed list is refused and nothing is stored", async () => {
+    const { nodeId } = await pairNode();
+    const app = fakeAppSocket();
+    await handleNodesMcpSet(deps(), app.ws, { nodeId, mcp: { broken: { transport: "carrier-pigeon" } } });
+    expect(app.frames[0]).toMatchObject({ type: "nodes.mcp.set.result", ok: false, error: "invalid MCP list" });
+    expect(nodeRecord(nodeId)?.mcp).toBeUndefined();
+  });
+
+  test("a node that was away is handed the list on its next connect", async () => {
+    const { nodeId } = await pairNode();
+    const app = fakeAppSocket();
+    await handleNodesMcpSet(deps(), app.ws, { nodeId, mcp: { godot: GODOT } });
+    const socket = fakeNodeSocket(nodeId);
+    attachNodeSocket(socket.ws);
+    expect(socket.sent.find((frame) => frame["type"] === "node.config")).toEqual({ type: "node.config", mcp: { godot: GODOT } });
+  });
+
+  test("the roster carries the configured servers, the reported state, and what the machine runs alone", async () => {
+    const { nodeId } = await pairNode();
+    await setNodeMcp(nodeId, { godot: GODOT });
+    const socket = fakeNodeSocket(nodeId);
+    attachNodeSocket(socket.ws);
+    handleNodeFrame(socket.ws, JSON.stringify({
+      type: "node.hello",
+      protocol: 1,
+      facts: { ...FACTS, mcp: [{ name: "godot", ok: true, tools: 3 }, { name: "local", ok: false, tools: 0, error: "no such binary" }] },
+    }));
+    const [summary] = await nodeSummaries();
+    expect(summary?.mcp).toEqual([
+      { name: "godot", transport: "stdio", target: "godot-mcp --headless", ok: true, tools: 3, config: GODOT },
+      { name: "local", transport: "stdio", target: "", external: true, ok: false, tools: 0, error: "no such binary" },
+    ]);
+    const frame = nodeFrame(summary!);
+    expect(frame.mcp?.[0]?.config).toEqual(GODOT);
   });
 });

@@ -285,6 +285,7 @@ import {
   handleNodesAdd,
   handleNodesDescribe,
   handleNodesList,
+  handleNodesMcpSet,
   handleNodesRename,
   handleNodesRevoke,
   handleNodesUpdate,
@@ -2038,6 +2039,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "nodes.update":
         this.detach(handleNodesUpdate(this.nodeDeps(), ws, frame), "handleNodesUpdate");
+        break;
+      case "nodes.mcp.set":
+        this.detach(handleNodesMcpSet(this.nodeDeps(), ws, frame), "handleNodesMcpSet");
         break;
       case "browser.unblock":
         this.detach(handleBrowserUnblock({

@@ -1,7 +1,8 @@
 import { chmod, mkdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { resolve, sep, join } from "node:path";
+import { isAbsolute, resolve, sep, join } from "node:path";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
+import type { McpServerConfig } from "../core/config.ts";
 
 /**
  * The node's own configuration and credentials, all under one directory (0600 for anything that
@@ -25,6 +26,12 @@ export interface NodeClientConfig {
   readOnly?: boolean;
   /** Directories the file tools may touch. Absent = no restriction. */
   roots?: string[];
+  /**
+   * MCP servers this machine runs for my-claw, by name. The server owns the list: it hands it
+   * over on every connect and on every change, and this file keeps the last one so a reboot
+   * starts them before any server is reached.
+   */
+  mcp?: Record<string, McpServerConfig>;
 }
 
 export interface ClientTls {
@@ -57,6 +64,12 @@ export function exposedTools(config: NodeClientConfig): NodeToolName[] {
 }
 
 /** The roots ceiling, for the file tools. Absent roots mean the machine is fully open. */
+/** A tool argument resolved against the working directory; an absolute path passes through. */
+export function resolvePath(config: NodeClientConfig, input: string): string {
+  const base = config.workdir ? resolve(config.workdir) : homedir();
+  return isAbsolute(input) ? resolve(input) : resolve(base, input);
+}
+
 export function pathAllowed(config: NodeClientConfig, path: string): boolean {
   if (!config.roots?.length) return true;
   const target = resolve(path);

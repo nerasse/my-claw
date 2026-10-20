@@ -1,5 +1,6 @@
 import type { ServerWebSocket } from "bun";
 import type { NodesConfig } from "../../core/config.ts";
+import type { McpServerConfig } from "../../core/config.ts";
 import {
   nodeSummaries,
   openNodeClaim,
@@ -7,6 +8,7 @@ import {
   revokeNodeForApp,
   setNodeAccessForApp,
   setNodeDescriptionForApp,
+  setNodeMcpForApp,
   updateNodeForApp,
   type NodeSummary,
 } from "../../nodes/app.ts";
@@ -39,6 +41,7 @@ export function nodeFrame(summary: NodeSummary): MyClawAppNodeFrame {
     ...(summary.agent ? { agent: summary.agent } : {}),
     ...(summary.description ? { description: summary.description } : {}),
     ...(summary.exposed ? { exposed: summary.exposed } : {}),
+    ...(summary.mcp ? { mcp: summary.mcp } : {}),
     ...(summary.approval ? { approval: true } : {}),
     ...(summary.disabled ? { disabled: true } : {}),
   };
@@ -152,6 +155,77 @@ export async function handleNodesUpdate(
     nodeId,
     ...(offered.error ? { error: offered.error } : {}),
   });
+}
+
+const MAX_MCP = 32;
+const MAX_MCP_TEXT = 2048;
+const MAX_MCP_ARGS = 32;
+
+/** The app's MCP list, bounded and typed here: a machine is about to spawn what this names. */
+function mcpListOf(raw: unknown): Record<string, McpServerConfig> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const entries = Object.entries(raw as Record<string, unknown>);
+  if (entries.length > MAX_MCP) return null;
+  const mcp: Record<string, McpServerConfig> = {};
+  for (const [name, value] of entries) {
+    if (!name.trim() || name.length > 64) return null;
+    if (!value || typeof value !== "object") return null;
+    const config = value as Record<string, unknown>;
+    const transport = config["transport"];
+    if (transport !== "stdio" && transport !== "sse" && transport !== "http") return null;
+    const text = (key: string): string | undefined => {
+      const field = config[key];
+      return typeof field === "string" && field.trim() && field.length <= MAX_MCP_TEXT ? field.trim() : undefined;
+    };
+    const command = text("command");
+    const url = text("url");
+    if (transport === "stdio" ? !command : !url) return null;
+    const args = Array.isArray(config["args"])
+      ? config["args"].filter((arg): arg is string => typeof arg === "string" && arg.length <= MAX_MCP_TEXT).slice(0, MAX_MCP_ARGS)
+      : undefined;
+    const map = (key: string): Record<string, string> | undefined => {
+      const field = config[key];
+      if (!field || typeof field !== "object" || Array.isArray(field)) return undefined;
+      const pairs = Object.entries(field as Record<string, unknown>)
+        .filter((entry): entry is [string, string] => typeof entry[1] === "string")
+        .slice(0, 32);
+      return pairs.length > 0 ? Object.fromEntries(pairs) : undefined;
+    };
+    const env = map("env");
+    const headers = map("headers");
+    mcp[name] = {
+      transport,
+      ...(command ? { command } : {}),
+      ...(args && args.length > 0 ? { args } : {}),
+      ...(env ? { env } : {}),
+      ...(url ? { url } : {}),
+      ...(headers ? { headers } : {}),
+      ...(config["enabled"] === false ? { enabled: false } : {}),
+    };
+  }
+  return mcp;
+}
+
+/** The MCP servers a node should run: stored here, handed to the machine when it is connected. */
+export async function handleNodesMcpSet(
+  d: MyClawAppNodeDeps,
+  ws: ServerWebSocket<MyClawAppSessionData>,
+  frame: { nodeId?: unknown; mcp?: unknown },
+): Promise<void> {
+  const nodeId = typeof frame.nodeId === "string" ? frame.nodeId : "";
+  const mcp = mcpListOf(frame.mcp);
+  if (!mcp) {
+    d.sendFrame(ws, { type: "nodes.mcp.set.result", ok: false, nodeId, error: "invalid MCP list" });
+    return;
+  }
+  const written = await setNodeMcpForApp(nodeId, mcp);
+  d.sendFrame(ws, {
+    type: "nodes.mcp.set.result",
+    ok: written.ok,
+    nodeId,
+    ...(written.error ? { error: written.error } : {}),
+  });
+  if (written.ok) await mirrorNodesList(d, ws);
 }
 
 /** The roster after a revocation, to the owner's other windows: the row they show is gone. */

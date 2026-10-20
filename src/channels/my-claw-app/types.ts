@@ -1190,6 +1190,24 @@ export interface MyClawAppNodesUpdate {
   nodeId: string;
 }
 
+/** One MCP server a node runs, as the app sends it: the same shape the server's own MCP uses. */
+export interface MyClawAppNodeMcpConfig {
+  transport: "stdio" | "sse" | "http";
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  enabled?: boolean;
+}
+
+/** The app's MCP list for a node: the whole map, stored and handed to the machine. */
+export interface MyClawAppNodesMcpSet {
+  type: "nodes.mcp.set";
+  nodeId: string;
+  mcp: Record<string, MyClawAppNodeMcpConfig>;
+}
+
 export type MyClawAppClientFrame =
   | MyClawAppMediaTicketGet
   | MyClawAppBrowserInfo
@@ -1325,6 +1343,7 @@ export type MyClawAppClientFrame =
   | MyClawAppNodesDescribe
   | MyClawAppNodesAccessSet
   | MyClawAppNodesUpdate
+  | MyClawAppNodesMcpSet
   | MyClawAppSubAgentsReset
   | MyClawAppSubAgentsCallers
   | MyClawAppSubAgentsHandoff
@@ -4134,6 +4153,19 @@ export interface MyClawAppNodeFrame {
   approval?: boolean;
   /** Its agent does not run; the machine stays connected. */
   disabled?: boolean;
+  /** The MCP servers it runs: the configured ones, and how each came up. */
+  mcp?: Array<{
+    name: string;
+    transport: string;
+    /** The command line (stdio) or the URL (http/sse); empty for a server the machine runs on its own. */
+    target: string;
+    external?: boolean;
+    ok?: boolean;
+    tools?: number;
+    error?: string;
+    /** What this server configured, so the app edits real fields instead of re-parsing a command line. */
+    config?: MyClawAppNodeMcpConfig;
+  }>;
 }
 
 export interface MyClawAppNodesListResult {
@@ -4183,6 +4215,13 @@ export interface MyClawAppNodesAccessSetResult {
 
 export interface MyClawAppNodesUpdateResult {
   type: "nodes.update.result";
+  ok: boolean;
+  nodeId: string;
+  error?: string;
+}
+
+export interface MyClawAppNodesMcpSetResult {
+  type: "nodes.mcp.set.result";
   ok: boolean;
   nodeId: string;
   error?: string;
@@ -4469,6 +4508,7 @@ export type MyClawAppServerFrame =
   | MyClawAppNodesDescribeResult
   | MyClawAppNodesAccessSetResult
   | MyClawAppNodesUpdateResult
+  | MyClawAppNodesMcpSetResult
   | MyClawAppNodesPresence
   | MyClawAppError;
 

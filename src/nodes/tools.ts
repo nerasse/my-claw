@@ -1,5 +1,5 @@
 import type { Tool, ToolResult } from "../tools/types.ts";
-import { callNodeTool, nodeFactsOf, nodeNameOf } from "./hub.ts";
+import { callNodeTool, nodeFactsOf, nodeNameOf, putFileToNode } from "./hub.ts";
 import { nodeRecord } from "./store.ts";
 
 /**
@@ -42,6 +42,32 @@ export function nodeToolsFor(
         return callNodeTool(nodeId, manifest.name, args, { signal: signalOf(args) });
       },
     }));
+
+  // The file direction the node's own tools cannot do: they write text, and an asset is bytes.
+  // Added before the file's `tools:` and the denylist are applied, so a restriction that does not
+  // name it does not hand it out: a name outside the set is dropped, never added.
+  tools.push({
+    name: "send_file_to_node",
+    description: `Send a file from this server to the remote node "${name}", which fetches it and writes it under its working directory. Use it to hand that machine an asset (an image, a scene, a texture) before a tool there needs it.`,
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Absolute path of the file on this server." },
+      },
+      required: ["path"],
+    },
+    get requiresApproval(): boolean {
+      return nodeRecord(nodeId)?.approval === true;
+    },
+    execute: async (args) => {
+      const path = typeof args["path"] === "string" ? args["path"].trim() : "";
+      if (!path) return { success: false, output: "", error: "path is required" };
+      if (!(await Bun.file(path).exists())) return { success: false, output: "", error: `no file at ${path}` };
+      const sent = await putFileToNode(nodeId, path);
+      if (!sent.ok) return { success: false, output: "", error: sent.error ?? "the file could not be sent" };
+      return { success: true, output: `Sent to the node at ${sent.path ?? "its working directory"}.` };
+    },
+  });
 
   // The file's `tools:` narrows the manifest exactly like it narrows a local baseline, and the
   // config denylist applies on top: a name outside the set is dropped, never added.

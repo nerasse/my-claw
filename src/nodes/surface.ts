@@ -9,6 +9,7 @@ import { issueNodeCertificate } from "./ca.ts";
 import { consumeClaim, openClaim, peekClaim, type ClaimDenial } from "./claims.ts";
 import { attachNodeSocket, closeNodeSocket, detachNodeSocket, handleNodeFrame, type NodeSocketData } from "./hub.ts";
 import { findNodeByToken, mintNode, nodeRecord, revokeNode } from "./store.ts";
+import { nodeUploadLimit, storeNodeUpload, takeFileTicket } from "./files.ts";
 import { parseNodeFacts } from "./types.ts";
 
 /**
@@ -191,6 +192,41 @@ export function createNodeSurface(deps: NodeSurfaceDeps): NodeSurface {
     });
   }
 
+  /**
+   * A node uploading what its tools produced: an image Blender rendered, an MCP's screenshot. The
+   * node's own token is the credential, and only the stored path ever comes back.
+   */
+  async function handleNodeUpload(req: Request): Promise<Response> {
+    const token = bearer(req) ?? "";
+    const record = token ? findNodeByToken(token) : undefined;
+    if (!record) return new Response("Unauthorized", { status: 401 });
+    const declared = Number(req.headers.get("content-length") ?? "0");
+    if (Number.isFinite(declared) && declared > nodeUploadLimit()) {
+      await req.body?.cancel();
+      return json({ error: `uploads are at most ${Math.round(nodeUploadLimit() / (1024 * 1024))} MB` }, 413);
+    }
+    const bytes = new Uint8Array(await req.arrayBuffer());
+    const filename = req.headers.get("x-file-name") ?? "file";
+    try {
+      const upload = await storeNodeUpload(record.nodeId, filename, bytes);
+      return json({ path: upload.path, filename: upload.filename, size: upload.size });
+    } catch (err) {
+      return json({ error: String((err as Error).message ?? err) }, 400);
+    }
+  }
+
+  /** The bytes behind a ticket, fetched by the node that was handed it. One shot, node token. */
+  async function handleNodeFile(req: Request, id: string): Promise<Response> {
+    const token = bearer(req) ?? "";
+    const record = token ? findNodeByToken(token) : undefined;
+    if (!record) return new Response("Unauthorized", { status: 401 });
+    const taken = takeFileTicket(id, record.nodeId);
+    if (!taken.ok) return json({ error: taken.error }, 403);
+    const file = Bun.file(taken.path);
+    if (!(await file.exists())) return json({ error: "the file is gone" }, 404);
+    return new Response(file, { headers: { "content-type": "application/octet-stream" } });
+  }
+
   /** The installers, served from this release: the ones that match the server being joined. */
   async function handleInstaller(script: string): Promise<Response> {
     const repoRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
@@ -233,6 +269,8 @@ export function createNodeSurface(deps: NodeSurfaceDeps): NodeSurface {
       if (url.pathname === "/node/ticket" && req.method === "POST") return handleTicket(req, context);
       if (url.pathname === "/node/revoke" && req.method === "POST") return handleRevoke(req);
       if (url.pathname === "/node/download" && req.method === "GET") return handleDownload(req, url, context);
+      if (url.pathname === "/node/upload" && req.method === "POST") return handleNodeUpload(req);
+      if (url.pathname.startsWith("/node/file/") && req.method === "GET") return handleNodeFile(req, url.pathname.slice("/node/file/".length));
       if (url.pathname === "/node/install.sh" && req.method === "GET") return handleInstaller("install-node.sh");
       if (url.pathname === "/node/install.ps1" && req.method === "GET") return handleInstaller("install-node.ps1");
       return new Response("Not Found", { status: 404 });

@@ -14,7 +14,7 @@ export interface AtomicWriteOptions {
   mode?: number;
 }
 
-export async function writeFileAtomically(path: string, content: string, options?: AtomicWriteOptions): Promise<void> {
+export async function writeFileAtomically(path: string, content: string | Uint8Array, options?: AtomicWriteOptions): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   const tmp = tmpNameFor(path);
   const handle = await open(tmp, "w", options?.mode ?? 0o644);

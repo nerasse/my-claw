@@ -1,8 +1,10 @@
 import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
-import type { NodeToolManifest } from "../nodes/types.ts";
+import type { NodeAttachment, NodeToolManifest } from "../nodes/types.ts";
+import { mediaTypeForPath } from "../utils/media.ts";
+import type { NodeUpload } from "./mcp.ts";
 import {
   capOutput,
   DEFAULT_IGNORES,
@@ -18,7 +20,7 @@ import {
   type SearchQuery,
 } from "../tools/search-core.ts";
 import { resolveRipgrep } from "../tools/ripgrep.ts";
-import { exposedTools, nodeDir, pathAllowed, type NodeClientConfig } from "./config.ts";
+import { exposedTools, nodeDir, pathAllowed, resolvePath, type NodeClientConfig } from "./config.ts";
 
 /**
  * The tools a node offers, implemented here rather than imported from the server: this runs on
@@ -31,11 +33,15 @@ export interface NodeToolResult {
   ok: boolean;
   output: string;
   error?: string;
+  /** Files this tool produced, already uploaded to the server that asked for the call. */
+  attachments?: NodeAttachment[];
 }
 
 export interface NodeToolContext {
   config: NodeClientConfig;
   signal: AbortSignal;
+  /** Uploads bytes to the server, so a picture this machine made reaches the model. */
+  upload?: NodeUpload;
 }
 
 export interface NodeTool {
@@ -49,6 +55,8 @@ const DEFAULT_TIMEOUT_MS = 120_000;
 const MAX_TIMEOUT_MS = 600_000;
 const MAX_OUTPUT_BYTES = 1_048_576;
 const MAX_READ_CHARS = 100_000;
+/** Past this, a media file is described rather than shipped: the server's own upload cap. */
+const MAX_MEDIA_BYTES = 32 * 1024 * 1024;
 const MAX_SEARCH_DEPTH = 10;
 const MAX_SEARCH_FILE_BYTES = 2 * 1024 * 1024;
 
@@ -72,11 +80,6 @@ function bool(args: Record<string, unknown>, key: string, fallback: boolean): bo
   if (value === "true") return true;
   if (value === "false") return false;
   return fallback;
-}
-
-function resolvePath(config: NodeClientConfig, input: string): string {
-  const base = config.workdir ? resolve(config.workdir) : homedir();
-  return isAbsolute(input) ? resolve(input) : resolve(base, input);
 }
 
 function describeError(error: unknown): string {
@@ -165,13 +168,24 @@ const readTool: NodeTool = {
     properties: { path: { type: "string", description: "File path (absolute, or relative to the working directory)" } },
     required: ["path"],
   },
-  async execute(args, { config }) {
+  async execute(args, { config, upload }) {
     const input = str(args, "path");
     if (!input.trim()) return { ok: false, output: "", error: "path is required and cannot be empty." };
     const resolved = resolvePath(config, input);
     if (!pathAllowed(config, resolved)) return { ok: false, output: "", error: `Path outside the allowed roots: ${resolved}` };
     try {
       const raw = await readFile(resolved);
+      // A picture, a sound, a video: the model reads text, so what it can use is the file itself.
+      const kind = mediaTypeForPath(resolved);
+      if (kind !== "file" && upload) {
+        if (raw.length > MAX_MEDIA_BYTES) {
+          return { ok: false, output: "", error: `${kind} too large to send (${Math.round(raw.length / (1024 * 1024))} MB, at most ${MAX_MEDIA_BYTES / (1024 * 1024)} MB)` };
+        }
+        const attachment = await upload(new Uint8Array(raw), basename(resolved));
+        if (attachment) {
+          return { ok: true, output: `${kind} ${resolved} (${Math.round(raw.length / 1024)} KB), attached to this reply.`, attachments: [attachment] };
+        }
+      }
       if (raw.subarray(0, 4096).includes(0)) {
         return { ok: false, output: `Binary file, not readable as text: ${resolved} (${Math.round(raw.length / 1024)} KB).` };
       }
@@ -616,11 +630,15 @@ export async function runTool(
   name: string,
   args: Record<string, unknown>,
   signal: AbortSignal,
+  extras: { upload?: NodeUpload; mcp?: { call: (name: string, args: Record<string, unknown>) => Promise<NodeToolResult | null> } } = {},
 ): Promise<NodeToolResult> {
   const tool = toolByName(config, name);
-  if (!tool) return { ok: false, output: "", error: `tool "${name}" is not exposed by this node` };
   try {
-    return await tool.execute(args, { config, signal });
+    if (tool) return await tool.execute(args, { config, signal, ...(extras.upload ? { upload: extras.upload } : {}) });
+    // An MCP tool is offered by this machine too: same manifest, same call path, one dispatch.
+    const remote = extras.mcp ? await extras.mcp.call(name, args) : null;
+    if (remote) return remote;
+    return { ok: false, output: "", error: `tool "${name}" is not exposed by this node` };
   } catch (error) {
     return { ok: false, output: "", error: describeError(error) };
   }

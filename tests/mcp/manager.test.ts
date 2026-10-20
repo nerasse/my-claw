@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { McpManager } from "../../src/mcp/manager.ts";
-import { mcpToolName } from "../../src/mcp/connection.ts";
+import { mcpToolName } from "../../src/mcp/transport.ts";
 import type { McpServerConfig } from "../../src/core/config.ts";
 
 const SERVER = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "echo-server.ts");

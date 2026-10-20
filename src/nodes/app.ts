@@ -4,12 +4,12 @@
  * rename, the description of its agent, what it may run, and a revocation. docs/remote-nodes.md.
  */
 
-import type { NodesConfig } from "../core/config.ts";
+import type { McpServerConfig, NodesConfig } from "../core/config.ts";
 import { nodeAgentFile, removeNodeAgent, renameNodeAgent, setNodeAgentDescription } from "./agent.ts";
 import { openClaim } from "./claims.ts";
-import { closeNodeSocket, nodeFactsOf, nodeOnline, offerNodeUpdateNow } from "./hub.ts";
-import { nodeNameError, nodeRecord, nodeRecords, revokeNode, setNodeAccess, setNodeName } from "./store.ts";
-import type { NodeFacts } from "./types.ts";
+import { closeNodeSocket, nodeFactsOf, nodeOnline, offerNodeUpdateNow, pushNodeMcp } from "./hub.ts";
+import { nodeNameError, nodeRecord, nodeRecords, revokeNode, setNodeAccess, setNodeMcp, setNodeName } from "./store.ts";
+import type { NodeFacts, NodeRecord } from "./types.ts";
 
 export interface NodeSummary {
   nodeId: string;
@@ -29,6 +29,22 @@ export interface NodeSummary {
   approval?: boolean;
   /** Its agent does not run; the machine stays connected. */
   disabled?: boolean;
+  /** The MCP servers it runs: the configured ones, and how each came up. */
+  mcp?: NodeMcpSummary[];
+}
+
+export interface NodeMcpSummary {
+  name: string;
+  transport: string;
+  /** The command line (stdio) or the URL (http/sse) the machine runs. */
+  target: string;
+  /** Running on the machine but not configured from here: a hand edit of its config. */
+  external?: boolean;
+  ok?: boolean;
+  tools?: number;
+  error?: string;
+  /** What this server configured, so the app edits fields rather than re-parsing a command line. */
+  config?: McpServerConfig;
 }
 
 export async function nodeSummaries(): Promise<NodeSummary[]> {
@@ -36,6 +52,7 @@ export async function nodeSummaries(): Promise<NodeSummary[]> {
   return Promise.all(records.map(async record => {
     const facts = nodeFactsOf(record.nodeId) ?? record.facts;
     const file = await nodeAgentFile(record.nodeId);
+    const summary = mcpSummaries(record, facts);
     return {
       nodeId: record.nodeId,
       name: record.name,
@@ -48,8 +65,46 @@ export async function nodeSummaries(): Promise<NodeSummary[]> {
       ...(record.tools ? { exposed: record.tools } : {}),
       ...(record.approval ? { approval: true } : {}),
       ...(record.disabled ? { disabled: true } : {}),
+      ...(summary.length > 0 ? { mcp: summary } : {}),
     };
   }));
+}
+
+function mcpTargetOf(config: McpServerConfig): string {
+  if (config.transport === "stdio") return [config.command, ...(config.args ?? [])].filter(Boolean).join(" ");
+  return config.url ?? "";
+}
+
+/**
+ * The configured servers and the reported ones, merged: a machine runs exactly what it was told
+ * plus whatever its own config file already had (shown, marked external, never managed here).
+ */
+function mcpSummaries(record: NodeRecord, facts: NodeFacts | undefined): NodeMcpSummary[] {
+  const status = new Map((facts?.mcp ?? []).map(entry => [entry.name, entry]));
+  const configured = Object.entries(record.mcp ?? {}).map(([name, config]) => {
+    const reported = status.get(name);
+    return {
+      name,
+      transport: config.transport,
+      target: mcpTargetOf(config),
+      ...(reported ? { ok: reported.ok, tools: reported.tools } : {}),
+      ...(reported?.error ? { error: reported.error } : {}),
+      config,
+    };
+  });
+  const known = new Set(configured.map(entry => entry.name));
+  const extra = (facts?.mcp ?? [])
+    .filter(entry => !known.has(entry.name))
+    .map(entry => ({
+      name: entry.name,
+      transport: "stdio",
+      target: "",
+      external: true,
+      ok: entry.ok,
+      tools: entry.tools,
+      ...(entry.error ? { error: entry.error } : {}),
+    }));
+  return [...configured, ...extra];
 }
 
 export function openNodeClaim(
@@ -90,6 +145,16 @@ export async function setNodeAccessForApp(
   access: { tools?: string[] | null; approval?: boolean; disabled?: boolean },
 ): Promise<{ ok: boolean; error?: string }> {
   return setNodeAccess(nodeId, access);
+}
+
+/** The owner's MCP list for a node: stored, then handed to the machine if it is connected. */
+export async function setNodeMcpForApp(
+  nodeId: string,
+  mcp: Record<string, McpServerConfig>,
+): Promise<{ ok: boolean; error?: string }> {
+  const written = await setNodeMcp(nodeId, mcp);
+  if (written.ok) pushNodeMcp(nodeId);
+  return written;
 }
 
 /** The owner asking a connected node to take the server's build now, window or no window. */

@@ -1,10 +1,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport, getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
-import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { McpServerConfig } from "../core/config.ts";
 import type { Tool, ToolResult } from "../tools/types.ts";
+import { buildTransport, mcpToolName, withDeadline } from "./transport.ts";
 
 const CLIENT_INFO = { name: "my-claw", version: "0.1.0" };
 const CALL_TIMEOUT_MS = 120_000;
@@ -15,30 +12,9 @@ const CALL_TIMEOUT_MS = 120_000;
  */
 const CONNECT_TIMEOUT_MS = 15_000;
 
-// Tools are namespaced so an external server cannot shadow a built-in tool name and
-// two servers cannot collide. The agent sees mcp__<server>__<tool>.
-export function mcpToolName(server: string, tool: string): string {
-  return `mcp__${server}__${tool}`;
-}
-
 interface McpContentText {
   type: string;
   text?: string;
-}
-
-/** Rejects rather than hanging: an await with no deadline is a boot with no deadline. */
-async function withDeadline<T>(work: Promise<T>, ms: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      work,
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(message)), ms);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 function contentToText(content: unknown): string {
@@ -53,25 +29,6 @@ function contentToText(content: unknown): string {
     }
   }
   return parts.join("\n");
-}
-
-function buildTransport(config: McpServerConfig): Transport {
-  if (config.transport === "stdio") {
-    if (!config.command) throw new Error("stdio MCP server requires 'command'");
-    return new StdioClientTransport({
-      command: config.command,
-      args: config.args ?? [],
-      // env REPLACES the child environment; merge over the SDK's safe defaults so the
-      // server still gets PATH etc. plus the config-declared extras.
-      env: { ...getDefaultEnvironment(), ...(config.env ?? {}) },
-    });
-  }
-  if (!config.url) throw new Error(`${config.transport} MCP server requires 'url'`);
-  const url = new URL(config.url);
-  const opts = config.headers ? { requestInit: { headers: config.headers } } : undefined;
-  return config.transport === "sse"
-    ? new SSEClientTransport(url, opts)
-    : new StreamableHTTPClientTransport(url, opts);
 }
 
 /**

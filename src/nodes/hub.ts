@@ -4,6 +4,8 @@ import type { ToolResult } from "../tools/types.ts";
 import { readAppVersion } from "../core/diagnostics.ts";
 import { log } from "../utils/logger.ts";
 import { nodeRecord, setNodeFacts, touchNode } from "./store.ts";
+import { isNodeUploadPath, openFileTicket } from "./files.ts";
+import { basename } from "node:path";
 import { NODE_PROTOCOL, nodeTargetFor, parseNodeFacts, type NodeClientFrame, type NodeFacts, type NodeServerFrame } from "./types.ts";
 
 /**
@@ -35,6 +37,14 @@ interface LiveNode {
   facts?: NodeFacts;
   lastSeen: number;
   pending: Map<string, PendingCall>;
+  /** Files being pushed to the machine, answered by `node.put.result`. */
+  pendingPuts: Map<string, { resolve: (result: PutResult) => void; timer: ReturnType<typeof setTimeout> }>;
+}
+
+export interface PutResult {
+  ok: boolean;
+  path?: string;
+  error?: string;
 }
 
 const live = new Map<string, LiveNode>();
@@ -81,6 +91,11 @@ function failPending(entry: LiveNode, reason: string): void {
     clearTimeout(pending.timer);
     pending.resolve({ success: false, output: "", error: reason });
   }
+  for (const [callId, put] of entry.pendingPuts) {
+    entry.pendingPuts.delete(callId);
+    clearTimeout(put.timer);
+    put.resolve({ ok: false, error: reason });
+  }
 }
 
 export function attachNodeSocket(ws: NodeWs): void {
@@ -96,9 +111,13 @@ export function attachNodeSocket(ws: NodeWs): void {
       // Already gone.
     }
   }
-  live.set(nodeId, { ws, nodeId, lastSeen: Date.now(), pending: new Map() });
+  live.set(nodeId, { ws, nodeId, lastSeen: Date.now(), pending: new Map(), pendingPuts: new Map() });
   startKeepalive();
   void log("info", "node connected", { nodeId });
+  // The MCP list the app set is the machine's standing order: handed over on every connect, so a
+  // node that was away when it changed catches up without anyone pressing anything.
+  const record = nodeRecord(nodeId);
+  if (record?.mcp) send(ws, { type: "node.config", mcp: record.mcp });
   notifyPresence(nodeId, true);
 }
 
@@ -154,18 +173,48 @@ export function handleNodeFrame(ws: NodeWs, raw: string): void {
     entry.pending.delete(frame.callId);
     clearTimeout(pending.timer);
     const durationMs = Date.now() - pending.startedAt;
+    // A node may claim any path it likes; only the files it actually uploaded here are readable.
+    const attachments = (Array.isArray(frame.attachments) ? frame.attachments : [])
+      .filter((file) => file && typeof file.path === "string" && isNodeUploadPath(entry.nodeId, file.path))
+      .map((file) => ({
+        type: file.type === "image" || file.type === "audio" || file.type === "video" || file.type === "file" ? file.type : "file" as const,
+        path: file.path,
+        ...(typeof file.mimeType === "string" ? { mimeType: file.mimeType } : {}),
+        ...(typeof file.filename === "string" ? { filename: file.filename } : {}),
+      }));
     void log(frame.ok ? "info" : "warn", "node tool finished", {
       nodeId: entry.nodeId,
       tool: pending.tool,
       durationMs,
       ok: frame.ok,
       outputChars: typeof frame.output === "string" ? frame.output.length : 0,
+      ...(attachments.length > 0 ? { attachments: attachments.length } : {}),
       ...(frame.error ? { error: frame.error } : {}),
     });
     pending.resolve({
       success: frame.ok === true,
       output: typeof frame.output === "string" ? frame.output : "",
       ...(frame.error ? { error: frame.error } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
+    });
+    return;
+  }
+
+  if (frame.type === "node.put.result") {
+    const put = entry.pendingPuts.get(frame.callId);
+    if (!put) return;
+    entry.pendingPuts.delete(frame.callId);
+    clearTimeout(put.timer);
+    void log(frame.ok ? "info" : "warn", "node file sent", {
+      nodeId: entry.nodeId,
+      ok: frame.ok,
+      ...(frame.path ? { path: frame.path } : {}),
+      ...(frame.error ? { error: frame.error } : {}),
+    });
+    put.resolve({
+      ok: frame.ok === true,
+      ...(typeof frame.path === "string" ? { path: frame.path } : {}),
+      ...(typeof frame.error === "string" ? { error: frame.error } : {}),
     });
     return;
   }
@@ -233,6 +282,31 @@ export function nodeFactsOf(nodeId: string): NodeFacts | undefined {
 
 export function nodeNameOf(nodeId: string): string {
   return nodeRecord(nodeId)?.name ?? nodeId;
+}
+
+/** Hands the machine a file of this server's, through a one-shot ticket it fetches itself. */
+export function putFileToNode(nodeId: string, path: string): Promise<PutResult> {
+  const entry = live.get(nodeId);
+  if (!entry) return Promise.resolve({ ok: false, error: "the node is not connected" });
+  const ticket = openFileTicket(nodeId, path);
+  const callId = randomUUID();
+  return new Promise<PutResult>((resolve) => {
+    const timer = setTimeout(() => {
+      entry.pendingPuts.delete(callId);
+      void log("warn", "node file put timed out", { nodeId, path });
+      resolve({ ok: false, error: "the node did not answer in time" });
+    }, CALL_TIMEOUT_MS);
+    entry.pendingPuts.set(callId, { resolve, timer });
+    send(entry.ws, { type: "node.put", callId, path: basename(path), url: ticket.url });
+  });
+}
+
+/** The MCP list this server wants a connected node to run; silent for one that is away. */
+export function pushNodeMcp(nodeId: string): boolean {
+  const entry = live.get(nodeId);
+  if (!entry) return false;
+  send(entry.ws, { type: "node.config", mcp: nodeRecord(nodeId)?.mcp ?? {} });
+  return true;
 }
 
 export function callNodeTool(

@@ -1,6 +1,11 @@
-import { NODE_PROTOCOL, type NodeFacts, type NodeServerFrame } from "../nodes/types.ts";
-import type { ClientTls, NodeClientConfig } from "./config.ts";
+import { mkdir } from "node:fs/promises";
+import { basename, dirname } from "node:path";
+import { NODE_PROTOCOL, type NodeAttachment, type NodeFacts, type NodeServerFrame } from "../nodes/types.ts";
+import { writeFileAtomically } from "../utils/atomic-write.ts";
+import { mediaTypeForPath } from "../utils/media.ts";
+import { httpBaseOf, pathAllowed, resolvePath, saveConfig, type ClientTls, type NodeClientConfig } from "./config.ts";
 import { buildFacts } from "./facts.ts";
+import { NodeMcpHub } from "./mcp.ts";
 import { runTool } from "./tools.ts";
 import { applyUpdate, canAttemptUpdate, markUpdateAttempt } from "./update.ts";
 
@@ -63,27 +68,97 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 export async function runNode(options: RunNodeOptions): Promise<void> {
   const backoff = options.backoff ?? DEFAULT_BACKOFF;
-  const facts = buildFacts(options.config);
   let delay = backoff.initialMs;
+  // The MCP servers outlive a socket: they are started once, from the config the last server left,
+  // and a reconnect must not restart Godot's addon.
+  const mcp = new NodeMcpHub({
+    log: (level, message, data) => options.log(level, message, data),
+    upload: (bytes, filename, mimeType) => uploadToServer(options, bytes, filename, mimeType),
+  });
+  await mcp.apply(options.config.mcp ?? {});
 
-  for (;;) {
-    if (options.signal?.aborted) return;
-    const startedAt = Date.now();
-    try {
-      await connectOnce(options, facts);
-    } catch (err) {
-      if (err instanceof NodeRevokedError) throw err;
-      options.log("warn", "connection failed", { error: err instanceof Error ? err.message : String(err) });
+  try {
+    for (;;) {
+      if (options.signal?.aborted) return;
+      const startedAt = Date.now();
+      try {
+        await connectOnce(options, mcp);
+      } catch (err) {
+        if (err instanceof NodeRevokedError) throw err;
+        options.log("warn", "connection failed", { error: err instanceof Error ? err.message : String(err) });
+      }
+      if (options.once || options.signal?.aborted) return;
+      if (Date.now() - startedAt > HEALTHY_SESSION_MS) delay = backoff.initialMs;
+      await sleep(delay, options.signal);
+      delay = Math.min(delay * 2, backoff.maxMs);
     }
-    if (options.once || options.signal?.aborted) return;
-    if (Date.now() - startedAt > HEALTHY_SESSION_MS) delay = backoff.initialMs;
-    await sleep(delay, options.signal);
-    delay = Math.min(delay * 2, backoff.maxMs);
+  } finally {
+    await mcp.closeAll();
+  }
+}
+
+/** The facts a hello carries right now: the machine, its own tools, then the MCP servers'. */
+function factsNow(config: NodeClientConfig, mcp: NodeMcpHub): NodeFacts {
+  const base = buildFacts(config);
+  const statuses = mcp.statuses();
+  return {
+    ...base,
+    tools: [...base.tools, ...mcp.manifest()],
+    ...(statuses.length > 0 ? { mcp: statuses } : {}),
+  };
+}
+
+/** A file this machine produced, handed to the server that asked: it owns the only copy the model sees. */
+async function uploadToServer(options: RunNodeOptions, bytes: Uint8Array, filename: string, mimeType?: string): Promise<NodeAttachment | undefined> {
+  try {
+    const response = await fetch(`${httpBaseOf(options.config.server)}/node/upload`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${options.token}`,
+        "content-type": mimeType ?? "application/octet-stream",
+        "x-file-name": basename(filename),
+      },
+      body: bytes,
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      options.log("warn", "upload refused", { status: response.status, filename });
+      return undefined;
+    }
+    const body = (await response.json().catch(() => undefined)) as { path?: unknown; filename?: unknown; error?: unknown } | undefined;
+    if (typeof body?.path !== "string") return undefined;
+    const stored = typeof body.filename === "string" ? body.filename : basename(filename);
+    return { type: mediaTypeForPath(stored), path: body.path, filename: stored, ...(mimeType ? { mimeType } : {}) };
+  } catch (err) {
+    options.log("warn", "upload failed", { error: String(err), filename });
+    return undefined;
+  }
+}
+
+/**
+ * A file the server pushes: the node fetches it from a one-shot ticket and writes it itself, so
+ * the socket never carries megabytes of JSON.
+ */
+async function receiveFile(options: RunNodeOptions, path: string, url: string): Promise<{ ok: boolean; path?: string; error?: string }> {
+  try {
+    const response = await fetch(`${httpBaseOf(options.config.server)}${url}`, { headers: { Authorization: `Bearer ${options.token}` } });
+    if (!response.ok) {
+      await response.body?.cancel();
+      return { ok: false, error: `the server refused the file (HTTP ${response.status})` };
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const target = resolvePath(options.config, path);
+    if (!pathAllowed(options.config, target)) return { ok: false, error: `outside the allowed roots: ${target}` };
+    await mkdir(dirname(target), { recursive: true });
+    await writeFileAtomically(target, bytes);
+    return { ok: true, path: target };
+  } catch (err) {
+    return { ok: false, error: String(err) };
   }
 }
 
 /** One connection, from open to close. Resolves when the socket closed; throws on revoke. */
-async function connectOnce(options: RunNodeOptions, facts: NodeFacts): Promise<void> {
+async function connectOnce(options: RunNodeOptions, mcp: NodeMcpHub): Promise<void> {
   const { log } = options;
   // `ca` is deliberately not passed: the stored CA is the one the *proxy* verifies this machine
   // with, not a trust anchor for the server's own certificate, which is a public one.
@@ -130,8 +205,8 @@ async function connectOnce(options: RunNodeOptions, facts: NodeFacts): Promise<v
         closeForAbort();
         return;
       }
-      send({ type: "node.hello", protocol: NODE_PROTOCOL, facts });
-      log("info", "connected", { server: options.config.server, name: options.config.name ?? facts.hostname });
+      send({ type: "node.hello", protocol: NODE_PROTOCOL, facts: factsNow(options.config, mcp) });
+      log("info", "connected", { server: options.config.server, name: options.config.name });
     };
     ws.onmessage = (event) => {
       let frame: NodeServerFrame;
@@ -146,7 +221,10 @@ async function connectOnce(options: RunNodeOptions, facts: NodeFacts): Promise<v
         const controller = new AbortController();
         running.set(frame.callId, controller);
         const startedAt = Date.now();
-        void runTool(options.config, frame.tool, frame.args, controller.signal).then((result) => {
+        void runTool(options.config, frame.tool, frame.args, controller.signal, {
+          upload: (bytes, filename, mimeType) => uploadToServer(options, bytes, filename, mimeType),
+          mcp: { call: (name, args) => mcp.call(name, args) },
+        }).then((result) => {
           running.delete(frame.callId);
           log(result.ok ? "info" : "warn", "tool finished", {
             tool: frame.tool,
@@ -160,6 +238,7 @@ async function connectOnce(options: RunNodeOptions, facts: NodeFacts): Promise<v
             ok: result.ok,
             output: result.output,
             ...(result.error ? { error: result.error } : {}),
+            ...(result.attachments?.length ? { attachments: result.attachments } : {}),
           });
         });
         return;
@@ -184,6 +263,28 @@ async function connectOnce(options: RunNodeOptions, facts: NodeFacts): Promise<v
           log,
         }).then((outcome) => {
           if (outcome === "failed") log("warn", "update failed; still running the old build", { version: frame.version });
+        });
+        return;
+      }
+      if (frame.type === "node.config") {
+        // The app owns this list: persist it, start what it names, then say what came up.
+        options.config.mcp = frame.mcp;
+        void (async () => {
+          await saveConfig(options.config, options.dir).catch(err => log("warn", "config save failed", { error: String(err) }));
+          await mcp.apply(frame.mcp);
+          send({ type: "node.hello", protocol: NODE_PROTOCOL, facts: factsNow(options.config, mcp) });
+        })();
+        return;
+      }
+      if (frame.type === "node.put") {
+        void receiveFile(options, frame.path, frame.url).then((outcome) => {
+          send({
+            type: "node.put.result",
+            callId: frame.callId,
+            ok: outcome.ok,
+            ...(outcome.path ? { path: outcome.path } : {}),
+            ...(outcome.error ? { error: outcome.error } : {}),
+          });
         });
         return;
       }

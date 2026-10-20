@@ -148,7 +148,7 @@ test("a connected node runs with its manifest as the tool set", async () => {
     expect(spawned.result).toBe("df answered");
 
     const tools = requests[0]?.["tools"] as Array<{ function: { name: string; description: string } }> | undefined;
-    expect(tools?.map((t) => t.function.name).sort()).toEqual(["bash", "read"]);
+    expect(tools?.map((t) => t.function.name).sort()).toEqual(["bash", "read", "send_file_to_node"]);
     expect(tools?.[0]?.function.description).toContain('remote node "web01"');
   } finally {
     mock.restore();
@@ -255,9 +255,9 @@ test("a tool exposed while the run is going is in the next turn's payload", asyn
   try {
     const spawned = await spawnIt(runnerFor(nodeAgent(nodeId)));
     expect(spawned.result).toBe("done");
-    expect(toolNamesOf(requests[0])).toEqual(["read"]);
+    expect(toolNamesOf(requests[0])).toEqual(["read", "send_file_to_node"]);
     // The owner opened `bash` while the tool call was in flight: the second turn carries it.
-    expect(toolNamesOf(requests[1])).toEqual(["bash", "read"]);
+    expect(toolNamesOf(requests[1])).toEqual(["bash", "read", "send_file_to_node"]);
   } finally {
     mock.restore();
   }
@@ -279,8 +279,8 @@ test("a tool taken away while the run is going is gone from the next turn's payl
   try {
     const spawned = await spawnIt(runnerFor(nodeAgent(nodeId)));
     expect(spawned.result).toBe("done");
-    expect(toolNamesOf(requests[0])).toEqual(["bash", "read"]);
-    expect(toolNamesOf(requests[1])).toEqual(["read"]);
+    expect(toolNamesOf(requests[0])).toEqual(["bash", "read", "send_file_to_node"]);
+    expect(toolNamesOf(requests[1])).toEqual(["read", "send_file_to_node"]);
   } finally {
     mock.restore();
   }

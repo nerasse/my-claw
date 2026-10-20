@@ -183,6 +183,9 @@ announces, its agent file, when it was last seen -- and opens a page for it:
   and its updates are all still visible, and nothing else changes.
 - **What it may run**: per tool, exposed or not, and one switch to ask before running anything
   there. A tool left out is absent from the agent's set, never added back.
+- **MCP servers**: add, edit or remove a server the machine runs (a name, and a command with its
+  arguments or a URL), with how each came up -- 3 tools, failed and why. A server the machine's
+  own config declares is shown, marked as not managed here.
 - **Update now**: offered for a connected node behind the server's version. The client retries a
   version once per half hour; this asks it right away (`node.update { force: true }`), which is
   the way out of a download that failed mid-flight.
@@ -198,7 +201,8 @@ logged too.
 ## Handshake
 
 The node announces facts nobody has to type: OS, arch, hostname, user, mode (`admin`/`user`),
-node version, and its tool manifest -- only the tools its config exposes.
+node version, and its tool manifest -- only the tools its config exposes -- plus how each MCP
+server it runs came up.
 
 ## Two locks on the tools
 
@@ -225,10 +229,46 @@ the per-invocation tools (`bash`, `memory`) which are reviewed one call at a tim
 
 Every remote call is journaled (node, tool, arguments, outcome). Results are untrusted content.
 
+## MCP servers on a node
+
+An MCP server that lives on that machine (Godot's addon, a Blender bridge) has to run there: the
+node hosts its own MCP clients, and the list is owned by the app.
+
+- The app's list is the truth: `nodes.json` keeps it, it is handed to the machine as
+  `node.config { mcp }` on every connect and on every change, and the node persists it in its own
+  `config.json` before starting anything. A machine that was offline catches up at its next hello.
+- The node starts each server with the transport its entry names (`stdio` with a command and
+  arguments, or `http`/`sse` with a URL), and their tools join its manifest as
+  `mcp__<server>__<tool>` -- the same namespace the server's own MCP uses, so an agent reads one
+  shape wherever a tool comes from. A call is an ordinary `node.call`: the node dispatches it to
+  the right client.
+- Everything the tools section says applies unchanged: the per-tool switches, the approval, the
+  agent file's `tools:`. A server that fails to start says why in the hello, and the app shows it.
+- The machine is still the one that runs the code. Letting the app edit this list means the app
+  can make that machine spawn a command of its choosing; a node that exposes `bash` could already
+  run one, so the app is the ceiling here by design (owner's call, 2026-10-20).
+
+## Files between a node and this server
+
+Text only was the old rule, and it is not enough for the case nodes exist for: Blender renders a
+picture the model has to see, and an asset the owner sends has to reach the machine.
+
+- **Node to server.** A media file the node's `read` opens (or an MCP tool returns as an image
+  block) is uploaded with `POST /node/upload` -- the node's own token, 32 MB ceiling -- and the
+  tool result names it under `attachments`. The bytes land in `$MY_CLAW_DIR/nodes/files/<nodeId>/`,
+  and only a path inside that directory is accepted from a node's frame: a machine may claim any
+  path, and a claim is not a file. The model sees the image and the app draws it like any other.
+- **Server to node.** A node agent also holds `send_file_to_node { path }` (the one tool this
+  server adds to the machine's manifest; the agent file's `tools:` and the denylist still
+  remove it). It puts the file behind a one-shot ticket and sends `node.put { path, url }`; the
+  node fetches the bytes with its token, writes them inside its roots, and answers the path it
+  wrote. The socket never carries the bytes.
+
 ## The agent
 
 - One generated agent per node, `node-<name>`, with a new base `node`. Its tools are the node's
-  tools, executed remotely; no local tool leaks in.
+  tools, executed remotely; no local tool leaks in. The one exception is `send_file_to_node`,
+  which moves a file of this server's to the machine -- the node agent has no read access here.
 - The spawn catalog shows name, description, online state and `[disabled]`, so the orchestrator
   does not pick an agent that cannot run.
 - The generated description carries the facts from the handshake and says what is missing; the
@@ -409,3 +449,5 @@ What is left, and who owns it:
   it yet. The operator's proxy blocks are above.
 - **A real install from the app.** The whole loop -- code from the screen, command pasted on a
   machine, node online, agent spawning -- has only been exercised with a fake app socket.
+- **A real MCP on a real machine.** The node's client is proven against fixture servers here;
+  Godot's and Blender's bridges have never been run from this repo.

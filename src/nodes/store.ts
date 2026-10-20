@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
+import type { McpServerConfig } from "../core/config.ts";
 import type { NodeFacts, NodeRecord } from "./types.ts";
 
 /**
@@ -17,6 +18,22 @@ import type { NodeFacts, NodeRecord } from "./types.ts";
 const NODES_PATH = join(MY_CLAW_DIR, "nodes.json");
 /** The manifest cap, reused: a record can never hold more names than a machine can offer. */
 const MAX_NODE_TOOLS = 64;
+
+/** The MCP servers the app asked a node to run. The node applies and persists them. */
+export async function setNodeMcp(nodeId: string, mcp: Record<string, McpServerConfig>): Promise<{ ok: boolean; error?: string }> {
+  const record = load().get(nodeId);
+  if (!record) return { ok: false, error: "unknown node" };
+  const names = Object.keys(mcp);
+  if (names.length > MAX_NODE_MCP) return { ok: false, error: `at most ${MAX_NODE_MCP} MCP servers` };
+  if (names.length === 0) delete record.mcp;
+  else record.mcp = mcp;
+  await persist();
+  void log("info", "node mcp set", { nodeId, servers: names });
+  return { ok: true };
+}
+
+/** More MCP servers than this on one node is a mistake, not a setup. */
+const MAX_NODE_MCP = 32;
 
 let records: Map<string, NodeRecord> | null = null;
 let writeQueue: Promise<void> = Promise.resolve();

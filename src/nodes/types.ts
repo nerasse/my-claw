@@ -1,3 +1,5 @@
+import type { McpServerConfig } from "../core/config.ts";
+
 /**
  * A remote node: a small client installed on another machine, reached over the one WebSocket it
  * dials out to my-claw. This file is the wire shape and the stored record; the connection, the
@@ -10,6 +12,22 @@ export interface NodeToolManifest {
   parameters: Record<string, unknown>;
 }
 
+/** One MCP server the node runs, as the node reports it: name, whether it came up, its tools. */
+export interface NodeMcpStatus {
+  name: string;
+  ok: boolean;
+  tools: number;
+  error?: string;
+}
+
+/** A file a remote tool hands back: the bytes were uploaded to this server, the path is its own. */
+export interface NodeAttachment {
+  type: "image" | "audio" | "video" | "file";
+  path: string;
+  mimeType?: string;
+  filename?: string;
+}
+
 /** What a node announces about itself: at pairing, then again on every connect. */
 export interface NodeFacts {
   os: string;
@@ -19,6 +37,8 @@ export interface NodeFacts {
   mode: "admin" | "user";
   version: string;
   tools: NodeToolManifest[];
+  /** The MCP servers it runs, and how each came up. */
+  mcp?: NodeMcpStatus[];
 }
 
 export interface NodeRecord {
@@ -42,12 +62,18 @@ export interface NodeRecord {
    * updates are still visible -- but a spawn is refused, and the catalog says so.
    */
   disabled?: boolean;
+  /**
+   * The MCP servers this server asked the node to run, by name. Pushed on every connect and on
+   * every change; the node persists the list and starts them from it.
+   */
+  mcp?: Record<string, McpServerConfig>;
 }
 
 /** Node -> server frames. */
 export type NodeClientFrame =
   | { type: "node.hello"; protocol: number; facts: NodeFacts }
-  | { type: "node.result"; callId: string; ok: boolean; output: string; error?: string }
+  | { type: "node.result"; callId: string; ok: boolean; output: string; error?: string; attachments?: NodeAttachment[] }
+  | { type: "node.put.result"; callId: string; ok: boolean; path?: string; error?: string }
   | { type: "node.pong" };
 
 /** Server -> node frames. */
@@ -56,6 +82,10 @@ export type NodeServerFrame =
   | { type: "node.cancel"; callId: string }
   | { type: "node.ping" }
   | { type: "node.bye"; reason: string }
+  /** The MCP servers this server wants the node to run: the app's list, applied and persisted. */
+  | { type: "node.config"; mcp: Record<string, McpServerConfig> }
+  /** A file for the node to fetch from `url` (one-shot ticket) and write at `path`. */
+  | { type: "node.put"; callId: string; path: string; url: string }
   /** The server runs another version than the node announced: fetch it and restart. */
   | { type: "node.update"; version: string; target: string; force?: boolean };
 
@@ -73,6 +103,8 @@ export function nodeTargetFor(os: string, arch: string): string | null {
 }
 
 const MAX_TOOLS = 64;
+/** More MCP servers than this on one machine is a mistake, not a setup. */
+const MAX_MCP_SERVERS = 32;
 const MAX_TOOL_NAME = 64;
 const MAX_DESCRIPTION = 1024;
 const MAX_PARAMETERS_BYTES = 16 * 1024;
@@ -105,7 +137,8 @@ function parseTool(value: unknown): NodeToolManifest | null {
 /**
  * Facts arrive from a machine that is only trusted to describe itself, so everything is bounded
  * before it reaches a store, a prompt or a tool schema. Anything malformed rejects the whole
- * hello rather than half-registering a node.
+ * hello rather than half-registering a node; the MCP status list is the exception -- a status
+ * line is display, so a bad entry is dropped and the hello stands.
  */
 export function parseNodeFacts(value: unknown): NodeFacts | null {
   if (!value || typeof value !== "object") return null;
@@ -124,5 +157,21 @@ export function parseNodeFacts(value: unknown): NodeFacts | null {
     if (!tool) return null;
     tools.push(tool);
   }
-  return { os, arch, hostname, user, mode, version, tools };
+  const mcp = parseMcpStatus(raw.mcp);
+  return { os, arch, hostname, user, mode, version, tools, ...(mcp.length > 0 ? { mcp } : {}) };
+}
+
+function parseMcpStatus(value: unknown): NodeMcpStatus[] {
+  if (!Array.isArray(value)) return [];
+  const statuses: NodeMcpStatus[] = [];
+  for (const entry of value.slice(0, MAX_MCP_SERVERS)) {
+    if (!entry || typeof entry !== "object") continue;
+    const raw = entry as { name?: unknown; ok?: unknown; tools?: unknown; error?: unknown };
+    const name = shortString(raw.name, MAX_TOOL_NAME);
+    if (!name || typeof raw.ok !== "boolean") continue;
+    const count = typeof raw.tools === "number" && Number.isFinite(raw.tools) ? Math.max(0, Math.min(MAX_TOOLS, Math.trunc(raw.tools))) : 0;
+    const error = typeof raw.error === "string" && raw.error.trim() ? raw.error.trim().slice(0, MAX_DESCRIPTION) : undefined;
+    statuses.push({ name, ok: raw.ok, tools: raw.ok ? count : 0, ...(error ? { error } : {}) });
+  }
+  return statuses;
 }
