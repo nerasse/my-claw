@@ -199,3 +199,89 @@ test("turning it back on lets the run start again", async () => {
   expect(spawned.result).toContain("offline");
   expect(spawned.result).not.toContain("disabled");
 });
+
+/**
+ * The owner's call: a tool added to a node while a run is going is usable in that same run, at
+ * the next turn, and the cache a changed tool block costs is accepted. The set is rebuilt per
+ * turn; this is what proves the next request carries it.
+ */
+function chatCompletion(body: Record<string, unknown>, opts: { tool?: { id: string; name: string; args: string } } = {}) {
+  const message = opts.tool
+    ? { content: null, tool_calls: [{ id: opts.tool.id, type: "function", function: { name: opts.tool.name, arguments: opts.tool.args } }] }
+    : { content: "done" };
+  return new Response(JSON.stringify({ choices: [{ message }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  }) as never;
+}
+
+function nodeSocket(nodeId: string, onCall?: () => Promise<unknown>) {
+  const sent: Array<Record<string, unknown>> = [];
+  const ws = {
+    data: { node: true as const, nodeId, lastSeen: Date.now() },
+    send: (raw: string) => {
+      const frame = JSON.parse(raw) as Record<string, unknown>;
+      sent.push(frame);
+      if (frame["type"] !== "node.call") return;
+      void (async () => {
+        await onCall?.();
+        handleNodeFrame(ws as unknown as ServerWebSocket<NodeSocketData>, JSON.stringify({ type: "node.result", callId: frame["callId"], ok: true, output: "hosts" }));
+      })();
+    },
+    close: () => undefined,
+  };
+  return ws as unknown as ServerWebSocket<NodeSocketData>;
+}
+
+function toolNamesOf(request: Record<string, unknown> | undefined): string[] {
+  const tools = request?.["tools"] as Array<{ function: { name: string } }> | undefined;
+  return (tools ?? []).map((tool) => tool.function.name).sort();
+}
+
+test("a tool exposed while the run is going is in the next turn's payload", async () => {
+  const minted = await mintNode({ name: "web01", facts: FACTS });
+  if (!minted.ok) throw new Error("mint failed");
+  const nodeId = minted.minted.record.nodeId;
+  await setNodeAccess(nodeId, { tools: ["read"] });
+  const ws = nodeSocket(nodeId, () => setNodeAccess(nodeId, { tools: ["read", "bash"] }));
+  attachNodeSocket(ws);
+  handleNodeFrame(ws, JSON.stringify({ type: "node.hello", protocol: 1, facts: FACTS }));
+
+  const requests: Array<Record<string, unknown>> = [];
+  const mock = mockFetch(async (_input, init) => {
+    requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return requests.length === 1 ? chatCompletion({}, { tool: { id: "call-1", name: "read", args: JSON.stringify({ path: "/etc/hosts" }) } }) : chatCompletion({});
+  });
+  try {
+    const spawned = await spawnIt(runnerFor(nodeAgent(nodeId)));
+    expect(spawned.result).toBe("done");
+    expect(toolNamesOf(requests[0])).toEqual(["read"]);
+    // The owner opened `bash` while the tool call was in flight: the second turn carries it.
+    expect(toolNamesOf(requests[1])).toEqual(["bash", "read"]);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("a tool taken away while the run is going is gone from the next turn's payload", async () => {
+  const minted = await mintNode({ name: "web01", facts: FACTS });
+  if (!minted.ok) throw new Error("mint failed");
+  const nodeId = minted.minted.record.nodeId;
+  const ws = nodeSocket(nodeId, () => setNodeAccess(nodeId, { tools: ["read"] }));
+  attachNodeSocket(ws);
+  handleNodeFrame(ws, JSON.stringify({ type: "node.hello", protocol: 1, facts: FACTS }));
+
+  const requests: Array<Record<string, unknown>> = [];
+  const mock = mockFetch(async (_input, init) => {
+    requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return requests.length === 1 ? chatCompletion({}, { tool: { id: "call-1", name: "read", args: JSON.stringify({ path: "/etc/hosts" }) } }) : chatCompletion({});
+  });
+  try {
+    const spawned = await spawnIt(runnerFor(nodeAgent(nodeId)));
+    expect(spawned.result).toBe("done");
+    expect(toolNamesOf(requests[0])).toEqual(["bash", "read"]);
+    expect(toolNamesOf(requests[1])).toEqual(["read"]);
+  } finally {
+    mock.restore();
+  }
+});

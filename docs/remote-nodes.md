@@ -212,10 +212,12 @@ node version, and its tool manifest -- only the tools its config exposes.
    same way, exactly like a local baseline, and the config denylist applies on top. All three are
    filters: a name outside a set is dropped, never added.
 
-Everything here is read again at each tool call, not frozen when the run starts: switching a node
-off, taking a tool away or turning the approval on applies from the next call of a run already in
-flight. The tool list offered to the model is fixed for the run, so a removed tool is refused at
-its call rather than vanishing from the prompt -- the run sees the refusal and carries on.
+Everything here is read again at each turn of a run, not frozen when it starts: the set is
+rebuilt before every request, so a tool added or taken away applies to the next turn of a run
+already in flight, and the approval flag is read at each call. Rebuilding changes the tool block of
+the prompt, which invalidates the provider's cached prefix for that turn -- the owner's call: a run
+never works from a stale set. A machine that goes away keeps its last set, so its calls answer
+"not connected" instead of the prompt emptying under the model.
 
 Approval rides the existing flow (`Tool.requiresApproval` on every tool of a node whose record
 asks for it): the sheet appears once per tool and a session grant covers the rest, except for

@@ -480,7 +480,7 @@ export class AgentBridge implements AgentBackend {
       tools = remote;
       nodeRemoteNames = new Set(remote.map((tool) => tool.name));
     }
-    const openaiTools = toOpenAiToolDefinitions(tools);
+    let openaiTools = toOpenAiToolDefinitions(tools);
     // The same resolution the dispatcher used to pick this engine: calling a different chain
     // here is how a run ended up on an engine chosen for another model.
     // Resolved into its own binding so the run's chain keeps its type: an override from the
@@ -751,7 +751,7 @@ export class AgentBridge implements AgentBackend {
         chatMessages.push({ role: "user", content: CUT_OFF_NUDGE });
       }
 
-      const toolSchemaTokens = estimateTokens(JSON.stringify(openaiTools));
+      let toolSchemaTokens = estimateTokens(JSON.stringify(openaiTools));
       // Carried on the session so the next turn-start gate can count it. That gate runs before this
       // point, so the alternative was assuming zero: it read the window as if a run cost nothing
       // before its first message, and on this install that hid 33k.
@@ -821,6 +821,24 @@ export class AgentBridge implements AgentBackend {
           }
         }
         iteration++;
+        // A node's manifest and the record's switches belong to the owner, who may change them
+        // while this run is going: the set is rebuilt for every turn, and a tool added now is
+        // usable now. A changed tool block invalidates the provider's cached prefix for that
+        // turn -- the owner's call, and the price of not running a stale set. A machine that
+        // went away keeps the previous set, so its calls answer "not connected" instead of the
+        // prompt emptying under the model.
+        if (agent.base === "node" && agent.node) {
+          const remote = nodeToolsFor(agent.node, { ...(agent.allow ? { allow: agent.allow } : {}), disabled });
+          if (remote) {
+            tools = remote;
+            openaiTools = toOpenAiToolDefinitions(remote);
+            nodeRemoteNames = new Set(remote.map((tool) => tool.name));
+            toolSchemaTokens = estimateTokens(JSON.stringify(openaiTools));
+            // The next run's turn-start gate reads this: a set that grew mid-run is what the
+            // window actually carries from now on.
+            session.lastFixedTokens = toolSchemaTokens + estimateTokens(systemPrompt);
+          }
+        }
         // Between two iterations, before the prompt is assembled: the loop is the only writer here
         // and the alternative is trimToContextWindow dropping the oldest turns for good.
         const currentEntryCount = contextEntries(entries.entries(), entries.leaf()).length;

@@ -9,10 +9,9 @@ import { nodeRecord } from "./store.ts";
  * only its own agent may hold it. The bridge asks for the set when it runs a `base: node` agent,
  * so a node that is away yields `null` -- and the run says so instead of starting blind.
  *
- * What the owner changes in the app is read again on every call rather than frozen here: the
- * approval flag is a getter, and the subset and the on/off switch are checked in `execute`. A run
- * in flight follows the settings from its next turn on, which is what "the settings apply at the
- * run" means for a remote machine.
+ * What the owner changes in the app is read again rather than frozen here: the bridge rebuilds
+ * this set before every turn of a run, the approval flag is a getter, and `execute` checks the
+ * record once more so a call already in flight when a switch moved is refused with the reason.
  */
 export function nodeToolsFor(
   nodeId: string,
