@@ -15,6 +15,8 @@ import type { NodeFacts, NodeRecord } from "./types.ts";
  */
 
 const NODES_PATH = join(MY_CLAW_DIR, "nodes.json");
+/** The manifest cap, reused: a record can never hold more names than a machine can offer. */
+const MAX_NODE_TOOLS = 64;
 
 let records: Map<string, NodeRecord> | null = null;
 let writeQueue: Promise<void> = Promise.resolve();
@@ -185,9 +187,6 @@ export async function setNodeAccess(
   });
   return { ok: true };
 }
-
-/** The manifest cap, reused here: a record can never hold more names than a machine can offer. */
-const MAX_NODE_TOOLS = 64;
 
 /** A node is alive; written at most once every five minutes (a pong every 30 s is not news). */
 export async function touchNode(nodeId: string): Promise<void> {

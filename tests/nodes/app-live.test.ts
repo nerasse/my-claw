@@ -233,3 +233,26 @@ test("the app renames a node, writes its description and narrows what it may run
 
   await rm(join(MY_CLAW_DIR, "agents", "node-prod-build.md"), { force: true });
 });
+
+test("a node coming online is pushed to the app, without a list request", async () => {
+  const app = await connect(adapter.port, "/my-claw-app", deviceHeaders);
+
+  app.ws.send(JSON.stringify({ type: "nodes.add" }));
+  const added = await app.next("nodes.add.result");
+  const paired = await fetch(`http://127.0.0.1:${adapter.port}/node/pair`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ code: added["code"], facts: FACTS }),
+  });
+  const { nodeId, token } = (await paired.json()) as { nodeId: string; token: string };
+
+  const node = await connect(adapter.port, "/node", { Authorization: `Bearer ${token}` });
+  // The frame lands as the socket opens, possibly before this line runs: read the ones held.
+  const presence = await app.waitFor("nodes.presence");
+  expect(presence).toEqual({ type: "nodes.presence", nodeId, online: true });
+
+  node.ws.close();
+  const gone = await app.next("nodes.presence");
+  expect(gone).toEqual({ type: "nodes.presence", nodeId, online: false });
+  await rm(join(MY_CLAW_DIR, "agents", "node-web01.md"), { force: true });
+});

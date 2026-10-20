@@ -40,6 +40,27 @@ interface LiveNode {
 const live = new Map<string, LiveNode>();
 let keepalive: ReturnType<typeof setInterval> | undefined;
 
+/**
+ * Told when a node comes or goes, so a roster on a screen can say so without being reloaded.
+ * A listener that throws must not take the socket path with it.
+ */
+const presenceListeners = new Set<(nodeId: string, online: boolean) => void>();
+
+export function onNodePresence(listener: (nodeId: string, online: boolean) => void): () => void {
+  presenceListeners.add(listener);
+  return () => presenceListeners.delete(listener);
+}
+
+function notifyPresence(nodeId: string, online: boolean): void {
+  for (const listener of presenceListeners) {
+    try {
+      listener(nodeId, online);
+    } catch {
+      // The screen's problem, never the socket's.
+    }
+  }
+}
+
 const PING_INTERVAL_MS = 30_000;
 const STALE_AFTER_MS = 90_000;
 /** Backstop only: the node's own tool timeouts answer first. */
@@ -78,6 +99,7 @@ export function attachNodeSocket(ws: NodeWs): void {
   live.set(nodeId, { ws, nodeId, lastSeen: Date.now(), pending: new Map() });
   startKeepalive();
   void log("info", "node connected", { nodeId });
+  notifyPresence(nodeId, true);
 }
 
 export function detachNodeSocket(ws: NodeWs): void {
@@ -86,6 +108,7 @@ export function detachNodeSocket(ws: NodeWs): void {
   failPending(entry, "the node disconnected before answering");
   live.delete(ws.data.nodeId);
   void log("info", "node disconnected", { nodeId: ws.data.nodeId });
+  notifyPresence(ws.data.nodeId, false);
 }
 
 export function handleNodeFrame(ws: NodeWs, raw: string): void {
@@ -157,10 +180,12 @@ export function nodeOnline(nodeId: string): boolean {
 /**
  * How a node reads from the outside, for the catalog and for a spawn: a disabled node stays
  * connected (its version, its tools, its updates are all still visible) but its agent does not
- * run. Revoking is the other thing -- that takes the record away entirely.
+ * run. A record that is gone is its own answer -- the agent file may well still be there.
  */
-export function nodeState(nodeId: string): "online" | "offline" | "disabled" {
-  if (nodeRecord(nodeId)?.disabled === true) return "disabled";
+export function nodeState(nodeId: string): "online" | "offline" | "disabled" | "gone" {
+  const record = nodeRecord(nodeId);
+  if (!record) return "gone";
+  if (record.disabled === true) return "disabled";
   return live.has(nodeId) ? "online" : "offline";
 }
 
@@ -326,6 +351,7 @@ function startKeepalive(): void {
 /** Module-level state, reset between test files. */
 export function resetNodeHub(): void {
   live.clear();
+  presenceListeners.clear();
   if (keepalive) {
     clearInterval(keepalive);
     keepalive = undefined;

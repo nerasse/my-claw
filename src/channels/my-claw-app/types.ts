@@ -4188,6 +4188,13 @@ export interface MyClawAppNodesUpdateResult {
   error?: string;
 }
 
+/** A node came or went. Pushed to every screen, so the roster's dot is never stale. */
+export interface MyClawAppNodesPresence {
+  type: "nodes.presence";
+  nodeId: string;
+  online: boolean;
+}
+
 /**
  * What a human needs to take the browser over themselves. The VNC password is included: a paired
  * device already runs the agent, and therefore already reads that file through any shell it asks
@@ -4462,6 +4469,7 @@ export type MyClawAppServerFrame =
   | MyClawAppNodesDescribeResult
   | MyClawAppNodesAccessSetResult
   | MyClawAppNodesUpdateResult
+  | MyClawAppNodesPresence
   | MyClawAppError;
 
 /**

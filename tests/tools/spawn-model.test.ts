@@ -114,3 +114,44 @@ test("what a spawn may name: the configured tags, then the catalog", () => {
   assert.deepEqual(ids, ["tag:Cheap", "tag:Smart", "a/b", "c/d"]);
   assert.deepEqual(spawnModelIds({ llm: {} }), []);
 });
+
+/**
+ * The catalog says what a node agent is worth right now: `[offline]`, `[disabled]`, `[gone]`.
+ * A refusal at spawn time is the backstop; the line here is what keeps the orchestrator from
+ * asking in the first place.
+ */
+test("a node agent is marked with the machine's state, and a local agent is not", async () => {
+  const { setNodeAccess, nodesFilePath, resetNodesStore, mintNode } = await import("../../src/nodes/store.ts");
+  const hub = await import("../../src/nodes/hub.ts");
+  const { rm } = await import("node:fs/promises");
+  await resetNodesStore();
+  await rm(nodesFilePath(), { force: true });
+  hub.resetNodeHub();
+
+  const facts = {
+    os: "linux", arch: "x64", hostname: "web01", user: "neras", mode: "user" as const, version: "0.1.0",
+    tools: [{ name: "read", description: "Read a file", parameters: { type: "object", properties: {} } }],
+  };
+  const minted = await mintNode({ name: "web01", facts });
+  if (!minted.ok) throw new Error("mint failed");
+  const nodeId = minted.minted.record.nodeId;
+  const nodeCatalog = (): AgentInfo[] => [
+    ...catalog(),
+    { name: "node-web01", description: "Remote node web01", base: "node", node: nodeId, source: "custom", path: "node-web01.md" },
+  ];
+
+  const offline = createSpawnTool({} as SubAgentRunner, {} as SubAgentRegistry, () => [], nodeCatalog).description;
+  assert.match(offline, /node-web01: Remote node web01 \[offline\]/);
+  assert.match(offline, /research: reads and reports\n/);
+
+  await setNodeAccess(nodeId, { disabled: true });
+  const disabled = createSpawnTool({} as SubAgentRunner, {} as SubAgentRegistry, () => [], nodeCatalog).description;
+  assert.match(disabled, /node-web01: Remote node web01 \[disabled\]/);
+
+  const gone = createSpawnTool({} as SubAgentRunner, {} as SubAgentRegistry, () => [], () => [
+    { name: "node-web01", description: "Remote node web01", base: "node", node: "node-deadbeef", source: "custom", path: "node-web01.md" },
+  ]).description;
+  assert.match(gone, /\[gone\]/);
+  await resetNodesStore();
+  hub.resetNodeHub();
+});

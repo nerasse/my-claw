@@ -93,11 +93,11 @@ describe("node tools", () => {
     const nodeId = minted.minted.record.nodeId;
     connect(nodeId);
 
-    expect(nodeToolsFor(nodeId)?.every((t) => t.requiresApproval === undefined)).toBe(true);
+    expect(nodeToolsFor(nodeId)?.every((t) => t.requiresApproval === false)).toBe(true);
     await setNodeAccess(nodeId, { approval: true });
     expect(nodeToolsFor(nodeId)?.every((t) => t.requiresApproval === true)).toBe(true);
     await setNodeAccess(nodeId, { approval: false });
-    expect(nodeToolsFor(nodeId)?.every((t) => t.requiresApproval === undefined)).toBe(true);
+    expect(nodeToolsFor(nodeId)?.every((t) => t.requiresApproval === false)).toBe(true);
   });
 
   test("executing a tool sends the call and returns the answer", async () => {
@@ -114,5 +114,50 @@ describe("node tools", () => {
     handleNodeFrame(ws, JSON.stringify({ type: "node.result", callId: call!["callId"], ok: true, output: "hosts" }));
     const result = await pending;
     expect(result).toEqual({ success: true, output: "hosts" });
+  });
+});
+
+describe("node tools follow the app's settings on the next call, not the next run", () => {
+  test("the approval flag is read again at every call", async () => {
+    const minted = await mintNode({ name: "web01", facts: FACTS });
+    if (!minted.ok) throw new Error("mint failed");
+    const nodeId = minted.minted.record.nodeId;
+    connect(nodeId);
+    const tool = nodeToolsFor(nodeId)?.find((t) => t.name === "read");
+    expect(tool?.requiresApproval).toBe(false);
+    await setNodeAccess(nodeId, { approval: true });
+    expect(tool?.requiresApproval).toBe(true);
+    await setNodeAccess(nodeId, { approval: false });
+    expect(tool?.requiresApproval).toBe(false);
+  });
+
+  test("a tool taken off the exposed list refuses its call without reaching the machine", async () => {
+    const minted = await mintNode({ name: "web01", facts: FACTS });
+    if (!minted.ok) throw new Error("mint failed");
+    const nodeId = minted.minted.record.nodeId;
+    const { sent } = connect(nodeId);
+    const tool = nodeToolsFor(nodeId)?.find((t) => t.name === "read");
+    await setNodeAccess(nodeId, { tools: [] });
+    const result = await tool!.execute({ path: "/etc/hosts" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("no longer exposed");
+    expect(sent.filter((frame) => frame["type"] === "node.call")).toHaveLength(0);
+  });
+
+  test("switching the node off refuses its calls, and back on lets them through", async () => {
+    const minted = await mintNode({ name: "web01", facts: FACTS });
+    if (!minted.ok) throw new Error("mint failed");
+    const nodeId = minted.minted.record.nodeId;
+    connect(nodeId);
+    const tool = nodeToolsFor(nodeId)?.find((t) => t.name === "read");
+    await setNodeAccess(nodeId, { disabled: true });
+    const refused = await tool!.execute({ path: "/etc/hosts" });
+    expect(refused.error).toContain("switched off");
+    await setNodeAccess(nodeId, { disabled: false });
+    const back = tool!.execute({ path: "/etc/hosts" });
+    // It reaches the machine again: the call frame leaves with the call id the answer needs.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    back.catch(() => undefined);
+    expect(nodeToolsFor(nodeId)?.some((t) => t.name === "read")).toBe(true);
   });
 });

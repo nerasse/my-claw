@@ -25,6 +25,7 @@ import { ALWAYS_PER_INVOCATION } from "../../agent/approvals.ts";
 import { approvalStats, listApprovals, recordApproval, serializeArgs, type ApprovalOutcome } from "../../approvals/store.ts";
 import { PairingSockets, type PairSocketData } from "./pair-socket.ts";
 import { createNodeSurface, type NodeSurface } from "../../nodes/surface.ts";
+import { onNodePresence } from "../../nodes/hub.ts";
 import type { NodeSocketData } from "../../nodes/hub.ts";
 import type { NodesConfig } from "../../core/config.ts";
 import { questionManager, type PendingQuestion } from "../../questions/manager.ts";
@@ -348,6 +349,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private nodeSurface?: NodeSurface;
   /** Live read of `config.nodes`: the surface is built once and the config hot-reloads. */
   private nodesConfig?: () => NodesConfig | undefined;
+  /** The node presence subscription, dropped on stop. */
+  private stopPresence?: () => void;
   /** Every open pairing socket, so the sweeper can reach the ones that never authenticate. */
   private pairing = new Set<ServerWebSocket<PairSocketData>>();
   private pendingApprovals = new Map<string, PendingApproval>();
@@ -449,6 +452,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
         authorizeAdmin: (req) => Boolean(this.authenticate(req, new URL(req.url))),
       });
     }
+    // A node that connects or drops is pushed to every screen: the roster's dot is the answer to
+    // "can I use this machine right now", and a stale one is worse than none.
+    this.stopPresence = onNodePresence((nodeId, online) => {
+      for (const ws of this.sockets.all()) this.sendFrame(ws, { type: "nodes.presence", nodeId, online });
+    });
     // The manager's broadcast path is this adapter: a run that asks without a channel would wait
     // forever, so the tool checks hasSurface() and the handler is set before the server opens.
     questionManager.setHandler((question) => {
@@ -507,6 +515,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   async stop(): Promise<void> {
+    this.stopPresence?.();
+    this.stopPresence = undefined;
     if (this.sweeper) clearInterval(this.sweeper);
     this.sweeper = undefined;
     for (const ws of this.sockets.all()) {

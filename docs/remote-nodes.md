@@ -207,10 +207,15 @@ node version, and its tool manifest -- only the tools its config exposes.
    A node announces exactly what its config allows, so a name the record holds and the machine
    does not offer is never matched.
 2. **In the app**: `nodes.json` holds the node's `tools` (the exposed subset; absent means
-   everything the machine offers, an empty list nothing) and `approval` (ask before running
-   anything there). The agent file's `tools:` narrows the same way, exactly like a local
-   baseline, and the config denylist applies on top. All three are filters: a name outside a set
-   is dropped, never added.
+   everything the machine offers, an empty list nothing), `approval` (ask before running
+   anything there) and `disabled` (its agent does not run). The agent file's `tools:` narrows the
+   same way, exactly like a local baseline, and the config denylist applies on top. All three are
+   filters: a name outside a set is dropped, never added.
+
+Everything here is read again at each tool call, not frozen when the run starts: switching a node
+off, taking a tool away or turning the approval on applies from the next call of a run already in
+flight. The tool list offered to the model is fixed for the run, so a removed tool is refused at
+its call rather than vanishing from the prompt -- the run sees the refusal and carries on.
 
 Approval rides the existing flow (`Tool.requiresApproval` on every tool of a node whose record
 asks for it): the sheet appears once per tool and a session grant covers the rest, except for

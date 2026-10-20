@@ -7,8 +7,10 @@ import {
   detachNodeSocket,
   handleNodeFrame,
   nodeFactsOf,
+  nodeState,
   nodeOnline,
   offerNodeUpdate,
+  onNodePresence,
   resetNodeHub,
   type NodeSocketData,
 } from "../../src/nodes/hub.ts";
@@ -249,4 +251,46 @@ describe("the update offer", () => {
     await Promise.resolve();
     expect(socket.sent.some((f) => f["type"] === "node.update")).toBe(true);
   });
+});
+
+describe("presence", () => {
+  test("a connect and a drop are told to every listener, and unsubscribing stops it", () => {
+    const seen: Array<[string, boolean]> = [];
+    const stop = onNodePresence((nodeId, online) => seen.push([nodeId, online]));
+    const socket = fakeSocket("node-1");
+    attachNodeSocket(socket.ws);
+    detachNodeSocket(socket.ws);
+    expect(seen).toEqual([["node-1", true], ["node-1", false]]);
+    stop();
+    attachNodeSocket(socket.ws);
+    expect(seen).toHaveLength(2);
+  });
+
+  test("a listener that throws does not break the socket path", () => {
+    onNodePresence(() => {
+      throw new Error("the screen is gone");
+    });
+    const socket = fakeSocket("node-1");
+    expect(() => attachNodeSocket(socket.ws)).not.toThrow();
+    expect(nodeOnline("node-1")).toBe(true);
+  });
+});
+
+test("a node reads as disabled before it reads as connected, and gone before both", async () => {
+  const { mintNode, setNodeAccess, resetNodesStore, nodesFilePath } = await import("../../src/nodes/store.ts");
+  const { rm } = await import("node:fs/promises");
+  await resetNodesStore();
+  await rm(nodesFilePath(), { force: true });
+  const minted = await mintNode({ name: "web01", facts: FACTS });
+  if (!minted.ok) throw new Error("mint failed");
+  const nodeId = minted.minted.record.nodeId;
+  expect(nodeState(nodeId)).toBe("offline");
+  const socket = fakeSocket(nodeId);
+  attachNodeSocket(socket.ws);
+  expect(nodeState(nodeId)).toBe("online");
+  await setNodeAccess(nodeId, { disabled: true });
+  expect(nodeState(nodeId)).toBe("disabled");
+  expect(nodeState("node-deadbeef")).toBe("gone");
+  await resetNodesStore();
+  await rm(nodesFilePath(), { force: true });
 });
