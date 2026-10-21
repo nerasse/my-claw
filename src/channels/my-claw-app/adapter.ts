@@ -2203,6 +2203,35 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   /**
+   * The ids a message carried, per thread, for a while. An id is minted per upload, so one that
+   * has been sent can never legitimately be staged again -- a `draft.file.add` for it is a frame
+   * that crossed the send, and honouring it put the file back on every composer.
+   */
+  private sentDraftFiles = new Map<string, Map<string, number>>();
+  private static readonly SENT_DRAFT_TTL_MS = 10 * 60 * 1000;
+
+  private rememberSentDraftFiles(owner: string, threadId: string, ids: readonly string[]): void {
+    if (ids.length === 0) return;
+    const key = `${owner}/${threadId}`;
+    const now = Date.now();
+    const sent = this.sentDraftFiles.get(key) ?? new Map<string, number>();
+    for (const id of ids) sent.set(id, now);
+    for (const [id, ts] of sent) if (now - ts > MyClawAppAdapter.SENT_DRAFT_TTL_MS) sent.delete(id);
+    this.sentDraftFiles.set(key, sent);
+  }
+
+  private wasSentDraftFile(owner: string, threadId: string, id: string): boolean {
+    const sent = this.sentDraftFiles.get(`${owner}/${threadId}`);
+    const ts = sent?.get(id);
+    if (ts === undefined) return false;
+    if (Date.now() - ts > MyClawAppAdapter.SENT_DRAFT_TTL_MS) {
+      sent!.delete(id);
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * A file staged in a composer: the bytes are already in the thread's store (the app uploads at
    * pick), this says they belong to a message nobody has sent.
    *
@@ -2213,6 +2242,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private async handleDraftFileAdd(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppDraftFileAdd): Promise<void> {
     const threadId = sanitizeThreadId(frame.threadId ?? "");
     if (!threadId || typeof frame.id !== "string" || !frame.id) return;
+    if (this.wasSentDraftFile(ws.data.owner, threadId, frame.id)) return;
     try {
       const stored = await this.files.list(ws.data.owner, threadId);
       if (!stored.some((file) => file.id === frame.id)) return;
@@ -2425,6 +2455,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     // another device while this message was being written is still unsent.
     try {
       const sent = (frame.attachments ?? []).map((attachment) => attachment.id).filter(Boolean);
+      this.rememberSentDraftFiles(ws.data.owner, threadId, sent);
       if (await this.store.removeSentDraftFiles(ws.data.owner, threadId, sent)) {
         await this.broadcastDraftFiles(ws.data.owner, threadId);
       }

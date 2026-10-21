@@ -2874,6 +2874,60 @@ describe("MyClawAppAdapter owners", () => {
     }
   });
 
+  test("a draft cleared on one window is gone for the other, and the store agrees", async () => {
+    const phone = await connectClient(adapter.port, "phone");
+    const browser = await connectClient(adapter.port, "browser");
+    try {
+      phone.ws.send(JSON.stringify({ type: "draft.set", threadId: "t-clear", text: "Re: la question" }));
+      const mirrored = await nextFrame(browser);
+      assert.equal(mirrored["type"], "draft.changed");
+      assert.equal(mirrored["text"], "Re: la question");
+
+      // Sent from the browser: the clear is news for the phone, not an edit it has to guess at.
+      browser.ws.send(JSON.stringify({ type: "draft.set", threadId: "t-clear", text: "" }));
+      const cleared = await nextFrame(phone);
+      assert.equal(cleared["type"], "draft.changed");
+      assert.equal(cleared["text"], "");
+      assert.equal(store.drafts.size, 0);
+    } finally {
+      phone.ws.close();
+      browser.ws.close();
+    }
+  });
+
+  test("a file a message carried can never be staged again", async () => {
+    const local = new SessionFileStore();
+    const photo = await local.save(OWNER, "t-late", "photo.png", new Uint8Array([1, 2, 3]));
+    const phone = await connectClient(adapter.port, "phone");
+    const browser = await connectClient(adapter.port, "browser");
+    try {
+      phone.ws.send(JSON.stringify({ type: "draft.file.add", threadId: "t-late", id: photo.id }));
+      assert.equal(((await nextFrame(browser)) as { type: string }).type, "draft.files.changed");
+
+      phone.ws.send(JSON.stringify({
+        type: "chat.send",
+        id: "m-late",
+        text: "regarde",
+        threadId: "t-late",
+        attachments: [{ id: photo.id, type: "image" }],
+      }));
+      const pruned = (await nextFrame(browser)) as { type: string; files: unknown[] };
+      assert.equal(pruned.type, "draft.files.changed");
+      assert.deepEqual(pruned.files, []);
+      assert.equal((await nextFrame(browser))["type"], "chat.user");
+
+      // The frame that crossed the send: the upload finished a beat too late and announced an id
+      // the message already carried. It must not put the chip back on any composer.
+      phone.ws.send(JSON.stringify({ type: "draft.file.add", threadId: "t-late", id: photo.id }));
+      await adapter.send(OWNER, { text: "marker", threadId: "t-late" });
+      assert.equal((await nextFrame(browser))["type"], "chat.message");
+      assert.equal(store.stagedFiles.size, 0);
+    } finally {
+      phone.ws.close();
+      browser.ws.close();
+    }
+  });
+
   test("a slash command is mirrored too, before the answer that quotes it", async () => {
     adapter.onCommandHandler(async () => "done");
     const phone = await connectClient(adapter.port, "phone");

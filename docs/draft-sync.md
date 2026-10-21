@@ -124,9 +124,18 @@ text mid-word both loses characters and throws the caret to the end. It is the s
 instructions editor already guards against (`settings-handlers.ts:639`: a push "overwrites the draft
 someone else is typing").
 
-The rule, device-side: **a remote draft is applied only when the local composer is empty, or not
-focused.** Otherwise it is stored in the local map and shown the next time the thread is opened. So
-the phone left on the desk catches up, and the window being typed in is never interrupted.
+The rule, device-side: **a remote draft replaces a local copy that is not ahead of the server, and
+nothing else.** The local copy is ahead when it holds text this device typed and the server has not
+acknowledged: the debounce is still armed, or the text differs from what was last sent. The device
+keeps the composer's live text on every keystroke for exactly this comparison -- an unmount-time
+copy made every decision read yesterday's field.
+
+A **clear** (`text === ''`, sent when a message leaves or a draft is thrown away) is subject to the
+same rule, and that is the half that used to be wrong. It empties the composer when the local copy
+is not ahead, even if the field has the caret; when the local copy is ahead it is ignored, because
+there is newer typing to keep. Before this, the screen refused a clear while focused while the
+store believed it: the next save wrote the already-sent text back to the server, and it reappeared
+on every other window.
 
 There is no merge, no conflict UI and no operational transform. Last write wins, per conversation.
 A draft is one person's unsent sentence on two screens, not a shared document.
@@ -134,11 +143,10 @@ A draft is one person's unsent sentence on two screens, not a shared document.
 ### Pages are not keystrokes
 
 Two frames arrive with a whole page: `chat.history` (the newest page, and the refresh after a
-branch switch) and `session.sync` when it replaces the thread. Those fill a gap; they are not a
-keystroke from another device. So a page is applied **only when the local map is empty, or still
-holds exactly what the server last knew**, and never while a change of ours is waiting for its
-debounce. Anything else is text typed here and not acknowledged, and reopening a conversation
-must never hand back yesterday's sentence over the one being written.
+branch switch) and `session.sync` when it replaces the thread. A page is authoritative over what
+the server holds, and over nothing else -- the same rule as a live change, applied by the same
+function. Reopening a conversation never hands back yesterday's sentence over the one being
+written, and a page built before a keystroke loses to it.
 
 ## Attachments: the bytes cross, the file stays local to its device
 
@@ -157,6 +165,9 @@ type, size, or its thumbnail) and sends the id the upload answered.
 - The page that replaces a thread carries `files` beside `draft`; a delta carries neither.
 - A send prunes only the ids its message carried. A photo staged on another device while the
   message was being written is still unsent and stays on the list.
+- An id a message carried can never be staged again: the server remembers them for ten minutes
+  and ignores a `draft.file.add` that crossed the send. An id is minted per upload, so the late
+  frame is always stale, and honouring it put the chip back on every composer.
 - `files.delete` removes the chip from every composer, and a session delete takes the whole entry
   (and the bytes) with it. Orphan entries age out like drafts.
 - A chip whose upload failed keeps its place and offers a retry: a refused request is not a reason
