@@ -247,6 +247,13 @@ test("resolveLlmConfigForMessage reads the leaf of a tag: a text-only route does
   assert.equal(resolveLlmConfigForMessage(textTag, undefined, true).model, "llama-3.3-70b");
 });
 
+test("resolveLlmConfigForMessage ignores a tag that no longer exists", () => {
+  // A deleted tag follows `tag:Default` everywhere else. Here it must not: the fallback is a
+  // deliberate target, and dropping it is not an instruction to reroute to whatever Default is.
+  const gone: LlmConfig = { ...visionFallbackConfig, visionFallback: "tag:gone", tags: {} };
+  assert.equal(resolveLlmConfigForMessage(gone, undefined, true).model, "llama-3.3-70b");
+});
+
 test("resolveLlmConfigForMessage without visionFallback keeps current behavior", () => {
   const none: LlmConfig = { ...visionFallbackConfig, visionFallback: undefined };
   assert.equal(resolveLlmConfigForMessage(none, undefined, true).model, "llama-3.3-70b");

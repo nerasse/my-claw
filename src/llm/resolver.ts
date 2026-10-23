@@ -371,6 +371,10 @@ export function resolveLlmConfigForMessage(
 
   const fallbackId = config.visionFallback;
   if (!fallbackId || fallbackId === resolved.model) return resolved;
+  // A pin naming a tag that no longer exists is ignored, not followed to `tag:Default`: the
+  // fallback is a deliberate target, and a deleted tag is not an instruction to reroute.
+  const fallbackTag = tagNameOf(fallbackId);
+  if (fallbackTag !== undefined && fallbackTag !== "Default" && !config.tags?.[fallbackTag]) return resolved;
   const fallbackLeaf = leafModelId(config, fallbackId);
   if (fallbackLeaf === (resolved.apiModel ?? resolved.model)) return resolved;
   const fallbackModel = findModel(config, fallbackLeaf);
