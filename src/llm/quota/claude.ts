@@ -94,16 +94,10 @@ interface ClaudeGrant {
   startsAt?: string;
   endsAt?: string;
   paused: boolean;
-  usableNow: boolean;
-  useRequiresLimit: boolean;
   clears: string[];
 }
 
 interface ClaudeResetBlock {
-  eligible: boolean;
-  reason?: string;
-  atLimit: boolean;
-  cooldownUntil?: string;
   nextGrantId?: string;
   grants: ClaudeGrant[];
 }
@@ -122,33 +116,20 @@ function grantOf(value: unknown): ClaudeGrant | undefined {
     ...(startsAt ? { startsAt } : {}),
     ...(endsAt ? { endsAt } : {}),
     paused: grant.paused === true,
-    // Missing usability flags default to the refusing side: a grant that does not say it is
-    // usable is not offered for spending.
-    usableNow: grant.usable_now !== false,
-    useRequiresLimit: grant.use_requires_limit !== false,
     clears: Array.isArray(grant.clears) ? grant.clears.filter((entry): entry is string => typeof entry === "string") : [],
   };
 }
 
 function resetBlockOf(value: unknown): ClaudeResetBlock | undefined {
   const block = recordOf(value);
-  if (!block || typeof block.eligible !== "boolean") return undefined;
+  if (!block) return undefined;
   const grants: ClaudeGrant[] = [];
   for (const raw of Array.isArray(block.grants) ? block.grants : []) {
     const grant = grantOf(raw);
     if (grant) grants.push(grant);
   }
-  const reason = stringOf(block.ineligible_reason);
-  const cooldownUntil = isoOf(block.cooldown_until);
   const nextGrantId = stringOf(block.next_grant_id);
-  return {
-    eligible: block.eligible,
-    ...(reason ? { reason } : {}),
-    atLimit: block.at_limit === true,
-    ...(cooldownUntil ? { cooldownUntil } : {}),
-    ...(nextGrantId ? { nextGrantId } : {}),
-    grants,
-  };
+  return { ...(nextGrantId ? { nextGrantId } : {}), grants };
 }
 
 /** Started, not paused, not expired, with something left to spend. */
@@ -171,18 +152,6 @@ function clearsLabel(grants: ClaudeGrant[]): string | undefined {
   return windows.size > 0 ? [...windows].join(" + ") : undefined;
 }
 
-function blockedReason(block: ClaudeResetBlock, now: number): string | undefined {
-  if (!block.eligible) {
-    if (block.reason === "no_grant") return "no reset left";
-    return block.reason ? `not eligible (${block.reason.replaceAll("_", " ")})` : "not eligible";
-  }
-  if (block.cooldownUntil && Date.parse(block.cooldownUntil) > now) return "a reset was used recently";
-  const active = activeGrants(block, now);
-  if (active.some((grant) => !grant.usableNow)) return "not usable yet";
-  if (!block.atLimit && active.some((grant) => grant.useRequiresLimit)) return "no window is full";
-  return undefined;
-}
-
 function resetCreditsOf(block: ClaudeResetBlock, now = Date.now()): QuotaResetCredits | undefined {
   const active = activeGrants(block, now);
   const available = active.reduce((sum, grant) => sum + grant.resetsLeft, 0);
@@ -191,13 +160,10 @@ function resetCreditsOf(block: ClaudeResetBlock, now = Date.now()): QuotaResetCr
     .map((grant) => grant.endsAt)
     .filter((expiry): expiry is string => Boolean(expiry))
     .sort();
-  const blocked = blockedReason(block, now);
   const clears = clearsLabel(active);
   return {
     available,
     ...(expiries[0] ? { nextExpiresAt: expiries[0] } : {}),
-    usable: blocked === undefined,
-    ...(blocked ? { blocked } : {}),
     ...(clears ? { clears } : {}),
   };
 }
@@ -283,21 +249,13 @@ export async function consumeClaudeReset(token: string): Promise<QuotaRedemption
   const block = resetBlockOf(recordOf(inventory.data)?.cedar_ember);
   if (!block) return { ok: false, code: "unavailable", message: "Reset inventory is unavailable." };
 
-  const now = Date.now();
-  const candidates = activeGrants(block, now).filter(
-    (grant) => grant.usableNow && (!grant.useRequiresLimit || block.atLimit),
-  );
+  // Every active grant is offered, whatever its `use_requires_limit` says: the provider decides,
+  // and a refusal costs nothing. Spending a reset at 80% is the owner's call, not ours.
+  const candidates = activeGrants(block, Date.now());
   const target =
     candidates.find((grant) => grant.id === block.nextGrantId) ??
     candidates.sort((left, right) => Date.parse(left.endsAt ?? "9999-12-31") - Date.parse(right.endsAt ?? "9999-12-31"))[0];
-  if (!target) {
-    const blocked = blockedReason(block, now);
-    return {
-      ok: false,
-      code: blocked ? "not-usable" : "no-credit",
-      message: blocked ? `This reset cannot be used: ${blocked}.` : "No reset is available.",
-    };
-  }
+  if (!target) return { ok: false, code: "no-credit", message: "No reset is available." };
 
   const profile = await getJson(PROFILE_URL, headers(token));
   const organization = recordOf(recordOf(profile.ok ? profile.data : undefined)?.organization);

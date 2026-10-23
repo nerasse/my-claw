@@ -39,11 +39,6 @@ export interface QuotaResetCredits {
   available: number;
   /** ISO: the soonest credit to lapse, so the card can say which one to spend first. */
   nextExpiresAt?: string;
-  /** The provider would accept a claim right now. The card enables its button on this, never on
-   *  a rule of its own: eligibility is the provider's to decide. */
-  usable: boolean;
-  /** Why not, when `usable` is false. */
-  blocked?: string;
   /** What the grant clears, as the provider names it ("weekly", "5 h"). */
   clears?: string;
 }

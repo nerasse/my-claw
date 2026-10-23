@@ -300,7 +300,7 @@ test("codex lists the banked credits with the soonest expiry", async () => {
   try {
     const result = await codexQuota("chatgpt", { accessToken: "tok", accountId: "acc" });
     assert.equal(result.ok, true);
-    if (result.ok) assert.deepEqual(result.snapshot.resets, { available: 2, nextExpiresAt: "2026-10-29T00:00:00.000Z", usable: false, blocked: "no window is full" });
+    if (result.ok) assert.deepEqual(result.snapshot.resets, { available: 2, nextExpiresAt: "2026-10-29T00:00:00.000Z" });
   } finally {
     mock.restore();
   }
@@ -395,7 +395,6 @@ test("claude reports its saved resets, and whether a claim would be accepted", a
       assert.deepEqual(result.snapshot.resets, {
         available: 1,
         nextExpiresAt: "2026-10-29T00:00:00.000Z",
-        usable: true,
         clears: "5 h + weekly",
       });
     }

@@ -185,25 +185,23 @@ export async function redeemQuota(config: MyClawConfig, provider: string): Promi
     // card from sending one the provider is going to refuse.
     const current = await quotaFor(config, provider, { force: true });
     if (!current.ok) return { ok: false, code: "unavailable", message: "Usage is unavailable right now." };
-    const resets = current.snapshot.resets;
-    if (!resets?.usable) {
-      return {
-        ok: false,
-        code: "not-usable",
-        message: resets?.blocked ? `This reset cannot be used: ${resets.blocked}.` : "No reset is available.",
-      };
+    // Only the absence of a credit is refused here: whether a window has to be full is the
+    // provider's rule, and a refused claim leaves the credit untouched.
+    if ((current.snapshot.resets?.available ?? 0) <= 0) {
+      return { ok: false, code: "no-credit", message: "No reset is available." };
     }
     const result = await consumeClaudeReset(token);
     await quotaFor(config, provider, { force: true });
     return result;
   }
 
-  // A full window is what the provider checks, so ask now instead of trusting a card that may be
-  // minutes old. A refusal from the backend is still surfaced below; this only avoids one.
+  // Ask now instead of trusting a card that may be minutes old: the only thing this refuses is a
+  // claim with no credit left. Whether a window has to be full is the provider's rule, and it
+  // answers `rate_limit_reset_ineligible` without consuming anything.
   const current = await quotaFor(config, provider, { force: true });
   if (!current.ok) return { ok: false, code: "unavailable", message: "Usage is unavailable right now." };
-  if (!current.snapshot.windows.some((window) => window.usedPercent >= 99)) {
-    return { ok: false, code: "not-limited", message: "No window is full: nothing to reset." };
+  if ((current.snapshot.resets?.available ?? 0) <= 0) {
+    return { ok: false, code: "no-credit", message: "No reset credit is available." };
   }
 
   let token: { accessToken: string; accountId: string };

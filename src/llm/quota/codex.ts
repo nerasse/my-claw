@@ -112,7 +112,6 @@ export async function codexQuota(
   const resets = resetCreditsOf(
     creditsResponse,
     numberOf(recordOf(body.rate_limit_reset_credits)?.available_count),
-    windows.some((window) => window.usedPercent >= 99),
   );
   if (credits?.unlimited === true) extras.push({ label: "Credits", value: "unlimited" });
 
@@ -136,7 +135,6 @@ export async function codexQuota(
 function resetCreditsOf(
   response: Awaited<ReturnType<typeof getJson>>,
   fallbackCount: number | undefined,
-  limited: boolean,
 ): QuotaResetCredits | undefined {
   const available = response.ok ? availableCredits(response.data) : [];
   const count = available.length > 0 ? available.length : (fallbackCount ?? 0);
@@ -145,12 +143,10 @@ function resetCreditsOf(
     .map((credit) => isoOf(credit.expires_at))
     .filter((expiry): expiry is string => Boolean(expiry))
     .sort();
-  return {
-    available: count,
-    ...(expiries[0] ? { nextExpiresAt: expiries[0] } : {}),
-    usable: limited,
-    ...(limited ? {} : { blocked: "no window is full" }),
-  };
+  // No eligibility of our own: the provider is the one that decides, and a refusal leaves the
+  // credit untouched. A full window is therefore not a condition we impose -- spending one at
+  // 80% is the owner's call.
+  return { available: count, ...(expiries[0] ? { nextExpiresAt: expiries[0] } : {}) };
 }
 
 function availableCredits(data: unknown): Array<Record<string, unknown>> {
