@@ -14,6 +14,7 @@ import {
   type ResolvedLlmConfig,
 } from "../core/config.ts";
 import { findModel, mergeAgentLlm, resolveLlmConfigForAgentMessage, resolveTagModelId } from "./resolver.ts";
+import type { ContextOverride } from "./context-window.ts";
 
 /**
  * Why a model cannot run, computed and never stored. See docs/model-resolution.md.
@@ -368,6 +369,31 @@ export function overrideForPick(
 ): string | undefined {
   const inherited = tryResolveRunModel(config, request, world);
   return inherited?.model === pick ? undefined : pick;
+}
+
+/** The two pins a conversation keeps on top of its model (`docs/context-window.md`). */
+export interface SessionPins {
+  effortOverride?: EffortLevel;
+  contextOverride?: ContextOverride;
+}
+
+/**
+ * What a pick does to the pins the conversation had set on top of its model.
+ *
+ * A tag is indivisible: it carries its own effort and its own ceiling, so a pin left over from a
+ * previous pick would silently outrank both (session override > tag candidate cap). A pick that
+ * lands on what would run without an override says the same thing the other way -- the
+ * conversation hands the whole combo back to its scope. Either way the two pins go, and
+ * `/effort` and `/cap` are how a new one is set afterwards.
+ */
+export function resetPinsOnPick(
+  pins: SessionPins,
+  pick: string,
+  override: string | undefined,
+): void {
+  if (override !== undefined && tagNameOf(pick) === undefined) return;
+  delete pins.effortOverride;
+  delete pins.contextOverride;
 }
 
 /**

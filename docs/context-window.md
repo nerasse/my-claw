@@ -149,10 +149,12 @@ Also reachable from the root menu as `Context >`, to change it without re-select
 The step is skipped entirely when the model has a single possible window: a lone option is not
 a choice, and a model below every offered ceiling has nothing to arbitrate.
 
-A **config flow** (agent, global default, job) staging a `tag:` reference skips the step too, for
-the same reason it skips the effort one: the tag pins its own ceiling and that pin outranks the
-scope's, so anything chosen here would be dead config. A chat keeps both steps, because a
-session's own choice still sits above the tag.
+A flow staging a `tag:` reference skips the step too, for the same reason it skips the effort
+one: the tag pins its own ceiling and that pin outranks the scope's, so anything chosen here
+would be dead config. That holds for the chat as well, and picking a tag is what makes it true:
+the conversation drops its own effort and ceiling at that moment (see Precedence below), so a
+number chosen for the previous model cannot keep outranking the tag. The tune sheet
+(`/cap`, `/effort`) is how a new override is set afterwards.
 
 ### One resolution, every surface
 
@@ -214,6 +216,14 @@ session override  >  tag candidate cap  >  agent cap  >  capExempt  >  global ca
 
 A numeric session override wins in both directions, including over an exemption: the
 conversation has said the most recent and most specific thing.
+
+The override is bound to the model it was chosen for, so **a pick resets it**: two writers do
+that, the app's `model.set` and the `/model` command. Picking a `tag:` drops the session's effort
+and ceiling, because the tag carries its own and the pins would outrank them (`resetPinsOnPick`
+in `src/llm/run-model.ts`). A pick that lands on what would run without an override does the
+same: no override left means the whole combo belongs to the scope again, which is what the
+picker's "Use default" row says. Picking a plain model keeps them -- a lowered window is a
+property of that conversation, and only a tag or a hand-back replaces it.
 
 ### The compaction split reads none of it
 

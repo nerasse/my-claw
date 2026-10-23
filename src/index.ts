@@ -29,7 +29,6 @@ import {
   MY_CLAW_DIR,
   parseConfig,
   providerRetryDelays,
-  resolveContextCap,
   DEFAULT_CONTEXT_CAP,
   resolveWorkspaceDir,
   resolveWorkspaceKey,
@@ -155,7 +154,7 @@ import { backfillConversationArchive } from "./conversations/store.ts";
 import { VoiceManager, SttPipeline, TtsPipeline } from "./voice/index.ts";
 import { extractMediaRefs, cleanupGeneratedTempFiles, cleanupAttachments, mediaTypeForPath } from "./utils/media.ts";
 import { llmCompleteStream } from "./llm/transport.ts";
-import { occupiedContextTokens } from "./llm/context-window.ts";
+import { occupiedContextTokens, standingContextCap } from "./llm/context-window.ts";
 import { codexLoginDeviceCode, loadCodexCredential, codexLogout, codexIsLoggedIn } from "./llm/codex-auth.ts";
 import { runClaudeSetupToken, setClaudeToken, clearClaudeToken, claudeTokenStatus } from "./llm/claude-auth.ts";
 import {
@@ -174,7 +173,7 @@ import type { ChatMessage } from "./llm/provider.ts";
 import { tagRouteOf } from "./core/config.ts";
 import { resolveUtilityLlmConfig } from "./llm/utility-model.ts";
 import { referenceWithRoute, routesFor, sortRoutes } from "./channels/route-menu.ts";
-import { availabilityOf, describe as describeAvailability, overrideForPick, runnableModels, tryResolveRunModel } from "./llm/run-model.ts";
+import { availabilityOf, describe as describeAvailability, overrideForPick, resetPinsOnPick, runnableModels, tryResolveRunModel } from "./llm/run-model.ts";
 import { chatModel } from "./llm/chat-model.ts";
 import { fallbackNoticeText } from "./llm/fallback-notice.ts";
 import { setAvailabilityWorld, availabilityWorld } from "./llm/world.ts";
@@ -1069,7 +1068,9 @@ async function main() {
       // The app builds its own ceiling list from these three numbers, the same way the picker
       // menus do on the other channels (docs/context-window.md).
       const choice = contextChoiceFor(config, model, session?.contextOverride);
-      const cap = resolveContextCap(config, "main");
+      // The cap in force on this model, not the global one: a tag pins its own, and the app
+      // offers exactly this number in the tune sheet (docs/context-window.md).
+      const cap = standingContextCap(config, model, "main");
       return {
         model,
         defaultModel,
@@ -1270,6 +1271,10 @@ async function main() {
           (await sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
         const previousModel = (await resolveModelState(owner, threadId)).model;
         session.modelOverride = overrideForPick(config, { agent: "main" }, modelId, availabilityWorld());
+        // A tag carries its own effort and ceiling, and picking it is how a conversation adopts
+        // them: the pins set on top of the previous model would outrank both. Same for a pick
+        // that hands the conversation back to its scope (no override left).
+        resetPinsOnPick(session, modelId, session.modelOverride);
         session.lastActiveAt = new Date().toISOString();
         await sessionManager.persist(sessionId);
         hooks.emit("session:model:changed", { sessionId, previousModel, newModel: modelId });

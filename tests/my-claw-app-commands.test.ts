@@ -141,6 +141,66 @@ describe("/effort and /cap on the app channel", () => {
   });
 });
 
+describe("/model on the app channel", () => {
+  const tagConfig = {
+    llm: {
+      defaultModel: "claude-opus-5",
+      models: [{ id: "claude-opus-5", label: "Opus 5", limit: { context: 1_000_000 } }],
+    },
+    tags: { Cheap: { model: "claude-opus-5", effort: "low", contextCap: 700_000 } },
+  } as unknown as MyClawConfig;
+
+  async function withSession(pins: Record<string, unknown>): Promise<{ manager: SessionManager; id: string }> {
+    const manager = new SessionManager();
+    const id = SessionManager.resolveSessionId("my-claw-app", "dm", "neras", "neras", {
+      threadId: "t1",
+      sessionScope: "per-user",
+    });
+    const session = await manager.getOrCreateWithMeta(id, "my-claw-app", "dm");
+    Object.assign(session, pins);
+    await manager.persist(id);
+    return { manager, id };
+  }
+
+  test("picking a tag hands the conversation's effort and ceiling to it", async () => {
+    const { manager, id } = await withSession({ effortOverride: "high", contextOverride: 128_000 });
+    const handler = createMyClawAppCommandHandler({
+      config: tagConfig,
+      sessionManager: manager,
+      modelPicker: new ModelPicker([{ id: "claude-opus-5", label: "Opus 5" }, { id: "tag:Cheap", label: "Cheap", group: "Tags" }]),
+    });
+
+    await handler("neras", "t1", "model", "tag:Cheap");
+
+    // A tag is indivisible: a leftover pin would outrank its own effort and cap
+    // (docs/context-window.md), and the tag is what the owner just picked.
+    const session = await manager.peek(id);
+    expect(session?.modelOverride).toBe("tag:Cheap");
+    expect(session?.effortOverride).toBeUndefined();
+    expect(session?.contextOverride).toBeUndefined();
+  });
+
+  test("picking the default model hands back the whole combo, not just the model", async () => {
+    const { manager, id } = await withSession({
+      modelOverride: "tag:Cheap",
+      effortOverride: "high",
+      contextOverride: 64_000,
+    });
+    const handler = createMyClawAppCommandHandler({
+      config: tagConfig,
+      sessionManager: manager,
+      modelPicker: new ModelPicker([{ id: "claude-opus-5", label: "Opus 5" }, { id: "tag:Cheap", label: "Cheap", group: "Tags" }]),
+    });
+
+    await handler("neras", "t1", "model", "claude-opus-5");
+
+    const session = await manager.peek(id);
+    expect(session?.modelOverride).toBeUndefined();
+    expect(session?.effortOverride).toBeUndefined();
+    expect(session?.contextOverride).toBeUndefined();
+  });
+});
+
 describe("/new on the app channel", () => {
   const config = {
     llm: { defaultModel: "claude-opus-5", models: [{ id: "claude-opus-5", label: "Opus 5", limit: { context: 1_000_000 } }] },

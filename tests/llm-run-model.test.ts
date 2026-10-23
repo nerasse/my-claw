@@ -5,6 +5,7 @@ import {
   UnknownModelError,
   availabilityOf,
   overrideForPick,
+  resetPinsOnPick,
   resolveRunModel,
   runnableModels,
   type AvailabilityWorld,
@@ -132,6 +133,38 @@ describe("writing a pick", () => {
     // A tag carries its own effort: dropping it as a no-op would drop that too.
     const c = config({ tags: { Slow: { model: "claude-sonnet-5", effort: "low" } } });
     expect(overrideForPick(c, { agent: "main" }, "tag:Slow", world())).toBe("tag:Slow");
+  });
+});
+
+describe("what a pick does to the pins set on top of the model", () => {
+  test("a tag takes both pins with it, because it carries its own", () => {
+    // Precedence: session override > tag candidate cap, and session effort > tag effort. A pin
+    // left over from the previous model would silently outrank the tag the owner just picked.
+    const pins = { effortOverride: "high" as const, contextOverride: 128_000 as const };
+    resetPinsOnPick(pins, "tag:Cheap", "tag:Cheap");
+    expect(pins.effortOverride).toBeUndefined();
+    expect(pins.contextOverride).toBeUndefined();
+  });
+
+  test("a tag drops a 'full' lift too: the tag's ceiling is what applies", () => {
+    const pins = { contextOverride: "full" as const };
+    resetPinsOnPick(pins, "tag:Cheap", "tag:Cheap");
+    expect(pins.contextOverride).toBeUndefined();
+  });
+
+  test("picking a plain model keeps the conversation's own pins", () => {
+    const pins = { effortOverride: "low" as const, contextOverride: 64_000 as const };
+    resetPinsOnPick(pins, "claude-opus-5", "claude-opus-5");
+    expect(pins).toEqual({ effortOverride: "low", contextOverride: 64_000 });
+  });
+
+  test("a pick that hands the conversation back to its scope drops them as a whole", () => {
+    // No override left is the same statement the root "Use default" makes: the whole combo belongs
+    // to the config again, not just the model.
+    const pins = { effortOverride: "low" as const, contextOverride: 64_000 as const };
+    resetPinsOnPick(pins, "claude-sonnet-5", undefined);
+    expect(pins.effortOverride).toBeUndefined();
+    expect(pins.contextOverride).toBeUndefined();
   });
 });
 

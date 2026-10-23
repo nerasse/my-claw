@@ -22,6 +22,7 @@ import { getHelpText } from "../commands-catalog.ts";
 import { effectiveEffort } from "../../llm/resolver.ts";
 import { handleCompactCommand } from "../compact-command.ts";
 import { chatModel } from "../../llm/chat-model.ts";
+import { resetPinsOnPick } from "../../llm/run-model.ts";
 import type { ContextOverride } from "../../llm/context-window.ts";
 import { parseEffortArg, formatEffort } from "../model-picker.ts";
 import { runRegistry } from "../../core/run-registry.ts";
@@ -160,6 +161,9 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
         const session =
           existing ?? (await deps.sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
         session.modelOverride = match.id === defaultModel ? undefined : match.id;
+        // The same rule as the picker's frames: a tag carries its own effort and ceiling, and
+        // landing on the default hands the whole combo back to the scope.
+        resetPinsOnPick(session, match.id, session.modelOverride);
         session.lastActiveAt = new Date().toISOString();
         await deps.sessionManager.persist(sessionId);
         hooks.emit("session:model:changed", { sessionId, previousModel: currentModel, newModel: match.id });

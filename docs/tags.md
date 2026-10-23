@@ -66,12 +66,12 @@ The selected route candidate's `contextCap` is a per-run ceiling applied in
 > global cap. It is deliberate per-candidate policy, so it outranks the agent's standing ceiling
 for that attempt. The next route candidate may have a different cap.
 
-Because each selected candidate may own both pins, a config flow that stages a tag (agent default,
-global default, a job) offers **neither** the effort step nor the window step for that tag: the
-candidate's own values win for the attempt. The chat is the exception by design: a session
-override sits above the tag (`/effort <level>`, `/cap <tokens|full>`), so it is offered there,
-and the picker's "default (inherit)" / "full" rows are how the override is removed. See
-docs/context-window.md.
+Because each selected candidate may own both pins, any flow that stages a tag (a session, an
+agent default, the global default, a job) offers **neither** the effort step nor the window step
+for that tag: the candidate's own values win for the attempt. A session can still pin its own
+later (`/effort <level>`, `/cap <tokens|full>`, or the app's tune sheet), and **picking a tag
+drops the pins the session already had**, so a value chosen for the previous model never keeps
+outranking the tag just picked. See docs/context-window.md.
 
 ## Where tags live
 
