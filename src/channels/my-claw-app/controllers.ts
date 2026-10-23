@@ -75,6 +75,8 @@ export interface MyClawAppVoiceController {
  */
 export interface MyClawAppQuotaController {
   get(provider: string, force?: boolean): Promise<import("../../llm/quota/types.ts").QuotaOutcome>;
+  /** Spends one banked reset; the provider decides whether it is eligible. */
+  redeem(provider: string): Promise<import("../../llm/quota/index.ts").QuotaRedemption>;
 }
 
 /**

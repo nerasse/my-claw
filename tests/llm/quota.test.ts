@@ -9,8 +9,8 @@
 import { beforeEach, test } from "bun:test";
 import assert from "node:assert/strict";
 import { mockFetch } from "../helpers/mock-fetch.ts";
-import { claudeQuota } from "../../src/llm/quota/claude.ts";
-import { codexQuota } from "../../src/llm/quota/codex.ts";
+import { claudeQuota, consumeClaudeReset } from "../../src/llm/quota/claude.ts";
+import { codexQuota, consumeCodexReset } from "../../src/llm/quota/codex.ts";
 import { opencodeGoQuota } from "../../src/llm/quota/opencode-go.ts";
 import { openrouterQuota } from "../../src/llm/quota/openrouter.ts";
 import { quotaFor, quotaSourceOf, resetQuotaCache } from "../../src/llm/quota/index.ts";
@@ -140,7 +140,7 @@ test("codex identifies its windows by duration, not by slot", async () => {
       ["Week", 26],
       ["5 h", 58],
     ]);
-    assert.equal(result.snapshot.extras.find((e) => e.label === "Banked resets")?.value, "2");
+    assert.equal(result.snapshot.resets?.available, 2);
   } finally {
     mock.restore();
   }
@@ -280,5 +280,180 @@ test("the cache serves the snapshot, force bypasses it, and a 429 keeps the last
   } finally {
     mock.restore();
     delete process.env["QUOTA_TEST_OPENROUTER_KEY"];
+  }
+});
+
+test("codex lists the banked credits with the soonest expiry", async () => {
+  const mock = mockFetch(async (input) => {
+    if (String(input).endsWith("/rate-limit-reset-credits")) {
+      return json({
+        credits: [
+          { id: "late", status: "available", expires_at: "2026-12-01T00:00:00Z" },
+          { id: "soon", status: "available", expires_at: "2026-10-29T00:00:00Z" },
+          { id: "gone", status: "redeemed", expires_at: "2026-10-01T00:00:00Z" },
+        ],
+        available_count: 2,
+      });
+    }
+    return json(CODEX_BODY);
+  });
+  try {
+    const result = await codexQuota("chatgpt", { accessToken: "tok", accountId: "acc" });
+    assert.equal(result.ok, true);
+    if (result.ok) assert.deepEqual(result.snapshot.resets, { available: 2, nextExpiresAt: "2026-10-29T00:00:00.000Z", usable: false, blocked: "no window is full" });
+  } finally {
+    mock.restore();
+  }
+});
+
+test("codex spends the soonest-expiring credit, with one request id", async () => {
+  const calls: Array<{ url: string; method: string; body?: string }> = [];
+  const mock = mockFetch(async (input, init) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    calls.push({ url, method, ...(typeof init?.body === "string" ? { body: init.body } : {}) });
+    if (url.endsWith("/rate-limit-reset-credits") && method === "GET") {
+      return json({
+        credits: [
+          { id: "late", status: "available", expires_at: "2026-12-01T00:00:00Z" },
+          { id: "soon", status: "available", expires_at: "2026-10-29T00:00:00Z" },
+        ],
+        available_count: 2,
+      });
+    }
+    if (url.endsWith("/consume")) return json({ code: "reset", windows_reset: 1 });
+    return json({});
+  });
+  try {
+    const result = await consumeCodexReset("chatgpt", { accessToken: "tok", accountId: "acc" });
+    assert.equal(result.ok, true);
+    const post = calls.find((call) => call.method === "POST");
+    assert.ok(post);
+    const body = JSON.parse(post.body ?? "{}") as { credit_id?: string; redeem_request_id?: string };
+    assert.equal(body.credit_id, "soon");
+    assert.match(body.redeem_request_id ?? "", /^[0-9a-f-]{36}$/);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("codex says why a reset was refused, and does not invent a second credit", async () => {
+  const mock = mockFetch(async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/rate-limit-reset-credits") && (init?.method ?? "GET") === "GET") {
+      return json({ credits: [{ id: "only", status: "available", expires_at: "2026-10-29T00:00:00Z" }] });
+    }
+    return json({ detail: { code: "rate_limit_reset_ineligible" } }, 403);
+  });
+  try {
+    const result = await consumeCodexReset("chatgpt", { accessToken: "tok", accountId: "acc" });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "ineligible");
+    assert.match(result.message, /no window is full/i);
+  } finally {
+    mock.restore();
+  }
+
+  const none = mockFetch(async () => json({ credits: [{ id: "used", status: "redeemed" }] }));
+  try {
+    const result = await consumeCodexReset("chatgpt", { accessToken: "tok", accountId: "acc" });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "no-credit");
+  } finally {
+    none.restore();
+  }
+});
+
+const CEDAR = {
+  eligible: true,
+  ineligible_reason: null,
+  at_limit: true,
+  grants: [
+    {
+      id: "grant_1",
+      label: "Full reset (Weekly + 5 hr)",
+      resets_total: 1,
+      resets_left: 1,
+      starts_at: null,
+      ends_at: "2026-10-29T00:00:00Z",
+      clears: ["five_hour", "seven_day"],
+      paused: false,
+      usable_now: true,
+      use_requires_limit: true,
+    },
+  ],
+  next_grant_id: "grant_1",
+  cooldown_until: null,
+};
+
+test("claude reports its saved resets, and whether a claim would be accepted", async () => {
+  const mock = mockFetch(async () => json({ ...CLAUDE_BODY, cedar_ember: CEDAR }));
+  try {
+    const result = await claudeQuota("claude-2", "token");
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.deepEqual(result.snapshot.resets, {
+        available: 1,
+        nextExpiresAt: "2026-10-29T00:00:00.000Z",
+        usable: true,
+        clears: "5 h + weekly",
+      });
+    }
+  } finally {
+    mock.restore();
+  }
+});
+
+test("claude has no reset when the inventory has no grant", async () => {
+  const mock = mockFetch(async () => json({ ...CLAUDE_BODY, cedar_ember: { eligible: false, ineligible_reason: "no_grant", at_limit: false, grants: [] } }));
+  try {
+    const result = await claudeQuota("claude-2", "token");
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.snapshot.resets, undefined);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("claude spends the grant the provider names, against its organization", async () => {
+  const calls: Array<{ url: string; method: string; body?: string }> = [];
+  const mock = mockFetch(async (input, init) => {
+    const url = String(input);
+    const method = init?.method ?? "GET";
+    calls.push({ url, method, ...(typeof init?.body === "string" ? { body: init.body } : {}) });
+    if (url.endsWith("/profile")) return json({ organization: { uuid: "11111111-2222-3333-4444-555555555555" } });
+    if (url.includes("cedar_ember=1")) return json({ ...CLAUDE_BODY, cedar_ember: CEDAR });
+    if (url.endsWith("/reset_rate_limits")) return json({ result: "reset", resets_left: 0, cleared: ["five_hour", "seven_day"] });
+    return json({});
+  });
+  try {
+    const result = await consumeClaudeReset("token");
+    assert.equal(result.ok, true);
+    const post = calls.find((call) => call.method === "POST");
+    assert.ok(post);
+    assert.match(post.url, /\/api\/organizations\/11111111-2222-3333-4444-555555555555\/reset_rate_limits$/);
+    const body = JSON.parse(post.body ?? "{}") as { program?: string; grant_id?: string; request_id?: string };
+    assert.equal(body.program, "cedar_ember");
+    assert.equal(body.grant_id, "grant_1");
+    assert.match(body.request_id ?? "", /^[0-9a-f-]{36}$/);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("claude never retries a claim whose answer was unreadable", async () => {
+  const mock = mockFetch(async (input, init) => {
+    const url = String(input);
+    if (url.endsWith("/profile")) return json({ organization: { uuid: "11111111-2222-3333-4444-555555555555" } });
+    if (url.includes("cedar_ember=1")) return json({ ...CLAUDE_BODY, cedar_ember: CEDAR });
+    return json({ error: "server_error" }, 500);
+  });
+  try {
+    const result = await consumeClaudeReset("token");
+    assert.equal(result.ok, false);
+    assert.equal(result.code, "unknown");
+    assert.match(result.message, /may or may not/);
+  } finally {
+    mock.restore();
   }
 });

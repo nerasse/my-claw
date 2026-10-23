@@ -7,7 +7,8 @@
  * drops one of them does not renumber the other.
  */
 import { CODEX_BASE_URL } from "../codex-auth.ts";
-import { getJson, isAuthFailure } from "./http.ts";
+import { getJson, isAuthFailure, postJson } from "./http.ts";
+import type { QuotaRedemption } from "./types.ts";
 import {
   clampPercent,
   isoOf,
@@ -16,12 +17,16 @@ import {
   stringOf,
   type QuotaBalance,
   type QuotaExtra,
+  type QuotaResetCredits,
   type QuotaProbe,
   type QuotaWindow,
 } from "./types.ts";
 
 const USAGE_URL = `${CODEX_BASE_URL}/wham/usage`;
+const RESET_CREDITS_URL = `${CODEX_BASE_URL}/wham/rate-limit-reset-credits`;
 const USER_AGENT = "my-claw-quota/1.0";
+/** The identity read is optional; it must not hold the numbers up. */
+const CREDITS_TIMEOUT_MS = 4_000;
 
 /** The durations the endpoint uses; 18000 = 5 h, 604800 = week, 2628000 = month. */
 export function labelForDuration(seconds: number | undefined): string | undefined {
@@ -52,11 +57,15 @@ export async function codexQuota(
   provider: string,
   token: { accessToken: string; accountId: string },
 ): Promise<QuotaProbe> {
-  const response = await getJson(USAGE_URL, {
+  const headers = {
     authorization: `Bearer ${token.accessToken}`,
     "chatgpt-account-id": token.accountId,
     "user-agent": USER_AGENT,
-  });
+  };
+  const [response, creditsResponse] = await Promise.all([
+    getJson(USAGE_URL, headers),
+    getJson(RESET_CREDITS_URL, headers, CREDITS_TIMEOUT_MS),
+  ]);
   if (!response.ok) {
     return {
       ok: false,
@@ -100,8 +109,11 @@ export async function codexQuota(
   const plan = stringOf(body.plan_type);
   if (plan) extras.push({ label: "Plan", value: plan });
   const email = stringOf(body.email);
-  const resets = numberOf(recordOf(body.rate_limit_reset_credits)?.available_count);
-  if (resets !== undefined && resets > 0) extras.push({ label: "Banked resets", value: String(resets) });
+  const resets = resetCreditsOf(
+    creditsResponse,
+    numberOf(recordOf(body.rate_limit_reset_credits)?.available_count),
+    windows.some((window) => window.usedPercent >= 99),
+  );
   if (credits?.unlimited === true) extras.push({ label: "Credits", value: "unlimited" });
 
   return {
@@ -114,7 +126,79 @@ export async function codexQuota(
       windows,
       balances,
       extras,
+      ...(resets ? { resets } : {}),
       fetchedAt: new Date().toISOString(),
     },
   };
+}
+
+/** The banked credits the plan still holds, with the soonest one to lapse. */
+function resetCreditsOf(
+  response: Awaited<ReturnType<typeof getJson>>,
+  fallbackCount: number | undefined,
+  limited: boolean,
+): QuotaResetCredits | undefined {
+  const available = response.ok ? availableCredits(response.data) : [];
+  const count = available.length > 0 ? available.length : (fallbackCount ?? 0);
+  if (count <= 0) return undefined;
+  const expiries = available
+    .map((credit) => isoOf(credit.expires_at))
+    .filter((expiry): expiry is string => Boolean(expiry))
+    .sort();
+  return {
+    available: count,
+    ...(expiries[0] ? { nextExpiresAt: expiries[0] } : {}),
+    usable: limited,
+    ...(limited ? {} : { blocked: "no window is full" }),
+  };
+}
+
+function availableCredits(data: unknown): Array<Record<string, unknown>> {
+  const body = recordOf(data);
+  if (!Array.isArray(body?.credits)) return [];
+  return body.credits
+    .map((entry) => recordOf(entry))
+    .filter((entry): entry is Record<string, unknown> => entry !== undefined && entry.status === "available");
+}
+
+/**
+ * Spends one banked reset. The provider decides eligibility, not us: a window must be full, and
+ * the same account has been seen refused with every window full (openai/codex#46854), so the code
+ * it answers is what the card says rather than a claim we invented.
+ *
+ * The soonest expiring credit is the one spent: the only reason to hold two is not to lose one.
+ */
+export async function consumeCodexReset(
+  provider: string,
+  token: { accessToken: string; accountId: string },
+): Promise<QuotaRedemption> {
+  const headers = {
+    authorization: `Bearer ${token.accessToken}`,
+    "chatgpt-account-id": token.accountId,
+    "user-agent": USER_AGENT,
+  };
+  const list = await getJson(RESET_CREDITS_URL, headers);
+  if (!list.ok) {
+    return { ok: false, code: list.status === 429 ? "rate-limited" : "failed", message: list.message };
+  }
+  const credits = availableCredits(list.data)
+    .map((credit) => ({ credit, expiry: isoOf(credit.expires_at) ? Date.parse(isoOf(credit.expires_at)!) : Number.POSITIVE_INFINITY }))
+    .sort((left, right) => left.expiry - right.expiry);
+  const target = credits[0]?.credit;
+  const creditId = stringOf(target?.id);
+  if (!creditId) return { ok: false, code: "no-credit", message: "No reset credit is available." };
+
+  const response = await postJson(`${RESET_CREDITS_URL}/consume`, headers, {
+    credit_id: creditId,
+    redeem_request_id: crypto.randomUUID(),
+  });
+  if (response.ok) return { ok: true, message: "Reset applied." };
+
+  const detail = recordOf(recordOf(response.data)?.detail);
+  const code = stringOf(detail?.code);
+  if (code === "rate_limit_reset_ineligible") {
+    return { ok: false, code: "ineligible", message: "No window is full: nothing to reset." };
+  }
+  if (code === "noCredit") return { ok: false, code: "no-credit", message: "No reset credit is available." };
+  return { ok: false, code: code ?? `http-${response.status}`, message: response.message };
 }

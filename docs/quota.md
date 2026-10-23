@@ -56,6 +56,24 @@ interface QuotaSnapshot {
 Windows carry **used** percent. A balance is money or a count of credits, never a percentage.
 Spend that my-claw recorded itself is not a quota and does not belong here.
 
+## Saved resets
+
+Two providers grant saved usage resets (Anthropic calls them limit resets, OpenAI banked resets).
+Both are read into `snapshot.resets` and spent by one explicit claim; nothing spends one on its own.
+
+- **Codex**: `GET /wham/rate-limit-reset-credits` lists them, `POST .../consume` spends one with
+  `{credit_id, redeem_request_id}`. A claim is `rate_limit_reset_ineligible` unless a window is
+  actually full. The soonest-expiring credit is the one spent.
+- **Claude**: `GET /api/oauth/usage?cedar_ember=1&skip_spend=1` carries the `cedar_ember` block
+  (grants with `resets_left`, `starts_at`, `ends_at`, `clears`, `paused`, `usable_now`,
+  `use_requires_limit`); the claim is `POST /api/organizations/{org}/reset_rate_limits` with
+  `{program:"cedar_ember", grant_id, request_id}`, where the organization comes from
+  `/api/oauth/profile`. The grant names its own eligibility, so the card enables its button on
+  `resets.usable`, never on a rule of its own.
+
+An unreadable answer to a claim (5xx, timeout, unparsable body) is `unknown` and is never retried:
+the request may have run, and a second one would spend a second reset.
+
 ## The reset a retry waits for
 
 When a run dies on a spent quota, the same module is the reset oracle: ask the provider (fresh,

@@ -8,14 +8,13 @@
 import { refreshEnvFile, type LlmProviderConfig, type MyClawConfig } from "../../core/config.ts";
 import { getCodexAccessToken } from "../codex-auth.ts";
 import { loadClaudeToken } from "../claude-auth.ts";
-import { claudeQuota } from "./claude.ts";
-import { codexQuota } from "./codex.ts";
+import { claudeQuota, consumeClaudeReset } from "./claude.ts";
+import { codexQuota, consumeCodexReset } from "./codex.ts";
 import { opencodeGoQuota } from "./opencode-go.ts";
 import { openrouterQuota } from "./openrouter.ts";
-import type { QuotaFailure, QuotaOutcome, QuotaProbe, QuotaSource } from "./types.ts";
+import type { QuotaFailure, QuotaOutcome, QuotaProbe, QuotaRedemption, QuotaSource } from "./types.ts";
 
-export type { QuotaBalance, QuotaExtra, QuotaFailure, QuotaOutcome, QuotaSnapshot, QuotaSource, QuotaWindow } from "./types.ts";
-export { clampPercent, isoOf } from "./types.ts";
+export type { QuotaBalance, QuotaExtra, QuotaFailure, QuotaOutcome, QuotaRedemption, QuotaResetCredits, QuotaSnapshot, QuotaSource, QuotaWindow } from "./types.ts";
 
 /** How long a snapshot is trusted before the next read. The Claude bucket is the touchiest. */
 export const QUOTA_TTL_MS: Record<QuotaSource, number> = {
@@ -166,4 +165,56 @@ export async function quotaFor(
 
   pending.set(provider, task);
   return task;
+}
+
+/**
+ * Spends one banked reset. Only Codex grants them: Anthropic has no equivalent, and its extra
+ * usage is a billing switch in its console, not a credit a client can redeem.
+ */
+export async function redeemQuota(config: MyClawConfig, provider: string): Promise<QuotaRedemption> {
+  const providerConfig = config.llm?.providers?.[provider];
+  const source = quotaSourceOf(providerConfig);
+  if (!providerConfig || (source !== "codex" && source !== "claude")) {
+    return { ok: false, code: "unsupported", message: "This provider grants no resettable credits." };
+  }
+
+  if (source === "claude") {
+    const token = await loadClaudeToken(provider);
+    if (!token) return { ok: false, code: "sign-in-expired", message: "Not signed in to Claude." };
+    // The inventory says whether a claim would even be accepted; a forced read keeps a stale
+    // card from sending one the provider is going to refuse.
+    const current = await quotaFor(config, provider, { force: true });
+    if (!current.ok) return { ok: false, code: "unavailable", message: "Usage is unavailable right now." };
+    const resets = current.snapshot.resets;
+    if (!resets?.usable) {
+      return {
+        ok: false,
+        code: "not-usable",
+        message: resets?.blocked ? `This reset cannot be used: ${resets.blocked}.` : "No reset is available.",
+      };
+    }
+    const result = await consumeClaudeReset(token);
+    await quotaFor(config, provider, { force: true });
+    return result;
+  }
+
+  // A full window is what the provider checks, so ask now instead of trusting a card that may be
+  // minutes old. A refusal from the backend is still surfaced below; this only avoids one.
+  const current = await quotaFor(config, provider, { force: true });
+  if (!current.ok) return { ok: false, code: "unavailable", message: "Usage is unavailable right now." };
+  if (!current.snapshot.windows.some((window) => window.usedPercent >= 99)) {
+    return { ok: false, code: "not-limited", message: "No window is full: nothing to reset." };
+  }
+
+  let token: { accessToken: string; accountId: string };
+  try {
+    token = await getCodexAccessToken(provider);
+  } catch (err) {
+    return { ok: false, code: "sign-in-expired", message: err instanceof Error ? err.message : String(err) };
+  }
+
+  const result = await consumeCodexReset(provider, token);
+  // The card is stale either way: a credit may be gone, or a window may have moved.
+  await quotaFor(config, provider, { force: true });
+  return result;
 }

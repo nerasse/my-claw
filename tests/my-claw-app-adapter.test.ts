@@ -566,7 +566,7 @@ describe("MyClawAppAdapter", () => {
         fetchedAt: new Date().toISOString(),
       },
     };
-    adapter.onQuotaController({ get: async () => spent });
+    adapter.onQuotaController({ get: async () => spent, redeem: async () => ({ ok: false, code: "unsupported", message: "not under test" }) });
     store.quotaRetry.set("default", { enabled: true });
     const refused = () => Object.assign(new Error("HTTP 429 — quota exhausted"), { status: 429, provider: "claude-2" });
 

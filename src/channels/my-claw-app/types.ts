@@ -1325,6 +1325,7 @@ export type MyClawAppClientFrame =
   | MyClawAppQuotaGet
   | MyClawAppQuotaWatch
   | MyClawAppQuotaUnwatch
+  | MyClawAppQuotaRedeem
   | MyClawAppSessionQuotaRetrySet
   | MyClawAppSessionQuotaRetryNow
   | MyClawAppStatsGet
@@ -3522,6 +3523,21 @@ export interface MyClawAppQuotaUnwatch {
   type: "quota.unwatch";
 }
 
+/** Spends one of the provider's banked resets. Only Codex has them. */
+export interface MyClawAppQuotaRedeem {
+  type: "quota.redeem";
+  provider: string;
+}
+
+/** What the redemption answered: a success, or the provider's own reason for refusing. */
+export interface MyClawAppQuotaRedeemResult {
+  type: "quota.redeem.result";
+  provider: string;
+  ok: boolean;
+  code?: string;
+  message?: string;
+}
+
 /**
  * Turns on "when a run dies on a spent quota, wait for the reset and continue" for one
  * conversation -- docs/quota-retry.md. Off by default; the setting outlives the wait it arms.
@@ -4544,6 +4560,7 @@ export type MyClawAppServerFrame =
   | MyClawAppChatAcked
   | MyClawAppStatusResult
   | MyClawAppQuotaState
+  | MyClawAppQuotaRedeemResult
   | MyClawAppSessionQuotaRetryState
   | MyClawAppStatsResult
   | MyClawAppSessionInstructionsResult

@@ -114,6 +114,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppChatContinue,
   MyClawAppSessionQuotaRetrySet,
   MyClawAppSessionQuotaRetryNow,
+  MyClawAppQuotaRedeem,
   MyClawAppRunStopping,
   MyClawAppClientFrame,
   MyClawAppError,
@@ -418,6 +419,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private readonly quotaWaits = new Set<string>();
   private readonly quotaAttempts = new Map<string, number>();
   private quotaRetryTimer: ReturnType<typeof setInterval> | null = null;
+  /** One redemption in flight per provider: a double tap must not spend two credits. */
+  private readonly redeeming = new Set<string>();
   /**
    * The send being admitted on each conversation, keyed by owner/thread.
    *
@@ -2040,6 +2043,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "quota.unwatch":
         this.quotaWatch.unwatch(ws);
         break;
+      case "quota.redeem":
+        this.detach(this.handleQuotaRedeem(ws, frame), "handleQuotaRedeem");
+        break;
       case "session.quotaRetry.set":
         this.detach(this.handleQuotaRetrySet(ws, frame), "handleQuotaRetrySet");
         break;
@@ -3148,6 +3154,37 @@ export class MyClawAppAdapter implements ChannelAdapter {
       ? await this.quota.get(provider, force)
       : { ok: false as const, code: "no-source" as const, message: "Quota is not available on this server." };
     this.sendFrame(ws, { type: "quota.state", provider, outcome });
+  }
+
+  private async handleQuotaRedeem(
+    ws: ServerWebSocket<MyClawAppSessionData>,
+    frame: MyClawAppQuotaRedeem,
+  ): Promise<void> {
+    const provider = typeof frame.provider === "string" ? frame.provider : "";
+    if (!provider) {
+      await this.refuse(ws, "status", "invalid provider", { provider: frame.provider });
+      return;
+    }
+    const answer = (ok: boolean, code: string, message: string): void => {
+      this.sendFrame(ws, { type: "quota.redeem.result", provider, ok, code, message });
+    };
+    if (this.redeeming.has(provider)) {
+      answer(false, "busy", "A reset is already being redeemed.");
+      return;
+    }
+    if (!this.quota) {
+      answer(false, "unsupported", "Quota is not available on this server.");
+      return;
+    }
+    this.redeeming.add(provider);
+    try {
+      const result = await this.quota.redeem(provider);
+      answer(result.ok, result.code ?? (result.ok ? "ok" : "failed"), result.message);
+      // Fresh numbers either way: a refusal can mean the card was already stale.
+      await this.sendQuota(ws, provider, false);
+    } finally {
+      this.redeeming.delete(provider);
+    }
   }
 
   private async handleQuotaRetrySet(

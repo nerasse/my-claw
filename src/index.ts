@@ -229,7 +229,7 @@ import type { ConfigEditResult } from "./core/config-edit.ts";
 import { envKeys, setEnvValue, renameEnvKey, removeEnvKey } from "./core/env-edit.ts";
 import { runReleaseKeyCli } from "./core/release-key.ts";
 import { claudeClaim } from "./llm/anthropic-release.ts";
-import { quotaFor, quotaSourceOf } from "./llm/quota/index.ts";
+import { quotaFor, quotaSourceOf, redeemQuota } from "./llm/quota/index.ts";
 import {
   readAgentFile,
   writeAgentFile,
@@ -874,7 +874,10 @@ async function main() {
     const myClawApp = new MyClawAppAdapter(myClawAppConfig, myClawAppSessions);
     // The quota module holds no config of its own: the composition root is where the live
     // providers live, and a hot-reloaded provider must answer on the next read.
-    myClawApp.onQuotaController({ get: (provider, force) => quotaFor(config, provider, { force }) });
+    myClawApp.onQuotaController({
+      get: (provider, force) => quotaFor(config, provider, { force }),
+      redeem: (provider) => redeemQuota(config, provider),
+    });
     // The remote-node surface reads the top-level `nodes` section live (mTLS header, claim TTL).
     myClawApp.setNodesConfig(() => config.nodes);
     myClawApp.onLocationResolver(new GeoapifyReverseGeocoder(() => process.env.GEOAPIFY_API_KEY));
