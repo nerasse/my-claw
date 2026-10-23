@@ -70,11 +70,17 @@ export async function streamAppApk(info: AppUpdateOk): Promise<Response> {
     return new Response("upstream failed", { status: 502 });
   }
   void myClawAppLog("info", "app update served", { version, size: info.apkSize });
+  // The length the cached check carried can disagree with the bytes behind a versioned URL when
+  // the source's latest.json lagged its own asset (2026-10-23: 0.6.167 advertised the 0.6.166
+  // size). The client refuses a body that does not match the length it was given, so the
+  // upstream's own length wins; a chunked upstream names none and the client falls back to the
+  // size the check reported.
+  const upstreamLength = upstream.headers.get("content-length");
   return new Response(upstream.body, {
     status: 200,
     headers: {
       "content-type": "application/vnd.android.package-archive",
-      "content-length": String(info.apkSize),
+      ...(upstreamLength === null ? {} : { "content-length": upstreamLength }),
       "cache-control": "no-store",
     },
   });

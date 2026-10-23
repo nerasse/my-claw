@@ -129,6 +129,34 @@ describe("streamAppApk", () => {
     ]);
   });
 
+  test("the upstream's own length wins over the size the cached check carried", async () => {
+    // Seen on 2026-10-23: latest.json still advertised the previous APK's size for 0.6.167, the
+    // relay repeated it, the phone downloaded the real file and rejected it as truncated. The
+    // bytes are the authority; the check's size is only a fallback for a chunked upstream.
+    const apk = "PK\x03\x04fake-bytes";
+    const upstreamLength = String(new TextEncoder().encode(apk).length);
+    const fetchMock = record(() => new Response(apk, { status: 200, headers: { "content-length": upstreamLength } }));
+    try {
+      const res = await streamAppApk({ ok: true, version: "0.6.167", apkSize: 999, publishedAt: "" });
+      expect(res.headers.get("content-length")).toBe(upstreamLength);
+      expect(await res.text()).toBe(apk);
+    } finally {
+      fetchMock.restore();
+    }
+  });
+
+  test("a chunked upstream leaves the length to the check's size", async () => {
+    // No upstream length to trust: the relay stays chunked and the phone falls back to the size
+    // the check reported, which is the only number left.
+    const fetchMock = record(() => new Response("PK\x03\x04fake-bytes", { status: 200 }));
+    try {
+      const res = await streamAppApk({ ok: true, version: "0.6.167", apkSize: 14, publishedAt: "" });
+      expect(res.headers.get("content-length")).toBeNull();
+    } finally {
+      fetchMock.restore();
+    }
+  });
+
   test("turns an upstream failure into 502", async () => {
     const fetchMock = record(() => new Response("not found", { status: 404 }));
     try {
