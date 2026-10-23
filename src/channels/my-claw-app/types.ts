@@ -1,6 +1,7 @@
 /** Wire protocol for the my-claw-app channel. Spec: docs/my-claw-app-channel.md. */
 import type { ChatLocation, ChatLocationInput } from "../types.ts";
 import type { FileKind } from "../../utils/file-kind.ts";
+import type { QuotaOutcome } from "../../llm/quota/types.ts";
 
 export interface MyClawAppAttachmentMeta {
   id: string;
@@ -1321,6 +1322,11 @@ export type MyClawAppClientFrame =
   | MyClawAppModelRemove
   | MyClawAppStatusWatch
   | MyClawAppStatusUnwatch
+  | MyClawAppQuotaGet
+  | MyClawAppQuotaWatch
+  | MyClawAppQuotaUnwatch
+  | MyClawAppSessionQuotaRetrySet
+  | MyClawAppSessionQuotaRetryNow
   | MyClawAppStatsGet
   | MyClawAppSessionInstructionsGet
   | MyClawAppSessionInstructionsSet
@@ -1625,6 +1631,8 @@ export interface MyClawAppSessionSummary {
    * reconnect and shipping every draft in it would be paid for by every device, every time.
    */
   hasDraft?: boolean;
+  /** The owner turned on "retry when the quota returns" for this conversation. */
+  quotaRetry?: boolean;
 }
 
 export interface MyClawAppChatMessage {
@@ -2063,6 +2071,8 @@ export interface MyClawAppSessionSyncResult {
   compacting?: { since: string; text?: string; reasoning?: string };
   /** Why the delta was replaced by a full page. */
   reset?: "unknown-cursor" | "branch-switch";
+  /** The owner's quota-retry setting, and the wait it has armed, carried on every answer. */
+  quotaRetry?: { enabled: boolean; waiting?: { at: string; attempts: number; windows: string[] } };
   /** Whether entries were truncated by the limit. */
   truncated?: boolean;
   /**
@@ -2745,6 +2755,8 @@ export interface MyClawAppProviderInfo {
   keyEnv?: string;
   /** A ChatGPT or Claude plan: its credential is its sign-in, and `keyPresent` says it is signed in. */
   account?: MyClawAppAccountKind;
+  /** The usage API this provider publishes, when it publishes one -- docs/quota.md. */
+  quota?: import("../../llm/quota/types.ts").QuotaSource;
   /** Switched off from its page: hidden from the picker, skipped by discovery and routing. */
   disabled?: boolean;
   keyPresent: boolean;
@@ -3479,6 +3491,65 @@ export interface MyClawAppStatusResult {
   type: "status.result";
   threadId: string;
   status: MyClawAppStatusPayload;
+}
+
+/**
+ * One provider's limits, asked once (`quota.get`) or pushed while a page watches it.
+ *
+ * `outcome` is the quota module's own answer: a snapshot, possibly stale, or the reason there is
+ * none. The app draws the card from it and never infers a number of its own -- docs/quota.md.
+ */
+export interface MyClawAppQuotaState {
+  type: "quota.state";
+  provider: string;
+  outcome: QuotaOutcome;
+}
+
+export interface MyClawAppQuotaGet {
+  type: "quota.get";
+  provider: string;
+  /** Asks for a fresh read now, TTL bypassed. A 429 cooldown still holds. */
+  force?: boolean;
+}
+
+/** Opens one provider's card: sent now, then at every change until `quota.unwatch`. */
+export interface MyClawAppQuotaWatch {
+  type: "quota.watch";
+  provider: string;
+}
+
+export interface MyClawAppQuotaUnwatch {
+  type: "quota.unwatch";
+}
+
+/**
+ * Turns on "when a run dies on a spent quota, wait for the reset and continue" for one
+ * conversation -- docs/quota-retry.md. Off by default; the setting outlives the wait it arms.
+ */
+export interface MyClawAppSessionQuotaRetrySet {
+  type: "session.quotaRetry.set";
+  threadId: string;
+  enabled: boolean;
+}
+
+/** Fires the wait now instead of at its reset, for a provider that came back early. */
+export interface MyClawAppSessionQuotaRetryNow {
+  type: "session.quotaRetry.now";
+  threadId: string;
+}
+
+/** The setting and what it is waiting for, pushed when either changes. */
+export interface MyClawAppSessionQuotaRetryState {
+  type: "session.quotaRetry.state";
+  threadId: string;
+  enabled: boolean;
+  waiting?: {
+    /** ISO: when the retry fires. */
+    at: string;
+    attempts: number;
+    /** The windows that were spent, as labels: "5 h", "Week". */
+    windows: string[];
+  };
 }
 
 /**
@@ -4472,6 +4543,8 @@ export type MyClawAppServerFrame =
   | MyClawAppChatSendReceived
   | MyClawAppChatAcked
   | MyClawAppStatusResult
+  | MyClawAppQuotaState
+  | MyClawAppSessionQuotaRetryState
   | MyClawAppStatsResult
   | MyClawAppSessionInstructionsResult
   | MyClawAppChatCleared

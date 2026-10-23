@@ -79,6 +79,23 @@ function withFallbackNotes(text: string, notes: readonly string[]): string {
   return notes.length > 0 ? `${notes.join("\n\n")}\n\n${text}` : text;
 }
 
+/**
+ * Names the model that actually failed on the error the run dies of.
+ *
+ * The provider's own text says what it refused; it does not say which configured provider it was,
+ * and the quota oracle is addressed by that key. Attached here, where the failing config is still
+ * in hand, rather than guessed from the session later -- a run that walked three fallbacks has no
+ * other record of which one it ended on.
+ */
+function withFailureContext(err: unknown, config: ResolvedLlmConfig): unknown {
+  if (err && typeof err === "object") {
+    const failure = err as { provider?: string; model?: string };
+    failure.provider ??= config.provider;
+    failure.model ??= config.model;
+  }
+  return err;
+}
+
 // The home loop is provider-agnostic except for these two transport calls: codex-backed models
 // speak the OpenAI Responses API (docs/codex-backend.md), anthropic-backed ones the Messages API
 // (docs/anthropic-backend.md), everything else chat/completions. All three share the
@@ -315,7 +332,7 @@ export class AgentBridge implements AgentBackend {
         return { response, config };
       } catch (err) {
         rethrowIfAborted(err, params.signal);
-        if (isOverflowError(err) || params.emitted() || !(isProviderOutage(err) || isCapabilityRefusal(err))) throw err;
+        if (isOverflowError(err) || params.emitted() || !(isProviderOutage(err) || isCapabilityRefusal(err))) throw withFailureContext(err, config);
 
         const reason = String((err as Error | undefined)?.message ?? err).slice(0, 200);
         const failed = { model: config.model, provider: config.provider };
@@ -342,7 +359,7 @@ export class AgentBridge implements AgentBackend {
           attempted: params.attempted,
         });
         const next = targets.shift();
-        if (!next) throw err;
+        if (!next) throw withFailureContext(err, config);
 
         this.recordFailedCall({ ...params, config, durationMs: Date.now() - startedAt, error: err });
         params.attempted.add(next.model);

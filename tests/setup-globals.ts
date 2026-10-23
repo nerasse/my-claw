@@ -39,6 +39,7 @@ import { closeApprovalStore } from "../src/approvals/store.ts";
 import { questionManager } from "../src/questions/manager.ts";
 import { resetSpeculations } from "../src/sessions/compaction-speculative.ts";
 import { resetEnvFileHotReload } from "../src/core/config.ts";
+import { resetQuotaCache } from "../src/llm/quota/index.ts";
 
 // Module-level state in src/ outlives a single test file, so anything a test writes here is
 // readable by every file that runs after it. Order-dependent pass/fail is the result, and a
@@ -53,6 +54,8 @@ beforeEach(async () => {
   resetSpeculations();
   // Opened by the retry tests on purpose, then rejects unrelated LLM calls for 60s.
   resetCircuitBreaker();
+  // A snapshot cached by one file would answer another file's provider of the same key.
+  resetQuotaCache();
   // Keyed on baseUrl + model, so one file's refusing endpoint would silence another file's
   // cache-breakpoint assertions without any visible link between them.
   resetLearnedRepairs();

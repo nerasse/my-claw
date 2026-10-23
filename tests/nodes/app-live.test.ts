@@ -106,7 +106,7 @@ beforeEach(async () => {
   await rm(join(MY_CLAW_DIR, "agents"), { recursive: true, force: true });
   resetClaims();
   resetNodeHub();
-  adapter = new MyClawAppAdapter(config, { flushDrafts: async () => undefined } as never);
+  adapter = new MyClawAppAdapter(config, { flushDrafts: async () => undefined, listQuotaWaits: async () => [] } as never);
   adapter.setNodesConfig(() => undefined);
   await adapter.start();
 });

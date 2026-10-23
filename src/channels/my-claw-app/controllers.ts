@@ -70,6 +70,14 @@ export interface MyClawAppVoiceController {
 }
 
 /**
+ * The provider usage endpoints, injected because the adapter holds the channel's config and the
+ * quota module needs the install's providers. The module caches and rate-limits on its own.
+ */
+export interface MyClawAppQuotaController {
+  get(provider: string, force?: boolean): Promise<import("../../llm/quota/types.ts").QuotaOutcome>;
+}
+
+/**
  * The services page (docs/services.md), injected for the same reason as the voice controller.
  * A set answers with the state of the config as written: the live one catches up through the
  * watcher, which is what applies it.

@@ -229,6 +229,7 @@ import type { ConfigEditResult } from "./core/config-edit.ts";
 import { envKeys, setEnvValue, renameEnvKey, removeEnvKey } from "./core/env-edit.ts";
 import { runReleaseKeyCli } from "./core/release-key.ts";
 import { claudeClaim } from "./llm/anthropic-release.ts";
+import { quotaFor, quotaSourceOf } from "./llm/quota/index.ts";
 import {
   readAgentFile,
   writeAgentFile,
@@ -871,6 +872,9 @@ async function main() {
       (key) => key === "default" || key in (config.workspaces ?? {}),
     );
     const myClawApp = new MyClawAppAdapter(myClawAppConfig, myClawAppSessions);
+    // The quota module holds no config of its own: the composition root is where the live
+    // providers live, and a hot-reloaded provider must answer on the next read.
+    myClawApp.onQuotaController({ get: (provider, force) => quotaFor(config, provider, { force }) });
     // The remote-node surface reads the top-level `nodes` section live (mTLS header, claim TTL).
     myClawApp.setNodesConfig(() => config.nodes);
     myClawApp.onLocationResolver(new GeoapifyReverseGeocoder(() => process.env.GEOAPIFY_API_KEY));
@@ -1423,6 +1427,8 @@ async function main() {
             ...(provider.apiKeyEnv ? { keyEnv: provider.apiKeyEnv } : {}),
             // A plan: the app draws its sign-in instead of a key (docs/subscription-accounts.md).
             ...(accountKindOf(provider) ? { account: accountKindOf(provider)! } : {}),
+            // The providers that publish their limits: the app draws a quota line on the row.
+            ...(quotaSourceOf(provider) ? { quota: quotaSourceOf(provider)! } : {}),
             // A plan has no env key at all, and reporting "no key" for it said the opposite of the
             // truth on a box that was perfectly authenticated. Its credential is its own sign-in.
             keyPresent:
@@ -2803,6 +2809,9 @@ async function main() {
             // (docs/bubble-identity.md).
             const sessionId = SessionManager.resolveSessionId("my-claw-app", "dm", msg.chatId, msg.userId, { threadId: msg.threadId, sessionScope: "per-user" });
             await myClawApp.recordFailure(msg.chatId, msg.threadId ?? DEFAULT_THREAD, briefError(err), runErrorBubble(sessionId));
+            // The one place that holds both the error and the conversation: a spent quota with a
+            // published reset arms the session's wait, anything else cancels one (docs/quota-retry.md).
+            await myClawApp.settleQuotaRetry(msg.chatId, msg.threadId ?? DEFAULT_THREAD, err);
           }
           throw err;
         }

@@ -19,6 +19,19 @@ export type SessionAttachment = { type: "image"; path: string; mimeType?: string
 
 export type SessionSubAgentStatus = "running" | "complete" | "error" | "aborted";
 
+export interface SessionQuotaRetry {
+  enabled?: boolean;
+  pending?: {
+    /** ISO: when the next attempt fires. */
+    at: string;
+    attempts: number;
+    /** The spent windows that set the wait, as labels. */
+    windows: string[];
+    /** What the run died on, short, so the pill can say it after a reload. */
+    error?: string;
+  };
+}
+
 /**
  * Which tool opened this card: `spawn` created the sub-agent, `send` drove an existing one.
  * The lifecycle is identical either way -- this only decides the wording, so a `send` card is
@@ -384,6 +397,14 @@ export interface SessionData {
   // Prompt size the provider actually billed on the last call, with the message count it covered.
   // The compaction gate needs a real number: chars/4 under-counts by ~2.3x on live traffic.
   lastPrompt?: import("../llm/context-window.ts").MeasuredPrompt;
+  /**
+   * Automatic retry when a run dies on a spent quota -- docs/quota-retry.md.
+   *
+   * `enabled` is the owner's setting and outlives each wait; `pending` is the wait itself, armed
+   * with the reset the provider published. A session deleted takes both with it, which is the
+   * right lifetime: nothing else has to remember to cancel.
+   */
+  quotaRetry?: SessionQuotaRetry;
   /**
    * System prompt plus tool schemas of the last prompt built, in tokens.
    *

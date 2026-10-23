@@ -103,6 +103,8 @@ export interface SessionMeta {
   nestedDisabled?: string[];
   memoryRecallOff?: boolean;
   meta?: SessionData["meta"];
+  /** The owner's automatic retry on a spent quota, and the wait it has armed. */
+  quotaRetry?: SessionData["quotaRetry"];
   callers?: SessionData["callers"];
   tokenUsage?: SessionData["tokenUsage"];
   nestedAgents?: SessionData["nestedAgents"];
@@ -173,6 +175,7 @@ const META_KEYS: Record<keyof SessionMeta, "session" | "carried"> = {
   promptCount: "carried",
   firstUserText: "carried",
   lastUserAt: "carried",
+  quotaRetry: "session",
 };
 
 /** What a conversation list reads off a log, mirrored into `meta.json` so the list never opens one. */
@@ -244,6 +247,7 @@ export function metaOf(
     nestedDisabled: session.nestedDisabled,
     memoryRecallOff: session.memoryRecallOff,
     meta: session.meta,
+    quotaRetry: session.quotaRetry,
     callers: session.callers,
     tokenUsage: session.tokenUsage,
     nestedAgents: session.nestedAgents,

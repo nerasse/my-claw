@@ -60,7 +60,7 @@ describe("the adapter", () => {
   const headers = { "X-My-Claw-Device": DEVICE, Authorization: `Bearer ${TOKEN}` };
 
   beforeEach(async () => {
-    adapter = new MyClawAppAdapter(config(), { flushDrafts: async () => {} } as never);
+    adapter = new MyClawAppAdapter(config(), { flushDrafts: async () => {}, listQuotaWaits: async () => [] } as never);
     await adapter.start();
     base = `http://127.0.0.1:${adapter.port}`;
   });

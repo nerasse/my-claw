@@ -30,6 +30,9 @@ const execFileAsync = promisify(execFile);
 const DEVICE_ID = "test-device";
 const TOKEN = "secret-token";
 
+/** Lets the adapter's fire-and-forget bookkeeping land before the test reads the store. */
+const settle = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 20));
+
 function createConfig(overrides: Partial<MyClawAppChannelConfig> = {}): MyClawAppChannelConfig {
   return {
     port: 0,
@@ -269,11 +272,12 @@ class FakeSessionStore {
     head: string | null;
     reset?: "unknown-cursor" | "branch-switch";
     truncated?: boolean;
+    quotaRetry: { enabled: boolean };
   }> {
     this.syncCalls.push({ since, leaf, limit, ...(lazyReasoning ? { lazyReasoning } : {}) });
     const all = this.historyMap.get(threadId) ?? [];
     const head = all.length > 0 ? all[all.length - 1]!.id : null;
-    return { entries: all, leaf: head, head, ...(this.lastRun ? { lastRun: this.lastRun } : {}) };
+    return { entries: all, leaf: head, head, quotaRetry: { enabled: false }, ...(this.lastRun ? { lastRun: this.lastRun } : {}) };
   }
 
   lastRun?: { id: string; status: "running" | "done" | "aborted" | "error" | "interrupted"; startTs: string; endTs?: string };
@@ -288,6 +292,38 @@ class FakeSessionStore {
 
   async recordFailure(deviceId: string, threadId: string, error: string): Promise<void> {
     this.failures.push({ threadId, error });
+  }
+
+  quotaRetry: Map<string, { enabled: boolean; waiting?: { at: string; attempts: number; windows: string[] } }> = new Map();
+
+  async quotaRetryOf(_deviceId: string, threadId: string) {
+    const state = this.quotaRetry.get(threadId) ?? { enabled: false };
+    return { type: "session.quotaRetry.state" as const, threadId, ...state };
+  }
+
+  async setQuotaRetryEnabled(_deviceId: string, threadId: string, enabled: boolean) {
+    const next = { ...(this.quotaRetry.get(threadId) ?? {}), enabled, ...(enabled ? {} : { waiting: undefined }) };
+    this.quotaRetry.set(threadId, next);
+    return { type: "session.quotaRetry.state" as const, threadId, ...next };
+  }
+
+  async armQuotaRetry(_deviceId: string, threadId: string, wait: { at: string; attempts: number; windows: string[]; error?: string }): Promise<boolean> {
+    if (this.quotaRetry.get(threadId)?.enabled !== true) return false;
+    this.quotaRetry.set(threadId, { enabled: true, waiting: wait });
+    return true;
+  }
+
+  async clearQuotaRetryPending(_deviceId: string, threadId: string): Promise<void> {
+    const state = this.quotaRetry.get(threadId);
+    if (state) this.quotaRetry.set(threadId, { enabled: state.enabled });
+  }
+
+  async listQuotaWaits(): Promise<Array<{ owner: string; threadId: string; at: string; attempts: number; windows: string[] }>> {
+    const waits: Array<{ owner: string; threadId: string; at: string; attempts: number; windows: string[] }> = [];
+    for (const [threadId, state] of this.quotaRetry) {
+      if (state.waiting) waits.push({ owner: "owner", threadId, ...state.waiting });
+    }
+    return waits;
   }
 
   patches: Array<{ threadId: string; patch: MyClawAppSessionInstructionPatch }> = [];
@@ -514,6 +550,40 @@ describe("MyClawAppAdapter", () => {
     });
     assert.equal(JSON.stringify(frame).includes(TOKEN), false);
     capable.ws.close();
+  });
+
+  test("a quota wait keeps its attempt count across the retry's own run, and a finished run ends the episode", async () => {
+    // The retry's Continue starts a run, and that start must not read as the end of the episode:
+    // the attempt count is what stops a provider that keeps refusing across resets.
+    const spent = {
+      ok: true as const,
+      snapshot: {
+        provider: "claude-2",
+        source: "claude" as const,
+        windows: [{ id: "session", label: "5 h", usedPercent: 100, resetAt: new Date(Date.now() + 3_600_000).toISOString() }],
+        balances: [],
+        extras: [],
+        fetchedAt: new Date().toISOString(),
+      },
+    };
+    adapter.onQuotaController({ get: async () => spent });
+    store.quotaRetry.set("default", { enabled: true });
+    const refused = () => Object.assign(new Error("HTTP 429 — quota exhausted"), { status: 429, provider: "claude-2" });
+
+    await adapter.settleQuotaRetry(DEVICE_ID, "default", refused());
+    assert.equal(store.quotaRetry.get("default")?.waiting?.attempts, 1);
+
+    adapter.notifyRun(DEVICE_ID, "default", true);
+    await settle();
+    assert.equal(store.quotaRetry.get("default")?.waiting?.attempts, 1, "a run starting keeps the wait");
+
+    await adapter.settleQuotaRetry(DEVICE_ID, "default", refused());
+    assert.equal(store.quotaRetry.get("default")?.waiting?.attempts, 2);
+
+    adapter.notifyRun(DEVICE_ID, "default", false, "done");
+    await settle();
+    assert.equal(store.quotaRetry.get("default")?.waiting, undefined, "a finished run ends the wait");
+    assert.equal(store.quotaRetry.get("default")?.enabled, true, "the owner's switch survives it");
   });
 
   test("names the server version on connect so the settings page can label it", async () => {

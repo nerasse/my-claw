@@ -18,7 +18,8 @@ import { FolderStore, type Folder } from "./folders.ts";
 import { parseStoredName, type SessionFile, type SessionFileStore } from "./files.ts";
 import { TOOL_OUTPUT_LIMIT } from "./stream.ts";
 import { toolCardId } from "./types.ts";
-import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppHistoryPage, MyClawAppRunMeta, MyClawAppSessionSummary, MyClawAppSessionInstructionPatch, MyClawAppPendingFile } from "./types.ts";
+import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppHistoryPage, MyClawAppRunMeta, MyClawAppSessionSummary, MyClawAppSessionInstructionPatch, MyClawAppPendingFile, MyClawAppSessionQuotaRetryState } from "./types.ts";
+import type { SessionData, SessionQuotaRetry } from "../../sessions/store.ts";
 
 const THREAD_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
 
@@ -42,6 +43,8 @@ export interface MyClawAppSyncPage {
   draft?: string;
   /** The files the composer holds, on the same window as `draft`. */
   files?: MyClawAppPendingFile[];
+  /** The owner's quota-retry setting, and the wait it has armed. */
+  quotaRetry: { enabled: boolean; waiting?: { at: string; attempts: number; windows: string[] } };
 }
 
 /** The return value of `runItems`: the work a folded row stood for -- docs/run-hydration.md. */
@@ -93,6 +96,15 @@ export interface MyClawAppSessionStore {
    * why the question got no answer. No-op on a thread that has no session yet.
    */
   recordFailure(owner: string, threadId: string, error: string, bubbleId?: string): Promise<void>;
+  /** The conversation's quota-retry setting, and the wait it has armed. */
+  quotaRetryOf(owner: string, threadId: string): Promise<MyClawAppSessionQuotaRetryState>;
+  /** Turns it on or off; turning it off cancels a wait in the same write. */
+  setQuotaRetryEnabled(owner: string, threadId: string, enabled: boolean): Promise<MyClawAppSessionQuotaRetryState>;
+  /** Arms a wait, refused when the owner never turned the setting on. */
+  armQuotaRetry(owner: string, threadId: string, wait: { at: string; attempts: number; windows: string[]; error?: string }): Promise<boolean>;
+  clearQuotaRetryPending(owner: string, threadId: string): Promise<void>;
+  /** Every armed wait on disk, for the boot that has to pick them back up. */
+  listQuotaWaits(): Promise<Array<{ owner: string; threadId: string; at: string; attempts: number; windows: string[]; error?: string }>>;
   /** Files the thread away, reversibly: no message is moved, deleted or snapshotted. */
   archive(owner: string, threadId: string): Promise<void>;
   unarchive(owner: string, threadId: string): Promise<void>;
@@ -514,6 +526,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         ...(session.folderId ? { folderId: session.folderId } : {}),
         workspace: session.workspace ?? "default",
         ...(drafted.has(sessionId) ? { hasDraft: true } : {}),
+        ...(session.quotaRetry?.enabled === true ? { quotaRetry: true } : {}),
       });
     }
     // The last message sent orders the list, not the log's clock: a run answering in another
@@ -676,6 +689,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
         head: null,
         ...(draft ? { draft } : {}),
         ...(staged.length ? { files: staged } : {}),
+        quotaRetry: { enabled: false },
       };
     }
 
@@ -777,6 +791,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       // work the client is watching arrive, and it must never overwrite text typed here.
       ...(freshWindow && draft ? { draft } : {}),
       ...(staged.length ? { files: staged } : {}),
+      // The setting travels on every answer: it can be turned on from another device while this
+      // one is reading a delta, and the pill has to appear without a reload.
+      quotaRetry: this.quotaRetryPayload(session),
     };
   }
 
@@ -892,6 +909,85 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       log.append<FailureEntry>(entry);
     }
     await this.sessionManager.persist(sessionId);
+  }
+
+  /**
+   * The quota-retry setting of one conversation, as the wire carries it.
+   *
+   * `enabled` is the owner's decision and survives a run that recovered on its own; `waiting` is
+   * armed only when a run actually died on a spent quota and the provider published a reset. The
+   * two are read together because the menu shows the switch and the thread shows the wait.
+   */
+  private quotaRetryPayload(session: SessionData): MyClawAppSyncPage["quotaRetry"] {
+    const pending = session.quotaRetry?.pending;
+    return {
+      enabled: session.quotaRetry?.enabled === true,
+      ...(pending
+        ? { waiting: { at: pending.at, attempts: pending.attempts, windows: pending.windows } }
+        : {}),
+    };
+  }
+
+  async quotaRetryOf(owner: string, threadId: string): Promise<MyClawAppSessionQuotaRetryState> {
+    const session = await this.sessionManager.read(this.resolveSessionId(owner, threadId));
+    return {
+      type: "session.quotaRetry.state",
+      threadId,
+      ...(session ? this.quotaRetryPayload(session) : { enabled: false }),
+    };
+  }
+
+  /** Turning it off is also what cancels a wait: one switch, one meaning. */
+  async setQuotaRetryEnabled(owner: string, threadId: string, enabled: boolean): Promise<MyClawAppSessionQuotaRetryState> {
+    const session = await this.sessionManager.read(this.resolveSessionId(owner, threadId));
+    if (!session) return { type: "session.quotaRetry.state", threadId, enabled: false };
+    const next: SessionQuotaRetry = { ...(session.quotaRetry ?? {}), enabled };
+    if (!enabled) delete next.pending;
+    session.quotaRetry = next;
+    await this.sessionManager.persist(session.id);
+    return { type: "session.quotaRetry.state", threadId, ...this.quotaRetryPayload(session) };
+  }
+
+  /** Arms the wait the bridge decided on. Does nothing when the owner never turned it on. */
+  async armQuotaRetry(
+    owner: string,
+    threadId: string,
+    wait: { at: string; attempts: number; windows: string[]; error?: string },
+  ): Promise<boolean> {
+    const session = await this.sessionManager.read(this.resolveSessionId(owner, threadId));
+    if (!session || session.quotaRetry?.enabled !== true) return false;
+    session.quotaRetry = { enabled: true, pending: wait };
+    await this.sessionManager.persist(session.id);
+    return true;
+  }
+
+  async clearQuotaRetryPending(owner: string, threadId: string): Promise<void> {
+    const session = await this.sessionManager.read(this.resolveSessionId(owner, threadId));
+    if (!session?.quotaRetry?.pending) return;
+    const next: SessionQuotaRetry = { ...session.quotaRetry };
+    delete next.pending;
+    session.quotaRetry = next;
+    await this.sessionManager.persist(session.id);
+  }
+
+  /**
+   * Every armed wait on disk, read at boot so a restart does not lose one.
+   *
+   * The pending wait lives in the session's own meta, which is why this scans rather than keeping
+   * a second index that could disagree with it. A deleted conversation takes its wait with it.
+   */
+  async listQuotaWaits(): Promise<Array<{ owner: string; threadId: string; at: string; attempts: number; windows: string[]; error?: string }>> {
+    const ids = await this.sessionManager.listSessions("my-claw-app/thread/");
+    const waits: Array<{ owner: string; threadId: string; at: string; attempts: number; windows: string[]; error?: string }> = [];
+    for (const id of ids) {
+      const meta = await readMeta(id).catch(() => null);
+      const pending = meta?.quotaRetry?.pending;
+      if (!pending) continue;
+      const [, , owner, threadId] = id.split("/");
+      if (!owner || !threadId) continue;
+      waits.push({ owner, threadId, ...pending });
+    }
+    return waits;
   }
 
   async recordCommand(owner: string, threadId: string, input: string, output: string, details?: string, sourceId?: string, quiet = false): Promise<void> {

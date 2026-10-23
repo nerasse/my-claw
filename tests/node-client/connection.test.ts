@@ -63,7 +63,7 @@ beforeEach(async () => {
   resetClaims();
   resetNodeHub();
   dir = await mkdtemp(join(tmpdir(), "node-client-e2e-"));
-  adapter = new MyClawAppAdapter(channelConfig(), { flushDrafts: async () => undefined } as never);
+  adapter = new MyClawAppAdapter(channelConfig(), { flushDrafts: async () => undefined, listQuotaWaits: async () => [] } as never);
   adapter.setNodesConfig(() => undefined);
   await adapter.start();
 });
@@ -117,7 +117,7 @@ test("a node pairs, serves a tool call, reconnects after a restart, and is stopp
   const port = adapter.port;
   await adapter.stop();
   await until(() => !nodeOnline(node.nodeId));
-  adapter = new MyClawAppAdapter(channelConfig(port), { flushDrafts: async () => undefined } as never);
+  adapter = new MyClawAppAdapter(channelConfig(port), { flushDrafts: async () => undefined, listQuotaWaits: async () => [] } as never);
   adapter.setNodesConfig(() => undefined);
   await adapter.start();
   await until(() => nodeOnline(node.nodeId));
@@ -221,7 +221,7 @@ test("a node whose call outlives the socket is cancelled, and pairing refuses a 
   const result = await pending;
   expect(result.success).toBe(false);
 
-  adapter = new MyClawAppAdapter(channelConfig(port), { flushDrafts: async () => undefined } as never);
+  adapter = new MyClawAppAdapter(channelConfig(port), { flushDrafts: async () => undefined, listQuotaWaits: async () => [] } as never);
   adapter.setNodesConfig(() => undefined);
   await adapter.start();
   await until(() => nodeOnline(node.nodeId));
