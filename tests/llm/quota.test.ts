@@ -35,6 +35,14 @@ const CLAUDE_BODY = {
   limits: [
     { kind: "session", group: "session", percent: 100, severity: "critical", resets_at: "2026-10-23T00:30:00.036679+00:00", scope: null },
     { kind: "weekly_all", group: "weekly", percent: 58, severity: "normal", resets_at: "2026-10-24T06:00:00.036749+00:00", scope: null },
+    {
+      kind: "weekly_scoped",
+      group: "weekly",
+      percent: 0,
+      severity: "normal",
+      resets_at: "2026-10-24T06:00:00+00:00",
+      scope: { model: { id: null, display_name: "Fable" }, surface: null },
+    },
   ],
 };
 
@@ -65,9 +73,10 @@ test("claude reads the modern limits array", async () => {
     const result = await claudeQuota("claude-2", "token");
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    assert.deepEqual(result.snapshot.windows.map((w) => [w.id, w.usedPercent]), [
-      ["session", 100],
-      ["weekly_all", 58],
+    assert.deepEqual(result.snapshot.windows.map((w) => [w.id, w.label, w.usedPercent]), [
+      ["session", "5 h", 100],
+      ["weekly_all", "Week · all models", 58],
+      ["weekly_scoped:Fable", "Week · Fable", 0],
     ]);
     assert.equal(result.snapshot.windows[0]?.resetAt, "2026-10-23T00:30:00.036Z");
   } finally {
@@ -84,7 +93,7 @@ test("claude falls back to five_hour and seven_day when limits is absent", async
     if (!result.ok) return;
     assert.deepEqual(result.snapshot.windows.map((w) => [w.id, w.label, w.usedPercent]), [
       ["session", "5 h", 100],
-      ["weekly_all", "Week", 58],
+      ["weekly_all", "Week · all models", 58],
     ]);
   } finally {
     mock.restore();
@@ -150,6 +159,35 @@ test("opencode go reads its three windows as published", async () => {
     ]);
   } finally {
     mock.restore();
+  }
+});
+
+test("opencode go takes the email only from a single-member workspace", async () => {
+  const mock = mockFetch(async (input) =>
+    String(input).endsWith("/budgets/members")
+      ? json([{ email: "someone@example.com" }])
+      : json(OPENCODE_GO_BODY),
+  );
+  try {
+    const result = await opencodeGoQuota("opencode_go", "key");
+    assert.equal(result.ok, true);
+    if (result.ok) assert.equal(result.snapshot.email, "someone@example.com");
+  } finally {
+    mock.restore();
+  }
+
+  const shared = mockFetch(async (input) =>
+    String(input).endsWith("/budgets/members")
+      ? json([{ email: "a@example.com" }, { email: "b@example.com" }])
+      : json(OPENCODE_GO_BODY),
+  );
+  try {
+    const result = await opencodeGoQuota("opencode_go", "key");
+    assert.equal(result.ok, true);
+    // The key does not say which member it is, and guessing would name the wrong account.
+    if (result.ok) assert.equal(result.snapshot.email, undefined);
+  } finally {
+    shared.restore();
   }
 });
 

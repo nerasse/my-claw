@@ -13,13 +13,17 @@ export type JsonResponse =
 
 const TIMEOUT_MS = 10_000;
 
-export async function getJson(url: string, headers: Record<string, string>): Promise<JsonResponse> {
+export async function getJson(
+  url: string,
+  headers: Record<string, string>,
+  timeoutMs = TIMEOUT_MS,
+): Promise<JsonResponse> {
   let response: Response;
   try {
     response = await fetch(url, {
       method: "GET",
       headers: { accept: "application/json", ...headers },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (err) {
     return { ok: false, message: err instanceof Error ? err.message : String(err) };

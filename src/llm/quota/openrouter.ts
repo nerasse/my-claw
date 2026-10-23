@@ -11,7 +11,6 @@ import {
   clampPercent,
   numberOf,
   recordOf,
-  stringOf,
   type QuotaBalance,
   type QuotaExtra,
   type QuotaProbe,
@@ -70,8 +69,6 @@ export async function openrouterQuota(
     const key = recordOf(recordOf(keyResponse.data)?.data);
     const usage = numberOf(key?.usage);
     const limit = numberOf(key?.limit);
-    const label = stringOf(key?.label);
-    if (label) extras.push({ label: "Key", value: label });
     if (usage !== undefined) extras.push({ label: "Key usage", value: usd(usage) });
     const weekly = numberOf(key?.usage_weekly);
     if (weekly !== undefined) extras.push({ label: "This week", value: usd(weekly) });

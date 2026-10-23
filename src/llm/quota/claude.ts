@@ -13,16 +13,31 @@ const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 
 function labelFor(kind: string, scope: string | undefined): string {
   if (kind === "session") return "5 h";
-  if (kind === "weekly_all") return "Week";
-  if (kind === "weekly_scoped") return scope ? `${scope} week` : "Week";
+  if (kind === "weekly_all") return "Week · all models";
+  if (kind === "weekly_scoped") return scope ? `Week · ${scope}` : "Week · scoped";
   return kind.replaceAll("_", " ");
+}
+
+/**
+ * What a scoped weekly limit is scoped to.
+ *
+ * The shape moved: `scope` is an object now (`{ model: { display_name }, surface }`), and a plain
+ * string before that. Read as a string it came back undefined and every scoped weekly limit drew
+ * itself as "Week", so a plan showed two identical rows and the one it was actually about was
+ * lost (2026-10-23).
+ */
+function scopeName(value: unknown): string | undefined {
+  const record = recordOf(value);
+  if (!record) return stringOf(value);
+  const model = recordOf(record.model);
+  return stringOf(model?.display_name) ?? stringOf(model?.id) ?? stringOf(record.surface);
 }
 
 function windowOf(entry: Record<string, unknown>, fallbackId: string): QuotaWindow | undefined {
   const percent = numberOf(entry.percent) ?? numberOf(entry.utilization);
   if (percent === undefined) return undefined;
   const kind = stringOf(entry.kind) ?? fallbackId;
-  const scope = stringOf(entry.scope);
+  const scope = scopeName(entry.scope);
   const windowSeconds = numberOf(entry.window_seconds);
   const resetAt = isoOf(entry.resets_at);
   return {
@@ -65,7 +80,7 @@ export async function claudeQuota(provider: string, token: string): Promise<Quot
     if (windows.some((window) => window.id === id)) continue;
     const record = recordOf(body[key]);
     const window = record ? windowOf(record, id) : undefined;
-    if (window) windows.push({ ...window, id, label: id === "session" ? "5 h" : "Week" });
+    if (window) windows.push({ ...window, id, label: id === "session" ? "5 h" : "Week · all models" });
   }
 
   const extra = recordOf(body.extra_usage);
