@@ -135,14 +135,23 @@ export function applyModelWindows(
 
     if (!table) return m;
     // The table is keyed by the id the provider publishes, never by our qualified reference.
-    const hit = table.contextWindowOf(apiId, provider?.baseUrl);
-    if (!hit) return m;
-    return { ...m, limit: { ...m.limit, context: hit.tokens }, contextFrom: "models.dev" };
+    // An alias is looked up under the upstream id it resells (`pricingModel`) first, then by the
+    // name the provider gave it, so a table that only knows one of the two still answers.
+    for (const candidate of catalogIdsOf(m, apiId)) {
+      const hit = table.contextWindowOf(candidate, provider?.baseUrl);
+      if (hit) return { ...m, limit: { ...m.limit, context: hit.tokens }, contextFrom: "models.dev" };
+    }
+    return m;
   });
 }
 
 interface WindowTable {
   contextWindowOf(model: string, baseUrl?: string, upstreamApiBase?: string): { tokens: number } | undefined;
+}
+
+/** The ids a price or a capability table may know a model under: the upstream one first. */
+function catalogIdsOf(model: LlmModelConfig, apiId: string): string[] {
+  return model.pricingModel && model.pricingModel !== apiId ? [model.pricingModel, apiId] : [apiId];
 }
 
 /**
@@ -220,7 +229,9 @@ export function applyModelMetadata(
         next.limit?.output === undefined ||
         next.reasoningField === undefined)
     ) {
-      const meta = table.metadataOf(apiId, provider ? providerBaseUrl(provider) : undefined);
+      const meta = catalogIdsOf(m, apiId)
+        .map((candidate) => table.metadataOf(candidate, provider ? providerBaseUrl(provider) : undefined))
+        .find((hit) => hit !== undefined);
       if (meta) {
         // `needsLabel` as well as the OpenRouter check: an owner-declared label used to be
         // protected only by the early return above, which a model reaching this branch for some
@@ -299,7 +310,63 @@ function discoveryFailure(err: unknown): string {
   return (err instanceof Error ? err.message : String(err)).slice(0, 200);
 }
 
-async function fetchOpenAiModels(baseUrl: string, apiKey?: string): Promise<string[]> {
+/**
+ * A row of an OpenAI-compatible `/models` answer, in the fields a provider may publish beyond the
+ * id. Every one is optional and gap-filling: a listing that declares only ids (the common case)
+ * yields `{ id }` and nothing changes downstream.
+ */
+interface OpenAiModelRow {
+  id: string;
+  label?: string;
+  context?: number;
+  output?: number;
+  vision?: boolean;
+  efforts?: EffortLevel[];
+  /** The upstream id behind a reseller's alias, when the listing names one (`hugging_face_id`). */
+  pricingModel?: string;
+}
+
+function positiveInt(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : undefined;
+}
+
+function effortLevelsOf(value: unknown): EffortLevel[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const levels = value
+    .filter((level): level is string => typeof level === "string")
+    .map((level) => level.toLowerCase())
+    .filter((level): level is EffortLevel => EFFORT_SET.has(level as EffortLevel));
+  if (levels.length === 0) return undefined;
+  // Bottom-up, deduped: the picker renders the ladder in the order it is given.
+  return EFFORT_ORDER.filter((level) => levels.includes(level));
+}
+
+function rowOf(model: Record<string, unknown>): OpenAiModelRow | undefined {
+  const id = typeof model.id === "string" && model.id.length > 0 ? model.id : undefined;
+  if (!id) return undefined;
+  const row: OpenAiModelRow = { id };
+  const display = typeof model.display_name === "string" ? model.display_name.trim() : undefined;
+  // An alias often names itself (`syn:large:text`), which says nothing about the model it routes
+  // to. The row usually says that too (`alias_of`), so the label carries both: what it is, and
+  // the stable name to pin.
+  if (display && display !== id) row.label = display;
+  else if (typeof model.alias_of === "string" && model.alias_of.trim()) row.label = `${model.alias_of.trim()} (${id})`;
+  else if (display) row.label = display;
+  const context = positiveInt(model.context_length) ?? positiveInt(model.max_input_tokens);
+  if (context !== undefined) row.context = context;
+  const output =
+    positiveInt(model.max_output_length) ?? positiveInt(model.max_completion_tokens) ?? positiveInt(model.max_output_tokens);
+  if (output !== undefined) row.output = output;
+  if (Array.isArray(model.input_modalities)) row.vision = model.input_modalities.includes("image");
+  const reasoning = model.reasoning_parameters as { efforts?: unknown } | undefined;
+  const efforts = effortLevelsOf(reasoning?.efforts);
+  if (efforts) row.efforts = efforts;
+  const huggingFace = typeof model.hugging_face_id === "string" ? model.hugging_face_id : undefined;
+  if (huggingFace) row.pricingModel = huggingFace.startsWith("hf:") ? huggingFace : `hf:${huggingFace}`;
+  return row;
+}
+
+async function fetchOpenAiModels(baseUrl: string, apiKey?: string): Promise<OpenAiModelRow[]> {
   const url = `${baseUrl.replace(/\/$/, "")}/models`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), DISCOVER_TIMEOUT_MS);
@@ -309,8 +376,8 @@ async function fetchOpenAiModels(baseUrl: string, apiKey?: string): Promise<stri
       signal: controller.signal,
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const body = (await res.json()) as { data?: Array<{ id?: string }> };
-    return (body.data ?? []).map((m) => m.id).filter((id): id is string => typeof id === "string" && id.length > 0);
+    const body = (await res.json()) as { data?: Array<Record<string, unknown>> };
+    return (body.data ?? []).map(rowOf).filter((row): row is OpenAiModelRow => row !== undefined);
   } finally {
     clearTimeout(timer);
   }
@@ -558,9 +625,21 @@ export class ModelCatalog {
             throw new Error(`provider "${name}" has type "${provider.type ?? "openai"}" and no baseUrl to discover from`);
           }
           const apiKey = provider.apiKeyEnv ? process.env[provider.apiKeyEnv] : undefined;
-          const ids = await fetchOpenAiModels(provider.baseUrl, apiKey);
-          for (const id of ids) {
-            next.push(discoveredModel({ id, label: id, provider: name, group: provider.group }));
+          const rows = await fetchOpenAiModels(provider.baseUrl, apiKey);
+          for (const row of rows) {
+            // Only what the listing stated, nothing invented: an endpoint that answers ids keeps
+            // `label: id` and no limit, and models.dev fills the rest downstream.
+            const limit = { context: row.context, output: row.output };
+            next.push(discoveredModel({
+              id: row.id,
+              label: row.label ?? row.id,
+              provider: name,
+              group: provider.group,
+              ...(row.vision !== undefined ? { vision: row.vision } : {}),
+              ...(row.efforts ? { supportsEffort: true, supportedEffortLevels: row.efforts } : {}),
+              ...(limit.context !== undefined || limit.output !== undefined ? { limit } : {}),
+              ...(row.pricingModel ? { pricingModel: row.pricingModel } : {}),
+            }));
           }
         }
       } catch (err) {

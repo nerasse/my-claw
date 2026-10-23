@@ -274,6 +274,13 @@ export interface LlmModelConfig {
    * The id the provider's API knows, when `id` is qualified. Absent means the two are the same.
    */
   apiId?: string;
+  /**
+   * The id a bill would name, when the provider sells an upstream model under its own alias
+   * (Synthetic's `syn:large:text` is `hf:deepseek-ai/DeepSeek-V4.1-Flash-1017`). Pricing and the
+   * capabilities models.dev publishes are looked up under it; the wire still sends `apiId`.
+   * Only discovery writes it. See docs/model-discovery.md.
+   */
+  pricingModel?: string;
   provider?: string;
   // Optional submenu grouping for the model picker: models sharing a `group` value are
   // collapsed behind a single "<group> >" entry in /model. A "/"-separated value nests

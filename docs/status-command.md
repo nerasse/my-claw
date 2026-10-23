@@ -303,12 +303,15 @@ one company, so there is nothing to infer. `ENGINE_PROVIDER` is the map, and it 
 | `claude-sdk` | `anthropic` | 59 |
 | `https://api.anthropic.com` | `anthropic` | 14 125 |
 | `https://chatgpt.com/backend-api` | `openai` | 9 |
+| `https://api.synthetic.new` | `synthetic` | plan, reference price |
 
 `api.anthropic.com` needs the entry for the same reason `claude-sdk` does, only louder: models.dev
 publishes no api base for `anthropic` itself, only for Anthropic-compatible third parties, so host
 resolution cannot find it and the row falls to the cross-market median. Subscription auth is not
 metered, so both are reference prices -- but they are reference prices at the vendor's tariff, which
-is the whole point of naming the engine.
+is the whole point of naming the engine. Synthetic is there for the same two reasons: a monthly plan
+is not a wallet, and its `syn:` aliases are priced under the upstream `hf:` id discovery records
+(`pricingModel`), not under the alias.
 
 **`claude-sdk` was missing from that map while this table claimed it was there.** The two Claude rows
 of one report disagreed -- the native host at 5/25 per million, the SDK at a median over 28 resellers

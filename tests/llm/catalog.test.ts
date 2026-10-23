@@ -586,3 +586,83 @@ test("a disabled provider is not queried, and does not keep discovery enabled", 
     token.restore();
   }
 });
+
+test("discovery reads the capabilities a /models row publishes, and the id it resells", async () => {
+  const mock = mockFetch(
+    async () =>
+      new Response(
+        JSON.stringify({
+          data: [
+            {
+              id: "syn:large:text",
+              display_name: "DeepSeek V4.1 Flash",
+              context_length: 524_288,
+              max_output_length: 65_536,
+              input_modalities: ["text", "image"],
+              reasoning_parameters: { efforts: ["none", "low", "high", "xhigh", "max"] },
+              hugging_face_id: "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+            },
+            { id: "plain:model" },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+  );
+  try {
+    const config: LlmConfig = {
+      providers: { synthetic: { baseUrl: "https://api.synthetic.new/openai/v1", discover: true, group: "Synthetic" } },
+      models: [],
+    };
+    const catalog = new ModelCatalog(() => config);
+    await catalog.refresh();
+
+    const alias = catalog.discovered().find((m) => m.id === "synthetic/syn:large:text");
+    assert.equal(alias?.label, "DeepSeek V4.1 Flash");
+    assert.equal(alias?.apiId, "syn:large:text");
+    assert.equal(alias?.vision, true);
+    assert.deepEqual(alias?.limit, { context: 524_288, output: 65_536 });
+    assert.equal(alias?.supportsEffort, true);
+    assert.deepEqual(alias?.supportedEffortLevels, ["none", "low", "high", "xhigh", "max"]);
+    // The price sheet knows the upstream model, never the alias.
+    assert.equal(alias?.pricingModel, "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017");
+
+    // A row that declares only an id invents nothing.
+    const plain = catalog.discovered().find((m) => m.id === "synthetic/plain:model");
+    assert.equal(plain?.label, "plain:model");
+    assert.equal(plain?.limit, undefined);
+    assert.equal(plain?.vision, undefined);
+    assert.equal(plain?.supportsEffort, undefined);
+    assert.equal(plain?.pricingModel, undefined);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("an alias takes its window and reasoning field from the upstream id it resells", () => {
+  const providers = { synthetic: { baseUrl: "https://api.synthetic.new/openai/v1" } };
+  const models: LlmModelConfig[] = [
+    {
+      id: "synthetic/syn:large:text",
+      apiId: "syn:large:text",
+      pricingModel: "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017",
+      label: "syn:large:text",
+      provider: "synthetic",
+    },
+  ];
+  const windows = {
+    contextWindowOf: (id: string) => (id === "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017" ? { tokens: 524_288 } : undefined),
+  };
+  const windowed = applyModelWindows(models, providers, windows);
+  assert.equal(windowed[0]?.limit?.context, 524_288);
+  assert.equal(windowed[0]?.contextFrom, "models.dev");
+
+  const metadata = {
+    metadataOf: (id: string) =>
+      id === "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017"
+        ? { reasoningField: "reasoning_content" as const, effortLevels: ["low", "high"] as EffortLevel[], source: "test" }
+        : undefined,
+  };
+  const described = applyModelMetadata(windowed, providers, metadata);
+  assert.equal(described[0]?.reasoningField, "reasoning_content");
+  assert.deepEqual(described[0]?.supportedEffortLevels, ["low", "high"]);
+});

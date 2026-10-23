@@ -65,6 +65,27 @@ live list from the source of truth so `/model` always reflects what the account 
   server pushes that snapshot and the model list after every pass, so the page of a provider just
   added moves from "asking" to its models or to the reason it has none.
 
+## What a row may carry besides its id (2026-10-23)
+
+An OpenAI-compatible `/models` answer is normally a list of ids. Some providers publish the
+model's own description there, and a row is read for it, field by field, with anything absent
+left absent:
+
+| Field | Read from |
+|---|---|
+| label | `display_name` |
+| context window | `context_length`, or `max_input_tokens` |
+| output limit | `max_output_length`, `max_completion_tokens`, or `max_output_tokens` |
+| vision | `input_modalities` containing `image` |
+| effort ladder | `reasoning_parameters.efforts` (filtered to our vocabulary, ordered bottom-up) |
+| upstream id | `hugging_face_id`, written as `pricingModel` (`hf:<owner>/<model>`) |
+
+This is what makes Synthetic usable as declared: it lists `syn:large:text`, `syn:small:text` and
+`infinite:*` aliases that the models.dev table does not know, while the price and the reasoning
+field belong to the upstream `hf:` model behind each alias. `pricingModel` is therefore looked up
+first, in `applyModelWindows`, `applyModelMetadata` and `ModelPricing.costOf`, and the wire still
+sends the alias. A provider that publishes ids and nothing else behaves exactly as before.
+
 ## Scope and limits
 
 - The Claude SDK control call exposes only family aliases (`sonnet`, `opus`, `haiku`); the
@@ -73,10 +94,12 @@ live list from the source of truth so `/model` always reflects what the account 
 - `ultra` exists on Codex only (`gpt-5.6-sol`, `gpt-5.6-terra`). The Claude SDK caps at `max`, so
   an `ultra` session effort is clamped to `max` with a warning when the run lands on Claude; the
   rungs below its ladder (`minimal`, `none`) clamp to `low` the same way.
-- An OpenAI-compatible provider answers `/v1/models` with ids and nothing else, so its capabilities
-  are filled in from the models.dev catalogue we already download for prices — reasoning ladder,
-  display name, vision, output limit. Gap-filling only: a provider that describes its own models
-  always wins. See `docs/model-metadata.md`.
+- An OpenAI-compatible provider that answers `/v1/models` with ids and nothing else has its
+  capabilities filled in from the models.dev catalogue we already download for prices — reasoning
+  ladder, display name, vision, output limit. Gap-filling only: a provider that describes its own
+  models always wins. See `docs/model-metadata.md`.
+- A provider that publishes its own row (context, output, modalities, efforts) is authoritative for
+  those fields; models.dev only adds what the row did not state (usually the reasoning field).
 - Menu callbacks carry a fixed-width digest of the model id (`mdl:<ref>`), not a list position, so
   a menu left open across a discovery refresh still designates the model it displayed. A ref that
   no longer resolves reports the menu as out of date instead of selecting a neighbour. The digest

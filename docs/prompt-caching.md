@@ -27,6 +27,13 @@ Scope is deliberately narrow:
 It is **opt-in per provider** (`promptCache: true`) because a few strict OpenAI endpoints reject
 unknown fields inside message content — so we never send it unless the owner declares support.
 
+Some engines cache the prefix with no hint at all and no opt-in. Measured on Synthetic
+(`api.synthetic.new`, 2026-10-23): the same 1 214-token prompt sent twice answered
+`prompt_tokens_details.cached_tokens: 1152` on the second call, with no `cache_control` and no
+`prompt_cache_key` in the request. Its aliases are open models (DeepSeek, GLM, Kimi, Qwen), which
+are the `implicit` dialect, so `promptCache` is left off there: the field would be ignored, and an
+implicit engine keys its own prefix cache on the prompt bytes.
+
 ## How it works
 
 `applyPromptCache()` in `src/llm/provider.ts` (called from `buildRequestBody` only when

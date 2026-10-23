@@ -127,6 +127,9 @@ export interface UsageForCost {
 const ENGINE_PROVIDER: Record<string, string> = {
   "api.anthropic.com": "anthropic",
   "chatgpt.com": "openai",
+  // A plan, not a metered API: its weekly credits pay for every model, so a call is priced at the
+  // published tariff as a reference and never as money owed.
+  "api.synthetic.new": "synthetic",
   // The subscription SDK transport. Without it the Claude rows written through the SDK fell to the
   // cross-market median while the same model on the native host, one line below, was priced at the
   // vendor's tarif -- two answers for one model on one page.
@@ -281,9 +284,27 @@ export class ModelPricing {
     private declaredProviders: () => Record<string, { baseUrl?: string; pricingProvider?: string }>,
     // Discovered models, used only to resolve an alias to a concrete version. Optional so the
     // price table stays usable without a catalogue.
-    private catalogModels: () => Array<{ id: string; apiId?: string; group?: string; limit?: { context?: number } }> = () => [],
+    private catalogModels: () => Array<{
+      id: string;
+      apiId?: string;
+      pricingModel?: string;
+      group?: string;
+      limit?: { context?: number };
+    }> = () => [],
   ) {
     this.loadCache();
+  }
+
+  /**
+   * The id a bill names, when discovery mapped a reseller alias to the upstream model it serves.
+   *
+   * Synthetic lists `syn:large:text` on the wire and `hf:deepseek-ai/...` in its price sheet; the
+   * catalog records the second on the model, and the table knows only that one. Anything without a
+   * mapping (the normal case) is returned unchanged.
+   */
+  private pricingIdOf(model: string): string {
+    const hit = this.catalogModels().find((m) => (m.apiId ?? m.id) === model);
+    return hit?.pricingModel ?? model;
   }
 
   /**
@@ -390,9 +411,13 @@ export class ModelPricing {
 
     if (!this.cache) return undefined;
 
+    // The id the bill names. A reseller sells an upstream model under its own alias (Synthetic's
+    // `syn:large:text` is models.dev's `hf:deepseek-ai/...`), and no table carries the alias.
+    const model = this.pricingIdOf(usage.model);
+
     const engine = ENGINE_PROVIDER[usage.baseUrl] ?? ENGINE_PROVIDER[hostOf(usage.baseUrl)];
     if (engine) {
-      const hit = this.lookupCost(engine, usage.model);
+      const hit = this.lookupCost(engine, model);
       // Subscription auth is not metered, so this is a reference price whatever the table says.
       if (hit) return this.priced(usage, hit.cost, false, hit.approximate, `engine ${engine}`);
     }
@@ -408,10 +433,10 @@ export class ModelPricing {
       // The rung that answered, unless the host is what resolved it: then the url we used is the
       // more informative half of the trace.
       const label = resolved.how === "host" ? fallbackLabel : resolved.how;
-      const hit = this.lookupCost(provider, usage.model);
+      const hit = this.lookupCost(provider, model);
       if (!hit) {
-        const vendor = this.vendorByModelId(usage.model);
-        const vendorHit = vendor ? this.lookupCost(vendor, usage.model) : undefined;
+        const vendor = this.vendorByModelId(model);
+        const vendorHit = vendor ? this.lookupCost(vendor, model) : undefined;
         if (vendorHit && !isFree(vendorHit.cost)) {
           return this.priced(usage, vendorHit.cost, false, vendorHit.approximate, `vendor ${vendor}`);
         }
@@ -420,7 +445,7 @@ export class ModelPricing {
       if (!isFree(hit.cost)) return this.priced(usage, hit.cost, true, hit.approximate, `${label} ${provider}`);
       // Never report zero: climb from a flat plan to the vendor for a comparable figure.
       const vendor = this.vendorOf(provider);
-      const vendorHit = vendor ? this.lookupCost(vendor, usage.model) : undefined;
+      const vendorHit = vendor ? this.lookupCost(vendor, model) : undefined;
       if (vendorHit && !isFree(vendorHit.cost)) {
         return this.priced(usage, vendorHit.cost, false, vendorHit.approximate, `plan ${provider} via ${vendor}`);
       }
@@ -436,7 +461,7 @@ export class ModelPricing {
 
     // 5. Last resort. A median describes what a model costs on the open market, not what this
     //    deployment pays for it, so it is never billed and always approximate.
-    const median = this.medianCost(usage.model);
+    const median = this.medianCost(model);
     if (median) return this.priced(usage, median.cost, false, true, `median of ${median.offers}`);
     return undefined;
   }

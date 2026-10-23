@@ -634,3 +634,43 @@ test("a genuine short form still resolves to its family", () => {
   expect(p.metadataOf("claude-fable", OPENROUTER_URL)?.label).toBe("Claude Fable 5.1");
   expect(p.contextWindowOf("claude-fable", OPENROUTER_URL)?.tokens).toBe(1_000_000);
 });
+
+test("an alias is priced and described under the upstream id the provider resells", () => {
+  mkdirSync(MY_CLAW_DIR, { recursive: true });
+  writeFileSync(
+    join(MY_CLAW_DIR, "model-pricing.json"),
+    JSON.stringify({
+      version: CACHE_VERSION,
+      fetchedAt: new Date().toISOString(),
+      hosts: { synthetic: "https://api.synthetic.new/openai/v1" },
+      models: {
+        synthetic: {
+          "hf:deepseek-ai/deepseek-v4.1-flash-1017": {
+            cost: { input: 0.6, output: 1.2, cacheRead: 0.03 },
+            id: "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017",
+            context: 524_288,
+          },
+        },
+      },
+    }),
+  );
+  const p = new ModelPricing(
+    () => ({}),
+    () => [
+      {
+        id: "synthetic/syn:large:text",
+        apiId: "syn:large:text",
+        pricingModel: "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017",
+        provider: "synthetic",
+        limit: { context: 524_288 },
+      },
+    ],
+  );
+  // No table carries the alias: without the mapping this falls to the market median.
+  expect(p.contextWindowOf("syn:large:text", "https://api.synthetic.new/openai/v1")).toBeUndefined();
+  const cost = p.costOf({ ...base, model: "syn:large:text", baseUrl: "https://api.synthetic.new/openai/v1" });
+  expect(cost?.usd).toBeCloseTo(0.6, 6);
+  expect(cost?.source).toBe("engine synthetic");
+  // A plan: the published tariff is a reference, never money owed.
+  expect(cost?.billed).toBe(false);
+});
