@@ -226,6 +226,27 @@ test("resolveLlmConfigForMessage ignores a fallback that is not a declared visio
   assert.equal(resolveLlmConfigForMessage(textOnly, undefined, true).model, "llama-3.3-70b");
 });
 
+test("resolveLlmConfigForMessage reroutes through a tag, and the run keeps the tag identity", () => {
+  const tagged: LlmConfig = {
+    ...visionFallbackConfig,
+    visionFallback: "tag:Vision",
+    tags: { Vision: { model: "accounts/fireworks/models/kimi-k2p6-turbo" } },
+  };
+  const resolved = resolveLlmConfigForMessage(tagged, undefined, true);
+  assert.equal(resolved.model, "tag:Vision");
+  assert.equal(resolved.apiModel, "accounts/fireworks/models/kimi-k2p6-turbo");
+  assert.equal(resolved.vision, true);
+});
+
+test("resolveLlmConfigForMessage reads the leaf of a tag: a text-only route does not hijack the run", () => {
+  const textTag: LlmConfig = {
+    ...visionFallbackConfig,
+    visionFallback: "tag:text",
+    tags: { text: { model: "llama-3.3-70b" } },
+  };
+  assert.equal(resolveLlmConfigForMessage(textTag, undefined, true).model, "llama-3.3-70b");
+});
+
 test("resolveLlmConfigForMessage without visionFallback keeps current behavior", () => {
   const none: LlmConfig = { ...visionFallbackConfig, visionFallback: undefined };
   assert.equal(resolveLlmConfigForMessage(none, undefined, true).model, "llama-3.3-70b");

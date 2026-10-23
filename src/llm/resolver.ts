@@ -354,7 +354,8 @@ export function resolveLlmConfig(
 
 /**
  * Like resolveLlmConfig, but reroutes the run to `visionFallback` when the message carries
- * images and the resolved model cannot take them. The fallback must be a declared,
+ * images and the resolved model cannot take them. The target may name a tag: the capability
+ * checked is the leaf model's, because that is what the run would end on. It must be a declared,
  * vision-capable model: a typo or a text-only target must never silently hijack the run.
  */
 export function resolveLlmConfigForMessage(
@@ -370,7 +371,9 @@ export function resolveLlmConfigForMessage(
 
   const fallbackId = config.visionFallback;
   if (!fallbackId || fallbackId === resolved.model) return resolved;
-  const fallbackModel = findModel(config, fallbackId);
+  const fallbackLeaf = leafModelId(config, fallbackId);
+  if (fallbackLeaf === (resolved.apiModel ?? resolved.model)) return resolved;
+  const fallbackModel = findModel(config, fallbackLeaf);
   if (!fallbackModel?.vision) return resolved;
 
   return resolveFromMerged(config, fallbackId, effortOverride, scopeEffort, missingTagFallback);

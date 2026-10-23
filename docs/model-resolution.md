@@ -40,7 +40,9 @@ Then, in order:
    `claude-sdk` (Claude subscription), `codex` (ChatGPT subscription), or an OpenAI-compatible
    HTTP provider. The engine is picked from the *resolved* model, never from the default.
 3. **Vision reroute.** When the message carries an image and the resolved model cannot take one,
-   the run switches to `config.llm.visionFallback` -- which may change the backend with it.
+   the run switches to `config.llm.visionFallback` -- which may change the backend with it. The
+   target may be a tag reference; it is expanded to the model its first route candidate lands on,
+   which is where the capability is read.
 
 Three different things are called a fallback; they never mix:
 

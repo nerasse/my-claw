@@ -1169,7 +1169,14 @@ async function main() {
             })(),
             // Whether the model accepts image input: the fallback picker needs it to offer only
             // models the resolver would actually reroute to. Mirrors the resolver's own guard.
-            ...(entry?.vision === undefined ? {} : { vision: entry.vision }),
+            // A tag is answered by the model its route lands on, since that is the capability the
+            // rerouted run would use.
+            ...(() => {
+              if (entry) return entry.vision === undefined ? {} : { vision: entry.vision };
+              if (tagNameOf(m.id) === undefined) return {};
+              const leafVision = findModel(config.llm, leafModelId(config.llm, m.id))?.vision;
+              return leafVision === undefined ? {} : { vision: leafVision };
+            })(),
             // What this model reads its own prior reasoning back from, and the answer budget it
             // was given. Both ride along so the edit form shows what actually runs -- a family
             // default included (docs/model-metadata.md) -- instead of an empty field over a real
@@ -1557,12 +1564,18 @@ async function main() {
         return writeAgentsConfig(`clear modèle ${agent}`);
       },
       setFallback: async (modelId) => {
-        // "" removes the pin; a model must be declared and vision-capable or the resolver would
-        // silently keep the original model at run time, which is a config that does nothing.
+        // "" removes the pin. A tag is accepted as it stands: it names a route, and the resolver
+        // reads the leaf's capability at run time, so a route that moves to a text-only model
+        // stops applying instead of failing a run.
         if (modelId !== "") {
-          const declared = findModel(config.llm, modelId);
-          if (!declared) throw new Error(`unknown model: ${modelId}`);
-          if (declared.vision !== true) throw new Error(`${modelId} cannot take images`);
+          const name = tagNameOf(modelId);
+          if (name !== undefined) {
+            if (name !== "Default" && !config.tags?.[name]) throw new Error(`unknown tag: ${modelId}`);
+          } else {
+            const declared = findModel(config.llm, modelId);
+            if (!declared) throw new Error(`unknown model: ${modelId}`);
+            if (declared.vision !== true) throw new Error(`${modelId} cannot take images`);
+          }
         }
         const result = await setVisionFallback(modelId);
         if (!result.ok) throw new Error(result.error);

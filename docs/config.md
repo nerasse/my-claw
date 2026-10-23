@@ -65,8 +65,9 @@ are covered too. See `docs/config-backup.md`.
 
 `visionFallback` (optional): model id to reroute a run to when the incoming message carries
 images and the resolved model (default or per-session override) has `vision: false`. The whole
-run uses the fallback model so it can see the image in context. The target must be a declared
-model with `vision: true`; otherwise the setting is ignored. Provider-agnostic: the switch
+run uses the fallback model so it can see the image in context. The target may name a tag: it is
+expanded to the model its route lands on, and that model must be a declared one with
+`vision: true`; otherwise the setting is ignored. Provider-agnostic: the switch
 happens in my-claw before the request, so it works with any backend (proxy, direct API, local).
 
 An image stays in the conversation for the turns that follow, not just the one it was attached
