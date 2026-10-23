@@ -770,7 +770,8 @@ export function displayOf(
         role: "assistant",
         text: entry.output,
         ts,
-        command: true,
+        // Cron reports are filed as commands for context, but read like the normal live message.
+        ...(entry.quiet && entry.input === "cron delivery" ? {} : { command: true }),
         ...(entry.details ? { details: entry.details } : {}),
       }));
       continue;

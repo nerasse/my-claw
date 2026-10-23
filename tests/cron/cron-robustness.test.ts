@@ -525,9 +525,19 @@ describe("follow-up: the conversation handles the report", () => {
       h.turns.push({ target, text });
       return true;
     };
-    await runOnce(h, createJob({ name: "veille", prompt: "p", schedule: "every 1h", origin, deliver: "origin" }));
+    const report = "## Results\n\n- **Ready**\n- [Details](https://example.com)";
+    const journaled: string[] = [];
+    h.scheduler.journal = async (_target, text) => {
+      h.order.push("journal");
+      journaled.push(text);
+    };
+    await runOnce(h, createJob({ name: "veille", prompt: "p", schedule: "every 1h", origin, deliver: "origin" }), report);
     expect(h.turns).toEqual([]);
     expect(h.order).toEqual(["journal", "frame"]);
+    expect(journaled).toEqual([`[Cron: veille]\n\n${report}`]);
+    expect(h.frames).toHaveLength(1);
+    expect(h.frames[0]).toMatchObject({ text: journaled[0], attachments: undefined });
+    expect(h.frames[0]).not.toHaveProperty("command");
   });
 
   test("a turn the channel refuses falls back to the note: the report is never lost", async () => {

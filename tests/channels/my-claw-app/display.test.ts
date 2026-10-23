@@ -421,6 +421,25 @@ describe("displayOf: what is shown and never sent", () => {
     expect(drawn[0]).toMatchObject({ id: "cmd-send-1", role: "assistant", text: "Undo: conversation rembobinée", command: true });
   });
 
+  test("a filed cron report replays as normal assistant Markdown, not command output", () => {
+    const text = "[Cron: daily report]\n\n## Results\n\n- **Ready**\n- [Details](https://example.com)";
+    const entries = chain([{ type: "command", prompt: true, input: "cron delivery", output: text, quiet: true }]);
+    const drawn = show(entries);
+    expect(drawn).toEqual([{
+      id: `cmd-${entries[0]!.id}`,
+      role: "assistant",
+      text,
+      ts: new Date(entries[0]!.ts).toISOString(),
+    }]);
+    expect(drawn[0]).not.toHaveProperty("command");
+  });
+
+  test("the cron label alone does not restyle an ordinary command", () => {
+    const drawn = show(chain([{ type: "command", prompt: false, input: "cron delivery", output: "ok" }]));
+    expect(drawn).toHaveLength(2);
+    expect(drawn[1]).toMatchObject({ role: "assistant", text: "ok", command: true });
+  });
+
   test("an old command without a source id keeps a stable fallback", () => {
     const entry = chain([{ type: "command", prompt: false, input: "/status", output: "ok" }])[0]!;
     const drawn = show([entry]);
