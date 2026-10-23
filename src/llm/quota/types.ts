@@ -6,7 +6,7 @@
  * 12 credits left says nothing about when a window refills, and a window at 100% says nothing
  * about a wallet.
  */
-export type QuotaSource = "claude" | "codex" | "opencode-go" | "openrouter";
+export type QuotaSource = "claude" | "codex" | "opencode-go" | "openrouter" | "synthetic";
 
 export interface QuotaWindow {
   /** Stable within a source: `session`, `weekly_all`, `rolling`, `month`... */

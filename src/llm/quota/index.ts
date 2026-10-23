@@ -12,6 +12,7 @@ import { claudeQuota, consumeClaudeReset } from "./claude.ts";
 import { codexQuota, consumeCodexReset } from "./codex.ts";
 import { opencodeGoQuota } from "./opencode-go.ts";
 import { openrouterQuota } from "./openrouter.ts";
+import { syntheticQuota } from "./synthetic.ts";
 import type { QuotaFailure, QuotaOutcome, QuotaProbe, QuotaRedemption, QuotaSource } from "./types.ts";
 
 export type { QuotaBalance, QuotaExtra, QuotaFailure, QuotaOutcome, QuotaRedemption, QuotaResetCredits, QuotaSnapshot, QuotaSource, QuotaWindow } from "./types.ts";
@@ -22,6 +23,7 @@ export const QUOTA_TTL_MS: Record<QuotaSource, number> = {
   codex: 120_000,
   "opencode-go": 120_000,
   openrouter: 120_000,
+  synthetic: 120_000,
 };
 
 const BACKOFF_BASE_MS = 30_000;
@@ -69,6 +71,8 @@ export function quotaSourceOf(provider: LlmProviderConfig | undefined): QuotaSou
   const host = hostOf(provider.baseUrl);
   if (host === "opencode.ai" && provider.baseUrl?.includes("/zen/go")) return "opencode-go";
   if (host === "openrouter.ai") return "openrouter";
+  // The key's plan, whatever path of theirs it points at (`/openai/v1` today).
+  if (host === "api.synthetic.new") return "synthetic";
   return undefined;
 }
 
@@ -103,6 +107,7 @@ async function probe(provider: string, config: LlmProviderConfig, source: QuotaS
     };
   }
   if (source === "opencode-go") return opencodeGoQuota(provider, key);
+  if (source === "synthetic") return syntheticQuota(provider, key);
   return openrouterQuota(provider, key, config.baseUrl);
 }
 

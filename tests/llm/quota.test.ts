@@ -13,6 +13,7 @@ import { claudeQuota, consumeClaudeReset } from "../../src/llm/quota/claude.ts";
 import { codexQuota, consumeCodexReset } from "../../src/llm/quota/codex.ts";
 import { opencodeGoQuota } from "../../src/llm/quota/opencode-go.ts";
 import { openrouterQuota } from "../../src/llm/quota/openrouter.ts";
+import { syntheticQuota } from "../../src/llm/quota/synthetic.ts";
 import { quotaFor, quotaSourceOf, resetQuotaCache } from "../../src/llm/quota/index.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 
@@ -219,6 +220,77 @@ test("openrouter pairs the wallet with the key, and survives a missing credits e
     if (result.ok) assert.equal(result.snapshot.balances.length, 0);
   } finally {
     onlyKey.restore();
+  }
+});
+
+const SYNTHETIC_BODY = {
+  subscription: { limit: 500, requests: 0, renewsAt: "2026-10-23T18:48:56.212Z" },
+  search: { hourly: { limit: 250, requests: 12, renewsAt: "2026-10-23T14:48:56.214Z" } },
+  planWeeklyLimit: { nextRegenAt: "2026-10-23T17:07:02.000Z", percentRemaining: 76, nextRegenPercent: 2 },
+};
+
+test("synthetic reads the weekly credit bar, the request window and the search allowance", async () => {
+  const mock = mockFetch(async (input) => {
+    assert.ok(String(input).endsWith("/v2/quotas"));
+    return json(SYNTHETIC_BODY);
+  });
+  try {
+    const result = await syntheticQuota("synthetic", "key");
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(result.snapshot.windows, [
+      { id: "five_hour", label: "5 h", usedPercent: 0, resetAt: "2026-10-23T18:48:56.212Z" },
+      { id: "weekly", label: "Week", usedPercent: 24, resetAt: "2026-10-23T17:07:02.000Z" },
+    ]);
+    assert.deepEqual(result.snapshot.extras, [
+      { label: "Search", value: "238 / 250 per hour" },
+      { label: "Regen", value: "+2 % per tick" },
+    ]);
+    assert.equal(result.snapshot.source, "synthetic");
+    // Synthetic banks no resettable credit an API key can spend.
+    assert.equal(result.snapshot.resets, undefined);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("synthetic reads the rolling window when the plan answers in the newer shape", async () => {
+  const mock = mockFetch(async () =>
+    json({
+      rollingFiveHourLimit: { max: 600, remaining: 90, tickPercent: 5, nextTickAt: "2026-10-23T14:15:00.000Z", limited: false },
+      weeklyTokenLimit: { percentRemaining: 0, nextRegenAt: "2026-10-23T15:00:00.000Z" },
+    }),
+  );
+  try {
+    const result = await syntheticQuota("synthetic", "key");
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(result.snapshot.windows, [
+      { id: "five_hour", label: "5 h", usedPercent: 85, resetAt: "2026-10-23T14:15:00.000Z" },
+      { id: "weekly", label: "Week", usedPercent: 100, resetAt: "2026-10-23T15:00:00.000Z" },
+    ]);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("synthetic: a refused key is a sign-in fault, an unknown body is a failed read", async () => {
+  let mock = mockFetch(async () => json({ error: "no" }, 401));
+  try {
+    const refused = await syntheticQuota("synthetic", "key");
+    assert.equal(refused.ok, false);
+    if (!refused.ok) assert.equal(refused.code, "not-signed-in");
+  } finally {
+    mock.restore();
+  }
+
+  mock = mockFetch(async () => json({ something: "else" }));
+  try {
+    const odd = await syntheticQuota("synthetic", "key");
+    assert.equal(odd.ok, false);
+    if (!odd.ok) assert.equal(odd.code, "failed");
+  } finally {
+    mock.restore();
   }
 });
 

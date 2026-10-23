@@ -12,6 +12,7 @@ when a run dies on a spent quota (`docs/quota-retry.md`).
 | `codex` | `GET https://chatgpt.com/backend-api/wham/usage` | the account's access token + `ChatGPT-Account-Id` | Undocumented: the endpoint the Codex app calls. `rate_limit.primary_window` / `secondary_window` are identified **by `limit_window_seconds`** (18000 = 5 h, 604800 = week, 2628000 = month), never by their slot. `credits.balance` is a count of credits, not money. `rate_limit_reset_credits.available_count` is the banked resets. |
 | `opencode-go` | `GET https://opencode.ai/zen/go/v1/usage` | the provider's API key | Undocumented but official (same origin as inference). `usage.rolling`, `weekly`, `monthly`, each `{status, percent, resetsAt}`; `status` is `ok` or `rate-limited`. The key names nobody, so the email comes from the console's member list (`/console/api/v1/budgets/members`): a Go workspace has one member, and a list with several names none of them. |
 | `openrouter` | `GET /api/v1/key` and `GET /api/v1/credits` | the provider's API key | `credits` is documented as management-key only but answers an ordinary key. `total_credits - total_usage` is the balance; the key's own `usage` and `limit` are separate. |
+| `synthetic` | `GET https://api.synthetic.new/v2/quotas` | the provider's API key | Documented, and calls to it are free. The plan is a weekly credit bar that regenerates in ticks: `planWeeklyLimit.percentRemaining` (older payloads: `weeklyTokenLimit`) plus `nextRegenAt` and `nextRegenPercent` (2 % every ~202 min). The rolling request window is `rollingFiveHourLimit` (`remaining`/`max`, `nextTickAt`, `limited`) when present, else the legacy `subscription` counter (`requests`/`limit`, `renewsAt` five hours out). `search.hourly` is the web-search allowance. Nothing names the plan or the account. |
 
 No source: Groq (only `x-ratelimit-*` on a billed response), Gemini (AI Studio only), LiteLLM
 (a virtual key is refused on `/key/info`). Those providers draw no card rather than an empty one.
@@ -29,6 +30,7 @@ another.
 | `codex` | 120 s |
 | `opencode-go` | 120 s |
 | `openrouter` | 120 s |
+| `synthetic` | 120 s |
 
 A probe is a read, not a run: it costs no tokens. The Claude bucket is per access token and
 punishes a caller without the claude User-Agent, which is why the interval is the longest of the
@@ -43,7 +45,7 @@ type, collapses concurrent probes, and caches. `force` bypasses the TTL, not a 4
 ```ts
 interface QuotaSnapshot {
   provider: string;
-  source: "claude" | "codex" | "opencode-go" | "openrouter";
+  source: "claude" | "codex" | "opencode-go" | "openrouter" | "synthetic";
   plan?: string;
   email?: string;
   windows: { id: string; label: string; usedPercent: number; resetAt?: string; windowSeconds?: number }[];
@@ -74,6 +76,12 @@ Both are read into `snapshot.resets` and spent by one explicit claim; nothing sp
 An unreadable answer to a claim (5xx, timeout, unparsable body) is `unknown` and is never retried:
 the request may have run, and a second one would spend a second reset.
 
+**Synthetic grants one usage reset a month, and no API key can spend it.** `/v2/quotas` does not
+carry the grant, the invoice-side reset is a dashboard action behind a browser session, and no
+endpoint for it appears in the public API surface (the only path named anywhere is
+`/admin/subscriptions/usage-reset-grants` on the web app, which is not the customer API). The card
+shows the two windows and their next regen tick instead of a button that would be a guess.
+
 ## The reset a retry waits for
 
 When a run dies on a spent quota, the same module is the reset oracle: ask the provider (fresh,
@@ -88,3 +96,5 @@ The decision and the UI of that wait live in `docs/quota-retry.md`.
 `tests/llm/quota.test.ts`: each adapter against a response captured from the live endpoint
 (assainie: emails, account ids and tokens removed), the window identified by duration rather than
 slot, 401 and 429 paths, the TTL, `force`, the stale-on-429 rule, and a provider with no source.
+Synthetic has both payload shapes (legacy `subscription` counter, newer `rollingFiveHourLimit`)
+and the weekly bar read as its complement, since the endpoint states what is *left*.
