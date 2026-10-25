@@ -3438,6 +3438,38 @@ export interface MyClawAppStatsPayload {
   filter: MyClawAppStatsFilter;
   /** The values the filter may be set to, computed without it. */
   facets: MyClawAppStatsFacets;
+  /** How the tools fared for the model over the period. docs/tool-telemetry.md. */
+  tools: MyClawAppStatsTools;
+}
+
+/** One tool over the period. A failure is what the model was told was one. */
+export interface MyClawAppStatsToolRow {
+  tool: string;
+  calls: number;
+  failures: number;
+  avgDurationMs: number;
+  /** Failures followed, in the same conversation, by another call to the same tool. */
+  retried: number;
+  /** Failures followed by a call to another tool: the model routing around this one. */
+  switched: number;
+  /** Successes read out of something that looks like a failure (`no-match`, `differ`, `noop-skipped`). */
+  outcomes: Record<string, number>;
+  /** The most frequent failure kinds, paths and ids taken out, most frequent first. */
+  topErrors: Array<{ kind: string; count: number }>;
+}
+
+export interface MyClawAppStatsTools {
+  /** Oldest call on record. */
+  since?: string;
+  /** The conversation logs older than the recorder have been read in. False while that runs. */
+  backfilled: boolean;
+  /**
+   * The filter only reaches the tools by conversation and caller. Set to anything else (a model, a
+   * workspace...), the tools are the whole period, and this says so.
+   */
+  filterApplied: boolean;
+  /** Ranked by calls. */
+  rows: MyClawAppStatsToolRow[];
 }
 
 /** The answer to one `stats.get`. */

@@ -42,6 +42,7 @@ import {
 } from "../sessions/compaction-speculative.ts";
 import { isOverflowError, isSilentOverflow } from "../llm/overflow.ts";
 import { recordApiCall } from "../analytics/usage-db.ts";
+import { recordToolCall } from "../analytics/tool-calls.ts";
 import { cacheAttributionOf } from "../llm/cache-policy.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import type { Tool } from "../tools/types.ts";
@@ -1293,6 +1294,15 @@ export class AgentBridge implements AgentBackend {
           });
 
           const durationMs = Date.now() - toolStartedAt;
+          recordToolCall({
+            sessionId: session.id,
+            caller: this.depth === 0 ? "orchestrator" : "subagent",
+            tool: tc.name,
+            ok: result.success,
+            durationMs,
+            ...(result.outcome ? { outcome: result.outcome } : {}),
+            ...(result.success ? {} : { error: result.content }),
+          });
 
           if (result.success) {
             hooks.emit("tool:execute:end", {
@@ -1707,7 +1717,7 @@ export class AgentBridge implements AgentBackend {
     // The exact tool set offered to the model this run. Passed rather than recomputed so the set
     // that can be executed is the same object the prompt and the API payload were built from.
     available: Tool[];
-  }): Promise<{ content: string; success: boolean; attachments?: Attachment[] }> {
+  }): Promise<{ content: string; success: boolean; attachments?: Attachment[]; outcome?: string }> {
     if (params.signal?.aborted) throw new AbortedError();
     // Resolved against the set this agent was offered, never the whole registry. A global lookup
     // executed anything the model named, which defeated three documented controls at once: the
@@ -1787,9 +1797,15 @@ export class AgentBridge implements AgentBackend {
           success: true,
           content: result.output.trim().length > 0 ? result.output : EMPTY_TOOL_OUTPUT,
           ...(result.attachments?.length ? { attachments: result.attachments } : {}),
+          ...(result.outcome ? { outcome: result.outcome } : {}),
         };
       }
-      const detail = (result.error ?? result.output).trim();
+      // The error and the output both, never one for the other: a failed command's stdout and
+      // stderr are what tell the model why. From 2026-06-07 to 2026-10-25 a tool that set both kept
+      // only the error, so every failed bash reached the model as "exit code 1" and nothing else.
+      const error = result.error?.trim() ?? "";
+      const output = result.output.trim();
+      const detail = [error, output === error ? "" : output].filter((part) => part.length > 0).join("\n\n");
       return {
         success: false,
         content: `Error: ${detail.length > 0 ? detail : "tool failed with no message"}`,

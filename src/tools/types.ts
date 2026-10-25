@@ -12,6 +12,13 @@ export interface ToolResult {
    * regenerated one is never sent twice (docs/tool-images.md).
    */
   keepFromReply?: boolean;
+  /**
+   * A success the tool had to read out of something that looks like a failure: a search that found
+   * nothing (`no-match`), a diff that found differences (`differ`), a patch that carried edits
+   * changing nothing (`noop-skipped`). Never shown to the model; the tool telemetry counts it, so a
+   * call that used to be a false failure stays visible (docs/tool-telemetry.md).
+   */
+  outcome?: string;
 }
 
 export interface Tool {

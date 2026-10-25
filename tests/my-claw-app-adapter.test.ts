@@ -4749,6 +4749,7 @@ describe("command frames", () => {
     reconciliation: [],
     filter: {},
     facets: { models: [], providers: [], providerLabels: {}, callers: [], sessions: [], workspaces: [], folders: [] },
+    tools: { backfilled: true, filterApplied: true, rows: [] },
   };
 
   test("stats.get answers the install-wide report for the period it names, and nothing per thread", async () => {

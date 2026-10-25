@@ -187,7 +187,7 @@ over a per-session ranking that silently starts in June, is not -- and that is e
 screen of today was doing. `rollupIncluded` says whether this particular answer crossed the wall;
 only `all` ever does, and only once a purge has run.
 
-## The eight views
+## The nine views
 
 All of them answer on a period: `7d`, `30d`, `90d`, `all`. A bounded period reads live rows alone --
 the purge only removes rows older than 90 days, so a bounded window and the rollup cannot describe
@@ -213,6 +213,10 @@ the same call. `all` adds the rollup.
    key, with the balance when there is one. A host we can only compare with itself is a row of the
    provider ranking, not a reconciliation, so it is not listed here.
 8. **Callers** -- `orchestrator`, `subagent`, `browser`, `compaction`, `compaction-speculative`.
+9. **Tools** -- how each tool fared for the model: calls, failure rate, what came next after a
+   failure (same tool again, or another one), the successes read out of an exit 1, the most
+   frequent failure kinds. Its own table (`tool_calls`), not `api_calls`, so the filter reaches it
+   by conversation and caller only. See docs/tool-telemetry.md.
 
 The first two, and 5, 6, 7 are all folded in TypeScript from **one** query (`usageByModel`), which
 is why the page costs four round trips to SQLite and not eight.

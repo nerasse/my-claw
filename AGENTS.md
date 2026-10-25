@@ -214,7 +214,8 @@ src/
 │   └── push.ts            # UnifiedPush (self-hosted ntfy), no Firebase -- docs/notifications.md
 ├── analytics/
 │   ├── usage-db.ts        # SQLite analytics (per-API-call token tracking) + the monthly rollup the purge feeds
-│   └── usage-stats.ts     # Install-wide aggregates over a period, rollup included -- docs/stats-page.md
+│   ├── usage-stats.ts     # Install-wide aggregates over a period, rollup included -- docs/stats-page.md
+│   └── tool-calls.ts      # One row per tool call as the model met it, backfilled from the logs -- docs/tool-telemetry.md
 ├── approvals/
 │   └── store.ts           # SQLite journal of every tool-approval outcome -- docs/my-claw-app-channel.md
 ├── memory/                # Active memory: SQLite store, hybrid recall, dedup, consolidation

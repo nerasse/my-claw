@@ -1,6 +1,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { attributeCallsToProviders, closeDb, usageHorizon } from "./analytics/usage-db.ts";
+import { backfillToolCalls } from "./analytics/tool-calls.ts";
 import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, loadSession, loadLegacySession } from "./sessions/store.ts";
 import { sessionLogOf } from "./sessions/log-access.ts";
 import { promptOf } from "./sessions/projection.ts";
@@ -382,6 +383,11 @@ async function main() {
   } catch (err) {
     void log("warn", "past calls could not be attributed to their provider", { error: String(err) });
   }
+  // The tool calls made before the recorder existed, read once from the conversation logs. Off the
+  // boot path: it walks every log on disk, and the stats page says "backfilling" until it is done.
+  void backfillToolCalls()
+    .then((n) => { if (n > 0) void log("info", "tool calls backfilled from the logs", { calls: n }); })
+    .catch((err) => void log("warn", "tool call backfill failed", { error: String(err) }));
   // A capture writes blobs and trees and no commit, so nothing in a shadow is reachable from a
   // ref and nothing ever pruned them: 247 MB of objects for snapshots long expired. Daily, and
   // never on the path of a run.

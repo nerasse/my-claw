@@ -178,12 +178,75 @@ export function bashEnv(
   return env;
 }
 
+/** Searches that exit 1 when they find nothing: an answer, not a failure. */
+const SEARCH_COMMANDS = new Set(["grep", "egrep", "fgrep", "zgrep", "rg", "ag", "ugrep"]);
+/** Comparisons that exit 1 when the inputs differ, with the differences on stdout. */
+const DIFF_COMMANDS = new Set(["diff", "cmp"]);
+/** Words that run the command after them, so the command is the next word. */
+const PREFIX_WORDS = new Set(["sudo", "command", "exec", "nice", "nohup", "time"]);
+
+/**
+ * The last simple command of a command line: the one whose status the shell returns. Quote-aware,
+ * so `rg 'a|b' src` is one command; `$(...)` and heredocs are not parsed, which only ever errs
+ * towards calling a real failure a failure.
+ */
+function lastSimpleCommand(command: string): string {
+  let start = 0;
+  let quote = "";
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]!;
+    if (quote) {
+      if (c === quote) quote = "";
+      else if (c === "\\" && quote === '"') i++;
+    } else if (c === "'" || c === '"') {
+      quote = c;
+    } else if (c === "\\") {
+      i++;
+    } else if (c === "&" && (command[i - 1] === ">" || command[i - 1] === "<" || command[i + 1] === ">")) {
+      continue; // 2>&1, &>file: a redirection, not a separator
+    } else if (c === "|" || c === ";" || c === "&" || c === "\n") {
+      start = i + 1;
+    }
+  }
+  return command.slice(start);
+}
+
+/**
+ * What an exit status of 1 means for this command line, when it means something other than a
+ * failure: a search that matched nothing, a diff that found differences. Undefined for everything
+ * else, and for anything the last command does not plainly name (a loop, a function): those stay
+ * failures. Claude Code made the same call for the same reason (2.1.144): a search that finds
+ * nothing reported as `Command failed` reads as a broken command, and the model starts working
+ * around a tool that worked (docs/tool-telemetry.md).
+ */
+export function exitOneMeaning(command: string): "no-match" | "differ" | undefined {
+  const words = lastSimpleCommand(command).trim().split(/\s+/).filter((w) => w !== "(" && w !== "{");
+  let i = 0;
+  while (i < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i]!) || PREFIX_WORDS.has(words[i]!))) i++;
+  if (words[i] === "timeout") i += 2;
+  const name = (words[i] ?? "").split("/").pop() ?? "";
+  if (SEARCH_COMMANDS.has(name)) return "no-match";
+  if (DIFF_COMMANDS.has(name)) return "differ";
+  if (name !== "git") return undefined;
+  // `git -C <dir> --no-pager grep`: the subcommand is the first word that is not an option.
+  for (i += 1; i < words.length; i++) {
+    const word = words[i]!;
+    if (word === "-C" || word === "-c") { i++; continue; }
+    if (word.startsWith("-")) continue;
+    if (word === "grep") return "no-match";
+    if (word === "diff") return "differ";
+    return undefined;
+  }
+  return undefined;
+}
+
 export const bashTool: Tool = {
   name: "bash",
   description:
     "Execute a shell command. The call is killed after a wall (default 5 minutes): pass " +
     "`timeout` in milliseconds (up to 3600000) for long builds and test runs, and detach with " +
-    "setsid for a job that must outlive the call.",
+    "setsid for a job that must outlive the call. A search (grep, rg, git grep) that finds nothing, " +
+    "or a diff that finds differences, exits 1: that is reported as a success, with the exit noted.",
   parameters: {
     type: "object",
     properties: {
@@ -195,7 +258,7 @@ export const bashTool: Tool = {
           "instead of prefixing the command with 'cd'. Relative paths resolve against the workspace; " +
           "absolute paths are used as-is. Defaults to the workspace root.",
       },
-      timeout: { type: "number", description: "Timeout in milliseconds (default 120000)" },
+      timeout: { type: "number", description: "Timeout in milliseconds (default 300000)" },
     },
     required: ["command"],
   },
@@ -311,6 +374,11 @@ export const bashTool: Tool = {
       if (exitCode === 0) {
         return { success: true, output };
       }
+      const meaning = exitCode === 1 && stderr.trim() === "" ? exitOneMeaning(command) : undefined;
+      if (meaning) {
+        const note = meaning === "no-match" ? "[exit 1: no match]" : "[exit 1: the inputs differ]";
+        return { success: true, outcome: meaning, output: output.trim() ? `${output.replace(/\n$/, "")}\n${note}` : note };
+      }
       // A wall, a memory ceiling and an external kill all end in SIGKILL; only the first two are
       // ours to explain, and saying "memory limit" for a 45-minute timeout would be a lie.
       if (wallHit) {
@@ -337,7 +405,7 @@ export const bashTool: Tool = {
       return {
         success: false,
         output,
-        error: `Command failed with exit code ${exitCode}. Check STDERR above for details.`,
+        error: `Command failed with exit code ${exitCode}.`,
       };
     } catch (e) {
       rethrowIfAborted(e, signal);

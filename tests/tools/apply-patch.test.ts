@@ -146,6 +146,34 @@ test("apply_patch: an edit that changes nothing is refused, not written", async 
   }
 });
 
+test("apply_patch: an unchanged block in a batch is skipped, the real edits beside it applied", async () => {
+  const path = await file("g2.ts", "one\ntwo\nthree\n");
+  try {
+    const result = await applyPatchTool.execute({
+      path,
+      edits: [{ old: "one", new: "uno" }, { old: "two", new: "two" }, { old: "three", new: "tres" }],
+    });
+    assert.equal(result.success, true);
+    assert.equal(result.outcome, "noop-skipped");
+    assert.equal(await readFile(path, "utf-8"), "uno\ntwo\ntres\n");
+    assert.match(result.output, /2 edits/);
+    assert.match(result.output, /edits\[1\]: old and new are identical, skipped/);
+  } finally {
+    await rm(TMP, { recursive: true, force: true });
+  }
+});
+
+test("apply_patch: a batch made only of unchanged blocks is refused", async () => {
+  const path = await file("g3.ts", "a\nb\n");
+  try {
+    const result = await applyPatchTool.execute({ path, edits: [{ old: "a", new: "a" }, { old: "b", new: "b" }] });
+    assert.equal(result.success, false);
+    assert.match(result.output, /every edit changes nothing/);
+  } finally {
+    await rm(TMP, { recursive: true, force: true });
+  }
+});
+
 test("apply_patch: malformed edits are named rather than silently skipped", async () => {
   const path = await file("h.ts", "content\n");
   try {

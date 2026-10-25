@@ -15,6 +15,10 @@ interface Edit {
   all: boolean;
 }
 
+function isNoop(edit: Edit): boolean {
+  return edit.old === edit.new;
+}
+
 /** How many lines of the file to name around an ambiguous anchor, so the model can extend it. */
 const AMBIGUITY_SAMPLE = 5;
 
@@ -29,10 +33,16 @@ function parseEdits(raw: unknown): { edits: Edit[]; error?: string } {
     if (oldText === undefined) return { edits: [], error: `edits[${index}].old is required.` };
     if (newText === undefined) return { edits: [], error: `edits[${index}].new is required (use "" to delete the block).` };
     if (oldText === "") return { edits: [], error: `edits[${index}].old cannot be empty: anchor the edit on text that exists.` };
-    if (oldText === newText) return { edits: [], error: `edits[${index}] changes nothing: old and new are identical.` };
     edits.push({ old: oldText, new: newText, all: bool(record, "all", false) });
   }
   if (edits.length === 0) return { edits: [], error: "edits is empty: nothing to apply." };
+  // An unchanged block slipped into a batch is skipped, not a reason to refuse the real edits beside
+  // it: refusing made the model redo the whole batch (the first cause of failure, 2026-10-25). A
+  // batch made only of them is still refused, since the model believes it changed something.
+  if (edits.every(isNoop)) {
+    const which = edits.length === 1 ? "edits[0] changes" : "every edit changes";
+    return { edits: [], error: `${which} nothing: old and new are identical.` };
+  }
   return { edits };
 }
 
@@ -108,7 +118,13 @@ export const applyPatchTool: Tool = {
 
     let next = original;
     const applied: string[] = [];
+    let skipped = 0;
     for (const [index, edit] of parsed.edits.entries()) {
+      if (isNoop(edit)) {
+        skipped += 1;
+        applied.push(`edits[${index}]: old and new are identical, skipped`);
+        continue;
+      }
       const found = occurrences(next, edit.old);
       if (found === 0) {
         // Nothing is written: a partial patch is worse than a refused one, since the model would
@@ -159,10 +175,12 @@ export const applyPatchTool: Tool = {
     // what changed rather than a re-echo of the whole file. Cosmetic only -- the file on disk is
     // the source of truth.
     const diff = buildUnifiedDiff(resolved, original, next);
+    const made = parsed.edits.length - skipped;
     return {
       success: true,
+      ...(skipped > 0 ? { outcome: "noop-skipped" } : {}),
       output:
-        `Patched ${resolved} (${parsed.edits.length} edit${parsed.edits.length > 1 ? "s" : ""}, ` +
+        `Patched ${resolved} (${made} edit${made > 1 ? "s" : ""}, ` +
         `${before} -> ${after} lines${delta === 0 ? "" : `, ${delta > 0 ? "+" : ""}${delta}`}).\n` +
         (diff.length > 0 ? `${diff}\n` : "") +
         applied.join("\n"),

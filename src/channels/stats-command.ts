@@ -1,5 +1,6 @@
 import type { MyClawConfig } from "../core/config.ts";
 import { usageHorizon } from "../analytics/usage-db.ts";
+import { toolStats } from "../analytics/tool-calls.ts";
 import {
   filterNarrows,
   filterReachesRollup,
@@ -38,6 +39,7 @@ import type {
   MyClawAppStatsReconciliation,
   MyClawAppStatsReliabilityRow,
   MyClawAppStatsSessionRow,
+  MyClawAppStatsTools,
   MyClawAppStatsTotals,
 } from "./my-claw-app/types.ts";
 
@@ -414,7 +416,15 @@ export async function statsReport(p: StatsParams): Promise<MyClawAppStatsPayload
     callers,
     reconciliation: reconciliationRows(p.config, models, labelOf),
     facets,
+    tools: toolsOf(p.period, filter),
   };
+}
+
+function toolsOf(period: MyClawAppStatsPeriod, filter: MyClawAppStatsFilter): MyClawAppStatsTools {
+  const { sessionId, caller, ...rest } = filter;
+  const filterApplied = !Object.values(rest).some((value) => value !== undefined && value !== false);
+  const stats = toolStats(period, filterApplied ? { ...(sessionId ? { sessionId } : {}), ...(caller ? { caller } : {}) } : {});
+  return { ...stats, filterApplied };
 }
 
 function sortedKeys(values: Iterable<string>): string[] {

@@ -359,6 +359,35 @@ describe("AgentBridge error handling", () => {
     }
   });
 
+  test("a failure reaches the model with its output, not only its error", async () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      name: "loud_fail",
+      description: "fails with output",
+      parameters: {},
+      async execute() {
+        return { success: false, output: "STDERR: grep: missing.txt: No such file", error: "Command failed with exit code 2." };
+      },
+    });
+    const bridge = new AgentBridge(config, registry, new SkillRegistry());
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
+    let callCount = 0;
+    const mock = mockFetch(async () => {
+      callCount++;
+      if (callCount === 1) return toolCallResponse("loud_fail") as never;
+      return okResponse("seen") as never;
+    });
+    try {
+      await bridge.handleMessage(createMessage(), createSession(), signal);
+      await log.flush();
+      const toolEntry = log.entries().find((e): e is ToolEntry => e.type === "tool");
+      expect(toolEntry!.output).toBe("Error: Command failed with exit code 2.\n\nSTDERR: grep: missing.txt: No such file");
+    } finally {
+      mock.restore();
+      end();
+    }
+  });
+
   test("session messages are recorded even when LLM fails", async () => {
     const registry = new ToolRegistry();
     const bridge = new AgentBridge(config, registry, new SkillRegistry());

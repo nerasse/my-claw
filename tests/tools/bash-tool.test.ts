@@ -1,6 +1,6 @@
-import { test } from "bun:test";
+import { test, expect } from "bun:test";
 import assert from "node:assert/strict";
-import { bashTool, bashEnv, setBashEnvPassthrough, DEFAULT_PASSTHROUGH } from "../../src/tools/bash.ts";
+import { bashTool, bashEnv, exitOneMeaning, setBashEnvPassthrough, DEFAULT_PASSTHROUGH } from "../../src/tools/bash.ts";
 
 test("bash: runs simple echo command", async () => {
   const result = await bashTool.execute({ command: "echo hello" });
@@ -95,4 +95,38 @@ test("bashEnv: locale and desktop wiring pass, anything else has to be named", (
   assert.equal(env.XDG_RUNTIME_DIR, "/run/user/1000");
   assert.equal(env.FORGEJO_URL, "https://git");
   assert.equal(env.SOME_SECRET, undefined);
+});
+
+test("bash: a search that finds nothing is an answer, not a failure", async () => {
+  for (const command of ["grep nothing-here /dev/null", "grep -E 'a|b' /dev/null", "cd /tmp && grep -c zzz /dev/null 2>&1"]) {
+    const result = await bashTool.execute({ command });
+    expect(result.success).toBe(true);
+    expect(result.outcome).toBe("no-match");
+    expect(result.output).toContain("[exit 1: no match]");
+  }
+});
+
+test("bash: a diff that finds differences keeps them and is not a failure", async () => {
+  const result = await bashTool.execute({ command: "diff <(echo a) <(echo b)" });
+  expect(result.success).toBe(true);
+  expect(result.outcome).toBe("differ");
+  expect(result.output).toContain("< a");
+});
+
+test("bash: exit 1 stays a failure when the search is not the last command, or wrote to stderr", async () => {
+  expect((await bashTool.execute({ command: "grep -q nope /dev/null && echo found" })).success).toBe(false);
+  expect((await bashTool.execute({ command: "echo oops >&2; grep nope /dev/null" })).success).toBe(false);
+  expect((await bashTool.execute({ command: "false" })).success).toBe(false);
+});
+
+test("bash: exitOneMeaning reads the last simple command", () => {
+  expect(exitOneMeaning("rg -n 'foo|bar' src | head")).toBe(undefined);
+  expect(exitOneMeaning("cd x && rg -n 'foo|bar' src")).toBe("no-match");
+  expect(exitOneMeaning("LC_ALL=C sudo grep x f")).toBe("no-match");
+  expect(exitOneMeaning("timeout 5 /usr/bin/grep x f")).toBe("no-match");
+  expect(exitOneMeaning("git --no-pager -C repo grep foo")).toBe("no-match");
+  expect(exitOneMeaning("git diff --quiet")).toBe("differ");
+  expect(exitOneMeaning("git status")).toBe(undefined);
+  expect(exitOneMeaning("for f in *; do grep x $f; done")).toBe(undefined);
+  expect(exitOneMeaning("echo 'a; grep'")).toBe(undefined);
 });
