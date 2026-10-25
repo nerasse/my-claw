@@ -229,7 +229,7 @@ const SYNTHETIC_BODY = {
   planWeeklyLimit: { nextRegenAt: "2026-10-23T17:07:02.000Z", percentRemaining: 76, nextRegenPercent: 2 },
 };
 
-test("synthetic reads the weekly credit bar, the request window and the search allowance", async () => {
+test("synthetic reads the weekly credit bar and the search allowance, and ignores the dead subscription counter", async () => {
   const mock = mockFetch(async (input) => {
     assert.ok(String(input).endsWith("/v2/quotas"));
     return json(SYNTHETIC_BODY);
@@ -238,8 +238,8 @@ test("synthetic reads the weekly credit bar, the request window and the search a
     const result = await syntheticQuota("synthetic", "key");
     assert.equal(result.ok, true);
     if (!result.ok) return;
+    // `subscription` renews five hours out but never counts down, so it is not a window.
     assert.deepEqual(result.snapshot.windows, [
-      { id: "five_hour", label: "5 h", usedPercent: 0, resetAt: "2026-10-23T18:48:56.212Z" },
       { id: "weekly", label: "Week", usedPercent: 24, resetAt: "2026-10-23T17:07:02.000Z" },
     ]);
     assert.deepEqual(result.snapshot.extras, [
@@ -249,6 +249,26 @@ test("synthetic reads the weekly credit bar, the request window and the search a
     assert.equal(result.snapshot.source, "synthetic");
     // Synthetic banks no resettable credit an API key can spend.
     assert.equal(result.snapshot.resets, undefined);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("synthetic still offers the 5 h window to a subscription that is charged on it", async () => {
+  const mock = mockFetch(async () =>
+    json({
+      ...SYNTHETIC_BODY,
+      rollingFiveHourLimit: { max: 600, remaining: 600, nextTickAt: "2026-10-23T18:00:00.000Z", limited: false },
+    }),
+  );
+  try {
+    const result = await syntheticQuota("synthetic", "key");
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.deepEqual(result.snapshot.windows, [
+      { id: "five_hour", label: "5 h", usedPercent: 0, resetAt: "2026-10-23T18:00:00.000Z" },
+      { id: "weekly", label: "Week", usedPercent: 24, resetAt: "2026-10-23T17:07:02.000Z" },
+    ]);
   } finally {
     mock.restore();
   }

@@ -1,7 +1,13 @@
 /**
- * Synthetic sells one plan and meters it with a weekly credit bar that refills in small ticks
- * (2 % every 202 minutes), not with a wall that clears once. Two other quotas ride along: a
- * rolling request window and an hourly web-search allowance.
+ * Synthetic meters a plan with one weekly credit bar that refills in small ticks (2 % every 202
+ * minutes), not with a wall that clears once. Its own rate-limit page says so: "Synthetic only uses
+ * weekly limits. Unlike other services, there aren't additional five-hour or monthly limits."
+ *
+ * Two older fields ride along and only one of them is a limit. `rollingFiveHourLimit` was the
+ * five-hour window before the pricing change and still answers older subscriptions, so it is read
+ * when it is actually there. The `subscription` counter is not read at all: it renews five hours
+ * out but never counts anything down (eleven billed completions left it at 0 of 500), so a window
+ * drawn from it is a bar that can never move and a countdown that means nothing.
  *
  * `percentRemaining` is what is left, so the card's number is its complement. `nextRegenAt` is the
  * next tick, not the end of the week: on an empty bar it is exactly the moment a retry can go
@@ -42,21 +48,6 @@ export async function syntheticQuota(provider: string, apiKey: string): Promise<
       usedPercent: clampPercent(((max - remaining) / max) * 100),
       ...(resetAt ? { resetAt } : {}),
     });
-  } else {
-    // The older shape counts requests directly. `renewsAt` sits five hours out, so this is the
-    // same rolling window, told as a counter instead of a bar.
-    const subscription = recordOf(body.subscription);
-    const limit = numberOf(subscription?.limit);
-    const requests = numberOf(subscription?.requests);
-    if (limit && limit > 0 && requests !== undefined) {
-      const resetAt = isoOf(subscription?.renewsAt);
-      windows.push({
-        id: "five_hour",
-        label: "5 h",
-        usedPercent: clampPercent((requests / limit) * 100),
-        ...(resetAt ? { resetAt } : {}),
-      });
-    }
   }
 
   const weekly = recordOf(body.planWeeklyLimit) ?? recordOf(body.weeklyTokenLimit);
