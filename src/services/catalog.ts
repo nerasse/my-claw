@@ -1,4 +1,5 @@
-import type { MyClawConfig, VoiceConfig } from "../core/config.ts";
+import { EMBEDDING_CONSUMERS } from "../core/config.ts";
+import type { EmbeddingConfig, EmbeddingConsumer, LlmProviderConfig, MyClawConfig, VoiceConfig } from "../core/config.ts";
 import { VoiceManager } from "../voice/manager.ts";
 
 /**
@@ -58,6 +59,14 @@ export interface ServiceState {
   endpoint?: string;
   /** What the chosen source still needs before it can work: env names, config keys. */
   missing: string[];
+  /**
+   * Embeddings only: the model in force, and the provider it comes from when one is named. Read
+   * from the config, not from memory, so a page that reopens describes what runs instead of
+   * guessing from the endpoint alone (an endpoint is a URL, and two providers can share a host).
+   */
+  model?: string;
+  /** Embeddings only: the `from` provider, when the destination is one of this install's. */
+  provider?: string;
 }
 
 function hostOf(url: string): string {
@@ -73,6 +82,22 @@ function selfOrUrl(url: string, kind: InstallKind, composeHost: string): Service
   if (kind === "compose") return hostOf(url) === composeHost ? "self-hosted" : "url";
   const host = hostOf(url);
   return host === "127.0.0.1" || host === "localhost" ? "self-hosted" : "url";
+}
+
+/**
+ * Where an embedding call goes, and what signs it. One rule, read by the state, the probe and the
+ * config writer alike: `from` names a provider already configured, and an explicit `baseUrl` is a
+ * server that is not one of this install's chat providers (docs/services.md).
+ */
+export function embeddingEndpoint(
+  cfg: EmbeddingConfig | undefined,
+  providers: Record<string, LlmProviderConfig> | undefined,
+): { baseUrl?: string; apiKeyEnv?: string } {
+  if (!cfg) return {};
+  if (!cfg.from) return { baseUrl: cfg.baseUrl, apiKeyEnv: cfg.apiKeyEnv };
+  const provider = providers?.[cfg.from];
+  if (!provider) return {};
+  return { baseUrl: provider.baseUrl, apiKeyEnv: provider.apiKeyEnv };
 }
 
 const needsEnv = (name: string | undefined, env: Env): string[] => (name && !env[name]?.trim() ? [name] : []);
@@ -99,10 +124,19 @@ const SERVICES: Record<ServiceId, (config: MyClawConfig, env: Env) => Omit<Servi
   embeddings: (config, env) => {
     const embedding = config.memory?.embedding;
     if (!embedding?.model) return { source: "off", missing: [] };
-    if (embedding.backend === "local") return { source: "self-hosted", missing: [] };
-    const endpoint = trimmed(embedding.baseUrl);
-    const missing = [...(endpoint ? [] : ["memory.embedding.baseUrl"]), ...needsEnv(embedding.apiKeyEnv, env)];
-    return { source: embedding.apiKeyEnv ? "cloud" : "url", ...(endpoint ? { endpoint } : {}), missing };
+    if (embedding.backend === "local") return { source: "self-hosted", missing: [], model: embedding.model };
+    // A provider the install already speaks to is "cloud" in the same sense OpenAI was: the model
+    // runs elsewhere. A bare URL with no key stays "url".
+    const { baseUrl, apiKeyEnv } = embeddingEndpoint(embedding, config.llm?.providers);
+    const endpoint = trimmed(baseUrl);
+    const missing = [...(endpoint ? [] : [embedding.from ? `llm.providers.${embedding.from}` : "memory.embedding.baseUrl"]), ...needsEnv(apiKeyEnv, env)];
+    return {
+      source: apiKeyEnv ? "cloud" : "url",
+      ...(endpoint ? { endpoint } : {}),
+      missing,
+      model: embedding.model,
+      ...(embedding.from ? { provider: embedding.from } : {}),
+    };
   },
   search: (config, env) => {
     const endpoint = trimmed(config.webSearch?.baseUrl);
@@ -151,12 +185,24 @@ export function choicesOf(id: ServiceId, kind: InstallKind): ServiceSource[] {
 export interface ServiceChoice {
   id: ServiceId;
   source: ServiceSource;
-  /** The engine's address, for `url` (and a cloud embeddings provider other than OpenAI). */
+  /** The engine's address, for `url` (and an embeddings host that is not a configured provider). */
   url?: string;
   /** Embeddings: the model id. */
   model?: string;
-  /** Embeddings in the cloud: the .env name holding the key. */
+  /** Embeddings in the cloud: the .env name holding the key, for a host that is not a provider. */
   keyEnv?: string;
+  /**
+   * Embeddings in the cloud on a provider this install already has: its key in `llm.providers`.
+   * Written as `memory.embedding.from`, so the URL and the key come from there and are never
+   * duplicated into memory's own section (docs/memory.md).
+   */
+  provider?: string;
+  /** Embeddings: which consumer this applies to. Absent means the default (`memory.embedding`). */
+  consumer?: EmbeddingConsumer;
+  /** Embeddings: switches this consumer's semantic half off without losing its model. */
+  enabled?: boolean;
+  /** Embeddings: drops this consumer's own entry, so it inherits the default again. */
+  inherit?: boolean;
 }
 
 /** The cloud embeddings default: OpenAI's small model, the cheapest that recall needs. */
@@ -185,6 +231,15 @@ function validUrl(url: string | undefined): string | undefined {
   }
 }
 
+/** Whether config.json already declares this provider: a name nothing answers for is a typo. */
+function isDeclaredProvider(raw: Raw, key: string): boolean {
+  const llm = raw["llm"];
+  if (llm === null || typeof llm !== "object" || Array.isArray(llm)) return false;
+  const providers = (llm as Raw)["providers"];
+  if (providers === null || typeof providers !== "object" || Array.isArray(providers)) return false;
+  return key in (providers as Raw);
+}
+
 /** A voice engine: cloud, the one this install runs, or the owner's at a URL. */
 function voicePatch(feature: "stt" | "tts") {
   return (raw: Raw, choice: ServiceChoice, url: string | undefined): void => {
@@ -195,6 +250,15 @@ function voicePatch(feature: "stt" | "tts") {
   };
 }
 
+/**
+ * Where one embedding choice is written: `memory.embedding` for the default, or
+ * `memory.embeddings.<consumer>` for a consumer that names its own. Returning the target section
+ * keeps the three branches below (inherit, on, off) from each having to know about the two shapes.
+ */
+function embeddingTarget(memory: Raw, consumer: EmbeddingConsumer | undefined): Raw {
+  return consumer ? child(child(memory, "embeddings"), consumer) : child(memory, "embedding");
+}
+
 /** How each choice is written into config.json. One entry per service, no condition elsewhere. */
 const PATCHES: Record<ServiceId, (raw: Raw, choice: ServiceChoice, url: string | undefined) => void> = {
   stt: voicePatch("stt"),
@@ -203,20 +267,81 @@ const PATCHES: Record<ServiceId, (raw: Raw, choice: ServiceChoice, url: string |
   location: () => {},
   embeddings: (raw, choice, url) => {
     const memory = child(raw, "memory");
+    // One consumer switched on or off, its model kept either way. This comes before `source`
+    // because a toggle says nothing about where to go: it only says whether to.
+    if (choice.enabled !== undefined) {
+      if (!choice.consumer) return;
+      const all = child(memory, "embeddings");
+      const existing =
+        all !== null && typeof all === "object" && !Array.isArray(all)
+          ? ((all as Raw)[choice.consumer] as Raw | undefined)
+          : undefined;
+      if (choice.enabled) {
+        if (!existing) return;
+        delete existing["enabled"];
+        // A consumer that only ever carried the switch follows the default again: an empty entry
+        // would say nothing and read as a choice in the config.
+        if (Object.keys(existing).length === 0) {
+          const rest = (memory["embeddings"] ?? {}) as Raw;
+          delete rest[choice.consumer];
+          if (Object.keys(rest).length === 0) delete memory["embeddings"];
+        }
+        return;
+      }
+      // Off without a model is a state of its own: it pins nothing, so the consumer goes back to
+      // following the default the day it is switched on again. `embeddingFor` reads it that way --
+      // see docs/memory.md.
+      const target = existing ?? (child(child(memory, "embeddings"), choice.consumer) as Raw);
+      target["enabled"] = false;
+      return;
+    }
+    // A consumer can drop its own entry at any time and be back on the default; that is the only
+    // way to undo a per-consumer choice, so it comes before every other branch.
+    if (choice.inherit) {
+      if (!choice.consumer) return;
+      const all = memory["embeddings"];
+      if (all === null || typeof all !== "object" || Array.isArray(all)) return;
+      delete (all as Raw)[choice.consumer];
+      if (Object.keys(all as Raw).length === 0) delete memory["embeddings"];
+      return;
+    }
+    // "Off" as a source differs by target: the default is removed outright, while a consumer
+    // keeps its model and is merely switched off, so switching it back on needs no reconfiguration.
     if (choice.source === "off") {
+      if (choice.consumer) {
+        const target = embeddingTarget(memory, choice.consumer);
+        target["enabled"] = false;
+        return;
+      }
       delete memory["embedding"];
       return;
     }
+    const target = embeddingTarget(memory, choice.consumer);
+    // A model set back on clears the off switch that kept it out of the way.
+    delete target["enabled"];
     if (choice.source === "self-hosted") {
-      memory["embedding"] = { backend: "local", model: choice.model?.trim() || LOCAL_EMBEDDING_MODEL };
+      target["backend"] = "local";
+      target["model"] = choice.model?.trim() || LOCAL_EMBEDDING_MODEL;
+      // A local model takes no address and no key, and a leftover from a previous choice would
+      // send the call somewhere the config no longer means.
+      delete target["from"];
+      delete target["baseUrl"];
+      delete target["apiKeyEnv"];
       return;
     }
-    memory["embedding"] = {
-      backend: "http",
-      baseUrl: url ?? CLOUD_EMBEDDING.baseUrl,
-      model: choice.model?.trim() || CLOUD_EMBEDDING.model,
-      ...(choice.source === "cloud" ? { apiKeyEnv: choice.keyEnv?.trim() || CLOUD_EMBEDDING.apiKeyEnv } : {}),
-    };
+    // A configured provider is named, not copied: one place holds the URL and the key, and moving
+    // the account later moves the embedding with it.
+    const provider = choice.provider?.trim();
+    if (choice.source === "cloud" && provider) {
+      target["backend"] = "http";
+      target["from"] = provider;
+      target["model"] = choice.model?.trim() || CLOUD_EMBEDDING.model;
+      return;
+    }
+    target["backend"] = "http";
+    target["baseUrl"] = url ?? CLOUD_EMBEDDING.baseUrl;
+    target["model"] = choice.model?.trim() || CLOUD_EMBEDDING.model;
+    if (choice.source === "cloud") target["apiKeyEnv"] = choice.keyEnv?.trim() || CLOUD_EMBEDDING.apiKeyEnv;
   },
   search: (raw, choice, url) => {
     child(raw, "webSearch")["baseUrl"] = choice.source === "off" ? "" : choice.source === "self-hosted" ? "http://searxng:8080" : url;
@@ -240,6 +365,21 @@ export function applyServiceChoice(raw: Raw, choice: ServiceChoice, kind: Instal
   const url = validUrl(choice.url);
   if (choice.source === "url" && !url) return { ok: false, error: "an http(s) URL is needed" };
   if (choice.url?.trim() && !url) return { ok: false, error: `not an http(s) URL: ${choice.url}` };
+  // The one cross-service rule: a cloud embedding may name a provider, and naming one that does
+  // not exist would write a config that only fails at the first recall.
+  if (choice.provider?.trim()) {
+    if (choice.id !== "embeddings") return { ok: false, error: `only embeddings can come from a provider` };
+    if (choice.source !== "cloud") return { ok: false, error: `a provider is only used by the cloud source` };
+    if (!isDeclaredProvider(raw, choice.provider.trim())) {
+      return { ok: false, error: `unknown provider: ${choice.provider.trim()}` };
+    }
+  }
+  if ((choice.consumer !== undefined || choice.inherit !== undefined) && choice.id !== "embeddings") {
+    return { ok: false, error: `only embeddings have consumers` };
+  }
+  if (choice.consumer !== undefined && !EMBEDDING_CONSUMERS.includes(choice.consumer)) {
+    return { ok: false, error: `unknown embedding consumer: ${choice.consumer}` };
+  }
   PATCHES[choice.id](raw, choice, url);
   return { ok: true };
 }

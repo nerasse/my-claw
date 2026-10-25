@@ -279,7 +279,7 @@ function resolveFromMerged(
     vision: model?.vision ?? merged.vision,
     limit: pinnedLimit(model?.limit ?? merged.limit, wireModel, providerRoute.providerRoute),
     effort: computeEffort(merged, model, false, effortOverride, scopeEffort, tagEffort),
-    promptCache: provider.promptCache,
+    promptCache: provider.promptCache ?? true,
     reasoningReplay: provider.reasoningReplay,
     reasoningField: model?.reasoningField,
     ...resolveTimeout(merged, model),

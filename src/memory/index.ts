@@ -1,4 +1,4 @@
-import type { MemoryConfig } from "../core/config.ts";
+import { EMBEDDING_CONSUMERS, embeddingActive, embeddingFor, type EmbeddingConfig, type MemoryConfig } from "../core/config.ts";
 import { hooks } from "../hooks/index.ts";
 import {
   addEntry,
@@ -11,7 +11,7 @@ import {
   countActive,
   purgeSuperseded,
 } from "./db.ts";
-import { embed, isEmbeddingEnabled, embeddingSignature } from "./embedding.ts";
+import { embed, embedMany, embeddingSignature } from "./embedding.ts";
 import { classify, hashContent, type DedupDecision } from "./dedup.ts";
 import { recall as recallEngine } from "./recall.ts";
 import { clearRecallCache } from "./cache.ts";
@@ -21,9 +21,10 @@ import type { MemoryCategory, MemoryEntry, RecallResult } from "./types.ts";
 
 export type { MemoryCategory, MemoryEntry, RecallResult } from "./types.ts";
 export { MEMORY_CATEGORIES, isMemoryCategory } from "./types.ts";
-export { warmupEmbedding, isEmbeddingReady } from "./embedding.ts";
+export { warmupEmbedding, isEmbeddingReady, setEmbeddingProviders } from "./embedding.ts";
 export { importHandEdits, exportToMarkdown, memoryFilePath, migrateLegacyFiles } from "./export.ts";
 export { closeMemoryDb } from "./db.ts";
+export { clearRecallCache } from "./cache.ts";
 export type { LlmCaller } from "./consolidate.ts";
 
 export interface RememberResult {
@@ -46,15 +47,19 @@ export async function remember(
   const trimmed = content.trim();
   if (!trimmed) return { decision: "skip", message: "Empty content, nothing stored." };
 
-  const embedding = await embed(trimmed, cfg?.embedding);
-  const sig = embeddingSignature(cfg?.embedding);
+  // Written as the dedup consumer computes it: the vector a new fact is stored under is the one
+  // the duplicate check needs, and a store written by another model is still added without one
+  // (recall's own space gets filled by its backfill).
+  const dedupCfg = embeddingFor(cfg, "dedup");
+  const embedding = await embed(trimmed, dedupCfg);
+  const sig = embeddingSignature(dedupCfg);
   const verdict = classify(trimmed, embedding, sig);
 
   if (verdict.decision === "skip") {
     return { decision: "skip", message: `Already known (${verdict.reason}).` };
   }
 
-  const id = addEntry(trimmed, category, embedding, verdict.hash, sig);
+  const id = addEntry(trimmed, category, sig && embedding ? { [sig]: embedding } : {}, verdict.hash);
   hooks.emit("memory:store", { id, category, decision: verdict.decision });
   afterWrite();
   const note = verdict.decision === "review" ? " (related entry exists; will merge on consolidation)" : "";
@@ -88,9 +93,10 @@ export async function update(
   const trimmed = newContent.trim();
   if (!trimmed) return { decision: "skip", message: "Empty content, nothing updated." };
 
-  const embedding = await embed(trimmed, cfg?.embedding);
-  const sig = embeddingSignature(cfg?.embedding);
-  const id = addEntry(trimmed, target?.category ?? "lesson", embedding, hashContent(trimmed), sig);
+  const dedupCfg = embeddingFor(cfg, "dedup");
+  const embedding = await embed(trimmed, dedupCfg);
+  const sig = embeddingSignature(dedupCfg);
+  const id = addEntry(trimmed, target?.category ?? "lesson", sig && embedding ? { [sig]: embedding } : {}, hashContent(trimmed));
   if (target) supersedeEntry(target.id, id);
   hooks.emit("memory:store", { id, category: target?.category ?? "lesson", decision: "add" });
   afterWrite();
@@ -135,18 +141,33 @@ export function purgeOldMemory(cfg?: MemoryConfig): number {
 }
 
 /**
- * Embed active entries that have no vector yet (stored while FTS5-only).
- * Run once after the embedding model is ready so enabling embeddings later
- * retroactively indexes the whole store. No-op when embeddings are disabled.
+ * Fill every vector space the configured consumers need, once.
+ *
+ * One pass per distinct model: two consumers pointed at the same model share a space, and asking
+ * for the same text twice to store it once is the one waste worth avoiding here. "Missing" is
+ * per space, so enabling a consumer, switching one model, or turning embeddings on for the first
+ * time all land in the same query (docs/memory.md).
+ *
+ * The stored spaces are returned, so a caller can say how many consumers went live.
  */
 export async function backfillEmbeddings(cfg?: MemoryConfig): Promise<number> {
-  if (!isEmbeddingEnabled(cfg?.embedding)) return 0;
-  const sig = embeddingSignature(cfg?.embedding)!;
-  const pending = getActiveNeedingEmbedding(sig);
+  const spaces = new Map<string, EmbeddingConfig>();
+  for (const consumer of EMBEDDING_CONSUMERS) {
+    if (!embeddingActive(cfg, consumer)) continue;
+    const embedCfg = embeddingFor(cfg, consumer)!;
+    const sig = embeddingSignature(embedCfg);
+    if (sig) spaces.set(sig, embedCfg);
+  }
   let done = 0;
-  for (const entry of pending) {
-    const vec = await embed(entry.content, cfg?.embedding);
-    if (vec) {
+  for (const [sig, embedCfg] of spaces) {
+    const pending = getActiveNeedingEmbedding(sig);
+    if (pending.length === 0) continue;
+    // Batched: a switch of model re-embeds the whole active store, and one request per entry turned
+    // that into hundreds of round trips (docs/memory.md).
+    const vectors = await embedMany(pending.map((entry) => entry.content), embedCfg);
+    for (const [index, entry] of pending.entries()) {
+      const vec = vectors[index];
+      if (!vec) continue;
       setEmbedding(entry.id, vec, sig);
       done += 1;
     }

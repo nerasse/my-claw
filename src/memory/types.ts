@@ -18,9 +18,13 @@ export interface MemoryEntry {
   id: number;
   content: string;
   category: MemoryCategory;
-  embedding: Float32Array | null;
-  /** Identity of the model that produced `embedding` (e.g. "model@dims"). Null when no vector. */
-  embeddingModel: string | null;
+  /**
+   * One vector per vector space, keyed by the model signature that produced it (`id@dims`). A
+   * model is a space: cosine across two of them is meaningless even at equal dimensions, so every
+   * consumer compares against its own key and nothing else. Empty when embeddings are off or when
+   * this entry was written before they were on.
+   */
+  embeddings: Record<string, Float32Array>;
   hash: string;
   createdAt: string;
   updatedAt: string;

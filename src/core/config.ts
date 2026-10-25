@@ -221,7 +221,10 @@ export interface LlmProviderConfig {
   disabled?: boolean;
   // OpenAI-compatible providers only: send Anthropic-style `cache_control` breakpoints so
   // proxies that support it (LiteLLM, OpenRouter) cache the stable system+tools prefix.
-  // Opt-in per provider: some strict endpoints reject unknown fields in message content.
+  // On unless switched off: a model is a family whose dialect decides whether a hint is sent at
+  // all (cacheDialectOf), so this only reaches an engine that can act on one, and an endpoint that
+  // refuses the shape is repaired once and remembered (request-repair). An explicit `false` opts
+  // out for an engine known to charge for cache writes it never reads back.
   // Ignored on the codex (subscription) backend. See docs/prompt-caching.md.
   promptCache?: boolean;
   // Hand the model's own reasoning back to it on the next call of a tool loop. Default on: the
@@ -253,6 +256,28 @@ export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhig
  * See docs/reasoning-replay.md.
  */
 export type ReasoningField = "reasoning_content" | "reasoning_details";
+
+/**
+ * What a model is for. The vocabulary is models.dev's own `type` field, kept verbatim so nothing is
+ * lost in translation; anything absent or unrecognised is read as `chat` (which is also what 8 476
+ * of its rows declare: nothing at all).
+ */
+export type ModelKind = "embedding" | "speech" | "transcription" | "image" | "video" | "reranking" | "realtime" | "chat";
+
+/**
+ * The kinds that cannot hold a conversation, however runnable their provider is. Every menu that
+ * offers something to talk to filters on this; the embedding select is the one place that wants
+ * exactly these.
+ */
+export const NON_CHAT_KINDS: ReadonlySet<ModelKind> = new Set<ModelKind>([
+  "embedding",
+  "speech",
+  "transcription",
+  "image",
+  "video",
+  "reranking",
+  "realtime",
+]);
 
 /**
  * The vocabulary as a ladder, bottom to top. One ordered copy: the clamps, the discovery filter
@@ -300,6 +325,14 @@ export interface LlmModelConfig {
   // `/v1/models`. Naming an unsupported type is a 400: Opus 5 reports `enabled: false` and takes
   // `adaptive` only, so this cannot be inferred from the family or the version.
   thinkingTypes?: { adaptive: boolean; enabled: boolean };
+  /**
+   * What the model is for. Absent means `chat`, which is what almost every model is. Written by
+   * discovery (models.dev `type`, OpenRouter's embeddings listing, or an id family whose API is
+   * not chat completions at all) and never invented for a model the owner declared. A non-chat
+   * model is kept in the catalogue -- the embedding select reads it there -- and kept out of every
+   * menu that offers something to talk to. See docs/model-metadata.md R13.
+   */
+  kind?: ModelKind;
   // OpenAI-compatible models only: the message field this model reads its own prior reasoning back
   // from, published by models.dev as `interleaved.field`. Absent means the model declares nothing
   // and nothing is replayed -- guessing a field name is how you send a body a strict endpoint
@@ -599,10 +632,76 @@ export interface CronConfig {
 
 export interface EmbeddingConfig {
   backend?: "local" | "http";
+  /**
+   * The provider this embedding runs on, by its key in `llm.providers`. Its `baseUrl` and
+   * `apiKeyEnv` are what the call uses, so a model already paid for on a configured account needs
+   * no URL and no second copy of the key.
+   *
+   * `from` and `baseUrl` are alternatives, not a cascade: naming both is a config error, because
+   * the two say different things about where the key lives and a silent winner would be a
+   * surprise. See docs/memory.md.
+   */
+  from?: string;
   model?: string;
   baseUrl?: string;
   apiKeyEnv?: string;
   dimensions?: number;
+  /**
+   * `false` turns this consumer's semantic half off without deleting its model: recall and dedup
+   * fall back to keywords, the skill suggestion to its keyword ranking. Absent is on, which is what
+   * a configured model means. Only meaningful inside `embeddings.<consumer>`; the default carries
+   * no switch of its own.
+   */
+  enabled?: boolean;
+}
+
+/**
+ * Everything that embeds text, one name each.
+ *
+ * Grouped this way in `memory.embeddings` so the owner can point one of them at another model
+ * without touching the rest. A consumer that names no model uses `memory.embedding`; a consumer
+ * that names one gets its own vector space, and an entry keeps one vector per *distinct model*
+ * rather than per consumer -- two consumers on the same model share one vector, and two on
+ * different models never compare against each other (cosine across spaces is meaningless).
+ *
+ * `skills` is here because it is the one caller whose vectors never reach the store: they are a
+ * per-process cache of the skill catalogue, so it can switch model without a single re-embed of
+ * the memory. See docs/memory.md.
+ */
+export const EMBEDDING_CONSUMERS = ["recall", "dedup", "consolidate", "import", "skills"] as const;
+export type EmbeddingConsumer = (typeof EMBEDDING_CONSUMERS)[number];
+
+/** What each consumer does, for the settings page. An id is never shown to a person. */
+export const EMBEDDING_CONSUMER_LABELS: Record<EmbeddingConsumer, { title: string; hint: string }> = {
+  recall: { title: "Memory recall", hint: "finds a memory by meaning, every message" },
+  dedup: { title: "Duplicate check", hint: "spots a fact already stored in other words" },
+  consolidate: { title: "Consolidation", hint: "re-embeds the facts it merges" },
+  import: { title: "Markdown import", hint: "MEMORY.md and its hand edits" },
+  skills: { title: "Skill suggestions", hint: "picks the skills a message is about" },
+};
+
+/**
+ * The config one consumer runs on: its own entry when it names a destination, else the default.
+ *
+ * "Names a destination" means `model` is set -- the field every backend needs. A `{ enabled: false }`
+ * entry is an override too: it says nothing about where to go because the answer is "nowhere".
+ * Everything else (`{ from: "x" }` alone, `{ dimensions: 768 }` alone) is an incomplete override and
+ * falls back to the default, because a consumer with no model embeds nothing at all.
+ */
+export function embeddingFor(memory: MemoryConfig | undefined, consumer: EmbeddingConsumer): EmbeddingConfig | undefined {
+  const own = memory?.embeddings?.[consumer];
+  if (!own) return memory?.embedding;
+  if (own.enabled === false) return own;
+  return own.model ? own : memory?.embedding;
+}
+
+/**
+ * Whether this consumer embeds at all. One predicate, so "configured" and "switched on" cannot
+ * disagree between a caller and the settings page.
+ */
+export function embeddingActive(memory: MemoryConfig | undefined, consumer: EmbeddingConsumer): boolean {
+  const cfg = embeddingFor(memory, consumer);
+  return Boolean(cfg?.model) && cfg?.enabled !== false;
 }
 
 export interface ConsolidationConfig {
@@ -614,7 +713,16 @@ export interface ConsolidationConfig {
 
 export interface MemoryConfig {
   enabled?: boolean;
+  /** The model every consumer runs on, unless it names its own below. */
   embedding?: EmbeddingConfig;
+  /**
+   * Per-consumer overrides. `{ "recall": { "from": "openrouter", "model": "x" } }` moves only
+   * recall; `{ "skills": { "enabled": false } }` leaves the rest alone and turns that one off.
+   * An entry here replaces the default for that consumer -- it does not merge field by field,
+   * because half a destination (a model without its provider) is not a smaller choice, it is a
+   * different one. See docs/memory.md.
+   */
+  embeddings?: Partial<Record<EmbeddingConsumer, EmbeddingConfig>>;
   consolidation?: ConsolidationConfig;
   recallMaxEntries?: number;
   recallMaxChars?: number;

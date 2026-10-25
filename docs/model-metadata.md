@@ -271,6 +271,35 @@ by `applyModelMetadata` *after* OpenRouter and models.dev. Rules:
 
 What it is not: a place to hardcode a price. Prices are the endpoint's and stay where they are.
 
+### R13 — A model that cannot answer a conversation is not offered one
+
+A `/models` listing carries everything the provider serves, and most of it is not a chat model.
+Measured live 2026-10-25 on this install's Gemini endpoint: **60 ids, of which 3 are embeddings, 5
+are speech, 6 are image and 2 are realtime** — and all of them were "ready" (the key is there), so
+all of them were selectable as the model a conversation answers with.
+
+`kind` is the field that separates them, and it is read from the strongest witness available, in
+this order:
+
+1. **The listing that says so.** OpenRouter publishes its embeddings apart from its chat models
+   (`/embeddings/models`, 35 rows, none of them in `/models`) and discovery reads both.
+2. **models.dev's `type`** (`embedding`, `speech`, `transcription`, `image`, `video`, `reranking`,
+   `realtime`, `chat`), kept verbatim in the compacted table. 8 476 of its rows declare none, which
+   is read as `chat`.
+3. **The id's own shape**, for rows no table has ever seen. Narrow on purpose: a path segment
+   `embed`/`embedding`/`embeds`, `transcribe`/`transcription`, `tts`, `native-audio`, `live`,
+   `lyria`. Measured on the 22 of Gemini's 60 ids that models.dev has no row for, it caught every
+   embedding and every speech model and left `-image` alone (a vision *input* model far more often
+   than a generator).
+
+Two rules keep it safe:
+
+- **A declared model is never reclassified.** Declaring one in `llm.models` is an act of intent;
+  hiding it from the menu it was written for would be the tool overruling its owner.
+- **The catalogue keeps it, only the menu drops it.** `runnableModels` is what a picker reads, and
+  `kind` keeps a non-chat model out of it. Availability stays what it always was — whether the
+  provider can be called — because the embeddings page reads exactly that half.
+
 ## Verification criteria
 
 1. `deepseek-v4-flash` on `opencode_go` offers exactly `low, high, max` — not the global six.
@@ -303,3 +332,7 @@ What it is not: a place to hardcode a price. Prices are the endpoint's and stay 
 17. A MiMo on a provider no table describes gets `reasoning_content`, `vision` (v2.6 only) and a
     `131072` output budget, with no table downloaded at all; a declaration and a table both
     outrank it, and a model outside the family is left untouched.
+18. `gemini-embedding-001`, `gemini-3.8-flash-tts` and `gemini-3.8-live` never appear in a model
+    picker, while `gemini-3.8-flash` still does — and a declared id is untouched by any of it.
+19. `models.dev`'s `type` survives the compaction (`CACHE_VERSION` 5), and an unknown spelling is
+    dropped rather than guessed into a meaning.

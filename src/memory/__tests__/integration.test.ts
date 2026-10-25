@@ -93,10 +93,12 @@ test("backfill embeds entries stored while FTS5-only", async () => {
   await remember("another older fact", "lesson");
   expect(getActiveNeedingEmbedding("m").length).toBe(2);
 
-  const mock = mockFetch(async () =>
-    new Response(JSON.stringify({ data: [{ embedding: [0.6, 0.8] }] }), {
-      status: 200,
-    }));
+  // Answers one row per text asked, the way an embeddings endpoint does: the backfill batches,
+  // and a mock that always returns one vector would be refused as a short answer (2026-10-25).
+  const mock = mockFetch(async (_input, init) => {
+    const asked = (JSON.parse(String(init?.body)) as { input: string[] }).input;
+    return Response.json({ data: asked.map((_, i) => ({ index: i, embedding: [0.6, 0.8] })) });
+  });
   try {
     const cfg = { embedding: { backend: "http" as const, model: "m", baseUrl: "http://x" } };
     const n = await backfillEmbeddings(cfg);
@@ -109,7 +111,7 @@ test("backfill embeds entries stored while FTS5-only", async () => {
 
 test("backfill re-embeds entries from a different model", async () => {
   // Seed an entry already embedded by an "old" model.
-  addEntry("fact embedded by old model", "lesson", new Float32Array([1, 0]), hashContent("fact embedded by old model"), "old-model");
+  addEntry("fact embedded by old model", "lesson", { "old-model": new Float32Array([1, 0]) }, hashContent("fact embedded by old model"));
   expect(getActiveNeedingEmbedding("new-model").length).toBe(1);
 
   const mock = mockFetch(async () =>

@@ -8,7 +8,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp } from "node:fs/promises";
-import type { MyClawConfig } from "../../src/core/config.ts";
+import type { MyClawConfig, MemoryConfig } from "../../src/core/config.ts";
+import { embeddingActive, embeddingFor } from "../../src/core/config.ts";
 import { CLOUD_EMBEDDING, LOCAL_EMBEDDING_MODEL, applyServiceChoice, piperEndpoint, probeService, serviceStates, whisperEndpoint, type ServiceId } from "../../src/services/catalog.ts";
 import { onDemandUnits, reconcileUnits, type Systemctl } from "../../src/services/on-demand.ts";
 
@@ -166,6 +167,105 @@ describe("a choice made in the app, written into config.json", () => {
     expect((raw.memory as { embedding: { model: string } }).embedding.model).toBe(LOCAL_EMBEDDING_MODEL);
     apply(raw, { id: "embeddings", source: "off" });
     expect(state(asConfig(), NATIVE, "embeddings").source).toBe("off");
+  });
+
+  test("embeddings on a provider the install already has: named, never copied", () => {
+    const raw: Record<string, unknown> = {
+      llm: { providers: { gemini: { baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", apiKeyEnv: "GEMINI_API_KEY" } } },
+    };
+    expect(apply(raw, { id: "embeddings", source: "cloud", provider: "gemini", model: "gemini-embedding-001" })).toEqual({ ok: true });
+    // The provider is the one place holding the URL and the key: memory carries the name only.
+    expect((raw.memory as { embedding: unknown }).embedding).toEqual({
+      backend: "http",
+      from: "gemini",
+      model: "gemini-embedding-001",
+    });
+    // And the catalogue reads it back through that provider, not through memory's own fields.
+    expect(state(raw as unknown as MyClawConfig, { ...NATIVE, GEMINI_API_KEY: "g" }, "embeddings")).toMatchObject({
+      source: "cloud",
+      endpoint: "https://generativelanguage.googleapis.com/v1beta/openai",
+      missing: [],
+      // The model and the provider ride the state, so a page that reopens draws what runs
+      // instead of guessing it from a URL two providers can share.
+      model: "gemini-embedding-001",
+      provider: "gemini",
+    });
+    // A provider nothing declares is a typo, refused before it can break the first recall.
+    expect(apply(raw, { id: "embeddings", source: "cloud", provider: "nope" })).toEqual({ ok: false, error: "unknown provider: nope" });
+    // Only embeddings have a provider, and only from the cloud source.
+    expect(apply(raw, { id: "search", source: "url", url: "http://x.test", provider: "gemini" })).toEqual({
+      ok: false,
+      error: "only embeddings can come from a provider",
+    });
+  });
+
+  test("one consumer takes its own model, gives it back, or is switched off -- the default untouched", () => {
+    const raw: Record<string, unknown> = {
+      llm: {
+        providers: {
+          gemini: { baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", apiKeyEnv: "GEMINI_API_KEY" },
+          synthetic: { baseUrl: "https://api.synthetic.new/openai/v1", apiKeyEnv: "SYNTHETIC_API_KEY" },
+        },
+      },
+    };
+    apply(raw, { id: "embeddings", source: "cloud", provider: "gemini", model: "gemini-embedding-001" });
+    const memory = (): Record<string, unknown> => raw.memory as Record<string, unknown>;
+
+    // Its own model: the consumer gets an entry of its own, and the default keeps its own shape.
+    apply(raw, { id: "embeddings", source: "cloud", provider: "synthetic", model: "hf:nomic-ai/nomic-embed-text-v1.5", consumer: "recall" });
+    expect((memory().embeddings as Record<string, unknown>).recall).toEqual({
+      backend: "http",
+      from: "synthetic",
+      model: "hf:nomic-ai/nomic-embed-text-v1.5",
+    });
+    expect(memory().embedding).toEqual({ backend: "http", from: "gemini", model: "gemini-embedding-001" });
+
+    // Switched off: the model stays, so switching it back on is one tap and no reconfiguration.
+    apply(raw, { id: "embeddings", source: "cloud", consumer: "recall", enabled: false });
+    expect((memory().embeddings as Record<string, { enabled?: boolean }>).recall).toMatchObject({ enabled: false });
+    apply(raw, { id: "embeddings", source: "cloud", consumer: "recall", enabled: true });
+    expect((memory().embeddings as Record<string, { enabled?: boolean }>).recall?.enabled).toBeUndefined();
+
+    // Back on the default: the entry goes, and the section with it when it is the last one.
+    apply(raw, { id: "embeddings", source: "cloud", consumer: "recall", inherit: true });
+    expect(memory().embeddings).toBeUndefined();
+    expect(memory().embedding).toEqual({ backend: "http", from: "gemini", model: "gemini-embedding-001" });
+
+    // A consumer id nothing declares is a typo, refused before it reaches the config.
+    expect(apply(raw, { id: "embeddings", source: "cloud", consumer: "nope" as never })).toEqual({
+      ok: false,
+      error: "unknown embedding consumer: nope",
+    });
+    // And only embeddings have consumers at all.
+    expect(apply(raw, { id: "stt", source: "cloud", consumer: "recall" })).toEqual({
+      ok: false,
+      error: "only embeddings have consumers",
+    });
+  });
+
+  test("a consumer that only follows the default can still be switched off, and comes back with no choice", () => {
+    // The switch is a state, not a destination: off pins no model, so switching it back on has
+    // nothing to undo but the switch itself.
+    const raw: Record<string, unknown> = {
+      llm: { providers: { gemini: { baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai", apiKeyEnv: "GEMINI_API_KEY" } } },
+    };
+    apply(raw, { id: "embeddings", source: "cloud", provider: "gemini", model: "gemini-embedding-001" });
+    const memory = (): Record<string, unknown> => raw.memory as Record<string, unknown>;
+
+    apply(raw, { id: "embeddings", source: "cloud", consumer: "dedup", enabled: false });
+    expect((memory().embeddings as Record<string, unknown>).dedup).toEqual({ enabled: false });
+    // It follows the default rather than naming a destination of its own.
+    expect(embeddingFor(memory() as MemoryConfig, "dedup")).toEqual({ enabled: false });
+    expect(embeddingActive(memory() as MemoryConfig, "dedup")).toBe(false);
+
+    apply(raw, { id: "embeddings", source: "cloud", consumer: "dedup", enabled: true });
+    // Nothing left to say: the entry goes, and the section with it.
+    expect(memory().embeddings).toBeUndefined();
+    expect(embeddingActive(memory() as MemoryConfig, "dedup")).toBe(true);
+
+    // The `off` source means the same thing for a consumer, so it writes the same entry.
+    apply(raw, { id: "embeddings", source: "off", consumer: "skills" });
+    expect((memory().embeddings as Record<string, unknown>).skills).toEqual({ enabled: false });
   });
 
   test("search: off empties the URL; self-hosting it is a compose profile, refused on bare metal", () => {

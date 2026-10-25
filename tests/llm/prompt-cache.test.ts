@@ -73,7 +73,7 @@ describe("applyPromptCache", () => {
 describe("buildRequestBody prompt cache gating", () => {
   const base = { baseUrl: "https://example.com", model: "m", apiKey: "k" };
 
-  async function capture(promptCache: boolean, model: string = "m"): Promise<Record<string, unknown>> {
+  async function capture(promptCache: boolean | undefined, model: string = "m"): Promise<Record<string, unknown>> {
     const bodies: Array<Record<string, unknown>> = [];
     const mock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
       bodies.push(JSON.parse(init?.body as string));
@@ -113,6 +113,12 @@ describe("buildRequestBody prompt cache gating", () => {
     const body = await capture(true, "deepseek-v4.1-flash");
     expect(JSON.stringify(body)).not.toContain("cache_control");
   });
+
+  test("unset: caching is on, so a Claude model still gets its breakpoints", async () => {
+    // The flag is an escape hatch, not an opt-in: only an explicit `false` turns it off.
+    const body = await capture(undefined, "claude-sonnet-5");
+    expect(JSON.stringify(body)).toContain("cache_control");
+  });
 });
 
 describe("resolver promptCache propagation", () => {
@@ -121,16 +127,28 @@ describe("resolver promptCache propagation", () => {
     defaultModel: "m",
     providers: {
       proxy: { baseUrl: "https://proxy/v1", promptCache: true },
+      plain: { baseUrl: "https://plain/v1" },
+      denied: { baseUrl: "https://denied/v1", promptCache: false },
       anthropic: { type: "anthropic", promptCache: true },
     },
     models: [
       { id: "m", label: "M", provider: "proxy" },
+      { id: "plain-m", label: "PM", provider: "plain" },
+      { id: "denied-m", label: "DM", provider: "denied" },
       { id: "claude", label: "C", provider: "anthropic" },
     ],
   };
 
   test("openai provider carries promptCache through to the resolved config", () => {
     expect(resolveLlmConfig(cfg, "m").promptCache).toBe(true);
+  });
+
+  test("a provider that says nothing caches: the default is on", () => {
+    expect(resolveLlmConfig(cfg, "plain-m").promptCache).toBe(true);
+  });
+
+  test("an explicit false is carried, so an endpoint can opt out", () => {
+    expect(resolveLlmConfig(cfg, "denied-m").promptCache).toBe(false);
   });
 
   test("the native anthropic backend caches on its own, so the flag is not propagated", () => {
@@ -170,6 +188,12 @@ describe("prompt_cache_key by model family", () => {
     expect(body["prompt_cache_key"]).toBe("sess-1");
   });
 
+  test("an OpenAI engine gets the key when caching is simply not mentioned", async () => {
+    // Caching is on by default; the absence of the flag must not read as a refusal.
+    const body = await capture({ model: "openai/gpt-5.6-luna", cacheKey: "sess-0" });
+    expect(body["prompt_cache_key"]).toBe("sess-0");
+  });
+
   test("the wire id decides, not the run identity", async () => {
     const body = await capture({ model: "tag:main", apiModel: "gpt-5.4", promptCache: true, cacheKey: "sess-2" });
     expect(body["prompt_cache_key"]).toBe("sess-2");
@@ -191,7 +215,9 @@ describe("prompt_cache_key by model family", () => {
     expect(JSON.stringify(body)).not.toContain("cache_control");
   });
 
-  test("no key without the provider opt-in, and none without a session", async () => {
+  test("no key when caching is turned off, and none without a session", async () => {
+    // Rewritten: the opt-in is gone, so the flag reads the other way. The intention stays -- a
+    // key is only ever sent to an engine that may cache, and never without a conversation to key.
     expect((await capture({ model: "gpt-5.6-luna", promptCache: false, cacheKey: "s" }))["prompt_cache_key"]).toBeUndefined();
     expect((await capture({ model: "gpt-5.6-luna", promptCache: true }))["prompt_cache_key"]).toBeUndefined();
   });

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { readFileSync } from "node:fs";
-import { MY_CLAW_DIR, type EffortLevel, type ReasoningField } from "../core/config.ts";
+import { MY_CLAW_DIR, NON_CHAT_KINDS, type EffortLevel, type ModelKind, type ReasoningField } from "../core/config.ts";
 import { writeJsonFileAtomically } from "../utils/atomic-write.ts";
 import { cachedOpenRouterEndpointPricing, cachedOpenRouterModel } from "./openrouter-endpoints.ts";
 import { log } from "../utils/logger.ts";
@@ -23,7 +23,8 @@ const FETCH_TIMEOUT_MS = 20_000;
 
 // Bumped whenever the compacted shape changes. A mismatch is treated as no cache at all, because
 // silently serving an older shape means missing fields for a full refresh period.
-export const CACHE_VERSION = 4;
+// 5: the model `kind` (models.dev `type`), which is what tells an embedding from a chat model.
+export const CACHE_VERSION = 5;
 
 interface TableEntry {
   // Absent for the ~400 models models.dev describes without publishing a price.
@@ -45,7 +46,18 @@ interface TableEntry {
   // `interleaved`. Published for 881 models: 819 say `reasoning_content`, 14 `reasoning_details`.
   // Per model and not per provider -- OpenRouter alone publishes both. See docs/reasoning-replay.md.
   reasoningField?: ReasoningField;
+  // What the model is for, from models.dev's `type`: `embedding`, `speech`, `transcription`,
+  // `image`, `reranking`... Absent is the overwhelmingly common `chat`. This is the one fact that
+  // keeps a 2 048-dimension embedding vector out of a menu that offers models to talk to.
+  kind?: ModelKind;
 }
+
+/**
+ * What a model is for, declared in core/config.ts (like ReasoningField). Re-exported so a caller
+ * holding a table entry, or an LlmModelConfig, reaches both spellings through one import.
+ */
+export type { ModelKind };
+export { NON_CHAT_KINDS };
 
 /** USD per million tokens. */
 export interface ModelCost {
@@ -94,6 +106,8 @@ export interface ModelMetadata {
   vision?: boolean;
   outputLimit?: number;
   reasoningField?: ReasoningField;
+  /** What the model is for: the same distinction that keeps a picker off an embedding. */
+  kind?: ModelKind;
   source: string;
 }
 
@@ -114,6 +128,19 @@ export interface UsageForCost {
    */
   pinned?: CostBreakdown;
 }
+
+/**
+ * Local provider key -> the id models.dev files it under, for the vendors whose own name differs.
+ *
+ * Read off the live file (2026-10-25): models.dev publishes `google` and `openai` with **no `api`**
+ * at all, so a declared provider keyed `gemini` or `openai` resolved nothing through the key rung
+ * and nothing through the host rung either. Measured: `gemini-embedding-001` came back with no
+ * metadata and no window, which is why the Google models looked undeclared on every install.
+ *
+ * Deliberately tiny. A second entry is only worth adding when the vendor's own name for itself
+ * cannot match its locally declared key, never to paper over a spelling.
+ */
+const VENDOR_ALIAS: Record<string, string> = { gemini: "google" };
 
 /**
  * Backends that talk to exactly one company, so their vendor is not inferred.
@@ -253,7 +280,8 @@ function describesModel(entry: TableEntry): boolean {
     entry.effortToggle === true ||
     entry.vision !== undefined ||
     entry.output !== undefined ||
-    entry.reasoningField !== undefined
+    entry.reasoningField !== undefined ||
+    entry.kind !== undefined
   );
 }
 
@@ -265,6 +293,7 @@ function entryMetadata(entry: TableEntry, source: string): ModelMetadata {
   if (entry.vision !== undefined) meta.vision = entry.vision;
   if (entry.output !== undefined) meta.outputLimit = entry.output;
   if (entry.reasoningField !== undefined) meta.reasoningField = entry.reasoningField;
+  if (entry.kind !== undefined) meta.kind = entry.kind;
   return meta;
 }
 
@@ -594,14 +623,14 @@ export class ModelPricing {
     return undefined;
   }
 
-  /**
-   * Which models.dev provider describes an endpoint, and on what evidence.
-   *
-   * Name before host: `opencode-go` and `opencode` both live on `opencode.ai` and publish different
-   * prices for the same id, so the host says nothing about which of the two is being called while
-   * the local provider key does. See docs/model-metadata.md R6.
-   */
-  private resolveProvider(url: string): { provider: string; how: "declared" | "key" | "api" | "host" } | undefined {
+/**
+ * Which models.dev provider describes an endpoint, and on what evidence.
+ *
+ * Name before host: `opencode-go` and `opencode` both live on `opencode.ai` and publish different
+ * prices for the same id, so the host says nothing about which of the two is being called while
+ * the local provider key does. See docs/model-metadata.md R6.
+ */
+private resolveProvider(url: string): { provider: string; how: "declared" | "key" | "api" | "host" } | undefined {
     const declared = this.declaredPricingProvider(url);
     if (declared) return { provider: declared, how: "declared" };
     const host = hostOf(url);
@@ -609,6 +638,9 @@ export class ModelPricing {
     for (const [key] of this.declaredAt(url)) {
       const match = this.keyToProvider.get(normalizeProviderKey(key));
       if (match) return { provider: match, how: "key" };
+      // The vendor's own name, for the ones whose key never matches it (`gemini` -> `google`).
+      const alias = VENDOR_ALIAS[key.trim().toLowerCase()];
+      if (alias && this.cache?.models[alias]) return { provider: alias, how: "key" };
     }
     // The address itself, path included, before the host: a provider keyed "work" on opencode.ai's
     // Go gateway is opencode-go, whichever of the two the upstream file lists first.
@@ -758,6 +790,9 @@ interface RawModel {
   reasoning?: boolean;
   reasoning_options?: Array<{ type?: string; values?: unknown }>;
   modalities?: { input?: string[] };
+  // models.dev's own vocabulary: `embedding`, `speech`, `transcription`, `image`, `reranking`,
+  // `realtime`, `chat`. 8 476 of its rows declare none, which is read as `chat`.
+  type?: string;
   // `true` (the field exists but names nothing) or `{ field: "reasoning_content" }`. Only the
   // object form is usable: the bare boolean says a model interleaves without saying how to feed
   // it, and guessing a field name is how you send a body a strict endpoint rejects.
@@ -808,7 +843,28 @@ export function effortLadderOf(model: { reasoning_options?: Array<{ type?: strin
 }
 
 /**
- * models.dev ships 3.3 MB and we need three fields, so only the price table is kept. Ids are
+ * models.dev's `type`, validated rather than trusted: it also carries values this build knows
+ * nothing about, and a new one must not be guessed into a meaning. `undefined` means "not stated",
+ * which every caller reads as `chat`; an unknown spelling is dropped the same way.
+ */
+function kindOf(type: string | undefined): ModelKind | undefined {
+  if (type === undefined) return undefined;
+  if (type === "chat") return "chat";
+  return MODEL_KINDS.has(type as ModelKind) ? (type as ModelKind) : undefined;
+}
+
+const MODEL_KINDS: ReadonlySet<ModelKind> = new Set<ModelKind>([
+  "embedding",
+  "speech",
+  "transcription",
+  "image",
+  "video",
+  "reranking",
+  "realtime",
+  "chat",
+]);
+/**
+ * models.dev ships 3.3 MB and we need a handful of fields, so only the price table is kept. Ids are
  * indexed both whole and by last path segment, lowercased, because both sides namespace
  * inconsistently: we record `accounts/fireworks/routers/kimi-k2p6-turbo`, models.dev carries
  * `TEE/qwen3.6-35b-a3b-uncensored`.
@@ -833,8 +889,15 @@ function compact(raw: Record<string, RawProvider>): PricingCache {
       const vision = Array.isArray(model.modalities?.input) ? model.modalities.input.includes("image") : undefined;
       const name = typeof model.name === "string" && model.name.length > 0 ? model.name : undefined;
       const reasoningField = reasoningFieldOf(model);
+      const kind = kindOf(model.type);
       const describes =
-        ladder.levels !== undefined || ladder.toggle || output !== undefined || vision !== undefined || name !== undefined || reasoningField !== undefined;
+        ladder.levels !== undefined ||
+        ladder.toggle ||
+        output !== undefined ||
+        vision !== undefined ||
+        name !== undefined ||
+        reasoningField !== undefined ||
+        kind !== undefined;
       // A model with a window but no published price is worth keeping now that the table answers
       // both questions; one with neither carries nothing.
       if (!cost && context === undefined && !describes) continue;
@@ -842,6 +905,7 @@ function compact(raw: Record<string, RawProvider>): PricingCache {
       if (cost) value.cost = cost;
       if (context !== undefined) value.context = context;
       if (name !== undefined) value.name = name;
+      if (kind !== undefined) value.kind = kind;
       if (ladder.levels !== undefined) value.effort = ladder.levels;
       else if (ladder.toggle) value.effortToggle = true;
       if (vision !== undefined) value.vision = vision;

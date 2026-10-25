@@ -1,6 +1,6 @@
 import { test, setSystemTime } from "bun:test";
 import assert from "node:assert/strict";
-import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows, applyModelMetadata } from "../../src/llm/catalog.ts";
+import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows, applyModelMetadata, applyModelKinds } from "../../src/llm/catalog.ts";
 import { openRouterModels, clearOpenRouterCache } from "../../src/llm/openrouter-endpoints.ts";
 import type { EffortLevel, LlmConfig, LlmModelConfig } from "../../src/core/config.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
@@ -665,4 +665,77 @@ test("an alias takes its window and reasoning field from the upstream id it rese
   const described = applyModelMetadata(windowed, providers, metadata);
   assert.equal(described[0]?.reasoningField, "reasoning_content");
   assert.deepEqual(described[0]?.supportedEffortLevels, ["low", "high"]);
+});
+
+test("applyModelKinds: the table's type wins, the id's shape is the last resort", () => {
+  const providers = { gemini: { baseUrl: "https://generativelanguage.googleapis.com/v1beta/openai" } };
+  const table = {
+    metadataOf: (id: string) =>
+      id === "gemini-2.5-flash-preview-tts" ? { source: "models.dev" as const, kind: "speech" as const } : undefined,
+  };
+  const models: LlmModelConfig[] = [
+    { id: "gemini/gemini-2.5-flash-preview-tts", label: "tts", provider: "gemini", apiId: "gemini-2.5-flash-preview-tts" },
+    { id: "gemini/gemini-3.8-flash-tts", label: "tts 2", provider: "gemini", apiId: "gemini-3.8-flash-tts" },
+    { id: "gemini/gemini-3.8-flash", label: "chat", provider: "gemini", apiId: "gemini-3.8-flash" },
+    { id: "litellm/extraction", label: "mine", provider: "litellm", apiId: "extraction-embed" },
+  ];
+  const kinds = applyModelKinds(models, providers, table, new Set(["litellm/extraction"]));
+  assert.equal(kinds.find((m) => m.id === "gemini/gemini-2.5-flash-preview-tts")?.kind, "speech");
+  // models.dev has no row for this one: the id says what it is.
+  assert.equal(kinds.find((m) => m.id === "gemini/gemini-3.8-flash-tts")?.kind, "speech");
+  assert.equal(kinds.find((m) => m.id === "gemini/gemini-3.8-flash")?.kind, undefined);
+  // A declared id is never reclassified, whatever its name looks like.
+  assert.equal(kinds.find((m) => m.id === "litellm/extraction")?.kind, undefined);
+});
+
+test("applyModelKinds: an embedding id is recognised in every spelling measured live", () => {
+  const ids: Array<[string, string | undefined]> = [
+    ["gemini-embedding-001", "embedding"],
+    ["gemini-embedding-2-preview", "embedding"],
+    ["text-embedding-3-small", "embedding"],
+    ["nomic-embed-text", "embedding"],
+    ["nvidia/nemotron-3.5-embed-1b:free", "embedding"],
+    ["liquid/lfm-2.5-embedding-350m:free", "embedding"],
+    ["gemini-3.5-transcribe", "transcription"],
+    ["gemini-3.8-flash-tts", "speech"],
+    ["gemini-2.5-flash-native-audio-latest", "speech"],
+    ["gemini-3.8-live", "realtime"],
+    // Not non-chat: image *input* models, a music generator's neighbours, plain chat.
+    ["gemini-3-pro-image", undefined],
+    ["gemini-2.5-flash", undefined],
+    ["deepseek-v4-flash", undefined],
+  ];
+  const providers = { gemini: { baseUrl: "https://gemini.test/v1beta/openai" } };
+  const models: LlmModelConfig[] = ids.map(([apiId]) => ({
+    id: `gemini/${apiId}`,
+    label: apiId,
+    provider: "gemini",
+    apiId,
+  }));
+  const kinds = applyModelKinds(models, providers, undefined, new Set());
+  assert.deepEqual(kinds.map((m) => m.kind), ids.map(([, kind]) => kind));
+});
+
+test("an embedding a provider serves without listing it is still offered", async () => {
+  // Measured 2026-10-25: Synthetic answers /embeddings 200 with 768 dimensions for its nomic, and
+  // its /models lists 14 chat models with no embedding at all. Discovery reads the listing, so the
+  // only way that model reaches the embeddings card is a stated exception.
+  const providers = { synthetic: { baseUrl: "https://api.synthetic.new/openai/v1", discover: true } };
+  const mock = mockFetch(async (input) => {
+    const url = String(input);
+    if (url.endsWith("/models")) return Response.json({ data: [{ id: "syn:large:text" }, { id: "hf:Qwen/Qwen3.8-27B" }] });
+    return new Response("not found", { status: 404 });
+  });
+  try {
+    const catalog = new ModelCatalog(() => ({ providers, models: [] }) as unknown as LlmConfig);
+    await catalog.refresh();
+    const ids = catalog.discovered().map((m) => m.apiId);
+    assert.ok(ids.includes("syn:large:text"));
+    assert.ok(ids.includes("hf:nomic-ai/nomic-embed-text-v1.5"));
+    const embedding = catalog.discovered().find((m) => m.apiId === "hf:nomic-ai/nomic-embed-text-v1.5");
+    assert.equal(embedding?.kind, "embedding");
+    assert.equal(embedding?.label, "nomic-embed-text-v1.5");
+  } finally {
+    mock.restore();
+  }
 });

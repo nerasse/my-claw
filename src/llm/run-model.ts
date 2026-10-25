@@ -1,6 +1,7 @@
 import {
   agentConfigKey,
   agentConfigOf,
+  NON_CHAT_KINDS,
   resolveAgentLlm,
   tagNameOf,
   tagRouteOf,
@@ -177,7 +178,9 @@ export function availabilityOf(
 
 /** Every model that can run right now: what a picker is allowed to offer. */
 export function runnableModels(config: LlmConfig, world: AvailabilityWorld): LlmModelConfig[] {
-  return (config.models ?? []).filter((m) => availabilityOf(config, m.id, world)?.state === "ready");
+  return (config.models ?? []).filter(
+    (m) => availabilityOf(config, m.id, world)?.state === "ready" && !NON_CHAT_KINDS.has(m.kind ?? "chat"),
+  );
 }
 
 /**

@@ -1,5 +1,5 @@
-import type { EffortLevel, LlmConfig, LlmModelConfig, LlmProviderConfig } from "../core/config.ts";
-import { EFFORT_ORDER } from "../core/config.ts";
+import type { EffortLevel, LlmConfig, LlmModelConfig, LlmProviderConfig, ModelKind } from "../core/config.ts";
+import { EFFORT_ORDER, NON_CHAT_KINDS } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
 import { hooks } from "../hooks/index.ts";
 import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
@@ -263,8 +263,62 @@ export function applyModelMetadata(
   });
 }
 
+/**
+ * Embedding models a provider serves without listing them. Keyed by the models.dev/engine host,
+ * because a provider key is the owner's to choose.
+ *
+ * Measured 2026-10-25 against the live APIs: Synthetic documents
+ * `hf:nomic-ai/nomic-embed-text-v1.5` on its Embedding Models page and answers it 200 with 768
+ * dimensions, but its `/models` lists 14 chat models and no embedding at all. A discovery pass can
+ * therefore never learn it, and the embeddings card offered nothing for a provider that does serve
+ * one.
+ *
+ * Small and explicit on purpose: this is a fact about an API's listing, not a policy. An entry is
+ * only added for a model proven to answer on that exact endpoint.
+ */
+const UNLISTED_EMBEDDINGS: Record<string, Array<{ id: string; label: string }>> = {
+  "api.synthetic.new": [{ id: "hf:nomic-ai/nomic-embed-text-v1.5", label: "nomic-embed-text-v1.5" }],
+};
+
+function unlistedEmbeddings(baseUrl: string): OpenAiModelRow[] {
+  try {
+    const host = new URL(baseUrl).hostname.toLowerCase();
+    return (UNLISTED_EMBEDDINGS[host] ?? []).map((m) => ({ id: m.id, label: m.label, kind: "embedding" as const }));
+  } catch {
+    return [];
+  }
+}
+
 interface MetadataTable {
   metadataOf(model: string, baseUrl?: string): ModelMetadata | undefined;
+}
+
+/**
+ * Settle what each model is for, once, after the catalogue is merged: the table's own `type` where
+ * it has one, the id's shape otherwise.
+ *
+ * A model the owner declared is left alone. Declaring one is an act of intent -- an owner can point
+ * `llm.models` at anything they like -- and reclassifying it would hide their row from the menu they
+ * wrote it for. Everything discovery found is fair game, because nobody chose it.
+ */
+export function applyModelKinds(
+  models: LlmModelConfig[],
+  providers: Record<string, LlmProviderConfig>,
+  table: MetadataTable | undefined,
+  declared: ReadonlySet<string>,
+): LlmModelConfig[] {
+  return models.map((m) => {
+    if (m.kind !== undefined || declared.has(m.id)) return m;
+    const provider = m.provider ? providers[m.provider] : undefined;
+    const apiId = m.apiId ?? m.id;
+    const fromTable = table
+      ? catalogIdsOf(m, apiId)
+          .map((candidate) => table.metadataOf(candidate, provider ? providerBaseUrl(provider) : undefined)?.kind)
+          .find((kind) => kind !== undefined)
+      : undefined;
+    const kind = fromTable ?? kindFromId(apiId);
+    return kind ? { ...m, kind } : m;
+  });
 }
 
 function isOpenRouterProvider(provider: LlmProviderConfig | undefined): boolean {
@@ -324,10 +378,39 @@ interface OpenAiModelRow {
   efforts?: EffortLevel[];
   /** The upstream id behind a reseller's alias, when the listing names one (`hugging_face_id`). */
   pricingModel?: string;
+  /** What the row is for, when the listing itself says: OpenRouter's embeddings catalogue does. */
+  kind?: ModelKind;
 }
 
 function positiveInt(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : undefined;
+}
+
+/**
+ * What an id that no catalogue describes is for, when its own name says so. Last resort, for the
+ * rows models.dev has never seen: measured on the live Gemini listing, 22 of its 60 ids have no
+ * row there, including `gemini-3.8-flash-tts`, `gemini-3.5-transcribe` and
+ * `gemini-embedding-2-preview`.
+ *
+ * Deliberately narrow, and only for a *discovered* model: an id the owner declared is never
+ * reclassified, because declaring one is an act of intent. Every pattern here names an API that
+ * cannot answer a chat completion, so the cost of a false positive is a model hidden from a menu
+ * the owner typed it into -- which is why nothing here is a guess from a family name alone
+ * (`flash` and `pro` say nothing; `-image-output` would).
+ */
+function kindFromId(apiId: string): ModelKind | undefined {
+  const id = apiId.toLowerCase();
+  // A path segment, not a substring: `nomic-embed-text` and `gemini-embedding-2` both end in one.
+  if (/(?:^|[-/])embed(?:ding)?s?(?:[-/.]|$)/.test(id)) return "embedding";
+  if (/(?:^|[-/])transcri(?:be|ption)(?:[-/.]|$)/.test(id)) return "transcription";
+  // `-tts`, `-tts-preview`, `-native-audio`, `-live`: speech out, or a realtime voice socket.
+  if (/(?:^|[-/])tts(?:[-/.]|$)/.test(id)) return "speech";
+  if (/(?:^|[-/])native-audio(?:[-/.]|$)/.test(id)) return "speech";
+  if (/(?:^|[-/])live(?:[-/.]|$)/.test(id)) return "realtime";
+  // A music generator. `-image` alone is a vision *input* model far more often than a generator,
+  // so only the explicit output spellings are taken and the rest stay as they are.
+  if (/(?:^|[-/])lyria(?:[-/.]|$)/.test(id)) return "speech";
+  return undefined;
 }
 
 function effortLevelsOf(value: unknown): EffortLevel[] | undefined {
@@ -378,6 +461,46 @@ async function fetchOpenAiModels(baseUrl: string, apiKey?: string): Promise<Open
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const body = (await res.json()) as { data?: Array<Record<string, unknown>> };
     return (body.data ?? []).map(rowOf).filter((row): row is OpenAiModelRow => row !== undefined);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * The embeddings a provider lists apart from its chat models (`/embeddings/models`). OpenRouter
+ * keeps the two catalogues separate, and a client that reads only `/models` loses the second one
+ * entirely -- including its per-token price, which is what makes a free one free.
+ *
+ * Throws on a provider without the route so the caller's own fallback decides; here that fallback
+ * is an empty list, because a chat catalogue that answered is still a good answer.
+ */
+async function fetchOpenRouterEmbeddings(baseUrl: string, apiKey?: string): Promise<OpenAiModelRow[]> {
+  const url = `${baseUrl.replace(/\/$/, "")}/embeddings/models`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DISCOVER_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+      signal: controller.signal,
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = (await res.json()) as { data?: Array<Record<string, unknown>> };
+    const rows: OpenAiModelRow[] = [];
+    for (const raw of body.data ?? []) {
+      const id = typeof raw["id"] === "string" ? raw["id"] : undefined;
+      if (!id) continue;
+      const display = typeof raw["name"] === "string" ? raw["name"].trim() : undefined;
+      const context = positiveInt(raw["context_length"]);
+      rows.push({
+        id,
+        ...(display ? { label: display } : {}),
+        ...(context !== undefined ? { context } : {}),
+        // The listing that says "this is an embedding" is the strongest evidence there is: no
+        // table lookup, no id pattern, and it cannot disagree with what the endpoint accepts.
+        kind: "embedding",
+      });
+    }
+    return rows;
   } finally {
     clearTimeout(timer);
   }
@@ -626,7 +749,19 @@ export class ModelCatalog {
           }
           const apiKey = provider.apiKeyEnv ? process.env[provider.apiKeyEnv] : undefined;
           const rows = await fetchOpenAiModels(provider.baseUrl, apiKey);
-          for (const row of rows) {
+          // A provider that has a separate embeddings catalogue answers on `/embeddings/models`
+          // and keeps those rows out of `/models`: OpenRouter lists 467 chat models and 35
+          // embeddings, and without this call the second half simply does not exist (measured
+          // 2026-10-25). Best-effort: a provider without such a route must not fail discovery.
+          const embeddings = isOpenRouterBaseUrl(provider.baseUrl)
+            ? await fetchOpenRouterEmbeddings(provider.baseUrl, apiKey).catch(() => [])
+            : [];
+          // Then the ones an API serves without ever listing (Synthetic's nomic): a fact about
+          // the listing, proven on the endpoint, never a guess.
+          const unlisted = unlistedEmbeddings(provider.baseUrl).filter(
+            (row) => !rows.some((listed) => listed.id === row.id),
+          );
+          for (const row of [...rows, ...embeddings, ...unlisted]) {
             // Only what the listing stated, nothing invented: an endpoint that answers ids keeps
             // `label: id` and no limit, and models.dev fills the rest downstream.
             const limit = { context: row.context, output: row.output };
@@ -636,6 +771,7 @@ export class ModelCatalog {
               provider: name,
               group: provider.group,
               ...(row.vision !== undefined ? { vision: row.vision } : {}),
+              ...(row.kind !== undefined ? { kind: row.kind } : {}),
               ...(row.efforts ? { supportsEffort: true, supportedEffortLevels: row.efforts } : {}),
               ...(limit.context !== undefined || limit.output !== undefined ? { limit } : {}),
               ...(row.pricingModel ? { pricingModel: row.pricingModel } : {}),

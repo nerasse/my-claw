@@ -1,4 +1,4 @@
-import type { MemoryConfig } from "../core/config.ts";
+import { embeddingFor, type MemoryConfig } from "../core/config.ts";
 import { searchFts, incrementAccess, type FtsHit } from "./db.ts";
 import { embed, cosineSimilarity, isEmbeddingEnabled, embeddingSignature } from "./embedding.ts";
 import { getCachedRecall, setCachedRecall } from "./cache.ts";
@@ -69,20 +69,19 @@ export async function recall(query: string, cfg?: MemoryConfig): Promise<RecallR
 
   const ftsNorm = normalizeFts(candidates);
 
+  const embedCfg = embeddingFor(cfg, "recall");
   let queryVec: Float32Array | null = null;
-  if (isEmbeddingEnabled(cfg?.embedding)) {
-    queryVec = await embed(query, cfg?.embedding);
+  if (embedCfg?.enabled !== false && isEmbeddingEnabled(embedCfg)) {
+    queryVec = await embed(query, embedCfg);
   }
-  const sig = embeddingSignature(cfg?.embedding);
+  const sig = embeddingSignature(embedCfg);
   const semantic = queryVec !== null;
 
   const hits: RecallHit[] = candidates.map((c, i) => {
     const fts = ftsNorm[i] ?? 0;
     // Only compare vectors from the same model: cosine across models is meaningless.
-    const cosine =
-      queryVec && c.entry.embedding && c.entry.embeddingModel === sig
-        ? cosineSimilarity(queryVec, c.entry.embedding)
-        : null;
+    const stored = sig ? c.entry.embeddings[sig] : undefined;
+    const cosine = queryVec && stored ? cosineSimilarity(queryVec, stored) : null;
     const accessBoost = Math.log(1 + c.entry.accessCount);
     const score = semantic
       ? W_FTS * fts + W_COSINE * Math.max(0, cosine ?? 0) + W_ACCESS * accessBoost

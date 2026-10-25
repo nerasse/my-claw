@@ -35,7 +35,7 @@ export interface DedupResult {
 export function classify(
   content: string,
   embedding: Float32Array | null,
-  embeddingModel?: string | null,
+  signature?: string | null,
 ): DedupResult {
   const hash = hashContent(content);
 
@@ -53,8 +53,10 @@ export function classify(
   let bestSim = 0;
   for (const { entry } of candidates) {
     // Only compare vectors from the same model: cosine across models is meaningless.
-    if (!entry.embedding || entry.embeddingModel !== embeddingModel) continue;
-    const sim = cosineSimilarity(embedding, entry.embedding);
+    if (!signature) continue;
+    const stored = entry.embeddings[signature];
+    if (!stored) continue;
+    const sim = cosineSimilarity(embedding, stored);
     if (sim > bestSim) {
       bestSim = sim;
       best = entry;

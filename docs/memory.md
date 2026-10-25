@@ -18,14 +18,84 @@ Memory grows indefinitely; cleanliness comes from consolidation, not eviction. A
 
 Pure vector search scores ~49% on long-memory benchmarks; hybrid keyword+vector ~92%. FTS5 pre-filters candidates by BM25, then cosine re-ranks in JS over that small set (<1ms). No `sqlite-vec` extension — no Bun precedent, and the JS path is fast enough.
 
-### Embeddings are optional, three modes, one interface
+### Five consumers, one model each (or one shared)
+
+Embeddings are not one feature with one model. Five places in the engine ask "is this the same
+meaning?", and they do not have the same needs: recall runs on every message, the duplicate check
+runs on every write, consolidation re-embeds what it merges, the Markdown import runs once at boot,
+and skill suggestion ranks the skills a message is about.
+
+`memory.embedding` is the **default**; `memory.embeddings.<consumer>` overrides it for one of them:
+
+| consumer | what it embeds | when |
+|---|---|---|
+| `recall` | the incoming message, against stored facts | every message |
+| `dedup` | a candidate fact, against its category | every write |
+| `consolidate` | the facts a merge produces | every consolidation pass |
+| `import` | hand-written bullets from `MEMORY.md` | boot, once |
+| `skills` | the message, against skill descriptions | when a skill may apply |
+
+An entry under `embeddings.<consumer>` **replaces** the default for that consumer, it does not merge
+field by field: half a destination (a model without its provider) is not a smaller choice, it is a
+different one. An entry that names no model falls back to the default rather than silencing the
+consumer, because embedding nothing is not what "I only set the dimensions" means.
+
+`enabled: false` is the off switch, and it is a state of its own rather than a destination: it pins
+nothing, so a consumer can be switched off while following the default and be switched back on
+without choosing anything. On a consumer that does name a model, the switch keeps the model, so
+coming back needs no reconfiguration either. `own` in the Services frame means "names its own
+model", not "has an entry", so the page never offers "follow the default" to a row that already
+does. `embeddingFor()` and `embeddingActive()` in `src/core/config.ts` are the only readers, so the
+settings page and the callers cannot disagree about what "configured" means.
+
+### A model is a vector space, so a vector names its model
+
+Two models never produce comparable vectors, even at equal dimensions. The store therefore keeps
+one vector **per model** rather than one vector per entry: `entry_vectors(entry_id, model, vector)`.
+Two consumers on the same model share the row; two consumers on different models each have their
+own, and cosine is only ever computed inside one model's space. Switching a consumer's model does
+not invalidate the other consumers' vectors, and the backfill only re-embeds the space that changed.
+
+The `skills` consumer is the exception: its vectors live in a process cache and never reach the
+database, so changing its model re-embeds nothing.
+
+### Embeddings are optional, four modes, one interface
 
 `embed(text)` returns a vector or `null`; `null` degrades that call to FTS5-only.
 - **FTS5-only (zero-config default):** no model, key, download, or network.
 - **local:** `@huggingface/transformers` runs ONNX in-process — no server.
-- **http:** any OpenAI-compatible `/embeddings` endpoint (Ollama, llama.cpp, Gemini, OpenAI). Serving the model is the provider's responsibility, not ours.
+- **http, on a provider already configured:** `from: "gemini"` names a key of `llm.providers`, and
+  the call uses that provider's `baseUrl` and `apiKeyEnv`. No URL to copy, no second key to paste,
+  and renaming or re-keying the provider moves the embedding with it. This is what the Services
+  page offers first, because it is the one setup a real install already has. Which models it can
+  offer comes from the catalogue's non-chat half (`kind: "embedding"`), never from a hardcoded
+  list: Gemini's and OpenRouter's are discovered, Synthetic's single one is declared because its
+  `/models` never lists it.
+- **http, at the owner's URL:** `baseUrl` (+ optional `apiKeyEnv`) for a server that is not one of
+  this install's chat providers — a bare llama.cpp, an Ollama box, a proxy.
 
-Recommended (the user mixes French and English): local `Xenova/multilingual-e5-large`, or hosted `gemini-embedding-001` (free tier).
+`from` and `baseUrl` are alternatives, not a cascade: naming both is a config error, since the two
+say different things about where the key lives and a silent winner would be a surprise.
+
+Measured on the live providers (2026-10-25): Gemini serves `gemini-embedding-001` and
+`gemini-embedding-2` on its OpenAI-compatible `/embeddings`; OpenRouter serves 35 embedding models
+on its own `/embeddings` and lists them apart on `/embeddings/models` (its `/models` carries none);
+Synthetic serves `hf:nomic-ai/nomic-embed-text-v1.5` (768 dimensions, free, and explicitly outside
+its rate limit) but **lists no embedding at all** in `/models`, so `UNLISTED_EMBEDDINGS` in
+`src/llm/catalog.ts` states it; LiteLLM answers 400 on that route, OpenCode Go 404, Groq 404. A
+provider with no embeddings therefore simply does not appear in the model list.
+
+Recommended (the user mixes French and English): local `Xenova/multilingual-e5-large`, or hosted
+`gemini-embedding-001` (768 dimensions is ample for a store of a few thousand facts).
+
+### One call per batch, not per entry
+
+The backfill is the caller that made this matter: switching model re-embeds the whole active store,
+and one request per entry turned that into hundreds of round trips. `embedMany` sends 40 texts per
+call and reads each row's own `index` rather than assuming the response is sorted — a misplaced
+vector indexes the wrong text for good, and nothing downstream could notice. A batch the endpoint
+refuses falls back to one text at a time, so a provider that only accepts a single input still
+works, just as slowly as before. Local embeddings stay per-text: no round trip to save.
 
 ### Boot warm-up, never blocking
 
@@ -33,13 +103,19 @@ The local backend loads in the background at startup (first run downloads ~1.3GB
 
 ### Per-vector model tag + unified backfill
 
-Each vector is stored with the model that produced it (`embedding_model` = the model id, plus `@dims` when a dimension override is set). This is the community-standard guard: cosine across two different models is meaningless even at equal dimensions, so retrieval and dedup only compare vectors carrying the *current* model's tag; others fall back to FTS5.
+Each vector is stored with the model that produced it (`entry_vectors.model` = the model id, plus
+`@dims` when a dimension override is set). This is the community-standard guard: cosine across two
+different models is meaningless even at equal dimensions, so retrieval and dedup only compare
+vectors in the space they asked for; entries with no vector in that space fall back to FTS5.
 
-At boot (after warm-up) a single backfill re-embeds every active entry whose vector is missing **or** was produced by a different model. One mechanism covers both cases:
+At boot (after warm-up) a single backfill re-embeds every active entry whose vector is missing in a
+space that is in use **or** was produced by a model no longer used there. One mechanism covers both
+cases:
 - **Enabling embeddings** on a zero-config store → all null vectors get embedded.
-- **Switching models** → all stale-model vectors get re-embedded.
+- **Switching models** → the vectors of that space get re-embedded, and only those.
 
-No manual reindex, no silent corruption. The backfill is idempotent and resumable (re-running only touches entries still needing it). A schema column is added via lightweight `ALTER TABLE` migration for stores created before this change.
+Rows written before the per-model table existed are migrated once (`migrateLegacyVectors()`): the
+old `entries.embedding` + `embedding_model` pair becomes one row in `entry_vectors`.
 
 ### Soft-delete with 1-year retention
 
@@ -72,7 +148,12 @@ A background pass every N writes asks an LLM to merge each category into the sma
   "enabled": true,
   "consolidation": { "enabled": true, "every": 20 },
   // Optional. Omit for FTS5-only (zero-config). http: also set baseUrl + apiKeyEnv.
-  "embedding": { "backend": "local", "model": "Xenova/multilingual-e5-large" }
+  "embedding": { "from": "gemini", "model": "gemini-embedding-001", "dimensions": 768 },
+  // Optional. One consumer elsewhere, or one switched off.
+  "embeddings": {
+    "recall": { "from": "synthetic", "model": "hf:nomic-ai/nomic-embed-text-v1.5" },
+    "skills": { "enabled": false }
+  }
 }
 ```
 
@@ -80,7 +161,8 @@ Defaults: `recallMaxEntries` 5, `recallMaxChars` 2000, `ftsCandidates` 20, `supe
 
 ## Storage
 
-- `~/.my-claw/memory.db` — SQLite, WAL. `entries` (+ `embedding` BLOB, `embedding_model` tag) and `entries_fts` (FTS5).
+- `~/.my-claw/memory.db` — SQLite, WAL. `entries` and `entries_fts` (FTS5), plus
+  `entry_vectors(entry_id, model, vector)` — one row per entry per embedding model in use.
 - `<workspace>/MEMORY.md` — generated human-readable view (atomic writes).
 
 ## Migration

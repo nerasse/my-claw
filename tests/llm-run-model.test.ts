@@ -209,6 +209,25 @@ describe("availability", () => {
     expect(runnableModels(config().llm, w)).toHaveLength(5);
   });
 
+  test("a model that is not for talking is runnable but never offered", () => {
+    const c = config();
+    // The catalogue keeps it: availability is about whether its provider can be called, and an
+    // embedding endpoint can. Only the menu decides it has nothing to say here.
+    c.llm.models = [
+      ...(c.llm.models ?? []),
+      { id: "gemini/gemini-embedding-001", label: "embedding", provider: "gemini", apiId: "gemini-embedding-001", kind: "embedding" },
+      { id: "gemini/gemini-3.8-flash-tts", label: "tts", provider: "gemini", apiId: "gemini-3.8-flash-tts", kind: "speech" },
+      { id: "gemini/gemini-3.8-flash", label: "flash", provider: "gemini", apiId: "gemini-3.8-flash" },
+    ];
+    c.llm.providers = { ...(c.llm.providers ?? {}), gemini: { baseUrl: "https://gemini.test/openai", apiKeyEnv: "GEMINI_API_KEY" } };
+    const w = world();
+    expect(availabilityOf(c.llm, "gemini/gemini-embedding-001", w)).toEqual({ state: "ready" });
+    expect(runnableModels(c.llm, w).map((m) => m.id)).not.toContain("gemini/gemini-embedding-001");
+    expect(runnableModels(c.llm, w).map((m) => m.id)).not.toContain("gemini/gemini-3.8-flash-tts");
+    // A model with no kind at all is a chat model, which is what almost everything is.
+    expect(runnableModels(c.llm, w).map((m) => m.id)).toContain("gemini/gemini-3.8-flash");
+  });
+
   test("a missing env key and an unconnected subscription are told apart", () => {
     const noKey = world({ hasEnv: () => false });
     expect(availabilityOf(config().llm, "qwen", noKey)).toEqual({

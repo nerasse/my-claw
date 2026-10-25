@@ -993,7 +993,11 @@ export function upsertProvider(key: string, patch: ProviderPatch): Promise<Confi
       else spec[field] = patch[field];
     }
     if (patch.discover !== undefined) spec["discover"] = patch.discover;
-    if (patch.promptCache !== undefined) spec["promptCache"] = patch.promptCache;
+    if (patch.promptCache !== undefined) {
+      // On is the default, so only the refusal is written (same rule as `disabled` below).
+      if (patch.promptCache) delete spec["promptCache"];
+      else spec["promptCache"] = false;
+    }
     if (patch.reasoningReplay !== undefined) spec["reasoningReplay"] = patch.reasoningReplay;
     if (patch.disabled !== undefined) {
       // Off is the default state, so re-enabling drops the field instead of writing `false`:

@@ -1,5 +1,5 @@
 import type { AgentToolType, MyClawConfig, ResolvedLlmConfig } from "../core/config.ts";
-import { resolveWorkspaceKey } from "../core/config.ts";
+import { embeddingFor, resolveWorkspaceKey } from "../core/config.ts";
 import {
   resolveInjectionBudgetBonus,
   nestedAgentsEnabled,
@@ -602,7 +602,10 @@ export class AgentBridge implements AgentBackend {
       const suggestedSkills = await selectRelevantSkills(
         skills,
         message.text,
-        this.config.memory?.embedding,
+        // The skill suggester's own space: its vectors live in a per-process cache, never in the
+        // store, so it can run on another model with no re-embed and no risk of comparing its
+        // vectors against a memory entry's (docs/memory.md).
+        embeddingFor(this.config.memory, "skills"),
         this.config.skills?.suggest,
       );
       let systemPrompt = await buildSystemPrompt({

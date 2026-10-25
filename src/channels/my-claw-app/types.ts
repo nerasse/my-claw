@@ -590,6 +590,21 @@ export interface MyClawAppServicesSet {
   url?: string;
   model?: string;
   keyEnv?: string;
+  /**
+   * Embeddings on a provider this install already has: its key in `llm.providers`. The server
+   * writes `memory.embedding.from`, so the URL and the key are never copied into memory.
+   */
+  provider?: string;
+  /**
+   * Embeddings only: which consumer this choice is for. Absent means the default every consumer
+   * inherits (`memory.embedding`); a name writes `memory.embeddings.<name>` instead, so one
+   * consumer can move without touching the rest.
+   */
+  consumer?: "recall" | "dedup" | "consolidate" | "import" | "skills";
+  /** Switches one consumer's semantic half off, keeping its model for when it is turned back on. */
+  enabled?: boolean;
+  /** Drops a consumer's own entry, so it follows the default again. */
+  inherit?: boolean;
 }
 
 export interface MyClawAppVoiceModeSet {
@@ -2267,6 +2282,38 @@ export interface MyClawAppServiceView {
   health: "up" | "down" | "no-endpoint";
   /** A local engine this server downloads when switched on, and frees on demand. */
   local?: { state: "idle" | "installing" | "ready" | "failed"; error?: string; bytes: number };
+  /** Embeddings: the model in force (`memory.embedding.model`). */
+  model?: string;
+  /** Embeddings: the provider it comes from, when the choice named one of this install's. */
+  provider?: string;
+}
+
+/**
+ * One model an embedding can run on, from the catalogue's non-chat half. Only providers this server
+ * can actually call are listed: a model whose key is missing is not a choice, it is a dead end.
+ */
+export interface MyClawAppEmbeddingModel {
+  /** The provider key, which is what `services.set` carries back. */
+  provider: string;
+  /** The id the provider's API knows: what `memory.embedding.model` is written as. */
+  id: string;
+  label: string;
+}
+
+/**
+ * What one consumer of embeddings runs on, as the owner set it. `own` is false when it inherits the
+ * default, which is what makes "everything on one model" readable at a glance on the page.
+ */
+export interface MyClawAppEmbeddingConsumer {
+  id: "recall" | "dedup" | "consolidate" | "import" | "skills";
+  /** A model is set and nothing switched it off. */
+  active: boolean;
+  /** The model in force, inherited or its own. */
+  model?: string;
+  /** The provider it comes from, when the destination is one of this install's. */
+  provider?: string;
+  /** True when this consumer names its own destination instead of following the default. */
+  own: boolean;
 }
 
 export interface MyClawAppServicesResult {
@@ -2277,6 +2324,10 @@ export interface MyClawAppServicesResult {
   pushDevices: string[];
   /** Paired devices, enabled or not. */
   pairedDevices: number;
+  /** The embedding models a provider of this install serves: what the embeddings card offers. */
+  embeddingModels?: MyClawAppEmbeddingModel[];
+  /** One row per consumer, so the page can show what inherits and what stands alone. */
+  embeddingConsumers?: MyClawAppEmbeddingConsumer[];
 }
 
 export interface MyClawAppAccountView {

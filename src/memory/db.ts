@@ -40,11 +40,48 @@ function getDb(): Database {
     CREATE INDEX IF NOT EXISTS idx_entries_superseded ON entries (superseded_by);
 
     CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(content, tokenize='unicode61');
+
+    -- One row per (entry, model). A model is a vector space: two models never compare, even at
+    -- equal dimensions, so consumers pointed at different models each keep their own vector here
+    -- instead of overwriting a single column. Keyed by the model signature (id plus its dims),
+    -- which is what every caller already knows (docs/memory.md).
+    CREATE TABLE IF NOT EXISTS entry_vectors (
+      entry_id INTEGER NOT NULL,
+      model    TEXT    NOT NULL,
+      vector   BLOB    NOT NULL,
+      PRIMARY KEY (entry_id, model)
+    ) WITHOUT ROWID;
+
+    CREATE INDEX IF NOT EXISTS idx_entry_vectors_model ON entry_vectors (model);
   `);
 
   ensureColumn(db, "entries", "embedding_model", "TEXT");
+  migrateLegacyVectors(db);
 
   return db;
+}
+
+/**
+ * The single-vector column becomes rows in `entry_vectors`, once. A store written before this
+ * table existed carries its vectors in `entries.embedding`; reading those as if they were the new
+ * shape is how a recall silently compares against nothing. The old columns are left alone --
+ * emptying them is a destructive step with no benefit, and a downgrade would want them.
+ */
+function migrateLegacyVectors(d: Database): void {
+  const done = d.prepare("SELECT 1 FROM entry_vectors LIMIT 1").get();
+  const pending = d
+    .prepare("SELECT COUNT(*) AS n FROM entries WHERE embedding IS NOT NULL AND embedding_model IS NOT NULL")
+    .get() as { n: number };
+  if (done || Number(pending.n) === 0) return;
+  const rows = d
+    .prepare("SELECT id, embedding, embedding_model FROM entries WHERE embedding IS NOT NULL AND embedding_model IS NOT NULL")
+    .all() as Array<{ id: number; embedding: Uint8Array; embedding_model: string }>;
+  const insert = d.prepare("INSERT OR REPLACE INTO entry_vectors (entry_id, model, vector) VALUES (?, ?, ?)");
+  const migrate = d.transaction((): void => {
+    for (const row of rows) insert.run(row.id, row.embedding_model, row.embedding);
+  });
+  migrate();
+  void log("info", "memory vectors migrated to per-model rows", { vectors: rows.length });
 }
 
 /** Add a column to an existing table if a prior schema version lacks it. */
@@ -77,8 +114,7 @@ function rowToEntry(row: Record<string, unknown>): MemoryEntry {
     id: Number(row["id"]),
     content: String(row["content"] ?? ""),
     category: isMemoryCategory(category) ? category : "lesson",
-    embedding: blobToEmbedding(row["embedding"]),
-    embeddingModel: row["embedding_model"] == null ? null : String(row["embedding_model"]),
+    embeddings: {},
     hash: String(row["hash"] ?? ""),
     createdAt: String(row["created_at"] ?? ""),
     updatedAt: String(row["updated_at"] ?? ""),
@@ -86,6 +122,45 @@ function rowToEntry(row: Record<string, unknown>): MemoryEntry {
     accessCount: Number(row["access_count"] ?? 0),
     lastAccess: row["last_access"] == null ? null : String(row["last_access"]),
   };
+}
+
+/**
+ * Attaches every vector of these entries, in one query. Per-row lookups would be one query per
+ * memory on a store of thousands -- and `getAllActive` is called by the export and the recall path.
+ */
+function withVectors(entries: MemoryEntry[]): MemoryEntry[] {
+  if (entries.length === 0) return entries;
+  const byId = new Map(entries.map((e) => [e.id, e]));
+  const ids = [...byId.keys()];
+  const d = getDb();
+  // Chunked so a huge store never builds an IN list beyond SQLite's bound-parameter ceiling.
+  for (let start = 0; start < ids.length; start += 500) {
+    const chunk = ids.slice(start, start + 500);
+    const marks = chunk.map(() => "?").join(", ");
+    const rows = d
+      .prepare(`SELECT entry_id, model, vector FROM entry_vectors WHERE entry_id IN (${marks})`)
+      .all(...chunk) as Array<{ entry_id: number; model: string; vector: Uint8Array }>;
+    for (const row of rows) {
+      const vec = blobToEmbedding(row.vector);
+      const entry = byId.get(Number(row.entry_id));
+      if (vec && entry) entry.embeddings[row.model] = vec;
+    }
+  }
+  return entries;
+}
+
+/** The vectors of one entry, by model signature. */
+function vectorsOf(id: number): Record<string, Float32Array> {
+  const rows = getDb().prepare("SELECT model, vector FROM entry_vectors WHERE entry_id = ?").all(id) as Array<{
+    model: string;
+    vector: Uint8Array;
+  }>;
+  const out: Record<string, Float32Array> = {};
+  for (const row of rows) {
+    const vec = blobToEmbedding(row.vector);
+    if (vec) out[row.model] = vec;
+  }
+  return out;
 }
 
 // --- FTS query sanitization --------------------------------------------------
@@ -105,57 +180,52 @@ export function toFtsQuery(raw: string): string {
 export function addEntry(
   content: string,
   category: MemoryCategory,
-  embedding: Float32Array | null,
+  embeddings: Record<string, Float32Array>,
   hash: string,
-  embeddingModel: string | null = null,
 ): number {
   const d = getDb();
-  // The row and its FTS shadow are one write. Split, a failure between the two leaves a memory
-  // that counts in the exports and can never be recalled again.
+  // The row, its FTS shadow and its vectors are one write. Split, a failure between them leaves a
+  // memory that counts in the exports and can never be recalled again.
   const insert = d.transaction((): number => {
     const row = d
       .prepare(
-        `INSERT INTO entries (content, category, embedding, embedding_model, hash)
-         VALUES ($content, $category, $embedding, $model, $hash)
+        `INSERT INTO entries (content, category, hash)
+         VALUES ($content, $category, $hash)
          RETURNING id`,
       )
-      .get({
-        $content: content,
-        $category: category,
-        $embedding: embeddingToBlob(embedding),
-        $model: embedding ? embeddingModel : null,
-        $hash: hash,
-      }) as { id: number };
+      .get({ $content: content, $category: category, $hash: hash }) as { id: number };
     d.prepare("INSERT INTO entries_fts (rowid, content) VALUES (?, ?)").run(row.id, content);
+    writeVectors(row.id, embeddings);
     return row.id;
   });
   return insert();
 }
 
+function writeVectors(id: number, embeddings: Record<string, Float32Array>): void {
+  const d = getDb();
+  const insert = d.prepare("INSERT OR REPLACE INTO entry_vectors (entry_id, model, vector) VALUES (?, ?, ?)");
+  for (const [model, vec] of Object.entries(embeddings)) insert.run(id, model, embeddingToBlob(vec));
+}
+
 export function updateEntry(
   id: number,
   content: string,
-  embedding: Float32Array | null,
+  embeddings: Record<string, Float32Array>,
   hash: string,
-  embeddingModel: string | null = null,
 ): void {
   const d = getDb();
   // Delete then insert: interrupted between the two, an existing memory becomes unrecallable.
   const update = d.transaction((): void => {
     d.prepare(
       `UPDATE entries
-       SET content = $content, embedding = $embedding, embedding_model = $model, hash = $hash,
-           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+       SET content = $content, hash = $hash, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
        WHERE id = $id`,
-    ).run({
-      $id: id,
-      $content: content,
-      $embedding: embeddingToBlob(embedding),
-      $model: embedding ? embeddingModel : null,
-      $hash: hash,
-    });
+    ).run({ $id: id, $content: content, $hash: hash });
     d.prepare("DELETE FROM entries_fts WHERE rowid = ?").run(id);
     d.prepare("INSERT INTO entries_fts (rowid, content) VALUES (?, ?)").run(id, content);
+    // A rewritten memory keeps no vector: it describes a text that no longer exists.
+    d.prepare("DELETE FROM entry_vectors WHERE entry_id = ?").run(id);
+    writeVectors(id, embeddings);
   });
   update();
 }
@@ -206,7 +276,7 @@ export function purgeSuperseded(days: number): number {
 export function getEntry(id: number): MemoryEntry | null {
   const d = getDb();
   const row = d.prepare("SELECT * FROM entries WHERE id = ?").get(id) as Record<string, unknown> | null;
-  return row ? rowToEntry(row) : null;
+  return row ? withVectors([rowToEntry(row)])[0]! : null;
 }
 
 export function getByHash(hash: string): MemoryEntry | null {
@@ -214,7 +284,7 @@ export function getByHash(hash: string): MemoryEntry | null {
   const row = d
     .prepare("SELECT * FROM entries WHERE hash = ? AND superseded_by IS NULL LIMIT 1")
     .get(hash) as Record<string, unknown> | null;
-  return row ? rowToEntry(row) : null;
+  return row ? withVectors([rowToEntry(row)])[0]! : null;
 }
 
 export function getAllActive(): MemoryEntry[] {
@@ -222,33 +292,31 @@ export function getAllActive(): MemoryEntry[] {
   const rows = d
     .prepare("SELECT * FROM entries WHERE superseded_by IS NULL ORDER BY created_at DESC")
     .all() as Array<Record<string, unknown>>;
-  return rows.map(rowToEntry);
+  return withVectors(rows.map(rowToEntry));
 }
 
 /**
- * Active entries whose vector is missing or was produced by a different model.
- * Covers both "embeddings just enabled" and "model changed" in one query.
+ * Active entries with no vector in this vector space. Covers "embeddings just enabled", "a new
+ * consumer went live", and "that consumer changed model": all three need the same missing rows,
+ * and the per-model table already answers it without a column to rewrite.
  */
 export function getActiveNeedingEmbedding(currentModel: string): MemoryEntry[] {
   const d = getDb();
   const rows = d
     .prepare(
-      `SELECT * FROM entries
-       WHERE superseded_by IS NULL
-         AND (embedding IS NULL OR embedding_model IS NOT $model)`,
+      `SELECT * FROM entries e
+       WHERE e.superseded_by IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM entry_vectors v WHERE v.entry_id = e.id AND v.model = $model
+         )`,
     )
     .all({ $model: currentModel }) as Array<Record<string, unknown>>;
   return rows.map(rowToEntry);
 }
 
-/** Set an entry's embedding (and its model identity) without touching content/FTS/timestamps. */
+/** Store one vector in one space, leaving the entry's other spaces untouched. */
 export function setEmbedding(id: number, embedding: Float32Array, embeddingModel: string): void {
-  const d = getDb();
-  d.prepare("UPDATE entries SET embedding = $embedding, embedding_model = $model WHERE id = $id").run({
-    $id: id,
-    $embedding: embeddingToBlob(embedding),
-    $model: embeddingModel,
-  });
+  writeVectors(id, { [embeddingModel]: embedding });
 }
 
 export function getActiveByCategory(category: MemoryCategory): MemoryEntry[] {
@@ -258,7 +326,7 @@ export function getActiveByCategory(category: MemoryCategory): MemoryEntry[] {
       "SELECT * FROM entries WHERE category = ? AND superseded_by IS NULL ORDER BY created_at DESC",
     )
     .all(category) as Array<Record<string, unknown>>;
-  return rows.map(rowToEntry);
+  return withVectors(rows.map(rowToEntry));
 }
 
 export function countActive(): number {
@@ -291,7 +359,7 @@ export function searchFts(query: string, limit: number): FtsHit[] {
          LIMIT $limit`,
       )
       .all({ $match: match, $limit: limit }) as Array<Record<string, unknown>>;
-    return rows.map((row) => ({ entry: rowToEntry(row), bm25: Number(row["bm25"] ?? 0) }));
+    return withVectors(rows.map(rowToEntry)).map((entry, i) => ({ entry, bm25: Number(rows[i]!["bm25"] ?? 0) }));
   } catch (err) {
     void log("warn", "memory searchFts failed", { error: String(err) });
     return [];
@@ -308,5 +376,5 @@ export function closeMemoryDb(): void {
 /** Test helper: wipe all rows. */
 export function clearAllEntries(): void {
   const d = getDb();
-  d.exec("DELETE FROM entries; DELETE FROM entries_fts;");
+  d.exec("DELETE FROM entries; DELETE FROM entries_fts; DELETE FROM entry_vectors;");
 }

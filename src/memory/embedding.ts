@@ -1,7 +1,8 @@
 import type * as Transformers from "@huggingface/transformers";
-import type { EmbeddingConfig } from "../core/config.ts";
+import type { EmbeddingConfig, LlmProviderConfig } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
 import { TRANSFORMERS_CACHE, transformersRuntime } from "../services/local-engines.ts";
+import { providerBaseUrl } from "../llm/resolver.ts";
 
 /**
  * transformers.js, imported the first time local embeddings run: the one dynamic import of the
@@ -28,6 +29,43 @@ type FeatureExtractor = (
 ) => Promise<{ data: Float32Array | number[] }>;
 
 const HTTP_TIMEOUT_MS = 30_000;
+/**
+ * How many texts one `/embeddings` call carries. OpenAI-compatible endpoints take an array, and a
+ * first-time backfill of a real store is hundreds of entries: one request each made switching model
+ * a two-minute wait on 435 round trips (measuring 2026-10-25). Chunked rather than unbounded --
+ * Gemini caps a batch by total input size, and a store can hold a single 40 kB entry.
+ */
+const EMBED_BATCH = 40;
+
+/**
+ * The live provider table, published the way the price table is: recall sits on the hot path of
+ * every message and holds no config of its own. Read through the closure so a provider renamed,
+ * disabled or given a new key applies on the next call, with no re-wiring.
+ */
+let providersOf: () => Record<string, LlmProviderConfig> = () => ({});
+
+export function setEmbeddingProviders(read: () => Record<string, LlmProviderConfig>): void {
+  providersOf = read;
+}
+
+/**
+ * Where an embedding call goes, and what signs it.
+ *
+ * `from` is the whole point: a model the owner already pays for on a configured provider needs no
+ * second URL and no second copy of the key. `baseUrl` stays for a server that is not a chat
+ * provider of this install (a bare llama.cpp, an Ollama box).
+ */
+function endpointOf(cfg: EmbeddingConfig): { baseUrl?: string; apiKey?: string } {
+  if (!cfg.from) {
+    return { baseUrl: cfg.baseUrl, apiKey: cfg.apiKeyEnv ? process.env[cfg.apiKeyEnv] : undefined };
+  }
+  const provider = providersOf()[cfg.from];
+  if (!provider) return {};
+  return {
+    baseUrl: providerBaseUrl(provider) || undefined,
+    apiKey: provider.apiKeyEnv ? process.env[provider.apiKeyEnv] : undefined,
+  };
+}
 
 let ready = false;
 let localFailed = false;
@@ -39,9 +77,18 @@ export function isEmbeddingReady(): boolean {
   return ready;
 }
 
+/**
+ * Whether this config embeds at all: a model and not switched off. One check, in `embed` itself,
+ * so no caller can forget it and so a consumer turned off keeps its model for when it is turned
+ * back on.
+ */
+function usable(cfg?: EmbeddingConfig): boolean {
+  return Boolean(cfg?.model) && cfg?.enabled !== false;
+}
+
 /** True when a model is configured (semantic recall is possible). */
 export function isEmbeddingEnabled(cfg?: EmbeddingConfig): boolean {
-  return Boolean(cfg?.model);
+  return usable(cfg);
 }
 
 /**
@@ -85,6 +132,9 @@ export async function warmupEmbedding(
     await getLocalPipeline(cfg.model);
     await embedLocal("warmup", cfg);
     ready = true;
+    // A warm-up that works clears an earlier failure: the model was missing, or the download was
+    // interrupted, and leaving the flag set would keep local embeddings dead until a restart.
+    localFailed = false;
     void log("info", "memory embedding ready", { backend: "local", model: cfg.model });
   } catch (err) {
     localFailed = true;
@@ -119,19 +169,24 @@ async function embedLocal(text: string, cfg: EmbeddingConfig): Promise<Float32Ar
 }
 
 interface EmbeddingResponse {
-  data?: Array<{ embedding?: number[] }>;
+  data?: Array<{ embedding?: number[]; index?: number }>;
 }
 
-async function embedHttp(text: string, cfg: EmbeddingConfig): Promise<Float32Array | null> {
-  if (!cfg.baseUrl) return null;
-  const apiKey = cfg.apiKeyEnv ? process.env[cfg.apiKeyEnv] : undefined;
-  const body: Record<string, unknown> = { model: cfg.model, input: text };
+/**
+ * One `/embeddings` call for a batch of texts, in order. The response carries an `index` per row
+ * and providers do not promise to return them sorted, so ordering is read rather than assumed:
+ * a misplaced vector indexes the wrong text forever, and nothing downstream could notice.
+ */
+async function requestEmbeddings(texts: string[], cfg: EmbeddingConfig): Promise<Float32Array[] | null> {
+  const { baseUrl, apiKey } = endpointOf(cfg);
+  if (!baseUrl) return null;
+  const body: Record<string, unknown> = { model: cfg.model, input: texts };
   if (cfg.dimensions) body["dimensions"] = cfg.dimensions;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
   try {
-    const res = await fetch(`${cfg.baseUrl}/embeddings`, {
+    const res = await fetch(`${baseUrl.replace(/\/+$/, "")}/embeddings`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -141,13 +196,21 @@ async function embedHttp(text: string, cfg: EmbeddingConfig): Promise<Float32Arr
       signal: controller.signal,
     });
     if (!res.ok) {
-      void log("warn", "memory embedding http failed", { status: res.status });
+      void log("warn", "memory embedding http failed", { status: res.status, model: cfg.model, from: cfg.from });
       return null;
     }
     const json = (await res.json()) as EmbeddingResponse;
-    const arr = json.data?.[0]?.embedding;
-    if (!arr || arr.length === 0) return null;
-    return truncate(new Float32Array(arr), cfg.dimensions);
+    const rows = json.data ?? [];
+    if (rows.length === 0) return null;
+    const out: Float32Array[] = new Array(rows.length);
+    for (const [fallback, row] of rows.entries()) {
+      const at = row.index ?? fallback;
+      if (!row.embedding || row.embedding.length === 0 || at < 0 || at >= out.length) return null;
+      out[at] = truncate(new Float32Array(row.embedding), cfg.dimensions);
+    }
+    // A hole means the endpoint answered fewer rows than it was asked for: refuse rather than
+    // pair a text with somebody else's vector.
+    return out.every((vec) => vec !== undefined) ? out : null;
   } catch (err) {
     void log("warn", "memory embedding http error", { error: String(err) });
     return null;
@@ -156,27 +219,75 @@ async function embedHttp(text: string, cfg: EmbeddingConfig): Promise<Float32Arr
   }
 }
 
+async function embedHttp(text: string, cfg: EmbeddingConfig): Promise<Float32Array | null> {
+  const out = await requestEmbeddings([text], cfg);
+  return out?.[0] ?? null;
+}
+
 /**
  * Embed text into a normalized vector, or null if embeddings are unavailable.
  * Null triggers FTS5-only recall for that call (graceful degradation).
  */
 export async function embed(text: string, cfg?: EmbeddingConfig): Promise<Float32Array | null> {
-  if (!cfg?.model) return null;
+  if (!usable(cfg)) return null;
   const trimmed = text.trim();
   if (!trimmed) return null;
+  const active = cfg as EmbeddingConfig;
 
-  if (cfg.backend === "local") {
+  if (active.backend === "local") {
     if (localFailed) return null;
     if (!ready && !localPipe) return null; // not warmed yet -> FTS fallback
     try {
-      return await embedLocal(trimmed, cfg);
+      return await embedLocal(trimmed, active);
     } catch (err) {
       void log("warn", "memory embedding local error", { error: String(err) });
       return null;
     }
   }
 
-  return embedHttp(trimmed, cfg);
+  return embedHttp(trimmed, active);
+}
+
+/**
+ * Embed many texts at once, in order, with `null` under any text that could not be embedded. The
+ * backfill is the caller that matters: hundreds of entries through one call per batch instead of
+ * one call per entry. A batch the endpoint refuses falls back to asking one text at a time, so a
+ * provider that only accepts a single input still works -- just as slowly as before.
+ *
+ * Local embeddings stay per-text: there is no network round trip to save, and the ONNX pipeline
+ * already answers one call at a time.
+ */
+export async function embedMany(texts: string[], cfg?: EmbeddingConfig): Promise<Array<Float32Array | null>> {
+  if (!usable(cfg)) return texts.map(() => null);
+  const active = cfg as EmbeddingConfig;
+  const trimmed = texts.map((t) => t.trim());
+  if (active.backend === "local") {
+    const out: Array<Float32Array | null> = [];
+    for (const text of trimmed) out.push(await embed(text, active));
+    return out;
+  }
+  const out: Array<Float32Array | null> = new Array(texts.length).fill(null);
+  for (let start = 0; start < trimmed.length; start += EMBED_BATCH) {
+    const slice = trimmed.slice(start, start + EMBED_BATCH);
+    // An empty entry is not a question the endpoint can answer, and sending it would misalign the
+    // indices of everything after it: it is skipped in place, never compacted away.
+    const asked: number[] = [];
+    const payload: string[] = [];
+    for (const [offset, text] of slice.entries()) {
+      if (!text) continue;
+      asked.push(start + offset);
+      payload.push(text);
+    }
+    if (payload.length === 0) continue;
+    const vectors = payload.length === 1
+      ? [await embedHttp(payload[0]!, active)]
+      : await requestEmbeddings(payload, active) ?? await Promise.all(payload.map((text) => embedHttp(text, active)));
+    for (const [offset, vec] of vectors.entries()) {
+      const at = asked[offset];
+      if (at !== undefined && vec) out[at] = vec;
+    }
+  }
+  return out;
 }
 
 /** Cosine similarity. Assumes finite vectors; returns 0 on shape mismatch. */

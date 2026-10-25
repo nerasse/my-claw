@@ -281,7 +281,16 @@ function buildRequest(messages: ChatMessage[], self?: ReplayIdentity): { system:
     last.content.push(...blocks.filter((b) => b.type !== "thinking" && b.type !== "redacted_thinking"));
   };
 
-  for (const msg of messages) {
+  // Where the last source message starts inside the final turn. Consecutive user-role messages
+  // merge (a tool_result and the owner's next text become one user turn), so a turn boundary is
+  // not a message boundary; the cache anchor needs the exact block.
+  let lastMessageStart: { turn: number; block: number } | undefined;
+  for (let mi = 0; mi < messages.length; mi++) {
+    const msg = messages[mi]!;
+    const turnBefore = turns.length;
+    const blockBefore = turns[turns.length - 1]?.role === "user"
+      ? turns[turns.length - 1]!.content.length
+      : 0;
     switch (msg.role) {
       case "system":
         // Anthropic has a single system slot, so a later system message (the iteration-limit
@@ -343,16 +352,25 @@ function buildRequest(messages: ChatMessage[], self?: ReplayIdentity): { system:
         break;
       }
     }
+    if (mi === messages.length - 1) {
+      lastMessageStart = turns.length > turnBefore
+        ? { turn: turns.length - 1, block: 0 }
+        : { turn: turns.length - 1, block: blockBefore };
+    }
   }
 
   // Cache the whole conversation, not just the system prefix: without a breakpoint on the final
   // turn, every agent iteration re-sends the entire history as fresh input tokens. The system
   // breakpoints alone cost ~12M input tokens on one observed 54-iteration run.
   //
-  // The fourth breakpoint goes on the owner's last text turn. It is the one point that survives
-  // into the next run unchanged: the log persists what the model read (`promptText`), while the
-  // turn that answered it is new. Without it, a run boundary can only match the system prefix, so
-  // the whole history is rewritten on every user message even when the system prompt is stable.
+  // The two conversation breakpoints are the points a request can actually reuse: the last
+  // user-role turn of the *previous* request, which that request cached, and the tail this one
+  // adds. At a run boundary the owner's new message is the tail, so the previous request's final
+  // turn is the last user-role turn before it. Marking the owner's own turn a second time moves
+  // the anchor forward instead: measured on one career session, every new user message sent a
+  // 283k-token prompt with 10k read and 273k written, while the same session's tool iterations
+  // read normally. Inside a run the tail is a tool result, and the owner's turn stays the stable
+  // anchor.
   const lastTurn = turns[turns.length - 1];
   let ownerTurn: (typeof turns)[number] | undefined;
   for (let i = turns.length - 1; i >= 0; i--) {
@@ -362,17 +380,37 @@ function buildRequest(messages: ChatMessage[], self?: ReplayIdentity): { system:
     ownerTurn = turn;
     break;
   }
-  if (ownerTurn && ownerTurn !== lastTurn) {
-    const lastBlock = ownerTurn.content[ownerTurn.content.length - 1];
-    if (lastBlock && (lastBlock.type === "text" || lastBlock.type === "image")) {
-      lastBlock.cache_control = CACHE_1H;
+  const markLastCacheable = (turn: (typeof turns)[number] | undefined): void => {
+    if (!turn) return;
+    const block = turn.content[turn.content.length - 1];
+    if (block && (block.type === "text" || block.type === "image" || block.type === "tool_result")) {
+      block.cache_control = CACHE_1H;
     }
-  }
-  if (lastTurn) {
-    const lastBlock = lastTurn.content[lastTurn.content.length - 1];
-    if (lastBlock && (lastBlock.type === "text" || lastBlock.type === "tool_result")) {
-      lastBlock.cache_control = CACHE_1H;
+  };
+  if (ownerTurn && ownerTurn === lastTurn) {
+    // The request ends on the new user message. The turn the previous request ended on is the
+    // block just before the last message when the two merged into one user turn, and the last
+    // user-role turn otherwise; never the assistant reply the previous request wrote afterwards.
+    const ownerIndex = turns.indexOf(ownerTurn);
+    const previousBlock = lastMessageStart && lastMessageStart.turn === ownerIndex && lastMessageStart.block > 0
+      ? ownerTurn.content[lastMessageStart.block - 1]
+      : undefined;
+    if (previousBlock && (previousBlock.type === "text" || previousBlock.type === "image" || previousBlock.type === "tool_result")) {
+      previousBlock.cache_control = CACHE_1H;
+    } else {
+      let previousTurn: (typeof turns)[number] | undefined;
+      for (let i = ownerIndex - 1; i >= 0; i--) {
+        if (turns[i]!.role === "user") {
+          previousTurn = turns[i];
+          break;
+        }
+      }
+      markLastCacheable(previousTurn);
     }
+    markLastCacheable(ownerTurn);
+  } else {
+    markLastCacheable(ownerTurn);
+    markLastCacheable(lastTurn);
   }
 
   return { system, turns };

@@ -1,6 +1,6 @@
 import { readFile, rename } from "node:fs/promises";
 import { join } from "node:path";
-import type { MemoryConfig } from "../core/config.ts";
+import { embeddingFor, type MemoryConfig } from "../core/config.ts";
 import { MY_CLAW_DIR } from "../core/config.ts";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
 import { getAllActive, getByHash, addEntry } from "./db.ts";
@@ -83,8 +83,10 @@ export async function importHandEdits(cfg?: MemoryConfig): Promise<number> {
     const hash = hashContent(content);
     if (getByHash(hash)) continue;
 
-    const embedding = await embed(content, cfg?.embedding);
-    addEntry(content, category, embedding, hash, embeddingSignature(cfg?.embedding));
+    const embedCfg = embeddingFor(cfg, "import");
+    const embedding = await embed(content, embedCfg);
+    const sig = embeddingSignature(embedCfg);
+    addEntry(content, category, sig && embedding ? { [sig]: embedding } : {}, hash);
     imported += 1;
   }
 
@@ -131,8 +133,10 @@ export async function migrateLegacyFiles(cfg?: MemoryConfig, dir?: string): Prom
       if (!isMeaningfulLine(trimmed)) continue;
       const hash = hashContent(trimmed);
       if (getByHash(hash)) continue;
-      const embedding = await embed(trimmed, cfg?.embedding);
-      addEntry(trimmed, category, embedding, hash, embeddingSignature(cfg?.embedding));
+      const embedCfg = embeddingFor(cfg, "import");
+      const embedding = await embed(trimmed, embedCfg);
+      const sig = embeddingSignature(embedCfg);
+      addEntry(trimmed, category, sig && embedding ? { [sig]: embedding } : {}, hash);
       migrated += 1;
     }
 

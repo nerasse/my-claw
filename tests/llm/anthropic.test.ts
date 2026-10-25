@@ -145,8 +145,11 @@ test("data urls become base64 image sources and plain urls stay urls", () => {
     },
   ]);
   const blocks = turns[0]!.content;
-  assert.deepEqual(blocks[0], { type: "image", source: { type: "base64", media_type: "image/png", data: "QUJD" } });
-  assert.deepEqual(blocks[1], { type: "image", source: { type: "url", url: "https://example.invalid/a.png" } });
+  // The last block carries the run-boundary cache marker; this test is about the source shape.
+  assert.equal(blocks[0]!.type, "image");
+  assert.deepEqual((blocks[0] as { source: unknown }).source, { type: "base64", media_type: "image/png", data: "QUJD" });
+  assert.equal(blocks[1]!.type, "image");
+  assert.deepEqual((blocks[1] as { source: unknown }).source, { type: "url", url: "https://example.invalid/a.png" });
 });
 
 test("tool names are prefixed on the wire and stripped on the way back", () => {
@@ -377,6 +380,46 @@ test("the final turn and the owner's last text turn carry the two conversation b
       }
     }
   }
+});
+
+test("a run boundary anchors the previous request's final user turn", () => {
+  // The owner's new message is the tail this request writes; the turn the previous request
+  // ended on is the only message prefix it can read back. Anchoring the new message a second
+  // time is what rewrote the whole history on every user turn (2026-10-23).
+  const messages: ChatMessage[] = [
+    { role: "system", content: "sys" },
+    { role: "user", content: "question one" },
+    { role: "assistant", content: "answer one" },
+    { role: "tool", tool_call_id: "t1", content: "output" },
+    { role: "user", content: "question two" },
+  ];
+  const { turns } = buildRequest(messages);
+  const marked = turns.flatMap((turn, i) =>
+    turn.content.flatMap((block, j) =>
+      "cache_control" in block && block.cache_control ? [`${i}:${j}`] : [],
+    ),
+  );
+  // The tool result and the new question merge into one user turn: the anchor is the result
+  // block, and the question is the tail.
+  assert.deepEqual(marked, ["2:0", "2:1"]);
+});
+
+test("a run boundary after a text-only answer anchors the previous user turn", () => {
+  // The assistant reply was written after the previous request, so it was never cached; the
+  // user turn it answered was. Walking back past the reply is what finds the reusable prefix.
+  const messages: ChatMessage[] = [
+    { role: "system", content: "sys" },
+    { role: "user", content: "question one" },
+    { role: "assistant", content: "answer one" },
+    { role: "user", content: "question two" },
+  ];
+  const { turns } = buildRequest(messages);
+  const marked = turns.flatMap((turn, i) =>
+    turn.content.flatMap((block, j) =>
+      "cache_control" in block && block.cache_control ? [`${i}:${j}`] : [],
+    ),
+  );
+  assert.deepEqual(marked, ["0:0", "2:0"]);
 });
 
 test("a tool's images ride inside its own tool_result", () => {

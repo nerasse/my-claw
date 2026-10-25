@@ -1,4 +1,4 @@
-import type { MemoryConfig } from "../core/config.ts";
+import { embeddingFor, type MemoryConfig } from "../core/config.ts";
 import {
   getActiveByCategory,
   addEntry,
@@ -61,11 +61,12 @@ async function consolidateCategory(
   if (facts.length === 0) return null;
   if (facts.length >= entries.length) return null; // no compaction achieved
 
-  const sig = embeddingSignature(cfg?.embedding);
+  const embedCfg = embeddingFor(cfg, "consolidate");
+  const sig = embeddingSignature(embedCfg);
   const newIds: number[] = [];
   for (const fact of facts) {
-    const embedding = await embed(fact, cfg?.embedding);
-    newIds.push(addEntry(fact, category, embedding, hashContent(fact), sig));
+    const embedding = await embed(fact, embedCfg);
+    newIds.push(addEntry(fact, category, sig && embedding ? { [sig]: embedding } : {}, hashContent(fact)));
   }
 
   const supersededBy = newIds[0] ?? null;

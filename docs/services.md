@@ -21,7 +21,7 @@ Every optional service has one of four sources, derived from the config, never s
 | --- | --- | --- | --- | --- |
 | Speech-to-text | cloud | Groq (`GROQ_API_KEY`) | Whisper: unit `my-claw-whisper`, compose `whisper` | `voice.stt.url` |
 | Text-to-speech | cloud | Edge (no key) | Piper: binary (bare metal), compose `piper` | `voice.tts.url` |
-| Embeddings | off | OpenAI-compatible `/embeddings` + key | in-process model (`backend: "local"`) | `memory.embedding.baseUrl` |
+| Embeddings | off | `/embeddings` on a configured provider, or OpenAI | in-process model (`backend: "local"`) | `memory.embedding.baseUrl` |
 | Web search | off | none (SearXNG only) | compose `searxng` | `webSearch.baseUrl` |
 | Browser | self-hosted | none | units, compose `browser` | `browser.sidecarUrl` |
 
@@ -58,20 +58,27 @@ sources this install can switch it to (`choicesOf`: self-hosted search only in c
 endpoint, what it still needs, and one probe. `.env` is re-read first (`refreshEnvFile`), so a key
 just pasted on the page is not reported missing.
 
-`services.set { id, source, url?, model?, keyEnv? }` writes the choice into `config.json`
-(`applyServiceChoice`, one patch per service, `setService` for the file: snapshot, atomic write) and
-answers every window with the state of the file as written. It never touches the live config: the
-watcher applies the file, and its appliers are what re-register `web_search` and reload memory. A
-live copy patched first would leave the watcher no difference to apply. Keys are not part of a
-choice; the page sends them with `providers.env.set`.
+`services.set { id, source, url?, model?, keyEnv?, provider?, consumer?, enabled?, inherit? }` writes the choice
+into `config.json` (`applyServiceChoice`, one patch per service, `setService` for the file: snapshot,
+atomic write) and answers every window with the state of the file as written. It never touches the
+live config: the watcher applies the file, and its appliers are what re-register `web_search` and
+reload memory. A live copy patched first would leave the watcher no difference to apply. Keys are
+not part of a choice; the page sends them with `providers.env.set`.
+
+Embeddings is the one service with more than one target: `consumer` names which of the five it
+applies to (`recall`, `dedup`, `consolidate`, `import`, `skills`), absent meaning the default every
+consumer inherits. `inherit: true` drops a consumer's own entry so it follows the default again, and
+`enabled` is the switch that keeps a consumer's model while turning its semantic half off. The
+Settings → Embeddings page is five rows, each with its own source, and the same three verbs. See
+`docs/memory.md`.
 
 | Choice | Written |
 | --- | --- |
 | stt / tts `cloud` | `voice.<f>.mode = "cloud"`, `url` removed |
 | stt / tts `self-hosted` | `mode = "local"`, `url` removed |
 | stt / tts `url` | `mode = "local"`, `url` |
-| embeddings `off` | `memory.embedding` removed |
-| embeddings `cloud` | `backend: "http"`, OpenAI by default (`text-embedding-3-small`, `OPENAI_API_KEY`) |
+| embeddings `off` | `memory.embedding` removed (or `enabled: false` on one consumer) |
+| embeddings `cloud` | `backend: "http"`; `from: "<provider>"` + `model` naming one of this install's providers (never a copied URL or key), else OpenAI directly (`text-embedding-3-small`, `OPENAI_API_KEY`) |
 | embeddings `self-hosted` | `backend: "local"`, `Xenova/all-MiniLM-L6-v2` (downloaded on first use) |
 | embeddings `url` | `backend: "http"`, the URL, no key |
 | search `off` / `url` / `self-hosted` | `webSearch.baseUrl` = `""` / the URL / `http://searxng:8080` |

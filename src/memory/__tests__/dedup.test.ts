@@ -30,7 +30,7 @@ test("hashContent normalizes whitespace and case", () => {
 
 test("exact hash duplicate yields skip", () => {
   const content = "user prefers dark mode";
-  addEntry(content, "user", null, hashContent(content));
+  addEntry(content, "user", {}, hashContent(content));
   const r = classify(content, null);
   expect(r.decision).toBe("skip");
   expect(r.reason).toBe("exact duplicate");
@@ -46,7 +46,7 @@ const MODEL = "test-model";
 
 test("near-duplicate by cosine yields skip", () => {
   const base = new Float32Array([1, 0]);
-  addEntry("user likes strong coffee", "user", base, hashContent("user likes strong coffee"), MODEL);
+  addEntry("user likes strong coffee", "user", { [MODEL]: base }, hashContent("user likes strong coffee"));
   const r = classify("user likes coffee very strong", unit(0.95), MODEL);
   expect(r.decision).toBe("skip");
   expect(r.reason).toBe("near-duplicate");
@@ -54,7 +54,7 @@ test("near-duplicate by cosine yields skip", () => {
 
 test("related entry by cosine yields review", () => {
   const base = new Float32Array([1, 0]);
-  addEntry("user likes strong coffee", "user", base, hashContent("user likes strong coffee"), MODEL);
+  addEntry("user likes strong coffee", "user", { [MODEL]: base }, hashContent("user likes strong coffee"));
   const r = classify("user likes coffee in the morning", unit(0.85), MODEL);
   expect(r.decision).toBe("review");
   expect(r.similar?.content).toContain("coffee");
@@ -62,14 +62,14 @@ test("related entry by cosine yields review", () => {
 
 test("low similarity yields add", () => {
   const base = new Float32Array([1, 0]);
-  addEntry("user likes strong coffee", "user", base, hashContent("user likes strong coffee"), MODEL);
+  addEntry("user likes strong coffee", "user", { [MODEL]: base }, hashContent("user likes strong coffee"));
   const r = classify("user likes coffee but differently", unit(0.4), MODEL);
   expect(r.decision).toBe("add");
 });
 
 test("vectors from a different model are ignored (no false dedup)", () => {
   const base = new Float32Array([1, 0]);
-  addEntry("user likes strong coffee", "user", base, hashContent("user likes strong coffee"), "old-model");
+  addEntry("user likes strong coffee", "user", { "old-model": base }, hashContent("user likes strong coffee"));
   // Same vector, but current model differs -> cannot be a semantic duplicate.
   const r = classify("user likes coffee very strong", unit(0.99), "new-model");
   expect(r.decision).toBe("add");

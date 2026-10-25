@@ -519,7 +519,7 @@ function cacheKeyOf(config: ResolvedLlmConfig): string {
  */
 function optionsFor(config: ResolvedLlmConfig): RepairOptions {
   const dialect = cacheDialectOf(config.apiModel ?? config.model);
-  return repairOptionsFor(cacheKeyOf(config), dialect, config.promptCache === true);
+  return repairOptionsFor(cacheKeyOf(config), dialect, config.promptCache !== false);
 }
 
 function buildRequestBody(
@@ -664,7 +664,7 @@ async function pinnedRoute404(
     maxTokens: body?.["max_tokens"],
     reasoningEffort: body?.["reasoning_effort"],
     stream: body?.["stream"],
-    promptCache: config.promptCache === true,
+    promptCache: config.promptCache !== false,
     toolCount: Array.isArray(body?.["tools"]) ? (body["tools"] as unknown[]).length : 0,
     messageCount: Array.isArray(body?.["messages"]) ? (body["messages"] as unknown[]).length : 0,
   });

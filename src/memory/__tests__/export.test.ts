@@ -32,8 +32,8 @@ afterAll(() => {
 beforeEach(() => clearAllEntries());
 
 test("exportToMarkdown groups entries by category", async () => {
-  addEntry("User lives in France", "user", null, hashContent("User lives in France"));
-  addEntry("Deploy via make release", "convention", null, hashContent("Deploy via make release"));
+  addEntry("User lives in France", "user", {}, hashContent("User lives in France"));
+  addEntry("Deploy via make release", "convention", {}, hashContent("Deploy via make release"));
   await exportToMarkdown();
   const md = readFileSync(memoryFilePath(), "utf-8");
   expect(md).toContain("## User");
@@ -63,7 +63,7 @@ test("importHandEdits is idempotent", async () => {
 });
 
 test("export then import round-trips without duplicating", async () => {
-  addEntry("Project uses Bun runtime", "project", null, hashContent("Project uses Bun runtime"));
+  addEntry("Project uses Bun runtime", "project", {}, hashContent("Project uses Bun runtime"));
   await exportToMarkdown();
   expect(await importHandEdits()).toBe(0);
   expect(countActive()).toBe(1);

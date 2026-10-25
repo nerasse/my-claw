@@ -24,20 +24,24 @@ Scope is deliberately narrow:
   the field (and exposes `prompt_tokens_details`); OpenRouter accepts it. Endpoints that don't
   cache simply ignore the extra field.
 
-It is **opt-in per provider** (`promptCache: true`) because a few strict OpenAI endpoints reject
-unknown fields inside message content — so we never send it unless the owner declares support.
+It is **on by default** for every provider entry. The old opt-in existed because a few strict
+OpenAI endpoints reject unknown fields inside message content -- but the dialect check already
+decides whether a hint is sent at all, so a provider that cannot take one never sees it, and an
+endpoint that does refuse the shape is repaired once and remembered (`plain-content`, see
+`docs/llm-request-repair.md`). An explicit `"promptCache": false` remains the escape hatch for an
+engine known to charge for cache writes it never reads back.
 
 Some engines cache the prefix with no hint at all and no opt-in. Measured on Synthetic
 (`api.synthetic.new`, 2026-10-23): the same 1 214-token prompt sent twice answered
 `prompt_tokens_details.cached_tokens: 1152` on the second call, with no `cache_control` and no
 `prompt_cache_key` in the request. Its aliases are open models (DeepSeek, GLM, Kimi, Qwen), which
-are the `implicit` dialect, so `promptCache` is left off there: the field would be ignored, and an
-implicit engine keys its own prefix cache on the prompt bytes.
+are the `implicit` dialect, so no hint of either spelling reaches them: the fields would be ignored
+anyway, and an implicit engine keys its own prefix cache on the prompt bytes.
 
 ## How it works
 
-`applyPromptCache()` in `src/llm/provider.ts` (called from `buildRequestBody` only when
-`config.promptCache` is set) adds three `cache_control: { type: "ephemeral" }` breakpoints — well
+`applyPromptCache()` in `src/llm/provider.ts` (called from `buildRequestBody` when
+`config.promptCache` is not `false`) adds three `cache_control: { type: "ephemeral" }` breakpoints — well
 under Anthropic's max of 4:
 
 1. **The system message** — the large stable prefix, constant across a run's iterations.
@@ -55,10 +59,14 @@ content (vision) gets the marker on its last part. Role-specific fields (`tool_c
 
 ```json
 "providers": {
-  "litellm":    { "baseUrl": "https://litellm.example/v1", "apiKeyEnv": "LITELLM_API_KEY", "promptCache": true },
-  "openrouter": { "baseUrl": "https://openrouter.ai/api/v1", "apiKeyEnv": "OPENROUTER_API_KEY", "promptCache": true }
+  "litellm":    { "baseUrl": "https://litellm.example/v1", "apiKeyEnv": "LITELLM_API_KEY" },
+  "openrouter": { "baseUrl": "https://openrouter.ai/api/v1", "apiKeyEnv": "OPENROUTER_API_KEY" },
+  "groq":       { "baseUrl": "https://api.groq.com/openai/v1", "apiKeyEnv": "GROQ_API_KEY", "promptCache": false }
 }
 ```
+
+Caching is implied; `"promptCache": false` is the only line worth writing, and only for an endpoint
+that bills the write and ignores the read.
 
 The actual token discount depends on the underlying model: Anthropic/Gemini models behind these
 proxies honor the breakpoints (cache reads ~10% of input price); OpenAI models cache automatically
@@ -118,9 +126,8 @@ Two places consume it:
   session-id header"). Measured 2026-10-09 on four identical 11.6k-token calls: body key alone,
   0 cached tokens on every call; with the header, 11,008 cached from the second call on.
   `thread-id` alone caches nothing either.
-- **OpenAI-compatible** (`provider.ts`) sends it only for the `openai` dialect, and only when the
-  provider opted into `promptCache` — that opt-in is precisely the owner stating the endpoint
-  tolerates cache hint fields.
+- **OpenAI-compatible** (`provider.ts`) sends it only for the `openai` dialect, and unless the
+  provider turned caching off with `promptCache: false`.
 
 The `openai` dialect is the only one that gets the key, and `anthropic` the only one that gets the
 breakpoints: the two spellings are mutually exclusive and each is meaningless to an engine that

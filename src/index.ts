@@ -27,6 +27,9 @@ import {
   findUnknownAgents,
   CONFIG_PATH,
   MY_CLAW_DIR,
+  EMBEDDING_CONSUMERS,
+  embeddingActive,
+  embeddingFor,
   parseConfig,
   providerRetryDelays,
   DEFAULT_CONTEXT_CAP,
@@ -82,7 +85,7 @@ import { sessionInstructionsReport } from "./channels/session-instructions.ts";
 import { PROMPT_FILES } from "./agent/prompt/files.ts";
 import { ModelPicker } from "./channels/model-picker.ts";
 import { contextChoiceFor } from "./channels/context-menu.ts";
-import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows, applyModelMetadata } from "./llm/catalog.ts";
+import { ModelCatalog, mergeModels, applyProviderGroups, applyModelWindows, applyModelMetadata, applyModelKinds } from "./llm/catalog.ts";
 import { openRouterModels } from "./llm/openrouter-endpoints.ts";
 import { ModelPricing, setSharedPricing } from "./llm/pricing.ts";
 import { statsReport } from "./channels/stats-command.ts";
@@ -141,6 +144,7 @@ import { loadAllSkills } from "./skills/loader.ts";
 import { syncBuiltIn } from "./skills/sync.ts";
 import { startSkillsWatcher } from "./skills/watcher.ts";
 import { reloadSkills, editableTierDirs, type SkillDirs } from "./skills/reload.ts";
+import { resetSkillVectorCache } from "./skills/retrieval.ts";
 import { AgentRegistry } from "./agents/registry.ts";
 import { loadAllAgents } from "./agents/loader.ts";
 import type { FileAgent } from "./agents/types.ts";
@@ -179,6 +183,7 @@ import { fallbackNoticeText } from "./llm/fallback-notice.ts";
 import { setAvailabilityWorld, availabilityWorld } from "./llm/world.ts";
 import { buildDiagnostics, readLogEntries, formatLogEntries, collectSecrets } from "./core/diagnostics.ts";
 import {
+  setEmbeddingProviders,
   warmupEmbedding,
   backfillEmbeddings,
   importHandEdits,
@@ -187,6 +192,7 @@ import {
   purgeOldMemory,
   consolidateMemory,
   closeMemoryDb,
+  clearRecallCache,
   type LlmCaller,
 } from "./memory/index.ts";
 import {
@@ -395,6 +401,9 @@ async function main() {
   // against a table that has been refetched since. `recordApiCall` runs deep in the agent loop, in
   // files that hold no table of their own, so the one instance is published here.
   setSharedPricing(pricing);
+  // Embeddings read the same live provider table: `memory.embedding.from` names a provider already
+  // configured (its URL and its key), so a rename or a new key applies without touching memory.
+  setEmbeddingProviders(() => config.llm.providers ?? {});
 
   // Nothing is ever swept: every call stays in `api_calls` for good, so the ranking and the daily
   // graph reach back to the first recorded row. The monthly rollup still counts the months an
@@ -420,9 +429,13 @@ async function main() {
     // Provider-first: models with no explicit group nest under their provider's group label.
     const grouped = applyProviderGroups(merged, config.llm.providers ?? {});
     const windowed = applyModelWindows(grouped, config.llm.providers ?? {}, pricing);
+    // What each model is for, settled before anything reads the list: a picker offers something to
+    // talk to, and an embedding endpoint answers a different kind of request entirely. The declared
+    // set comes from disk, so an id the owner typed is never reclassified behind their back.
+    const kinds = applyModelKinds(windowed, config.llm.providers ?? {}, pricing, new Set(baseModels.map((m) => m.id)));
     // A provider that lists ids and nothing else gets its capabilities from the same download the
     // windows come from, so the effort menu describes the model rather than our fallback list.
-    config.llm.models = applyModelMetadata(windowed, config.llm.providers ?? {}, pricing);
+    config.llm.models = applyModelMetadata(kinds, config.llm.providers ?? {}, pricing);
     config.llm.tags = config.tags;
     // The picker offers what can run; `config.llm.models` keeps everything, because the resolver
     // needs the unavailable entries to say *why* a pinned model cannot run. Filtering the config
@@ -975,6 +988,29 @@ async function main() {
           return { ...state, choices: choicesOf(state.id, kind), health: await probeService(state), ...(held ? { local: held } : {}) };
         }),
       );
+      // The models an embedding can run on: the catalogue's non-chat half, filtered to providers
+      // this server can actually call. A model whose key is missing is not a choice.
+      const world = availabilityWorld();
+      const embeddingModels = (config.llm.models ?? [])
+        .filter((m) => m.kind === "embedding" && m.provider && availabilityOf(config.llm, m.id, world)?.state === "ready")
+        .map((m) => ({ provider: m.provider!, id: m.apiId ?? m.id, label: m.label }));
+      // One row per consumer: what it runs on, and whether that is its own choice or the default.
+      // Computed here rather than in the app so "inherits" and "switched off" cannot be guessed
+      // wrong from a config the page never sees.
+      const embeddingConsumers = EMBEDDING_CONSUMERS.map((id) => {
+        const own = source.memory?.embeddings?.[id];
+        const cfg = embeddingFor(source.memory, id);
+        return {
+          id,
+          active: embeddingActive(source.memory, id),
+          ...(cfg?.model ? { model: cfg.model } : {}),
+          ...(cfg?.from ? { provider: cfg.from } : {}),
+          // "Own" means it names its own model. A consumer carrying nothing but the off switch
+          // follows the default the day it comes back, so offering it "follow the default" would
+          // be an action that changes nothing.
+          own: own?.model !== undefined,
+        };
+      });
       const [push, apnsDevices] = await Promise.all([
         endpointStore.endpoints().catch(() => []),
         registeredAPNsDevices().catch(() => []),
@@ -984,6 +1020,8 @@ async function main() {
         services,
         pushDevices: [...new Set([...push.map((entry) => entry.deviceId), ...apnsDevices])],
         pairedDevices: Object.keys(config.channels["my-claw-app"]?.devices ?? {}).length,
+        embeddingModels,
+        embeddingConsumers,
       };
     };
     // The subscriptions' sign-in from the app (docs/subscription-accounts.md): the same token stores
@@ -3086,7 +3124,11 @@ function initMemory(config: MyClawConfig): ReturnType<typeof setInterval> | unde
       await exportToMarkdown();
       // Preload embeddings without blocking boot; recall falls back to FTS5 until ready.
       // Once ready, backfill vectors for entries stored while FTS5-only.
-      await warmupEmbedding(memCfg?.embedding);
+      // One warm-up per distinct model any consumer names; the backfill fills every space.
+      for (const consumer of EMBEDDING_CONSUMERS) {
+        if (!embeddingActive(memCfg, consumer)) continue;
+        await warmupEmbedding(embeddingFor(memCfg, consumer));
+      }
       const n = await backfillEmbeddings(memCfg);
       if (n > 0) void log("info", "memory embeddings backfilled", { embedded: n });
     } catch (err) {
@@ -3132,13 +3174,25 @@ function initMemory(config: MyClawConfig): ReturnType<typeof setInterval> | unde
   return setInterval(() => purgeOldMemory(memCfg), DAY_MS);
 }
 
-// Applier for a hot-reloaded `memory` section. Recall knobs are read live per call, so the
-// only side effect needed is re-warming the embedding model: cheap when unchanged (warmup is
-// cached by model name and backfill only re-embeds rows whose stored model signature differs).
+// Applier for a hot-reloaded `memory` section. Recall knobs are read live per call, so the only
+// side effect needed is re-warming every model a consumer now names: cheap when unchanged (warm-up
+// is cached by model name, and the backfill only fills the spaces that are actually missing rows).
 async function reloadMemoryEmbedding(memory: MyClawConfig["memory"]): Promise<void> {
+  // Whatever was cached was computed under the previous setting: a recall answered with cosine
+  // must not be served after embeddings are switched off, and a skill vector computed for one
+  // model must never be compared against a query embedded by another.
+  clearRecallCache();
+  resetSkillVectorCache();
   if (memory?.enabled === false) return;
   try {
-    await warmupEmbedding(memory?.embedding);
+    const warmed = new Set<string>();
+    for (const consumer of EMBEDDING_CONSUMERS) {
+      if (!embeddingActive(memory, consumer)) continue;
+      const cfg = embeddingFor(memory, consumer);
+      if (!cfg?.model || warmed.has(cfg.model)) continue;
+      warmed.add(cfg.model);
+      await warmupEmbedding(cfg);
+    }
     const n = await backfillEmbeddings(memory);
     if (n > 0) void log("info", "memory embeddings re-backfilled after config reload", { embedded: n });
   } catch (err) {

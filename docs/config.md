@@ -942,7 +942,7 @@ inside it. An unknown key is reported at boot and refuses the run.
 ```
 
 - `enabled` — master switch (default: true).
-- `embedding` — optional. Omit for FTS5-only keyword recall (zero-config, no download/key). `backend: "local"` runs in-process via transformers.js; `backend: "http"` hits any OpenAI-compatible `/embeddings` endpoint (also set `baseUrl` and `apiKeyEnv`).
+- `embedding` — optional. Omit for FTS5-only keyword recall (zero-config, no download/key). `backend: "local"` runs in-process via transformers.js; `backend: "http"` needs a destination: `from: "<provider key>"` borrows that provider's `baseUrl` and `apiKeyEnv`, while `baseUrl` (+ optional `apiKeyEnv`) points at a server that is not one of this install's chat providers. `from` and `baseUrl` are alternatives, never both. `dimensions` truncates and renormalizes the vector, and changing any of these re-embeds the whole active store in batches.
 - `consolidation.every` — writes between background merge passes (default: 20). `consolidation.model` overrides the merge LLM (default: main agent).
 - `recallMaxEntries` (5), `recallMaxChars` (2000), `ftsCandidates` (20), `supersededRetentionDays` (365).
 

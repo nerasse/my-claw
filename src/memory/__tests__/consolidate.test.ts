@@ -30,7 +30,7 @@ beforeEach(() => clearAllEntries());
 function seedUser(n: number) {
   for (let i = 0; i < n; i++) {
     const c = `user fact number ${i}`;
-    addEntry(c, "user", null, hashContent(c));
+    addEntry(c, "user", {}, hashContent(c));
   }
 }
 
