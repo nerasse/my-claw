@@ -30,6 +30,14 @@ Now the screen is a stage (`sidecar/live.mjs`):
 - Agents' windows are born off the screen (`Target.createTarget` with a `left` past it), and so are
   the popups of a window off the screen. A popup of the window on the screen stays on it: a "Sign
   in with Google" opened from a captcha page is where the owner is looking.
+- Every window is the size the server's `browser.viewport` states, not the size a site chose. A
+  window keeps the size it is born with, and a popup is born at the size its site passed to
+  `window.open`: without this rule one window -- and the tile the app drew for it -- stood portrait
+  in a wall of landscapes until it closed (measured 2026-10-25: nothing resized a popup, ever).
+  The size is taken at birth, and every listing puts right a window that was already open when the
+  rule arrived; a minimized window is left alone (its bounds are stale), and a window the owner
+  resizes by hand in VNC stays where he put it: the wall follows the page, it does not overrule
+  the person in front of it.
 - The owner's own new window (`browser.control` `new_window`) goes on the screen, alone.
 - When the window on the screen closes, the one worked in last takes its place. Otherwise the
   screen keeps what it shows: nothing moves under the owner's eyes unless he asks, or an agent

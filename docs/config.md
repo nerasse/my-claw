@@ -786,7 +786,9 @@ Artificial Analysis TTS arena, native dialogue. What `src/voice/gemini-tts.ts` d
 - `enabled` — enable the `delegate_browser_task` tool (default: true).
 - `sidecarUrl` — where the app reaches the Node browser sidecar (default `http://127.0.0.1:9223`). Playwright runs in that sidecar because `connectOverCDP` hangs under Bun. See `browser.md`. The Chromium CDP endpoint itself is set via the sidecar's `CDP_URL` env, not here.
 - `novncUrl` — live-browser URL surfaced to the user on a human-handoff (default `http://localhost:6080`).
-- `viewport` — browser viewport size.
+- `viewport` — browser viewport size, and the size every window works at: a window a site sized
+  itself (`window.open(..., "width=..,height=..")`) is put back to it, so every tile of the wall is
+  the same shape. An existing window is not resized by a config change until it closes.
 - `maxSteps` — max LLM iterations of one browsing task, the browser agent's budget (default: 60).
 
 Tabs are persistent and never auto-closed (the shared browser stays open for reuse across tasks).

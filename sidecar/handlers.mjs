@@ -27,7 +27,7 @@ import {
   windowOf,
   withFocus,
 } from "./browser.mjs";
-import { OFFSTAGE, go, input, stage, stagedWindows } from "./live.mjs";
+import { OFFSTAGE, go, input, settleWindows, stage, standardSize, stagedWindows } from "./live.mjs";
 import { healRef, injectRefLabels, removeRefLabels, resolveRef, screenshotPath, snapshotPage } from "./snapshot.mjs";
 
 /**
@@ -118,11 +118,10 @@ export const handlers = {
   async "create-window"(body) {
     const ctx = await ensureContext();
     const cdp = await browserSession();
-    const width = Number(body.viewport?.width ?? 1920);
-    const height = Number(body.viewport?.height ?? 1080);
+    const size = standardSize(body.viewport);
     // Born off the VNC screen, where a human may be working: the owner's own window, or the first
     // one of an empty screen, is put on it.
-    const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank", newWindow: true, width, height, ...OFFSTAGE });
+    const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank", newWindow: true, width: size.width, height: size.height, ...OFFSTAGE });
     const page = await pageForTarget(ctx, targetId);
     const windowId = await windowOf(targetId);
     if (body.onStage === true || (await stagedWindows()).size === 0) await stage(windowId);
@@ -164,7 +163,7 @@ export const handlers = {
       tabs.push({ pageId: t.id, url: t.url, title: t.title, ...(openerPageId ? { openerPageId } : {}) });
       windows.set(windowId, tabs);
     });
-    const staged = await stagedWindows().catch(() => new Set());
+    const staged = await settleWindows().catch(() => new Set());
     return {
       windows: [...windows].map(([windowId, tabs]) => {
         tabs.sort(byBirth);

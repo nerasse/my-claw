@@ -11,6 +11,31 @@ export const STAGE = {
 };
 const OFFSTAGE_LEFT = STAGE.width + 2000;
 
+/**
+ * The size every window works at: what the server asks for a new window (the config's `viewport`),
+ * the screen's until it asks. One shape for every window is what makes the wall a grid -- a window
+ * keeps the size it is born with, so a site's own `window.open(..., "width=500,height=600")` would
+ * leave one window, and its tile, that shape for the rest of its life (docs/browser-live.md).
+ */
+let windowSize = { width: STAGE.width, height: STAGE.height };
+
+/** The standard size, taken from what the server asked for a new window; returns it. */
+export function standardSize(viewport) {
+  const width = Math.round(Number(viewport?.width));
+  const height = Math.round(Number(viewport?.height));
+  if (Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0) windowSize = { width, height };
+  return windowSize;
+}
+
+/**
+ * Chromium without a window manager gives a window one pixel less than it was asked for on each
+ * axis once it fills the screen (measured on Chromium 147: 1919x1079 for 1920x1080, and exactly
+ * what was asked below the screen's size). A window is at the standard size within a pixel.
+ */
+function atSize(bounds) {
+  return Math.abs(bounds.width - windowSize.width) <= 1 && Math.abs(bounds.height - windowSize.height) <= 1;
+}
+
 async function boundsOf(windowId) {
   const cdp = await browserSession();
   return (await cdp.send("Browser.getWindowBounds", { windowId })).bounds;
@@ -38,22 +63,77 @@ async function place(windowId, bounds) {
   await cdp.send("Browser.setWindowBounds", { windowId, bounds });
 }
 
-export async function stagedWindows() {
+async function windowBounds() {
   const ids = await windowIds();
   const bounds = await Promise.all(ids.map((id) => boundsOf(id).catch(() => undefined)));
-  return new Set(ids.filter((_, i) => bounds[i] && onStage(bounds[i])));
+  return ids.flatMap((windowId, i) => (bounds[i] ? [{ windowId, bounds: bounds[i] }] : []));
+}
+
+export async function stagedWindows() {
+  return new Set((await windowBounds()).filter(({ bounds }) => onStage(bounds)).map(({ windowId }) => windowId));
+}
+
+/**
+ * Window placement is a read-then-write on the browser's own bounds, and two of them interleaved (a
+ * listing putting a window back at the standard size while the owner stages another) leave two
+ * windows on the screen. One queue, as for the focus.
+ */
+let placementQueue = Promise.resolve();
+
+function withPlacement(step) {
+  const result = placementQueue.then(step, step);
+  placementQueue = result.catch(() => undefined);
+  return result;
+}
+
+/**
+ * Every window took the standard size once, at birth. A window the owner resizes by hand in VNC is
+ * left as he left it: the wall follows the page, it does not overrule the person in front of it.
+ */
+const settled = new Set();
+
+/**
+ * Every window at the standard size, and the ids of the ones standing on the screen.
+ *
+ * Run with every listing, which reads every window's bounds anyway, so a window that was already
+ * open when this rule arrived (or that the browser resized after its birth hook) is put right here.
+ * A minimized window keeps stale bounds and is left alone; the ids are pruned to the windows that
+ * still exist, which is what keeps this set from growing with the browser's history.
+ */
+export async function settleWindows() {
+  return withPlacement(async () => {
+    const windows = await windowBounds();
+    const alive = new Set(windows.map(({ windowId }) => windowId));
+    for (const windowId of settled) if (!alive.has(windowId)) settled.delete(windowId);
+    await Promise.all(
+      windows.map(({ windowId, bounds }) => {
+        if (bounds.windowState !== "normal") return undefined;
+        if (atSize(bounds)) return void settled.add(windowId);
+        if (settled.has(windowId)) return undefined;
+        settled.add(windowId);
+        return place(windowId, onStage(bounds) ? { left: 0, top: 0, ...windowSize } : { ...OFFSTAGE, ...windowSize }).catch(
+          () => undefined,
+        );
+      }),
+    );
+    return new Set(windows.filter(({ bounds }) => onStage(bounds)).map(({ windowId }) => windowId));
+  });
 }
 
 /** Puts one window on the VNC screen and every other one off it. */
 export async function stage(windowId) {
+  return withPlacement(() => stageNow(windowId));
+}
+
+async function stageNow(windowId) {
   const ids = await windowIds();
   if (!ids.includes(windowId)) throw new Error(`There is no window ${windowId} in the browser.`);
   for (const id of ids) {
     if (id === windowId) continue;
     const bounds = await boundsOf(id).catch(() => undefined);
-    if (bounds && onStage(bounds)) await place(id, { left: OFFSTAGE_LEFT, top: 0 });
+    if (bounds && onStage(bounds)) await place(id, { ...OFFSTAGE, ...windowSize });
   }
-  await place(windowId, { left: 0, top: 0, width: STAGE.width, height: STAGE.height });
+  await place(windowId, { left: 0, top: 0, ...windowSize });
 }
 
 export const OFFSTAGE = { left: OFFSTAGE_LEFT, top: 0 };
@@ -61,30 +141,51 @@ export const OFFSTAGE = { left: OFFSTAGE_LEFT, top: 0 };
 /**
  * A window a site just opened lands where the browser puts new windows, on the screen, over the
  * window a human may be working in. It is moved off unless it belongs there: its opener is the
- * window on the screen (a "sign in with" popup during a captcha), or the screen was empty.
+ * window on the screen (a "sign in with" popup during a captcha), or the screen was empty. Either
+ * way it takes the standard size, which is the whole point of this hook: a popup opened at the
+ * size its site asked for would keep it, and its tile with it, until it closes.
+ *
+ * A tab born in a window already off the screen is the common case (`target=_blank`, a plain
+ * `window.open`): that window is left where it stands.
  */
 export async function keepOffStage(page, pageId) {
+  return withPlacement(() => keepOffStageNow(page, pageId));
+}
+
+async function keepOffStageNow(page, pageId) {
   const windowId = await windowOf(pageId);
-  if (!onStage(await boundsOf(windowId))) return;
+  const bounds = await boundsOf(windowId);
+  if (!onStage(bounds)) {
+    if (bounds.windowState === "normal" && !atSize(bounds)) {
+      settled.add(windowId);
+      await place(windowId, { ...OFFSTAGE, ...windowSize });
+    }
+    return;
+  }
   const staged = await stagedWindows();
   staged.delete(windowId);
-  if (staged.size === 0) return;
-  const opener = await page.opener().catch(() => null);
-  const openerId = opener ? idOf(opener) : undefined;
-  if (openerId) {
-    const openerWindow = await windowOf(openerId).catch(() => undefined);
-    if (openerWindow === windowId || (openerWindow !== undefined && staged.has(openerWindow))) return;
+  if (staged.size > 0) {
+    const opener = await page.opener().catch(() => null);
+    const openerId = opener ? idOf(opener) : undefined;
+    const openerWindow = openerId ? await windowOf(openerId).catch(() => undefined) : undefined;
+    const forOwner = openerWindow !== undefined && (openerWindow === windowId || staged.has(openerWindow));
+    if (!forOwner) return void (await place(windowId, { ...OFFSTAGE, ...windowSize }));
   }
-  await place(windowId, OFFSTAGE);
+  // It belongs on the screen (the screen was empty, or the owner is working there): it stands at the
+  // screen's size rather than over the owner at some size of the site's choosing.
+  settled.add(windowId);
+  await place(windowId, { left: 0, top: 0, ...windowSize });
 }
 
 /** The screen went empty (its window closed): the window worked in last takes it. */
 export async function refillStage() {
-  if ((await stagedWindows()).size > 0) return;
-  const targets = await pageTargets();
-  if (targets.length === 0) return;
-  const latest = targets.reduce((a, b) => (frontOf(b.id) > frontOf(a.id) ? b : a));
-  await stage(await windowOf(latest.id));
+  return withPlacement(async () => {
+    if ((await stagedWindows()).size > 0) return;
+    const targets = await pageTargets();
+    if (targets.length === 0) return;
+    const latest = targets.reduce((a, b) => (frontOf(b.id) > frontOf(a.id) ? b : a));
+    await stageNow(await windowOf(latest.id));
+  });
 }
 
 // --- live pictures ---------------------------------------------------------------------------
