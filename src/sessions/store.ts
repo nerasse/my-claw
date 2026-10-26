@@ -103,10 +103,8 @@ export type SessionMessage =
        */
       reasoning?: string;
       /**
-       * How much thinking this turn was estimated to have done, when the engine gives a count
-       * instead of the text (the Claude bridge redacts it -- docs/reasoning-visibility.md). One
-       * number, so the replayed bubble can still say the turn thought rather than losing it with
-       * the live stream.
+       * What the turn spent thinking, as the endpoint counted it -- docs/reasoning-visibility.md.
+       * One number, so the replayed bubble still says the turn thought when it kept no words.
        */
       reasoningTokens?: number;
       /**

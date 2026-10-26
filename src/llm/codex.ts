@@ -156,6 +156,7 @@ interface ResponsesUsage {
   output_tokens?: number;
   total_tokens?: number;
   input_tokens_details?: { cached_tokens?: number };
+  output_tokens_details?: { reasoning_tokens?: number };
 }
 
 function normalizeUsage(raw?: ResponsesUsage): LlmUsage | undefined {
@@ -168,6 +169,8 @@ function normalizeUsage(raw?: ResponsesUsage): LlmUsage | undefined {
   // The Responses API reports cache hits as a subset of input_tokens, like chat completions.
   const cacheRead = raw.input_tokens_details?.cached_tokens ?? 0;
   if (cacheRead > 0) usage.cacheReadTokens = cacheRead;
+  const reasoning = raw.output_tokens_details?.reasoning_tokens ?? 0;
+  if (reasoning > 0) usage.reasoningTokens = reasoning;
   return usage;
 }
 
@@ -236,6 +239,13 @@ async function processStream(
    * the item is still announced but empty, and replaying an empty one buys nothing.
    */
   const reasoningItems: ReasoningItem[] = [];
+  /**
+   * How long the reasoning items stayed open, from `added` to `done`. The backend writes a summary
+   * for only part of its thoughts, and a thought with no summary streams no delta at all, so the
+   * segmenter never sees it: the item's own lifetime is then the only span there is.
+   */
+  const itemOpenedAt = new Map<string, number>();
+  let silentMs = 0;
   const slots = new Map<number, FunctionCallSlot>();
   const order: number[] = [];
 
@@ -260,7 +270,8 @@ async function processStream(
 
     switch (type) {
       case "response.output_item.added": {
-        const item = event["item"] as { type?: string; call_id?: string; name?: string; arguments?: string } | undefined;
+        const item = event["item"] as { type?: string; id?: string; call_id?: string; name?: string; arguments?: string } | undefined;
+        if (item?.type === "reasoning" && item.id) itemOpenedAt.set(item.id, Date.now());
         if (item?.type === "function_call") {
           ensureSlot(Number(event["output_index"] ?? 0), {
             callId: item.call_id ?? "",
@@ -326,6 +337,9 @@ async function processStream(
         // `done` and not `added`: the encrypted state is only complete once the item closes.
         if (item?.type === "reasoning" && item.id) {
           reasoningItems.push({ id: item.id, ...(item.encrypted_content ? { encrypted: item.encrypted_content } : {}) });
+          const openedAt = itemOpenedAt.get(item.id);
+          if (openedAt !== undefined) silentMs += Date.now() - openedAt;
+          itemOpenedAt.delete(item.id);
         }
         if (item?.type === "function_call") {
           const slot = ensureSlot(Number(event["output_index"] ?? 0));
@@ -382,6 +396,9 @@ async function processStream(
     .map((s) => ({ id: s.callId, name: s.name, arguments: safeJson(s.args || "{}") }));
 
   const segments = segmenter.list();
+  // The segmenter's span when the thought had words, since it is the one the live view measured;
+  // the items' own lifetime when it had none.
+  const reasoningMs = reasoning ? segmenter.thinkingMs() : silentMs > 0 ? silentMs : undefined;
   return {
     content,
     ...(reasoningItems.length > 0 ? { providerMeta: { backend: self.backend, model: self.model, reasoning: reasoningItems } } : {}),
@@ -390,6 +407,7 @@ async function processStream(
     incomplete: !content && toolCalls.length === 0 && finishReason !== "completed",
     usage,
     ...(reasoning ? { reasoning } : {}),
+    ...(reasoningMs !== undefined ? { reasoningMs } : {}),
     ...(segments ? { segments } : {}),
   };
 }

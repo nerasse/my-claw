@@ -70,7 +70,9 @@ model/context/message types); only the OAuth flow shape is reused.
 
 `response.output_item.added`, `response.output_text.delta`,
 `response.function_call_arguments.delta/.done`, `response.output_item.done`
-(function_call finalize), `response.completed`/`.incomplete` (usage), `error` /
+(function_call finalize; a reasoning item's lifetime times a thought that came back without a
+summary), `response.completed`/`.incomplete` (usage, `reasoning_tokens` included --
+docs/reasoning-visibility.md, "A thought with no words"), `error` /
 `response.failed`. Non-streaming callers run the same stream with a no-op token
 sink.
 

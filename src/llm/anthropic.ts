@@ -442,11 +442,7 @@ interface AnthropicUsage {
   output_tokens?: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
-  /**
-   * How many of the billed output tokens were thinking. Read only to be ignored: thinking is billed
-   * *inside* `output_tokens`, so adding it would double it. Never reported to the reasoning sink,
-   * see the `message_delta` case.
-   */
+  /** How many of the billed output tokens were thinking: a subset of `output_tokens`, never added. */
   output_tokens_details?: { thinking_tokens?: number };
 }
 
@@ -466,6 +462,8 @@ function normalizeUsage(raw: AnthropicUsage | undefined, outputTokens: number): 
   const usage: LlmUsage = { promptTokens: prompt, completionTokens: completion, totalTokens: prompt + completion };
   if (cacheRead > 0) usage.cacheReadTokens = cacheRead;
   if (cacheWrite > 0) usage.cacheWriteTokens = cacheWrite;
+  const thinking = raw.output_tokens_details?.thinking_tokens ?? 0;
+  if (thinking > 0) usage.reasoningTokens = thinking;
   return usage;
 }
 
@@ -581,13 +579,8 @@ async function processStream(
         if (delta?.stop_reason) finishReason = delta.stop_reason;
         const usage = event["usage"] as AnthropicUsage | undefined;
         if (usage?.output_tokens) outputTokens = usage.output_tokens;
-        // `output_tokens_details.thinking_tokens` lands here and is deliberately not sent to
-        // `reasoningSink.onTokens`. The count belongs to the redacted engine: the SDK bridge reports
-        // it *while* the model thinks, so it opens the bubble the answer then fills. This one arrives
-        // on the last event of the stream, after the answer, where the streamer seals the bubble and
-        // opens a fresh one -- a stray "Thought . 14 tokens" bubble under a reply whose reasoning is
-        // already displayed in full, and which no replay reproduces since the mirror stores no count
-        // for this transport. This transport reports thinking as text, and only as text.
+        // The thinking count only exists once the answer is written, on this last event.
+        if (usage?.output_tokens_details) rawUsage = { ...rawUsage, output_tokens_details: usage.output_tokens_details };
         break;
       }
       case "error": {

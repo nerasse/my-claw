@@ -195,3 +195,18 @@ test("a zero header does not shadow a body that does declare a cost", async () =
   expect(res.proxyCostUsd).toBeCloseTo(7e-6, 12);
   expect(res.upstreamApiBase).toBe("https://up.example/v1");
 });
+
+test("the reasoning share of the output is captured, buffered and streamed alike", async () => {
+  // A subset of completion_tokens: what the app shows of a thought, never added to the bill.
+  const usage = { prompt_tokens: 10, completion_tokens: 300, total_tokens: 310, completion_tokens_details: { reasoning_tokens: 256 } };
+  for (const res of [await buffered(usage), await streamed(usage)]) {
+    expect(res.usage?.completionTokens).toBe(300);
+    expect(res.usage?.totalTokens).toBe(310);
+    expect(res.usage?.reasoningTokens).toBe(256);
+  }
+});
+
+test("a zero reasoning share is no count at all", async () => {
+  const res = await buffered({ prompt_tokens: 10, completion_tokens: 3, completion_tokens_details: { reasoning_tokens: 0 } });
+  expect(res.usage?.reasoningTokens).toBeUndefined();
+});

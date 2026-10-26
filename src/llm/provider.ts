@@ -208,6 +208,12 @@ export interface LlmUsage {
   totalTokens: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /**
+   * How many of `completionTokens` the model spent thinking, when the endpoint says. A subset, never
+   * added to anything: it is what the app shows of a thought the endpoint kept to itself, and the
+   * Responses API keeps most of them (docs/reasoning-visibility.md, "A thought with no words").
+   */
+  reasoningTokens?: number;
 }
 
 export interface LlmResponse {
@@ -264,6 +270,7 @@ interface RawUsage {
     cached_tokens?: number;
     cache_creation_tokens?: number;
   };
+  completion_tokens_details?: { reasoning_tokens?: number };
   // Anthropic-style, passed straight through by some proxies instead of being folded into
   // prompt_tokens_details.
   cache_read_input_tokens?: number;
@@ -707,6 +714,8 @@ function normalizeUsage(raw?: RawUsage): LlmUsage | undefined {
   };
   if (cacheRead > 0) usage.cacheReadTokens = cacheRead;
   if (cacheWrite > 0) usage.cacheWriteTokens = cacheWrite;
+  const reasoning = raw.completion_tokens_details?.reasoning_tokens ?? 0;
+  if (reasoning > 0) usage.reasoningTokens = reasoning;
   return usage;
 }
 

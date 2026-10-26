@@ -2,6 +2,7 @@ import { currentRunId } from "../../utils/run-context.ts";
 import { newEntryId } from "../../sessions/log.ts";
 import { stripMediaRefsStreaming } from "../../utils/media.ts";
 import type { ToolCallInfo, ToolCallResult } from "../../agent/tool-status.ts";
+import type { ReasoningCount } from "../../agent/backend.ts";
 import { toolCardId } from "./types.ts";
 import type { MyClawAppServerFrame, MyClawAppSpawnAction } from "./types.ts";
 
@@ -87,10 +88,14 @@ export class MyClawAppStreamer {
     return this.enqueue(() => this.thinkingInternal());
   }
 
-  /** Token estimate from a redacted engine; opens the bubble for the same reason. */
-  async pushReasoningTokens(tokens: number): Promise<void> {
-    if (!Number.isFinite(tokens) || tokens <= 0) return;
-    return this.enqueue(() => this.reasoningTokensInternal(tokens));
+  /**
+   * What the call that just answered spent thinking. Sent to the bubble that call wrote into, and
+   * opened for it when it wrote nothing: a call that thought and went straight to a tool is still
+   * a thought, and the count is all the endpoint said of it.
+   */
+  async pushReasoningCount(count: ReasoningCount): Promise<void> {
+    if (!Number.isFinite(count.tokens) || count.tokens <= 0) return;
+    return this.enqueue(() => this.reasoningCountInternal(count));
   }
 
   async finish(finalText?: string): Promise<void> {
@@ -294,16 +299,17 @@ export class MyClawAppStreamer {
     });
   }
 
-  private async reasoningTokensInternal(tokens: number): Promise<void> {
+  // No seal: the count arrives after the answer it belongs to, and sealing would hand it to a fresh
+  // bubble under that answer, on its own.
+  private async reasoningCountInternal(count: ReasoningCount): Promise<void> {
     if (this.finished) return;
-    await this.sealBeforeReasoning();
     if (!this.started) await this.startSegment();
     await this.opts.send({
       type: "chat.reasoning.tokens",
       id: this.currentId(),
       threadId: this.opts.threadId,
-      tokens,
-      ...this.openSpan(),
+      tokens: count.tokens,
+      ...(count.ms !== undefined && count.ms > 0 ? { ms: count.ms } : {}),
     });
   }
 

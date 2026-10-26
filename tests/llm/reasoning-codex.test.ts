@@ -206,3 +206,93 @@ describe("Codex Responses reasoning", () => {
     expect(response.reasoning).toBe("unheard");
   });
 });
+
+/** Events written one by one, with real time between the ones that need a span to measure. */
+function pacedResponse(steps: Array<unknown | { pauseMs: number }>): Response {
+  const encoder = new TextEncoder();
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      async start(controller) {
+        for (const step of steps) {
+          if (step && typeof step === "object" && "pauseMs" in step) await Bun.sleep((step as { pauseMs: number }).pauseMs);
+          else controller.enqueue(encoder.encode(`data: ${JSON.stringify(step)}\n\n`));
+        }
+        controller.close();
+      },
+    }),
+    { status: 200 },
+  );
+}
+
+/**
+ * Measured on gpt-6.1-sol (2026-10-26): with `summary: "auto"` the backend writes a summary for a
+ * fraction of its thoughts, and the rest come back as a reasoning item with `summary: []` and no
+ * delta at all -- 82 % of the phases that day. The count and the item's lifetime are then all
+ * there is to show (docs/reasoning-visibility.md, "A thought with no words").
+ */
+describe("a Codex thought with no words", () => {
+  const silentThenTool = (pauseMs: number): Array<unknown | { pauseMs: number }> => [
+    { type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: "rs_1", summary: [] } },
+    { pauseMs },
+    { type: "response.output_item.done", output_index: 0, item: { type: "reasoning", id: "rs_1", summary: [], encrypted_content: "enc" } },
+    { type: "response.output_item.added", output_index: 1, item: { type: "function_call", call_id: "c1", name: "read", arguments: "" } },
+    { type: "response.output_item.done", output_index: 1, item: { type: "function_call", call_id: "c1", name: "read", arguments: "{\"path\":\"/x\"}" } },
+    {
+      type: "response.completed",
+      response: { status: "completed", usage: { input_tokens: 100, output_tokens: 600, output_tokens_details: { reasoning_tokens: 516 } } },
+    },
+  ];
+
+  test("reports what it spent, from the usage of the completed response", async () => {
+    writeAuth();
+    mock = mockFetch(async () => pacedResponse(silentThenTool(0)) as never);
+    const response = await codexResponseStream(config, [{ role: "user", content: "hi" }], () => {});
+    expect(response.usage?.reasoningTokens).toBe(516);
+    expect(response.usage?.completionTokens).toBe(600);
+    expect(response.reasoning).toBeUndefined();
+    expect(response.toolCalls?.map((call) => call.name)).toEqual(["read"]);
+  });
+
+  test("is timed by its reasoning item, since no delta ever opened a span", async () => {
+    writeAuth();
+    mock = mockFetch(async () => pacedResponse(silentThenTool(25)) as never);
+    const response = await codexResponseStream(config, [{ role: "user", content: "hi" }], () => {});
+    // A lower bound only: a loaded machine stretches the pause, it never shortens it.
+    expect(response.reasoningMs).toBeGreaterThanOrEqual(20);
+  });
+
+  test("a thought with words keeps the span the live view measured, from its first delta", async () => {
+    writeAuth();
+    mock = mockFetch(async () =>
+      pacedResponse([
+        { type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: "rs_1", summary: [] } },
+        { pauseMs: 300 },
+        { type: "response.reasoning_summary_text.delta", summary_index: 0, delta: "**Reading**" },
+        { pauseMs: 25 },
+        { type: "response.output_item.done", output_index: 0, item: { type: "reasoning", id: "rs_1", summary: [{ type: "summary_text", text: "**Reading**" }] } },
+        { type: "response.output_text.delta", output_index: 1, delta: "ok" },
+        { type: "response.completed", response: { status: "completed", usage: { input_tokens: 1, output_tokens: 9, output_tokens_details: { reasoning_tokens: 7 } } } },
+      ]) as never,
+    );
+    const response = await codexResponseStream(config, [{ role: "user", content: "hi" }], () => {});
+    expect(response.reasoning).toBe("**Reading**");
+    expect(response.usage?.reasoningTokens).toBe(7);
+    // Opened by the delta, closed by the first word of the answer: the 300 ms before the delta are
+    // not in it, which is what tells it from the item's own lifetime.
+    expect(response.reasoningMs).toBeGreaterThanOrEqual(20);
+    expect(response.reasoningMs).toBeLessThan(300);
+  });
+
+  test("a response that did not think reports neither a count nor a span", async () => {
+    writeAuth();
+    mock = mockFetch(async () =>
+      pacedResponse([
+        { type: "response.output_text.delta", output_index: 0, delta: "4" },
+        { type: "response.completed", response: { status: "completed", usage: { input_tokens: 1, output_tokens: 1, output_tokens_details: { reasoning_tokens: 0 } } } },
+      ]) as never,
+    );
+    const response = await codexResponseStream(config, [{ role: "user", content: "hi" }], () => {});
+    expect(response.usage?.reasoningTokens).toBeUndefined();
+    expect(response.reasoningMs).toBeUndefined();
+  });
+});

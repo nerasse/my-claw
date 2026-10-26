@@ -19,20 +19,19 @@ one instead of pretending they are uniform.
 | Engine | Transport | Reasoning text | Evidence |
 | --- | --- | --- | --- |
 | home loop, `type: "openai"` | Chat Completions | **full, streamed** | measured on `opencode_go`: `reasoning_content` deltas on `deepseek-v4-flash`, `deepseek-v4-pro`, `qwen3.7-plus`, `kimi-k3`; none at all on `minimax-m3` |
-| home loop, `type: "codex"` | OpenAI Responses | **summary text**, already requested and thrown away | `codex.ts:289` sends `reasoning: { effort, summary: "auto" }`; the `switch` handles no `response.reasoning_*` event |
-| `type: "claude-sdk"` | Claude Code bridge | **none — redacted** | `SDKThinkingTokensMessage` (`sdk.d.ts:4641`): the raw text never leaves the bridge, only a running `estimated_tokens` "for spinners/pills, not the authoritative billed output_tokens" |
+| home loop, `type: "codex"` | OpenAI Responses | **summary text, for part of the thoughts**; a count for every call | `reasoning: { effort, summary: "auto" }`; see "A thought with no words" |
+| `type: "claude-sdk"` (removed) | Claude Code bridge | **none — redacted** | `SDKThinkingTokensMessage` (`sdk.d.ts:4641`): the raw text never left the bridge, only a running `estimated_tokens` |
 
 | `type: "anthropic"` | Messages API | **full, streamed** | `thinking_delta` blocks, asked for with `thinking.display: "summarized"` -- docs/anthropic-backend.md |
 
 The redaction is a property of the **subscription bridge**, not of Anthropic: the Messages API
 streams real `thinking_delta` blocks, which is what the native transport added when it landed.
 
-That transport reports **no token count**. `usage.output_tokens_details.thinking_tokens` only
-arrives on the stream's last event, after the answer, where `sealBeforeReasoning` turns it into a
-second bubble holding nothing but a count -- under a reply already showing its reasoning in full,
-and with no stored `reasoningTokens` to replay it. `onTokens` is the bridge's shape, and only the
-bridge's: it reports while the model is still thinking, which is the whole reason the count is worth
-a bubble there. Reasoning as text, or nothing.
+Every transport also reports **what the call spent thinking**, read off its usage:
+`completion_tokens_details.reasoning_tokens` (Chat Completions), `output_tokens_details.reasoning_tokens`
+(Responses), `output_tokens_details.thinking_tokens` (Messages). It is a subset of the output count,
+never added to it, and it only exists once the call has answered -- see "A thought with no words"
+for how it reaches the bubble without opening a second one.
 
 `minimax-m3` proves the feature must degrade to nothing gracefully: a model that reasons silently
 is normal, not an error.
@@ -61,6 +60,41 @@ Responses API event names, from the same source
 - `response.reasoning_summary_text.delta` — the summary `summary: "auto"` already asks for
 - `response.reasoning_text.delta` — raw reasoning, when a model exposes it
 - `response.reasoning_summary_part.added` — a **new part** of that summary begins
+
+### A thought with no words
+
+Measured on `gpt-6.1-sol` (2026-10-26), through the backend directly: with `summary: "auto"` the
+Responses API writes a summary for only part of its thoughts. The rest come back as a reasoning
+item with `summary: []` and no delta at all, while `reasoning_tokens` says 500 to 1 000 tokens were
+spent. Same request, run again: sometimes 2 000 characters of summary, sometimes none. It falls with
+the effort (`low` and `medium` were mostly silent, `xhigh` two times out of three) and with the
+shape of the step: a call that reads a file and goes to the next tool thinks little and is rarely
+summarised. On the owner's sessions that day, 82 % of the phases had neither words nor anything
+else to show, and a run chaining tools looked like it did not think at all. Neither `detailed` nor
+dropping `include: ["reasoning.encrypted_content"]` changes it; `concise` summarised every call of a
+small sample, in one heading of 25 to 45 characters, and is left untried here.
+
+So the count is shown for every call, beside the words when there are some and alone when there are
+none: `Reasoning · 516 tokens · 4.2 s`.
+
+- **One count per call, reported once.** The bridge reads `usage.reasoningTokens` once the call has
+  answered, before the turn is recorded and before its tools open their cards, and hands it to the
+  run's sink (`ReasoningSink.onCount`). Before the recorder, because the recorder claims the ids of
+  the bubbles the call wrote into; before the cards, so the count reads above the tool it led to.
+- **It lands on the bubble its call wrote into, and never seals it.** The count arrives after the
+  answer, and a thought sealing an answer is the rule for *words*: applied to a count, it gave the
+  count a bubble of its own under the reply. A call that wrote nothing still has its bubble, opened
+  by `beginThinking` when the call started, so the count fills it and the bubble survives the end of
+  the stream.
+- **It opens no span and closes none.** The words are timed where they stream (`since`, below); a
+  count is a figure about a thought that is over.
+- **A silent thought is timed by its reasoning item.** No delta, so the segmenter never sees it: the
+  Responses transport measures each reasoning item from `output_item.added` to `output_item.done`
+  and returns that as `reasoningMs`. The frame carries it as `ms`, and only for a call that streamed
+  no words, since the client has timed those itself. A thought with words keeps the segmenter's
+  span, the one the live view measured.
+- **The log keeps it** on the last phase of the call (`reasoningTokens`, beside `reasoningMs`), so a
+  reopened thread shows the same line the live one did.
 
 ### A summary comes in parts, and the parts need a separator
 
@@ -115,13 +149,10 @@ DeepSeek tool-chain contract is satisfied. It is not.
     segments?: Array<{ reasoning?: string; reasoningMs?: number; content: string }> }
 ```
 
-`reasoningTokens` is the redacted engine's half of the same field, and the bridge is its only
-writer. The Claude bridge gives a
-running `estimated_tokens` and no text at all, so the live counter was the whole trace of a turn's
-thinking, and it died with the stream: a reopened thread showed a bubble that had apparently
-thought nothing. The backend keeps the last estimate seen before the turn it mirrors, one integer
-per turn, and the app replays it as `Thought . 12.3k tokens` in the same muted line. A turn that
-thought nothing stores nothing.
+`reasoningTokens` is what the call spent thinking, as the endpoint counted it, one integer per call
+on its last phase. It was first the redacted engine's half of the field (the Claude bridge, since
+removed); it is now written for every transport that reports a count, words or none -- "A thought
+with no words". A call that thought nothing stores nothing.
 
 It must never reach a model. Two paths replay the mirror, and both build explicit objects field by
 field, so an added field cannot leak by accident:
@@ -205,8 +236,8 @@ signal, one trailing optional parameter carries both shapes:
 export interface ReasoningSink {
   /** Reasoning text, incremental. Absent engine-side means the transport has none. */
   onText?: (delta: string) => Promise<void>;
-  /** Running estimate while a redacted engine thinks. Claude bridge only. */
-  onTokens?: (estimated: number) => Promise<void>;
+  /** What the call that just answered spent thinking, once. `ms` only when it streamed no words. */
+  onCount?: (count: { tokens: number; ms?: number }) => Promise<void>;
 }
 ```
 
@@ -247,8 +278,8 @@ Three additive server frames, and one additive history field.
 /** Incremental reasoning for the bubble `id`. Text engines only. */
 { type: "chat.reasoning.delta"; id: string; threadId: string; text: string; since?: string }
 
-/** Running estimate while a redacted engine thinks. No text will follow. */
-{ type: "chat.reasoning.tokens"; id: string; threadId: string; tokens: number; since?: string }
+/** What the call that wrote into bubble `id` spent thinking, once it has answered. */
+{ type: "chat.reasoning.tokens"; id: string; threadId: string; tokens: number; ms?: number }
 
 /** A call began and has produced nothing yet. See "While nothing has come out of it". */
 { type: "chat.turn.thinking"; id: string; threadId: string; since: string }
@@ -274,7 +305,7 @@ and a window reloading mid-thought started a new counter from zero on a thought 
 running for forty seconds. The stored duration then contradicted what the reader had just watched.
 
 `since` is the ISO instant the phase opened, server side, put on the frame that opens the phase --
-the first delta, or the first token count for a redacted engine, whichever fills the bubble first.
+the first delta. A count carries none: it opens no span.
 An instant and not an elapsed time, for the reason `chat.compacting.since` carries one: a state
 replayed to a window that arrives late cannot be a number that was true when it was computed.
 
@@ -294,7 +325,7 @@ own `Date.now()`, which is what it did before.
 ## Streamer semantics
 
 `MyClawAppStreamer` (`channels/my-claw-app/stream.ts`) gains `pushReasoning(delta)` and
-`pushReasoningTokens(n)`, both going through the existing `enqueue` queue so reasoning, text, tool
+`pushReasoningCount(count)`, both going through the existing `enqueue` queue so reasoning, text, tool
 cards and `done` cannot interleave out of order.
 
 Rules:
@@ -321,7 +352,7 @@ Rules:
   per API call: `segments` is what carries the cuts to the replay, so the live stream and a reopened
   conversation agree.
   A thinking phase that has not answered yet is never split: the condition is visible text
-  (`emittedText`), so a running token estimate keeps landing on the bubble it opened.
+  (`emittedText`). A count never seals at all: it belongs to the answer it follows.
 - **A reasoning-only bubble survives `finish`.** Today an empty-text bubble is removed
   (`chat.ts:224`). A bubble that carries reasoning but no text is not empty: it explains a tool
   call that produced no prose. Keep it.
@@ -400,7 +431,8 @@ precisely the "it is working" affordance; it then grows into the answer without 
 ```
 ▸ Thinking…                      (while reasoning streams, no text yet)
 ▸ Reasoning                      (text arrived, or the run ended)
-▸ Thought · 1.2k tokens          (Claude: a count, because there is nothing to open)
+▸ Reasoning · 1.2k tokens 12 s   (words, and what the call spent on them)
+  Reasoning · 516 tokens 4.2 s   (no words: a count, because there is nothing to open)
 ```
 
 Muted, small, no border, no background — it must lose every contest with the answer. Expansion is
@@ -422,8 +454,9 @@ consistency and accessibility: `Pressable`, `accessibilityRole="button"`,
 `accessibilityState={{ expanded }}`, `accessibilityHint` of "Show the model's reasoning" /
 "Hide the model's reasoning".
 
-**The redacted case is not a button.** With Claude there is no body to reveal, so the row renders
-as static muted text. A control that opens nothing is worse than no control.
+**The silent case is not a button.** A thought the endpoint kept to itself has no body to reveal,
+so the row renders as static muted text: the count and the span. A control that opens nothing is
+worse than no control.
 
 No setting in v1. A collapsed line is unobtrusive enough that a preference would be
 configuration for its own sake; if it ever proves noisy, the natural home is the app's existing
@@ -447,6 +480,12 @@ Server, each one failing before the change:
   streamer that is open now -- and a folded message announcing its own calls is asserted to be
   impossible: a run's calls reach the run's sink, a folded message's sink hears nothing
   (`tests/e2e/injection.test.ts`).
+- `reasoning-count.test.ts`: each call reports its count once, before its tools open their cards;
+  the log keeps it on the phase, a silent one included; a sink that throws does not stop the run.
+  `reasoning-stream.test.ts`: the count lands on its call's bubble without sealing it, opens none of
+  its own after an answer, opens and closes no span. `reasoning-codex.test.ts`: the count comes off
+  the completed response, a silent thought is timed by its reasoning item, a worded one by its
+  first delta. `usage-capture.test.ts` and `anthropic.test.ts`: the count on the other two wires.
 - `call-start-hook.test.ts`: every call of a streamed run is announced on its own sink before its
   first token, a sink that throws does not take the run down, and the call names its session.
 - App: `turnThinking.test.ts` (the frame starts the line, every content frame and the run end take

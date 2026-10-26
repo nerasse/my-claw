@@ -31,7 +31,7 @@ describe("a run's reasoning sink", () => {
     const sink = runReasoningSink(() => streamer);
     await sink.onCallStart!();
     await sink.onText!("weighing");
-    await sink.onTokens!(120);
+    await sink.onCount!({ tokens: 120 });
     expect(types(frames)).toEqual([
       "chat.stream.start",
       "chat.turn.thinking",

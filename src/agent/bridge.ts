@@ -938,10 +938,6 @@ export class AgentBridge implements AgentBackend {
                 markEmitted();
                 await reasoningSink.onText?.(delta);
               },
-              onTokens: async (estimated: number): Promise<void> => {
-                markEmitted();
-                await reasoningSink.onTokens?.(estimated);
-              },
             }
           : undefined;
         try {
@@ -1091,6 +1087,20 @@ export class AgentBridge implements AgentBackend {
         }
         emptyTurnRetries = 0;
 
+        // Before the turn is recorded and before its tools open their cards: the count belongs to
+        // the bubble this call wrote into, and the recorder claims that bubble's id.
+        const reasoningTokens = response.usage?.reasoningTokens;
+        if (reasoningTokens) {
+          try {
+            await reasoningSink?.onCount?.({
+              tokens: reasoningTokens,
+              ...(!response.reasoning && response.reasoningMs !== undefined ? { ms: response.reasoningMs } : {}),
+            });
+          } catch {
+            // A display frame must never abort the run.
+          }
+        }
+
         if (!response.toolCalls?.length) {
           const transformedResponse = (await hooks.transform("transform:agent:response", { response: response.content, sessionId: session.id, model: llmConfig.model })).response;
           // Dropped when a hook rewrote the answer: the cuts are offsets into text that no
@@ -1100,6 +1110,7 @@ export class AgentBridge implements AgentBackend {
             content: transformedResponse,
             ...(response.reasoning ? { reasoning: response.reasoning } : {}),
             ...(response.reasoningMs !== undefined ? { reasoningMs: response.reasoningMs } : {}),
+            ...(reasoningTokens ? { reasoningTokens } : {}),
             ...(segments ? { segments } : {}),
             ...(response.providerMeta ? { providerMeta: response.providerMeta } : {}),
             ...(response.incomplete ? { incomplete: response.incomplete } : {}),
@@ -1195,6 +1206,7 @@ export class AgentBridge implements AgentBackend {
           content: response.content,
           ...(response.reasoning ? { reasoning: response.reasoning } : {}),
           ...(response.reasoningMs !== undefined ? { reasoningMs: response.reasoningMs } : {}),
+          ...(reasoningTokens ? { reasoningTokens } : {}),
           ...(response.segments ? { segments: response.segments } : {}),
           ...(replayable ? { providerMeta: response.providerMeta } : {}),
           ...(response.incomplete ? { incomplete: response.incomplete } : {}),

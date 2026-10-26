@@ -50,11 +50,11 @@ describe("a sub-agent's stream", () => {
     expect((frames[1] as MyClawAppServerFrame & { threadId: string }).threadId).toBe("child-thread");
   });
 
-  test("carries a redacted engine's count too", async () => {
+  test("carries what each call spent thinking too", async () => {
     const frames: MyClawAppServerFrame[] = [];
     const streamers = new Map([["child", streamerFor(frames)]]);
     const stream = subAgentStreamFor(streamers, new Map(), "child", () => {});
-    await stream!.reasoning!.onTokens!(120);
+    await stream!.reasoning!.onCount!({ tokens: 120 });
     expect(types(frames)).toEqual(["chat.stream.start", "chat.reasoning.tokens"]);
   });
 

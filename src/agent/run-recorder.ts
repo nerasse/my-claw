@@ -50,7 +50,7 @@ export interface RecordedTurn {
   reasoningMs?: number;
   /** Set only when one call produced more than one thinking phase. */
   segments?: RecordedPhase[];
-  /** How much it thought, when the engine counts instead of reporting the text. */
+  /** What the call spent thinking, as the endpoint counted it, words or none. */
   reasoningTokens?: number;
   /** Opaque provider state. Persisted, unlike before -- a resumed run kept losing the chain. */
   providerMeta?: ProviderMeta;

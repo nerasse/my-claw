@@ -1562,7 +1562,7 @@ export type MyClawAppHistoryEntry =
        */
       reasoning?: string;
       reasoningChars?: number;
-      /** How much it thought, when the engine redacts the text and only counts it. */
+      /** What the call spent thinking, beside `reasoning` or alone when the endpoint kept the words. */
       reasoningTokens?: number;
       /** How long that thinking lasted, so a reopened thread shows the span it took. */
       reasoningMs?: number;
@@ -1877,17 +1877,17 @@ export interface MyClawAppReasoningDelta {
 }
 
 /**
- * Running token estimate while a redacted engine thinks (the Claude Code bridge never sends the
- * text). No reasoning text will follow on this bubble, so the app shows a count, not a disclosure.
+ * What the call that wrote into this bubble spent thinking, sent once when it has answered. Beside
+ * the words when there were some, alone when the endpoint kept them -- docs/reasoning-visibility.md,
+ * "A thought with no words". It neither opens nor closes a thinking span.
  */
 export interface MyClawAppReasoningTokens {
   type: "chat.reasoning.tokens";
   id: string;
   threadId: string;
   tokens: number;
-  /** ISO instant this thinking phase began. Same rule as MyClawAppReasoningDelta.since: a redacted
-   *  engine reports a count and no text, and the span is just as long. */
-  since?: string;
+  /** How long the thought lasted, set only when it streamed no words for the client to time. */
+  ms?: number;
 }
 
 export interface MyClawAppStreamDone {

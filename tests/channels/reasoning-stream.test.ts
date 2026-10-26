@@ -65,19 +65,26 @@ describe("reasoning opens the bubble", () => {
     expect(reasoningOf(frames)).toBe("ab");
   });
 
-  test("a token estimate alone opens the bubble too, for a redacted engine", async () => {
+  test("a count alone opens the bubble, for a call that thought and kept the words", async () => {
     const { streamer, frames } = collect();
-    await streamer.pushReasoningTokens(512);
+    await streamer.pushReasoningCount({ tokens: 512, ms: 9_000 });
     expect(types(frames)).toEqual(["chat.stream.start", "chat.reasoning.tokens"]);
-    const frame = frames[1] as MyClawAppServerFrame & { type: "chat.reasoning.tokens"; tokens: number };
+    const frame = frames[1] as MyClawAppServerFrame & { type: "chat.reasoning.tokens"; tokens: number; ms?: number };
     expect(frame.tokens).toBe(512);
+    expect(frame.ms).toBe(9_000);
   });
 
-  test("a zero or negative estimate is not sent at all", async () => {
+  test("a zero or negative count is not sent at all", async () => {
     const { streamer, frames } = collect();
-    await streamer.pushReasoningTokens(0);
-    await streamer.pushReasoningTokens(-3);
+    await streamer.pushReasoningCount({ tokens: 0 });
+    await streamer.pushReasoningCount({ tokens: -3 });
     expect(frames).toHaveLength(0);
+  });
+
+  test("a span of nothing is not sent beside a count", async () => {
+    const { streamer, frames } = collect();
+    await streamer.pushReasoningCount({ tokens: 12, ms: 0 });
+    expect(frames[1]).not.toHaveProperty("ms");
   });
 
   test("minCharsBeforeDelta never withholds reasoning", async () => {
@@ -136,26 +143,49 @@ describe("reasoning belongs to its segment", () => {
     expect(types(frames).indexOf("chat.stream.done")).toBeLessThan(types(frames).lastIndexOf("chat.stream.start"));
   });
 
-  test("a token estimate after an answer seals it too, for a redacted engine", async () => {
+  // The count only exists once the call has answered, so it always arrives after the words. Sealing
+  // on it, the way a thought sealing an answer does, gave it a bubble of its own under the reply.
+  test("a count after an answer lands on that answer's bubble, without sealing it", async () => {
     const { streamer, frames } = collect();
-    await streamer.push("first answer");
-    await streamer.pushReasoningTokens(512);
-    await streamer.push("second answer");
+    await streamer.pushReasoning("weighing");
+    await streamer.push("the answer");
+    await streamer.pushReasoningCount({ tokens: 512 });
     await streamer.finish();
 
-    expect(textOf(frames, bubbleId(frames, 0))).toBe("first answer");
-    expect(textOf(frames, bubbleId(frames, 1))).toBe("second answer");
+    expect(types(frames).filter((t) => t === "chat.stream.start")).toHaveLength(1);
     const tokens = frames.find((f) => f.type === "chat.reasoning.tokens");
-    expect(tokens && "id" in tokens ? tokens.id : undefined).toBe(bubbleId(frames, 1));
+    expect(tokens && "id" in tokens ? tokens.id : undefined).toBe(bubbleId(frames, 0));
+    expect(types(frames).at(-1)).toBe("chat.stream.done");
   });
 
-  test("a thinking phase that never answered is not split in two", async () => {
+  test("a call that thought silently and went to a tool keeps its bubble, the count in it", async () => {
     const { streamer, frames } = collect();
-    await streamer.pushReasoning("still weighing");
-    await streamer.pushReasoningTokens(64);
-    await streamer.pushReasoning(" and weighing");
-    expect(types(frames).filter((t) => t === "chat.stream.start")).toHaveLength(1);
-    expect(reasoningOf(frames)).toBe("still weighing and weighing");
+    await streamer.beginThinking();
+    await streamer.pushReasoningCount({ tokens: 516, ms: 4_200 });
+    await streamer.appendToolStart([{ id: "call_1", name: "read", arguments: { path: "/x" } }]);
+
+    const tokens = frames.find((f) => f.type === "chat.reasoning.tokens");
+    expect(tokens && "id" in tokens ? tokens.id : undefined).toBe(bubbleId(frames, 0));
+    // The bubble is closed before the card opens, so the count reads above the tool it led to.
+    const order = types(frames);
+    expect(order.indexOf("chat.reasoning.tokens")).toBeLessThan(order.indexOf("chat.tool.start"));
+  });
+
+  test("the next call's count goes to the next call's bubble", async () => {
+    const { streamer, frames } = collect();
+    await streamer.beginThinking();
+    await streamer.push("first answer");
+    await streamer.pushReasoningCount({ tokens: 10 });
+    await streamer.beginThinking();
+    await streamer.pushReasoningCount({ tokens: 20 });
+
+    const counts = frames.filter(
+      (f): f is MyClawAppServerFrame & { type: "chat.reasoning.tokens"; id: string; tokens: number } => f.type === "chat.reasoning.tokens",
+    );
+    expect(counts.map((f) => [f.id, f.tokens])).toEqual([
+      [bubbleId(frames, 0), 10],
+      [bubbleId(frames, 1), 20],
+    ]);
   });
 
   test("a long thought is sent whole, and the next segment still gets its own", async () => {
@@ -250,7 +280,7 @@ describe("a reasoning-only bubble", () => {
     await streamer.finish();
     const before = frames.length;
     await streamer.pushReasoning("late thought");
-    await streamer.pushReasoningTokens(10);
+    await streamer.pushReasoningCount({ tokens: 10 });
     expect(frames).toHaveLength(before);
   });
 });
@@ -318,21 +348,17 @@ describe("the thinking span carries the instant it opened", () => {
     expect(dated.every((f) => typeof f.since === "string")).toBe(true);
   });
 
-  test("a redacted engine dates its count the same way, since the span is just as long", async () => {
+  test("a count opens no span: it is a figure about a thought that is over", async () => {
     const { streamer, frames } = collect();
-    await streamer.pushReasoningTokens(128);
-    await streamer.pushReasoningTokens(640);
-
-    expect(sinces(frames)[0]).toBeTypeOf("string");
-    expect(sinces(frames)[1]).toBeUndefined();
+    await streamer.pushReasoningCount({ tokens: 128 });
+    expect(sinces(frames)).toEqual([undefined]);
   });
 
-  test("text and a count share one span while the phase is open", async () => {
-    // The phase is the bubble, whatever fills it: an engine reporting both must not date the same
-    // thinking twice, or the client would restart a running counter on the second frame.
+  test("a count does not close the open span either, so the next thought of the bubble is not re-dated", async () => {
     const { streamer, frames } = collect();
     await streamer.pushReasoning("still weighing");
-    await streamer.pushReasoningTokens(64);
+    await streamer.pushReasoningCount({ tokens: 64 });
+    await streamer.pushReasoning(" and weighing");
     expect(sinces(frames).filter((since) => since !== undefined)).toHaveLength(1);
   });
 });

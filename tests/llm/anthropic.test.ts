@@ -299,14 +299,12 @@ test("thinking tokens are billed inside the output count, never beside it", () =
   assert.ok(usage);
   assert.equal(usage.completionTokens, 106);
   assert.equal(usage.totalTokens, 206);
+  assert.equal(usage.reasoningTokens, 57);
 });
 
-test("the thinking token count is never reported to the sink, only the text is", async () => {
-  // The count arrives on the stream's last event, after the answer, where the app's streamer seals
-  // the bubble and opens another one: it produced a stray token-count bubble under a reply that was
-  // already showing its reasoning in full. That shape belongs to the redacted SDK bridge, which
-  // reports its estimate while the model is still thinking.
-  const tokens: number[] = [];
+test("the thinking count rides on the usage of the last event, beside the text", async () => {
+  // It only exists once the answer is written, so the transport cannot stream it: it goes back on
+  // the usage, and the loop hands it to the bubble the call wrote into (docs/reasoning-visibility.md).
   const text: string[] = [];
   const result = await processStream(
     sse([
@@ -316,14 +314,27 @@ test("the thinking token count is never reported to the sink, only the text is",
       { type: "message_delta", usage: { output_tokens: 20, output_tokens_details: { thinking_tokens: 14 } } },
     ]),
     undefined,
-    { onText: async (d) => void text.push(d), onTokens: async (n) => void tokens.push(n) },
+    { onText: async (d) => void text.push(d) },
   );
 
-  assert.deepEqual(tokens, []);
   assert.deepEqual(text, ["il demande 24/8"]);
   assert.equal(result.reasoning, "il demande 24/8");
   assert.equal(result.content, "3");
   assert.equal(result.usage?.completionTokens, 20);
+  assert.equal(result.usage?.reasoningTokens, 14);
+});
+
+test("a response that did not think reports no thinking count", async () => {
+  const result = await processStream(
+    sse([
+      { type: "message_start", message: { usage: { input_tokens: 10 } } },
+      { type: "content_block_delta", delta: { type: "text_delta", text: "3" } },
+      { type: "message_delta", usage: { output_tokens: 1 } },
+    ]),
+    undefined,
+    undefined,
+  );
+  assert.equal(result.usage?.reasoningTokens, undefined);
 });
 
 test("the stream re-arms the request timeout on every line, thinking included", async () => {

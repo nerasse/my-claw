@@ -83,6 +83,7 @@ export interface PhaseEntry extends EntryBase {
   prompt: true;
   text: string;
   reasoning?: string;
+  /** What the call spent thinking, as the endpoint counted it; on the last phase of the call. */
   reasoningTokens?: number;
   /** How long the thinking that produced `reasoning` lasted. Kept so a reopened thread shows it. */
   reasoningMs?: number;

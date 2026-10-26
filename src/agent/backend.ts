@@ -14,17 +14,26 @@ export type ToolStartCallback = (tool: { id: string; name: string; arguments: Re
 
 export type TurnSwitchCallback = (message: UnifiedMessage) => Promise<void>;
 
+/** What one call spent thinking -- `ReasoningSink.onCount`. */
+export interface ReasoningCount {
+  tokens: number;
+  ms?: number;
+}
+
 /**
- * Where a run reports what the model is thinking -- docs/reasoning-visibility.md. Two shapes
- * because the engines differ in kind, not in degree: an OpenAI-compatible transport streams the
- * text, while the Claude Code bridge redacts it and only counts tokens. A channel that provides
- * neither callback gets nothing, which is how a channel without a sink stays untouched.
+ * Where a run reports what the model is thinking -- docs/reasoning-visibility.md. The words while
+ * they stream, and the count once the call has answered: an endpoint may keep the words to itself
+ * (the Responses API summarises only part of its thoughts), never the count. A channel that
+ * provides no callback gets nothing, which is how a channel without a sink stays untouched.
  */
 export interface ReasoningSink {
   /** Reasoning text, incremental. */
   onText?: (delta: string) => Promise<void>;
-  /** Running token estimate while a redacted engine thinks. No text will follow. */
-  onTokens?: (estimated: number) => Promise<void>;
+  /**
+   * What the call that just answered spent thinking, once, before its tools run. `ms` is set when
+   * the thought streamed no words, so nothing else on screen could have timed it.
+   */
+  onCount?: (count: ReasoningCount) => Promise<void>;
   /**
    * A model call of this run began; nothing has come out of it yet. On the run's own sink, never a
    * global hook: a hook is heard by every listener on the session, and a message folded into a run
