@@ -132,22 +132,24 @@ describe("the size every window works at", () => {
     await live.settleWindows();
 
     expect([...(await live.stagedWindows())]).toEqual([3]);
-    expect(placed).toEqual([{ windowId: 3, bounds: { left: 0, top: 0, width: STAGE.width, height: STAGE.height } }]);
+    expect(placed).toEqual([{ windowId: 3, bounds: { width: STAGE.width, height: STAGE.height } }]);
   });
 
-  test("a window the owner resized by hand stays where he put it", async () => {
+  test("a window a site resized after its birth is put back at the next listing", async () => {
+    // `window.resizeTo` from the page, or a restart of the sidecar: no memory of what was done is
+    // needed, because the bounds themselves say whether a window is where it should be.
     live.standardSize({ width: 1920, height: 1080 });
     aWindow(4, { left: OFFSTAGE_LEFT, width: STAGE.width - 1, height: STAGE.height - 1 });
-    // Settled at birth: from here on the rule has had its say about this window.
     await live.settleWindows();
     placed.length = 0;
-    // He drags its corner in VNC, which the wall has no business undoing.
+
     windows.get(4)!.width = 1200;
     windows.get(4)!.height = 900;
-
     await live.settleWindows();
 
-    expect(placed).toHaveLength(0);
+    // The size only: where it stands is the stage's business, and a page that resizes itself onto
+    // the screen must not drag a second window there.
+    expect(placed).toEqual([{ windowId: 4, bounds: { width: STAGE.width, height: STAGE.height } }]);
   });
 
   test("a minimized window is left alone: its bounds are stale, and it takes no placement", async () => {
@@ -167,7 +169,7 @@ describe("the size every window works at", () => {
 
     await live.settleWindows();
 
-    expect(placed).toEqual([{ windowId: 6, bounds: { left: OFFSTAGE_LEFT, top: 0, width: 1600, height: 900 } }]);
+    expect(placed).toEqual([{ windowId: 6, bounds: { width: 1600, height: 900 } }]);
   });
 
   test("a viewport the server did not state is not a size: the screen's stands", async () => {

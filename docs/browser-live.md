@@ -34,10 +34,10 @@ Now the screen is a stage (`sidecar/live.mjs`):
   window keeps the size it is born with, and a popup is born at the size its site passed to
   `window.open`: without this rule one window -- and the tile the app drew for it -- stood portrait
   in a wall of landscapes until it closed (measured 2026-10-25: nothing resized a popup, ever).
-  The size is taken at birth, and every listing puts right a window that was already open when the
-  rule arrived; a minimized window is left alone (its bounds are stale), and a window the owner
-  resizes by hand in VNC stays where he put it: the wall follows the page, it does not overrule
-  the person in front of it.
+  The size is taken at birth, and every listing puts right any window whose bounds do not match --
+  one that was already open when the rule arrived, one a site resized with `window.resizeTo`, one
+  that outlived a restart of the sidecar. A minimized window is left alone, its bounds being stale.
+  The screen has no window manager, so nobody resizes a window by hand.
 - The owner's own new window (`browser.control` `new_window`) goes on the screen, alone.
 - When the window on the screen closes, the one worked in last takes its place. Otherwise the
   screen keeps what it shows: nothing moves under the owner's eyes unless he asks, or an agent

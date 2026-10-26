@@ -87,34 +87,25 @@ function withPlacement(step) {
 }
 
 /**
- * Every window took the standard size once, at birth. A window the owner resizes by hand in VNC is
- * left as he left it: the wall follows the page, it does not overrule the person in front of it.
- */
-const settled = new Set();
-
-/**
  * Every window at the standard size, and the ids of the ones standing on the screen.
  *
- * Run with every listing, which reads every window's bounds anyway, so a window that was already
- * open when this rule arrived (or that the browser resized after its birth hook) is put right here.
- * A minimized window keeps stale bounds and is left alone; the ids are pruned to the windows that
- * still exist, which is what keeps this set from growing with the browser's history.
+ * Run with every listing, which reads every window's bounds anyway. What a window should be is
+ * stated by its own bounds, never remembered here: a window that was already open when this rule
+ * arrived, one a site resized with `window.resizeTo`, and one that survived a restart of this
+ * process are all put right by the same comparison. A minimized window keeps stale bounds and is
+ * left alone.
+ *
+ * Only the size is set, never the position: `stage` and `keepOffStage` own where a window stands.
+ * A window that resizes itself onto the screen is a fact of the browser, and moving it here as
+ * well would put a second one on the screen beside the owner's.
  */
 export async function settleWindows() {
   return withPlacement(async () => {
     const windows = await windowBounds();
-    const alive = new Set(windows.map(({ windowId }) => windowId));
-    for (const windowId of settled) if (!alive.has(windowId)) settled.delete(windowId);
     await Promise.all(
-      windows.map(({ windowId, bounds }) => {
-        if (bounds.windowState !== "normal") return undefined;
-        if (atSize(bounds)) return void settled.add(windowId);
-        if (settled.has(windowId)) return undefined;
-        settled.add(windowId);
-        return place(windowId, onStage(bounds) ? { left: 0, top: 0, ...windowSize } : { ...OFFSTAGE, ...windowSize }).catch(
-          () => undefined,
-        );
-      }),
+      windows.map(({ windowId, bounds }) =>
+        bounds.windowState === "normal" && !atSize(bounds) ? place(windowId, { ...windowSize }).catch(() => undefined) : undefined,
+      ),
     );
     return new Set(windows.filter(({ bounds }) => onStage(bounds)).map(({ windowId }) => windowId));
   });
@@ -156,10 +147,7 @@ async function keepOffStageNow(page, pageId) {
   const windowId = await windowOf(pageId);
   const bounds = await boundsOf(windowId);
   if (!onStage(bounds)) {
-    if (bounds.windowState === "normal" && !atSize(bounds)) {
-      settled.add(windowId);
-      await place(windowId, { ...OFFSTAGE, ...windowSize });
-    }
+    if (bounds.windowState === "normal" && !atSize(bounds)) await place(windowId, { ...OFFSTAGE, ...windowSize });
     return;
   }
   const staged = await stagedWindows();
@@ -173,7 +161,6 @@ async function keepOffStageNow(page, pageId) {
   }
   // It belongs on the screen (the screen was empty, or the owner is working there): it stands at the
   // screen's size rather than over the owner at some size of the site's choosing.
-  settled.add(windowId);
   await place(windowId, { left: 0, top: 0, ...windowSize });
 }
 
