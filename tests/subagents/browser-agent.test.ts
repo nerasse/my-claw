@@ -71,7 +71,7 @@ interface Harness {
   runner: SubAgentRunner;
 }
 
-function harness(config: MyClawConfig): Harness {
+function harness(config: MyClawConfig, modelIds?: () => string[]): Harness {
   const tools = new ToolRegistry();
   for (const n of ["read", "bash", "spawn"]) {
     tools.register({ name: n, description: n, parameters: { type: "object", properties: {} }, execute: async () => ({ success: true, output: "" }) });
@@ -81,7 +81,7 @@ function harness(config: MyClawConfig): Harness {
   const voice = new VoiceManager(config);
   const runner = new SubAgentRunner(config, tools, new SkillRegistry(), voice, new SttPipeline(voice), agents, session);
   const registry = new SubAgentRegistry();
-  return { tool: createDelegateBrowserTool(config, runner, registry, session), tools, session, runner };
+  return { tool: createDelegateBrowserTool(config, runner, registry, session, undefined, modelIds), tools, session, runner };
 }
 
 function llmResponse(payload: object): Response {
@@ -98,6 +98,8 @@ function json(payload: object, status = 200): Response {
 interface LlmCall {
   tools: string[];
   messages: Array<{ role: string; content: unknown }>;
+  /** The `model` field of the request: what the run actually asked the provider for. */
+  model?: string;
 }
 
 /**
@@ -129,8 +131,8 @@ function world(script: Array<(call: LlmCall) => object | Promise<object>>, opts:
       if (endpoint === "screenshot") return json({ type: "image", path: "/tmp/shot.png", mimeType: "image/png" });
       return json({});
     }
-    const body = JSON.parse(String(init?.body ?? "{}")) as { tools?: Array<{ function: { name: string } }>; messages: LlmCall["messages"] };
-    const call: LlmCall = { tools: (body.tools ?? []).map((t) => t.function.name), messages: body.messages };
+    const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string; tools?: Array<{ function: { name: string } }>; messages: LlmCall["messages"] };
+    const call: LlmCall = { tools: (body.tools ?? []).map((t) => t.function.name), messages: body.messages, ...(body.model ? { model: body.model } : {}) };
     llm.push(call);
     const step = script[Math.min(turn, script.length - 1)]!;
     turn += 1;
@@ -380,6 +382,102 @@ describe("delegate_browser_task runs the browser agent as a sub-agent", () => {
       // Both windows were given back.
       const listing = await browser.windows.describe("anyone");
       expect(listing).not.toContain("in use");
+    } finally {
+      w.restore();
+    }
+  });
+});
+
+describe("a browsing run takes a model of its own", () => {
+  // A page that needs a strong model (a captcha-heavy booking) or a cheap one (a hundred listings)
+  // is the caller's call, exactly like a spawn's -- the browser agent's pin is only the default.
+  const IDS = ["tag:Cheap", "tag:Smart", "anthropic/claude-sonnet-5-5", "synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash-1017", "costly-model"];
+
+  test("the parameter names the tags and does not enumerate the catalog", () => {
+    const { tool } = harness(makeConfig({ enabled: true }), () => IDS);
+    const schema = tool.parameters as { properties: Record<string, { type?: string; enum?: unknown[]; description?: string }> };
+    const model = schema.properties["model"]!;
+    expect(model.type).toBe("string");
+    expect(model.enum).toBeUndefined();
+    expect(model.description).toContain("tag:Cheap");
+    expect(model.description).toContain("Default: the browser agent's own model");
+  });
+
+  test("the definition does not move when discovery finds a model: the cached prefix holds", () => {
+    let ids = IDS;
+    const { tool } = harness(makeConfig({ enabled: true }), () => ids);
+    const before = JSON.stringify({ d: tool.description, p: tool.parameters });
+    ids = [...IDS, "openrouter/newcomer/fresh-model"];
+    expect(JSON.stringify({ d: tool.description, p: tool.parameters })).toBe(before);
+  });
+
+  test("the model named reaches the request the run sends, and is recorded on its session like a spawn's", async () => {
+    const { tool, runner } = harness(makeConfig({ enabled: true }), () => IDS);
+    const asked: Array<string | undefined> = [];
+    const real = runner.spawn.bind(runner);
+    runner.spawn = (async (opts: Parameters<typeof real>[0]) => {
+      asked.push(opts.model);
+      return await real(opts);
+    }) as typeof runner.spawn;
+    const w = world([
+      () => toolCall("browser_done", { summary: "done" }),
+      () => ({ content: "done" }),
+    ]);
+    try {
+      const result = await tool.execute({
+        url: "https://example.com",
+        instructions: "read it",
+        model: "costly-model",
+        __message: message(),
+        __sessionId: "my-claw-app/thread/u1/t1",
+      });
+      expect(result.success).toBe(true);
+      expect(asked).toEqual(["costly-model"]);
+      // Not just handed to the runner: the request the run sent names that model.
+      expect(w.llm[0]?.model).toBe("costly-model");
+    } finally {
+      w.restore();
+    }
+  });
+
+  test("without a model the run asks for none, so the browser agent's own pin decides", async () => {
+    const { tool, runner } = harness(makeConfig({ enabled: true }), () => IDS);
+    const asked: Array<string | undefined> = [];
+    const real = runner.spawn.bind(runner);
+    runner.spawn = (async (opts: Parameters<typeof real>[0]) => {
+      asked.push(opts.model);
+      return await real(opts);
+    }) as typeof runner.spawn;
+    const w = world([
+      () => toolCall("browser_done", { summary: "done" }),
+      () => ({ content: "done" }),
+    ]);
+    try {
+      expect((await tool.execute({ url: "https://example.com", instructions: "read it", __message: message(), __sessionId: "s1" })).success).toBe(true);
+      expect(asked).toEqual([undefined]);
+      // Nothing was pinned: the run fell through to the configured default.
+      expect(w.llm[0]?.model).toBe("test-model");
+    } finally {
+      w.restore();
+    }
+  });
+
+  test("an unknown model is refused with the closest ids, and no run starts", async () => {
+    const { tool } = harness(makeConfig({ enabled: true }), () => IDS);
+    const w = world([() => ({ content: "never" })]);
+    try {
+      const result = await tool.execute({
+        url: "https://example.com",
+        instructions: "read it",
+        model: "claude-sonnet-5-5",
+        __message: message(),
+        __sessionId: "my-claw-app/thread/u1/t1",
+      });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Unknown model");
+      expect(result.error).toContain("anthropic/claude-sonnet-5-5");
+      expect(result.error).toContain("tag:Cheap");
+      expect(w.llm).toEqual([]);
     } finally {
       w.restore();
     }

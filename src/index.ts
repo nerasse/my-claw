@@ -117,7 +117,8 @@ import { applyPatchTool } from "./tools/apply-patch.ts";
 import { lsTool } from "./tools/ls.ts";
 import { createMemoryTool } from "./tools/memory.ts";
 import { createConversationSearchTool } from "./tools/conversation-search.ts";
-import { createSpawnTool, spawnModelIds } from "./tools/spawn.ts";
+import { createSpawnTool } from "./tools/spawn.ts";
+import { subagentModelIds } from "./tools/model-choice.ts";
 import { createSendTool } from "./tools/send.ts";
 import { createAgentsTool } from "./tools/agents.ts";
 import { createSkillsTool } from "./tools/skills.ts";
@@ -3227,17 +3228,19 @@ function registerSubAgentTools(
 ): void {
   // Both lists are read live: the spawn schema is rebuilt per run, so an agent file dropped in
   // `agents/` is spawnable on the next message without a restart.
+  const modelIds = (): string[] => subagentModelIds(config);
   registry.register(createSpawnTool(
     runner,
     subRegistry,
-    () => spawnModelIds(config),
+    modelIds,
     () => agentRegistry.list(),
     streamProvider,
   ));
   registry.register(createSendTool(runner, subRegistry, streamProvider));
   // The browser is a sub-agent like the others, reached through its own door rather than `spawn`:
-  // one shared Chromium, one task at a time (docs/browser.md).
-  registry.register(createDelegateBrowserTool(config, runner, subRegistry, browserSession, streamProvider));
+  // one shared Chromium, one task at a time (docs/browser.md). Its door takes a model too, so a
+  // page that needs another one is the caller's call rather than a config edit.
+  registry.register(createDelegateBrowserTool(config, runner, subRegistry, browserSession, streamProvider, modelIds));
   registry.register(createAgentsTool(runner, subRegistry));
 }
 

@@ -44,7 +44,8 @@ decides whether a tool stands alone:
   model: 544 ids, 20 000 characters, about 5 000 tokens per request, more than every other change
   here together, and it moved whenever discovery found a model while the tool definitions open the
   cached prefix. It is a string now, checked at call time; a wrong one is answered with the closest
-  ids (docs/subagents.md).
+  ids (docs/subagents.md). `delegate_browser_task` takes the same parameter, read and refused by the
+  same code (`src/tools/model-choice.ts`): one rule for every door that starts a sub-agent.
 - **Rare actions of one shape share a tool.** `agents` (list, kill, reset) replaced three tools;
   `audio` (transcribe, speak, mode) replaced `stt`, `tts`, `voice_mode`; the kept browser windows
   moved onto `delegate_browser_task` as `kept` (list, release, extend) instead of

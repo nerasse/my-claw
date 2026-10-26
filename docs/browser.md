@@ -97,7 +97,7 @@ app see the runs it creates like any other one-shot.
 Every tool but `browser_list_windows`, `browser_new_window`, `browser_read_output` and `browser_done` takes `window`, the
 window to act in: the first one to name a free window takes it for the run (`docs/browser-windows.md`).
 | `browser_done(summary, needs_human?)` | Record the outcome for the caller (summary, human takeover), then the agent answers with the summary |
-| `delegate_browser_task(url, instructions)` | Any other agent → a run of the browser agent. Screenshots auto-attached to response |
+| `delegate_browser_task(url, instructions, model?)` | Any other agent → a run of the browser agent. Screenshots auto-attached to response |
 
 **Why `reload`, `text` and `fetch` are first-class.** A survey of the 132 browser runs up to
 2026-09-20 found `browser_eval` was the single most-called tool (1103 calls, 114 of 132 runs) with
@@ -199,6 +199,11 @@ systemd and Playwright only attaches over CDP, never launches it.
   run a claude-sdk or codex default, which is why it used to skip agent resolution altogether and
   take that last fallback whatever `agents.browser` said -- so the model was decided by the order
   of `llm.models`, and a gateway that blocks the first entry broke every browser task.
+  A single call may name its own model (`delegate_browser_task(..., model: "tag:Cheap")`), the way
+  `spawn` does: the pool of what it may name and the refusal a wrong one gets are the same
+  (`src/tools/model-choice.ts`), and the runner records the pick as the session's model, so a
+  `send` to that run keeps it. A page that needs a strong model, or a runaway listing that should
+  run cheap, is then the caller's decision instead of a config edit.
 - **Cancellable**: the parent run's `AbortSignal` is threaded into the sub-agent run (via the tool's
   `__signal`, then the runner's tracked signal). `/stop` and the app's Stop interrupt it like any
   sub-agent run; the browser run's own thread has a Stop of its own too.

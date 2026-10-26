@@ -26,7 +26,7 @@ The filesystem is the source of truth. `SubAgentRegistry` scans `sessions/subage
 |---|---|---|
 | `general` | All base tools (bash, read, write, apply_patch, fetch, search, ls, memory) | Execution tasks |
 | `research` | Read-only: read, search, ls, fetch | Exploration, analysis |
-| `browser` | The `browser_*` tools and nothing else | Web tasks. Not offered by `spawn`: reached through `delegate_browser_task`, which frames the task, runs it in windows of its own on the one Chromium and reads the handoff back (`docs/browser.md`, `docs/browser-windows.md`). Its runs are private one-shots of the caller, listed, opened and driven like any other |
+| `browser` | The `browser_*` tools and nothing else | Web tasks. Not offered by `spawn`: reached through `delegate_browser_task`, which frames the task, runs it in windows of its own on the one Chromium and reads the handoff back (`docs/browser.md`, `docs/browser-windows.md`). Its runs are private one-shots of the caller, listed, opened and driven like any other. The door takes the same `model` a spawn does, pinned on the run |
 
 Depth 0 (orchestrator) can spawn depth 1. `MAX_DEPTH` is 2, but **depth 2 is currently unreachable**:
 `spawn` is in `SUBAGENT_EXCLUDED_TOOLS` (`src/tools/registry.ts`), so no sub-agent of any type can

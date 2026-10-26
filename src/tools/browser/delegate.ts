@@ -1,9 +1,10 @@
-import { type Tool, type ToolResult, str } from "../types.ts";
+import { type Tool, type ToolResult, str, strOpt } from "../types.ts";
 import type { MyClawConfig } from "../../core/config.ts";
 import type { UnifiedMessage } from "../../channels/types.ts";
 import { isAbort, rethrowIfAborted } from "../../core/aborted.ts";
 import type { SubAgentRegistry } from "../../subagents/registry.ts";
 import type { SubAgentRunner, SubAgentStream } from "../../subagents/runner.ts";
+import { refuseUnknownModel, tagsOf } from "../model-choice.ts";
 import { DEFAULT_NOVNC_URL, takeBrowserOutcome, type BrowserSession } from "./session.ts";
 import { keptWindows } from "./held.ts";
 
@@ -16,6 +17,10 @@ import { keptWindows } from "./held.ts";
  *
  * With `kept`, no task runs: the call reads or settles the windows earlier tasks kept for this
  * conversation (held.ts). Those are the delegating side's business, so they live on its door.
+ *
+ * `model` pins the run the way a spawn's does, refused the same way when it names nothing known: a
+ * page that needs a strong model (or a cheap one) is the caller's call, and the browser agent's own
+ * pin is only the default (`config.agents.browser.llm.defaultModel`).
  */
 export function createDelegateBrowserTool(
   config: MyClawConfig,
@@ -23,21 +28,31 @@ export function createDelegateBrowserTool(
   registry: SubAgentRegistry,
   session: BrowserSession,
   streamProvider?: (subagentId: string) => SubAgentStream | undefined,
+  listModelIds?: () => string[],
 ): Tool {
+  const modelIds = (): string[] => listModelIds?.() ?? [];
   return {
     name: "delegate_browser_task",
     description: "Delegate a web browsing task to a specialized subagent. Use for multi-step web interactions like filling forms, booking, or searching on specific websites. Tasks run in parallel on one shared browser, each in windows of its own: parallel calls are fine, even on the same site. The subagent may take screenshots during the task; any captured images are automatically attached to your response and delivered to the user. Do NOT try to find, read, or re-attach these screenshots, and do NOT reference them with MEDIA: — they are already attached. Just describe the result in your reply. " +
       "With `kept` instead of a task: the windows earlier tasks kept (for a human, or for this conversation to continue in): 'list' them with what each waits for and until when, 'extend' one of this conversation's (window, hold), or 'release' them (window, or all) once no longer needed. A kept window closes with its tabs when its time is up; to continue in one, delegate the next step: it is offered that window first.",
-    parameters: {
-      type: "object",
-      properties: {
-        url: { type: "string", description: "Starting URL (a task)" },
-        instructions: { type: "string", description: "Detailed instructions for the browsing task" },
-        kept: { type: "string", enum: ["list", "release", "extend"], description: "Instead of a task: act on the windows kept for this conversation" },
-        window: { type: "number", description: "kept: the window number to release or extend" },
-        hold: { type: "string", description: "kept=extend: how long to keep it from now, e.g. 24h. Capped at browser.holdMax." },
-        all: { type: "boolean", description: "kept=release: every window kept for this conversation" },
-      },
+    // A getter like spawn's: the tags follow a hot-reload instead of freezing at boot.
+    get parameters() {
+      const tags = tagsOf(modelIds());
+      return {
+        type: "object",
+        properties: {
+          url: { type: "string", description: "Starting URL (a task)" },
+          instructions: { type: "string", description: "Detailed instructions for the browsing task" },
+          model: {
+            type: "string",
+            description: `Optional model for this browsing run: ${tags.length > 0 ? `a tag (${tags.join(", ")}) or ` : ""}a model id (provider/model). Default: the browser agent's own model.`,
+          },
+          kept: { type: "string", enum: ["list", "release", "extend"], description: "Instead of a task: act on the windows kept for this conversation" },
+          window: { type: "number", description: "kept: the window number to release or extend" },
+          hold: { type: "string", description: "kept=extend: how long to keep it from now, e.g. 24h. Capped at browser.holdMax." },
+          all: { type: "boolean", description: "kept=release: every window kept for this conversation" },
+        },
+      };
     },
     async execute(args): Promise<ToolResult> {
       // Read enabled live so the config hot-reload watcher can toggle it at runtime.
@@ -54,6 +69,10 @@ export function createDelegateBrowserTool(
       const signal = args["__signal"] instanceof AbortSignal ? args["__signal"] : undefined;
       const workspaceDir = typeof args["__workspaceDir"] === "string" ? args["__workspaceDir"] : undefined;
       const toolCallId = typeof args["__toolCallId"] === "string" ? args["__toolCallId"] : undefined;
+      const model = strOpt(args, "model");
+      // The same refusal spawn gives, from the same place: a browser run is pinned, not guessed.
+      const refused = refuseUnknownModel(model, modelIds());
+      if (refused) return { success: false, output: "", error: refused };
       const message = args["__message"] as UnifiedMessage | undefined;
       if (!message) {
         return { success: false, output: "", error: "Missing parent message context" };
@@ -76,6 +95,7 @@ export function createDelegateBrowserTool(
           parentSessionId: callerSessionId,
           visibility: "private",
           signal,
+          ...(model ? { model } : {}),
           enqueue: <T,>(runId: string, run: () => Promise<T>) => registry.enqueue(runId, run),
           ...(toolCallId ? { toolCallId } : {}),
           ...(streamProvider ? { streamProvider } : {}),

@@ -237,7 +237,7 @@ src/
 │   ├── skills.ts          # Skill management tools
 │   ├── cron.ts            # Schedule/list/pause/resume/trigger cron jobs
 │   ├── audio.ts           # Transcribe, speak, voice mode: one tool over voice/
-│   └── spawn.ts, send.ts, agents.ts  # agents = list, kill, reset
+│   └── spawn.ts, send.ts, agents.ts  # agents = list, kill, reset; model-choice.ts = what a sub-agent run may be pinned to, shared by both doors
 ├── subagents/
 │   ├── runner.ts          # Sub-agent execution (spawn, send, kill, reset) -- docs/subagent-visibility.md
 │   ├── registry.ts        # Sub-agent ID generation + listing

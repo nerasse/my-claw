@@ -10,7 +10,8 @@
 
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { closestModels, createSpawnTool, spawnModelIds } from "../../src/tools/spawn.ts";
+import { closestModels, subagentModelIds } from "../../src/tools/model-choice.ts";
+import { createSpawnTool } from "../../src/tools/spawn.ts";
 import type { SubAgentRunner } from "../../src/subagents/runner.ts";
 import type { SubAgentRegistry } from "../../src/subagents/registry.ts";
 import type { AgentInfo } from "../../src/agents/types.ts";
@@ -109,10 +110,10 @@ test("closest: the ids sharing the most of the name come first", () => {
   assert.equal(closestModels("sonnet-5.5", IDS, 1)[0], "openrouter/anthropic/claude-sonnet-5.5");
 });
 
-test("what a spawn may name: the configured tags, then the catalog", () => {
-  const ids = spawnModelIds({ tags: { Cheap: {}, Smart: {} }, llm: { models: [{ id: "a/b" }, { id: "c/d" }] } });
+test("what a sub-agent run may be pinned to: the configured tags, then the catalog", () => {
+  const ids = subagentModelIds({ tags: { Cheap: {}, Smart: {} }, llm: { models: [{ id: "a/b" }, { id: "c/d" }] } });
   assert.deepEqual(ids, ["tag:Cheap", "tag:Smart", "a/b", "c/d"]);
-  assert.deepEqual(spawnModelIds({ llm: {} }), []);
+  assert.deepEqual(subagentModelIds({ llm: {} }), []);
 });
 
 /**

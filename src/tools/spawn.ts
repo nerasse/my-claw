@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
+import { refuseUnknownModel, tagsOf } from "./model-choice.ts";
 import { resumeHint, subagentIdOf, SubAgentRunner, type SubAgentStream } from "../subagents/runner.ts";
 import { SubAgentRegistry } from "../subagents/registry.ts";
 import type { UnifiedMessage } from "../channels/types.ts";
@@ -7,43 +8,12 @@ import { isAbort, rethrowIfAborted } from "../core/aborted.ts";
 import type { AgentInfo } from "../agents/types.ts";
 import { nodeState } from "../nodes/hub.ts";
 
-const SUGGESTIONS = 5;
-
-const tokensOf = (text: string): string[] => text.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-
 /**
- * The ids a mistyped model most looks like: the ones sharing the most of its name, the id that
- * contains it whole before the others, the shorter first. Tags are left out, they are listed apart.
- *
- * Exported for its own test.
- */
-export function closestModels(query: string, ids: readonly string[], limit = SUGGESTIONS): string[] {
-  const wanted = tokensOf(query);
-  if (wanted.length === 0) return [];
-  const floor = Math.max(1, Math.ceil(wanted.length / 2));
-  const whole = query.toLowerCase();
-  return ids
-    .filter((id) => !id.startsWith("tag:"))
-    .map((id) => {
-      const own = new Set(tokensOf(id));
-      return { id, score: wanted.filter((token) => own.has(token)).length, whole: id.toLowerCase().includes(whole) };
-    })
-    .filter((candidate) => candidate.score >= floor)
-    .sort((a, b) => b.score - a.score || Number(b.whole) - Number(a.whole) || a.id.length - b.id.length)
-    .slice(0, limit)
-    .map((candidate) => candidate.id);
-}
-
-/** Every id a spawn may name: the tags, as `tag:<name>`, then the catalog. */
-export function spawnModelIds(config: { tags?: Record<string, unknown>; llm: { models?: Array<{ id: string }> } }): string[] {
-  return [...Object.keys(config.tags ?? {}).map((tag) => `tag:${tag}`), ...(config.llm.models ?? []).map((m) => m.id)];
-}
-
-/**
- * `listModelIds` answers every id a spawn may name (`spawnModelIds`), the tags included as `tag:<name>`. None of
- * them is drawn in the schema: the catalog is hundreds of ids (544 on this install, about 5 000
- * tokens on every request) and it moves with discovery, while the tool definitions open the cached
- * prefix. The tags, a handful that change only with the config, are named in the description.
+ * `listModelIds` answers every id a sub-agent run may be pinned to (`subagentModelIds`), the tags
+ * included as `tag:<name>`. None of them is drawn in the schema: the catalog is hundreds of ids (544
+ * on this install, about 5 000 tokens on every request) and it moves with discovery, while the tool
+ * definitions open the cached prefix. The tags, a handful that change only with the config, are
+ * named in the description.
  */
 export function createSpawnTool(
   runner: SubAgentRunner,
@@ -79,7 +49,7 @@ export function createSpawnTool(
     // Getter on purpose: both engines rebuild tool definitions per run, so the agent types and the
     // tags follow hot-reloads instead of freezing at boot.
     get parameters() {
-      const tags = (listModelIds?.() ?? []).filter((id) => id.startsWith("tag:"));
+      const tags = tagsOf(listModelIds?.() ?? []);
       const names = agents().map((a) => a.name);
       return {
         type: "object",
@@ -119,16 +89,8 @@ export function createSpawnTool(
         const workspaceDir = strOpt(args, "workspaceDir");
         const model = strOpt(args, "model");
         if (model) {
-          const known = listModelIds?.() ?? [];
-          if (!known.includes(model)) {
-            const near = closestModels(model, known);
-            const tags = known.filter((id) => id.startsWith("tag:"));
-            const hints = [
-              near.length > 0 ? `Closest ids: ${near.join(", ")}.` : "No known id looks like it.",
-              tags.length > 0 ? `Tags: ${tags.join(", ")}.` : "",
-            ].filter(Boolean).join(" ");
-            return { success: false, output: "", error: `Unknown model "${model}". ${hints} Omit model to use the configured one.` };
-          }
+          const refused = refuseUnknownModel(model, listModelIds?.() ?? []);
+          if (refused) return { success: false, output: "", error: refused };
         }
         // The confinement check lives in the runner: only it knows the sub-agent's base
         // workspace (the agent's configured one, else the parent's). See docs/multi-workspace.md.

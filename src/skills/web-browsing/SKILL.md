@@ -46,6 +46,30 @@ own tools, or a gap to report, never something to work around.
    release kept windows with `delegate_browser_task(kept="release", window)`
    (`kept="list"` shows them); the owner has `/windows`.
 
+## Choosing the model
+
+The run uses the browser agent's own model (`config.agents.browser.llm.defaultModel`) unless the
+call names another one:
+
+```
+delegate_browser_task(url, instructions, model: "tag:Cheap")
+delegate_browser_task(url, instructions, model: "synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash-1017")
+```
+
+- **Tags first** (`tag:Medium`, `tag:Cheap`, ...): a route the owner maintains, with its own effort
+  and fallbacks. They are the stable names; the catalog behind them moves.
+- A bare model id (`provider/model`) pins that model for the run. The catalog is large, so it is
+  not enumerated anywhere: the ids that are runnable now are what the picker offers, and a wrong
+  one comes back with the five ids that look most like it and the tags.
+- **Leave it out** for ordinary work: the agent's pin already is the owner's choice, and a task
+  that does not need a special model should not spend one.
+- **Reach for a tag when the task's difficulty is the point**: `tag:Smart` for a booking flow with
+  many branches, `tag:Cheap` for a long, mechanical sweep (a hundred listings to read).
+- The pick sticks to the run: if the agent is stopped mid-task and continued with `send`, it keeps
+  the model it started on.
+- How to see which tags and ids exist on this install, and how to pick one from the shape of the
+  task: read `references/models.md`.
+
 ## The browser persists
 
 Windows, tabs and logins stay open between tasks: the subagent is told which windows are open and
