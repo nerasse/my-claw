@@ -86,8 +86,11 @@ class RunRegistry {
     this.controllers.set(sessionId, controller);
     this.runs.set(controller.signal, []);
     // Not a fresh mailbox: the session claims one when it takes the lock, and the messages
-    // already in it are addressed by this run's next call. Replacing it would drop them.
+    // already in it are addressed by this run's next call. Replacing it would drop them. What it
+    // does reopen, unconditionally, is `accepting`: `stop` closed it for its wind-down, and this
+    // run is exactly what those arrivals were refused in favour of.
     this.openMailbox(sessionId);
+    this.mailboxes.get(sessionId)!.accepting = true;
     return {
       signal: controller.signal,
       end: () => {
@@ -126,7 +129,19 @@ class RunRegistry {
     if (compaction) return stopOutcomeOf([compaction.controller]);
     const controller = this.controllers.get(sessionId);
     if (!controller) return "idle";
-    return stopOutcomeOf([controller]);
+    const outcome = stopOutcomeOf([controller]);
+    // A run that is winding down has no next iteration boundary to drain anything at, and
+    // `settleMailbox` rejects whatever it never read. Leaving the mailbox accepting through the
+    // wind-down is what swallowed a message typed right after Stop: it was parked in a run that
+    // was already aborting, rejected by that run's abort, and never ran -- the owner had to type
+    // it again (2026-10-25). Closed here, it falls through to a queued run of its own, which is
+    // what sending it meant. The mailbox itself stays: its pending items are still owed their
+    // rejection, and deleting it here would leave their promises unsettled for good.
+    if (outcome === "stopped") {
+      const mailbox = this.mailboxes.get(sessionId);
+      if (mailbox) mailbox.accepting = false;
+    }
+    return outcome;
   }
 
   isRunning(sessionId: string): boolean {
@@ -184,9 +199,18 @@ class RunRegistry {
    * startRoot().
    */
   openMailbox(sessionId: string): void {
-    if (!this.mailboxes.has(sessionId)) {
+    const existing = this.mailboxes.get(sessionId);
+    if (!existing) {
       this.mailboxes.set(sessionId, { pending: [], claimed: [], accepting: true });
+      return;
     }
+    // A claim (the router takes one before the session's lock) is what makes the next messages
+    // join the run that is about to start instead of opening runs of their own. It must not
+    // reopen a session whose run is already aborting: that run has no turn boundary left, and
+    // `settleMailbox` rejects what it never read -- parking there is how a message typed right
+    // after Stop got swallowed (2026-10-25). Those messages wait for the lock and open their own
+    // run, whose `startRoot` reopens this mailbox unconditionally.
+    if (!this.controllers.get(sessionId)?.signal.aborted) existing.accepting = true;
   }
 
   /** Removes the mailbox; called when the run that owned it has settled it. */

@@ -257,6 +257,19 @@ describe("live turn journal: sends no run has consumed yet", () => {
     live.holdQueued(OWNER, THREAD, "m1", [bubble("m1"), mark("m1")]);
     expect(live.replay(OWNER, "thread-2")).toEqual([]);
   });
+
+  test("the end of the run drops what it never read: a rejected send is not parked any more", () => {
+    // The run died with the message still in its mailbox -- a stop, an error, a forced close --
+    // and the app lifts every queued mark on `chat.run.end` for exactly that reason. Holding the
+    // send here made the two surfaces disagree: the badge came back on the next sync, for a send
+    // nothing was ever going to read, and stayed until a reload replaced the thread (2026-10-25).
+    const live = new LiveTurnJournal();
+    live.open(OWNER, THREAD);
+    live.holdQueued(OWNER, THREAD, "m2", [bubble("m2"), mark("m2")]);
+    live.close(OWNER, THREAD);
+    expect(live.replay(OWNER, THREAD)).toEqual([]);
+    expect(live.isQueued(OWNER, THREAD, "m2")).toBe(false);
+  });
 });
 
 describe("live turn journal: the stop claimed on the thread", () => {

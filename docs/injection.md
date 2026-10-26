@@ -112,6 +112,28 @@ around it). A message that loses the race lands after the close and falls back t
 never lost, never double-run. If a run is force-closed with an undrained injection (iteration budget
 exhausted), that injection is rerouted to a fresh run via `RerouteSignal`.
 
+### A stop closes the mailbox for its wind-down
+
+A stopped run has no next boundary, and `settleMailbox` rejects whatever it never read. So a message
+typed right after Stop used to be parked in a run that was already aborting, rejected by that run's
+abort, and never run at all: the bubble said "queued for the next turn" and nothing came, and the
+owner typed it again (2026-10-25). `stop()` now marks the mailbox not-accepting the moment the abort
+lands, so the message waits for the session lock and opens a run of its own -- which is what sending
+it meant. `startRoot` reopens the mailbox for that run, so the messages after it fold into it
+normally, and nothing is left refusing injections for the rest of the process.
+
+The mailbox is not deleted at the stop: its pending items are still owed their rejection, and dropping
+it would leave their promises unsettled.
+
+The line stays where it was for a message parked **before** the stop: it dies with the run. The owner
+asked for the stop, and reviving what it interrupted would defeat it.
+
+The app's two surfaces agreed too late, which is the other half of the same report. The live journal
+kept a parked send until the run drained it, and a run that dies never does -- so `close` now drops
+the thread's parked sends with the journal, matching the `chat.run.end` that already lifts every queued
+mark. Without that, the badge came back on the next sync (the replay re-sent `chat.send.queued`) and
+stayed until a reload replaced the thread.
+
 ### Scope and limits
 
 - Per **session root** only: the mailbox is keyed by the root `sessionId`; sub-agents (depth > 0) never
@@ -126,7 +148,10 @@ exhausted), that injection is rerouted to a fresh run via `RerouteSignal`.
 ## Where
 
 - `src/core/run-registry.ts` -- the per-session injection mailbox (`enqueueInjection`,
-  `peekInjections`, `drainInjections`, `drainOrClose`, `settleMailbox`) and `RerouteSignal`.
+  `peekInjections`, `drainInjections`, `drainOrClose`, `settleMailbox`, and the `stop` that closes it
+  for the wind-down) and `RerouteSignal`.
+- `src/channels/my-claw-app/live-turn.ts` -- `holdQueued`/`releaseQueued`, dropped with the journal
+  on `close` so a run that dies does not replay a badge nothing will lift.
 - `src/core/router.ts` -- enqueue branch in `route`, `settleMailbox` at the three run exits.
 - `src/agent/bridge.ts` -- drains at the iteration boundary and the final-answer point,
   `recordInjectedEntries` at the turn's return, `injectUserTurn`.

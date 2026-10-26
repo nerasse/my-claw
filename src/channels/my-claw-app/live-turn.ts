@@ -195,6 +195,12 @@ export class LiveTurnJournal {
   close(owner: string, threadId: string): boolean {
     const key = this.key(owner, threadId);
     this.stopping.delete(key);
+    // The sends parked for this run are no longer parked: it ended without draining them, which
+    // is what an abort, an error and a forced close all do. The app lifts every queued mark on
+    // `chat.run.end` for the same reason, so keeping them here made the two surfaces disagree --
+    // the badge came back on the next sync, for a send nothing was ever going to read, and stayed
+    // until a reload replaced the thread (2026-10-25).
+    this.queued.delete(key);
     return this.journals.delete(key);
   }
 

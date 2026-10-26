@@ -123,3 +123,107 @@ test("with injection disabled, a second message runs as a separate queued run", 
   assert.equal(runs, 2);
   runRegistry.clear();
 });
+
+/**
+ * A message typed right after Stop used to be lost: it found the mailbox of the run that was
+ * already aborting, was parked there, and that run's `settleMailbox` rejected it without ever
+ * reading it. The owner saw "queued for the next turn" and nothing came, so he typed it again.
+ * The stop closes the mailbox to new arrivals for its wind-down; the message waits for the lock
+ * and opens a run of its own, which is what sending it meant (2026-10-25).
+ */
+test("a message sent while a stopped run winds down runs on its own", async () => {
+  runRegistry.clear();
+  const ran: string[] = [];
+  const router = new MessageRouter(new SessionManager(), {
+    async handleMessage(m: UnifiedMessage, _s: SessionData, signal?: AbortSignal) {
+      ran.push(m.id);
+      if (m.id === "m1") {
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) return resolve();
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        // A real engine takes a moment to unwind: the socket, the sub-agents, the streamer.
+        await delay(60);
+        throw new AbortedError();
+      }
+      return `answer-${m.id}`;
+    },
+    async handleMessageStreaming() { throw new Error("unused"); },
+    getResponseAttachments() { return []; },
+  } as never, config);
+
+  const p1 = router.route(message("m1"));
+  await waitUntil(() => runRegistry.isRunning(SESSION_ID), "run #1 to start");
+  assert.equal(router.stop(SESSION_ID), "stopped");
+  await delay(5); // the abort landed; the run has not settled yet
+
+  const p2 = router.route(message("m2"));
+  assert.equal(await p1, undefined);
+  assert.equal((await p2)?.text, "answer-m2");
+  assert.deepEqual(ran, ["m1", "m2"]);
+  runRegistry.clear();
+});
+
+/** The other half: a message parked *before* the stop still dies with it. The owner asked for the
+ *  stop, and reviving what they interrupted would defeat it. */
+test("a message parked before the stop still dies with it", async () => {
+  runRegistry.clear();
+  const router = new MessageRouter(new SessionManager(), {
+    async handleMessage(_m: UnifiedMessage, _s: SessionData, signal?: AbortSignal) {
+      await new Promise<void>((resolve) => {
+        if (signal?.aborted) return resolve();
+        signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      await delay(20);
+      throw new AbortedError();
+    },
+    async handleMessageStreaming() { throw new Error("unused"); },
+    getResponseAttachments() { return []; },
+  } as never, config);
+
+  const injected = injectionSignal();
+  const p1 = router.route(message("m1"));
+  await waitUntil(() => runRegistry.isRunning(SESSION_ID), "run #1 to start");
+  const p2 = router.route(message("m2"));
+  await waitUntil(injected.seen, "m2 to be parked in run #1");
+  injected.dispose();
+
+  router.stop(SESSION_ID);
+  await p1;
+  await assert.rejects(p2, (e: unknown) => e instanceof AbortedError);
+  runRegistry.clear();
+});
+
+/** The session is not burns after a stop: the run that follows is steerable like any other. */
+test("the run after a stop still takes injections", async () => {
+  runRegistry.clear();
+  const router = new MessageRouter(new SessionManager(), {
+    async handleMessage(m: UnifiedMessage, _s: SessionData, signal?: AbortSignal) {
+      if (m.id === "m1") {
+        await delay(20);
+        throw new AbortedError();
+      }
+      await new Promise<void>((resolve) => {
+        const tick = setInterval(() => {
+          if (runRegistry.drainInjections(SESSION_ID).length > 0) { clearInterval(tick); resolve(); }
+        }, 2);
+        signal?.addEventListener("abort", () => { clearInterval(tick); resolve(); }, { once: true });
+      });
+      return "steered";
+    },
+    async handleMessageStreaming() { throw new Error("unused"); },
+    getResponseAttachments() { return []; },
+  } as never, config);
+
+  const p1 = router.route(message("m1"));
+  await waitUntil(() => runRegistry.isRunning(SESSION_ID), "run #1 to start");
+  router.stop(SESSION_ID);
+  await p1;
+
+  const p2 = router.route(message("m2"));
+  await waitUntil(() => runRegistry.isRunning(SESSION_ID), "run #2 to start");
+  const p3 = router.route(message("m3"));
+  assert.equal((await p2)?.text, "steered");
+  assert.equal(await p3, undefined, "m3 folded into the run m2 opened");
+  runRegistry.clear();
+});
