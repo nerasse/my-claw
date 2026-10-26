@@ -230,7 +230,10 @@ export class BrowserClient {
   }
 
   async listWindows(): Promise<BrowserWindowView[]> {
-    const { windows } = await this.call<{ windows: BrowserWindowView[] }>("list-windows", {});
+    // The viewport travels with the listing: it is where a window that has to be put back to the
+    // standard size learns that size from, and a restarted sidecar has no other way to know it
+    // (docs/browser-live.md).
+    const { windows } = await this.call<{ windows: BrowserWindowView[] }>("list-windows", { viewport: this.viewport });
     return windows;
   }
 

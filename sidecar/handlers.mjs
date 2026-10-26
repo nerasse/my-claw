@@ -131,9 +131,12 @@ export const handlers = {
 
   // Asked of the browser, never of the pages: a tab stuck in its own JavaScript answers nothing,
   // its title included, and a listing that asked each tab waited on it for every run at once.
-  async "list-windows"() {
+  async "list-windows"(body) {
     const ctx = await ensureContext();
     const cdp = await browserSession();
+    // The server states the viewport here too: a sidecar that just restarted resizes no window to
+    // the screen's size while every other window is the config's.
+    standardSize(body.viewport);
     const targets = await pageTargets();
     // The opener comes from Playwright, which keeps it without asking the page: the browser's own
     // list drops it for a target=_blank link, which Chromium opens noopener.

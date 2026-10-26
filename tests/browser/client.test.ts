@@ -69,6 +69,9 @@ describe("BrowserClient", () => {
       const created = await client.createWindow("https://b.test");
       assert.strictEqual(created.windowId, 6);
       await client.closeWindow(6);
+      // The viewport travels with the listing too: it is where a window that has to be put back to
+      // the standard size learns that size from, a restarted sidecar having no other source.
+      assert.deepStrictEqual(m.calls.find((c) => c.path === "list-windows")?.body, { viewport: { width: 1280, height: 800 } });
       assert.deepStrictEqual(m.calls.find((c) => c.path === "create-window")?.body, { url: "https://b.test", viewport: { width: 1280, height: 800 } });
       assert.strictEqual(m.calls.find((c) => c.path === "close-window")?.body.windowId, 6);
     } finally {
