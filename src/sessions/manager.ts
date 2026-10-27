@@ -414,7 +414,14 @@ export class SessionManager {
 
   async persist(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId);
-    if (!session) return;
+    if (!session) {
+      // Nothing to write, and no way to tell that from a successful write. A caller that read the
+      // session with `read()` rather than `peek()` lands here with a mutation nobody will ever
+      // see: the wire has already been told the new value, and the file still holds the old one
+      // (the quota-retry switch stayed off that way). Say it, rather than drop it in silence.
+      void log("warn", "session persist: not cached, nothing written", { sessionId });
+      return;
+    }
     await this.queueWrite(sessionId, async () => {
       // Cleared before the write, not after: a mutation landing while the file is being written
       // must leave the session dirty for the next tick rather than be marked as saved.

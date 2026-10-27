@@ -939,7 +939,11 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
 
   /** Turning it off is also what cancels a wait: one switch, one meaning. */
   async setQuotaRetryEnabled(owner: string, threadId: string, enabled: boolean): Promise<MyClawAppSessionQuotaRetryState> {
-    const session = await this.sessionManager.read(this.resolveSessionId(owner, threadId));
+    // `peek`, like every other mutator here: `read` leaves a session it had to load out of the
+    // cache, and `persist` writes the cache. A conversation that was cold when the owner flipped
+    // the switch therefore answered "on" and stored nothing, and the next sync put it back to
+    // off. Reading a session only to look at it can stay on `read`; touching it cannot.
+    const session = await this.sessionManager.peek(this.resolveSessionId(owner, threadId));
     if (!session) return { type: "session.quotaRetry.state", threadId, enabled: false };
     const next: SessionQuotaRetry = { ...(session.quotaRetry ?? {}), enabled };
     if (!enabled) delete next.pending;
@@ -954,7 +958,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     threadId: string,
     wait: { at: string; attempts: number; windows: string[]; error?: string },
   ): Promise<boolean> {
-    const session = await this.sessionManager.read(this.resolveSessionId(owner, threadId));
+    const session = await this.sessionManager.peek(this.resolveSessionId(owner, threadId));
     if (!session || session.quotaRetry?.enabled !== true) return false;
     session.quotaRetry = { enabled: true, pending: wait };
     await this.sessionManager.persist(session.id);
@@ -962,7 +966,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
   }
 
   async clearQuotaRetryPending(owner: string, threadId: string): Promise<void> {
-    const session = await this.sessionManager.read(this.resolveSessionId(owner, threadId));
+    const session = await this.sessionManager.peek(this.resolveSessionId(owner, threadId));
     if (!session?.quotaRetry?.pending) return;
     const next: SessionQuotaRetry = { ...session.quotaRetry };
     delete next.pending;

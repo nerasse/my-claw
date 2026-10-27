@@ -10,6 +10,16 @@ setting, not a one-shot: once on, every quota wall in that conversation arms a w
 turns it off. The pill under the last run is where the wait shows, and where it can be cancelled
 or fired now — cancelling is the same switch, said from where the owner is looking.
 
+## The switch is a mutation, so it reads with `peek`
+
+`meta.json` carries it, and the three mutations that write it (`setQuotaRetryEnabled`,
+`armQuotaRetry`, `clearQuotaRetryPending`) go through `SessionManager.peek()`. That is not
+incidental: `read()` deliberately leaves a session it had to load out of the cache, and `persist()`
+writes the cache -- so a mutator on `read` answered the new value over the wire, stored nothing,
+and had it overwritten by the stored one on the next sync. Every wall on a conversation that had
+not been opened since the server booted hit that; the switch simply never stayed on. `read()` is
+for the paths that only look.
+
 ## What arms a wait
 
 A run that **failed** (not one that recovered on a fallback) with a quota-shaped error: status 402

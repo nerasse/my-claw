@@ -2253,3 +2253,69 @@ describe("MyClawAppSessionStoreImpl listing order", () => {
     assert.equal(listed[1]!.lastMessageAt, "2026-01-01T00:01:00.000Z");
   });
 });
+
+describe("MyClawAppSessionStoreImpl quota retry", () => {
+  let manager: SessionManager;
+  let store: MyClawAppSessionStoreImpl;
+  const sessionId = `my-claw-app/thread/${DEVICE}/${THREAD}`;
+
+  beforeEach(async () => {
+    manager = new SessionManager();
+    store = new MyClawAppSessionStoreImpl(manager, new SessionFileStore());
+    await deleteSession(sessionId);
+    await writeLegacySessionFile(sessionId, session(sessionId, [
+      { role: "user", content: "une question", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+  });
+
+  /**
+   * Reported from the app: the switch stayed off however many times it was tapped. A conversation
+   * that was cold when the owner flipped it answered "on" and stored nothing -- `read` leaves a
+   * session it had to load out of the cache, and `persist` writes the cache -- so the next sync
+   * pushed the stored `false` straight back over it.
+   */
+  test("the switch sticks on a conversation that was not loaded yet", async () => {
+    const answered = await store.setQuotaRetryEnabled(DEVICE, THREAD, true);
+    assert.equal(answered.enabled, true);
+
+    assert.equal((await readMeta(sessionId))?.quotaRetry?.enabled, true, "written to disk");
+    assert.equal((await store.quotaRetryOf(DEVICE, THREAD)).enabled, true, "and read back");
+
+    // A restart: the same file, a manager that has cached nothing.
+    const restarted = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore());
+    assert.equal((await restarted.quotaRetryOf(DEVICE, THREAD)).enabled, true);
+  });
+
+  test("turning it off clears the armed wait and sticks too", async () => {
+    await store.setQuotaRetryEnabled(DEVICE, THREAD, true);
+    const armed = await store.armQuotaRetry(DEVICE, THREAD, {
+      at: "2026-01-01T01:00:00.000Z",
+      attempts: 1,
+      windows: ["5 h"],
+    });
+    assert.equal(armed, true);
+    assert.equal((await store.quotaRetryOf(DEVICE, THREAD)).waiting?.attempts, 1);
+
+    await store.setQuotaRetryEnabled(DEVICE, THREAD, false);
+    const stored = await readMeta(sessionId);
+    assert.equal(stored?.quotaRetry?.enabled, false);
+    assert.equal(stored?.quotaRetry?.pending, undefined);
+  });
+
+  /**
+   * The wait is armed from the composition root's failure path, which holds a thread the owner
+   * may never have opened on this server: the meta has to carry the attempt count or an eight
+   * attempt guard silently never counts.
+   */
+  test("an armed wait on a cold conversation survives a restart", async () => {
+    await store.setQuotaRetryEnabled(DEVICE, THREAD, true);
+    await store.armQuotaRetry(DEVICE, THREAD, { at: "2026-01-01T01:00:00.000Z", attempts: 2, windows: ["Week"] });
+
+    const restarted = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore());
+    const waits = await restarted.listQuotaWaits();
+    assert.deepEqual(
+      waits.filter((wait) => wait.threadId === THREAD).map((wait) => [wait.threadId, wait.attempts]),
+      [[THREAD, 2]],
+    );
+  });
+});

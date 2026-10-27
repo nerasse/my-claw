@@ -2566,7 +2566,9 @@ async function main() {
             if (mode === "note") {
               // Filed, never prompted: the journal is the display-only channel, so a note reads
               // back on reload without ever reaching a model.
-              const targetSession = await sessionManager.read(target);
+              // `peek`, so the session enters the cache: `persist` below writes the cache, and a
+              // cold session would have kept its stale leaf on disk.
+              const targetSession = await sessionManager.peek(target);
               if (!targetSession) {
                 outcomes.push({ sessionId: target, threadId: appThread, ok: false, error: "conversation is gone" });
                 continue;
