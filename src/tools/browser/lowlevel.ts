@@ -6,6 +6,7 @@ import { resolveWorkspacePath } from "../workspace.ts";
 import { log } from "../../utils/logger.ts";
 import { windowed, workspaceOf } from "./state.ts";
 import type { BrowserWindows } from "./windows.ts";
+import { downloadRoot } from "./downloads.ts";
 import { globToRegExp } from "../../utils/glob.ts";
 
 /** Methods the subagent may drive when allowCdp is on. Deliberately narrow: page structure,
@@ -32,9 +33,7 @@ export interface BrowserLowLevelOptions {
 }
 
 function downloadDirFor(opts: BrowserLowLevelOptions, args: Record<string, unknown>): string {
-  if (opts.config?.downloadDir) return opts.config.downloadDir;
-  const workspaceDir = workspaceOf(args, opts.workspaceDir);
-  return workspaceDir ? join(workspaceDir, "downloads") : "/tmp/my-claw-downloads";
+  return downloadRoot(opts.config, args, opts.workspaceDir);
 }
 
 /** Audit trail for the powerful tools. Written before the call so a crash still leaves a
@@ -142,32 +141,6 @@ export function createBrowserHandleDialogTool(client: BrowserClient, pages: Brow
         const accept = bool(args, "accept", true);
         await client.handleDialog(await pages.page(args), accept, strOpt(args, "prompt_text"));
         return { success: true, output: `Next dialog will be ${accept ? "accepted" : "dismissed"}.` };
-      } catch (e) {
-        return { success: false, output: "", error: String(e) };
-      }
-    },
-  };
-}
-
-export function createBrowserDownloadTool(
-  client: BrowserClient,
-  pages: BrowserWindows,
-  opts: BrowserLowLevelOptions,
-): Tool {
-  return {
-    name: "browser_download",
-    description: "Wait for a file download to finish and save it, returning the local path. Trigger the download first (click the link), then call this. Downloads already finished are picked up too.",
-    parameters: windowed({
-      type: "object",
-      properties: {
-        timeout_ms: { type: "number", description: "How long to wait, in ms (default 30000)" },
-      },
-    }),
-    async execute(args): Promise<ToolResult> {
-      try {
-        const dir = downloadDirFor(opts, args);
-        const result = await client.waitForDownload(await pages.page(args), dir, numOpt(args, "timeout_ms"));
-        return { success: true, output: `Downloaded ${result.filename} to ${result.path}` };
       } catch (e) {
         return { success: false, output: "", error: String(e) };
       }

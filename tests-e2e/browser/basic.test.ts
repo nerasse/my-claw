@@ -95,6 +95,34 @@ describe.skipIf(!E2E_ENABLED)("Browser E2E", () => {
           `<!DOCTYPE html><html><body><a id="dl" href="/file" style="display:block;width:150px;height:28px">Download</a></body></html>`,
           { headers: { "Content-Type": "text/html" } },
         ),
+        // A page whose download link closes its own tab the moment the file starts: the case the
+        // staging registry exists for (22 runs measured with "download.saveAs: canceled").
+        "/downloadpage-selfclose": new Response(
+          `<!DOCTYPE html><html><body><a id="dl" href="/file" target="_blank" style="display:block;width:150px;height:28px">Download</a><script>document.getElementById("dl").addEventListener("click",()=>setTimeout(()=>window.close(),50));</script></body></html>`,
+          { headers: { "Content-Type": "text/html" } },
+        ),
+        // A 300-character filename, which produced ENAMETOOLONG six times: the page chooses the
+        // name, so the sidecar has to shorten it.
+        "/download-long-name": new Response('<!DOCTYPE html><html><body><a id="dl" href="/file-long" style="display:block">Download</a></body></html>', {
+          headers: { "Content-Type": "text/html" },
+        }),
+        // A PDF link answered by a login wall: the name says .pdf, the bytes are HTML, and an
+        // agent that trusts the name reports a paper it does not have.
+        "/download-liar": new Response('<!DOCTYPE html><html><body><a id="dl" href="/file-liar" style="display:block">Download</a></body></html>', {
+          headers: { "Content-Type": "text/html" },
+        }),
+        "/file-liar": new Response("<!DOCTYPE html><html><body>Please sign in</body></html>", {
+          headers: {
+            "Content-Type": "application/pdf",
+            "Content-Disposition": 'attachment; filename="article.pdf"',
+          },
+        }),
+        "/file-long": new Response("long-name-payload", {
+          headers: {
+            "Content-Type": "application/octet-stream",
+            "Content-Disposition": `attachment; filename="${"a".repeat(300)}.pdf"`,
+          },
+        }),
         "/api/json": new Response(JSON.stringify({ hello: "world" }), {
           headers: { "Content-Type": "application/json" },
         }),
@@ -370,19 +398,96 @@ describe.skipIf(!E2E_ENABLED)("Browser E2E", () => {
   });
 
   test("downloads are captured and saved", async () => {
-    const dir = "/tmp/my-claw-e2e-downloads";
+    const dir = `/tmp/my-claw-e2e-downloads-${Date.now()}`;
     const result = await client.navigate(`${baseUrl}/downloadpage`);
     const link = Number(result.snapshot.raw.match(/\[__ref="(\d+)"\] a "Download"/)?.[1]);
     await client.click(result.pageId, link).catch(() => undefined); // a download click never "navigates"
-    const saved = await client.waitForDownload(result.pageId, dir, 15000);
+    const saved = await client.claimDownload({ pageId: result.pageId, dir, waitMs: 15000 });
+    assert.strictEqual(saved.filename, "hello.txt");
+    assert.strictEqual(saved.kind, "unknown");
+    assert.strictEqual(saved.bytes, 5);
+    const { readFile } = await import("node:fs/promises");
+    assert.strictEqual(await readFile(saved.path, "utf8"), "hello");
+  });
+
+  test("a download survives the tab that started it closing", async () => {
+    // The case behind 22 "download.saveAs: canceled": the page hands the file off and goes away, and
+    // the bytes have to be secured before that happens, not when the agent asks for them.
+    const dir = `/tmp/my-claw-e2e-downloads-${Date.now()}-close`;
+    const result = await client.navigate(`${baseUrl}/downloadpage-selfclose`);
+    const link = Number(result.snapshot.raw.match(/\[__ref="(\d+)"\] a "Download"/)?.[1]);
+    await client.click(result.pageId, link).catch(() => undefined);
+    // Wait for the record, then close the page: the claim must still work.
+    let records = await client.downloads({ windowId: await windowOf(result.pageId) });
+    for (let i = 0; i < 40 && records.length === 0; i++) {
+      await Bun.sleep(100);
+      records = await client.downloads({ windowId: await windowOf(result.pageId) });
+    }
+    assert.ok(records.length > 0, "the download is recorded the moment it starts");
+    await client.closeTab(result.pageId).catch(() => undefined);
+    const saved = await client.claimDownload({ windowId: await windowOf(result.pageId).catch(() => undefined), dir, waitMs: 5000 });
     assert.strictEqual(saved.filename, "hello.txt");
     const { readFile } = await import("node:fs/promises");
     assert.strictEqual(await readFile(saved.path, "utf8"), "hello");
   });
 
+  test("a 300-character name from the page is shortened, and keeps its extension", async () => {
+    const dir = `/tmp/my-claw-e2e-downloads-${Date.now()}-long`;
+    const result = await client.navigate(`${baseUrl}/download-long-name`);
+    const link = Number(result.snapshot.raw.match(/\[__ref="(\d+)"\] a "Download"/)?.[1]);
+    await client.click(result.pageId, link).catch(() => undefined);
+    const saved = await client.claimDownload({ pageId: result.pageId, dir, waitMs: 15000 });
+    assert.ok(saved.filename.endsWith(".pdf"), saved.filename);
+    assert.ok(saved.filename.length <= 150, `kept ${saved.filename.length} chars`);
+    assert.strictEqual(await Bun.file(saved.path).text(), "long-name-payload");
+  });
+
+  test("a PDF name holding an HTML page is reported as such", async () => {
+    const dir = `/tmp/my-claw-e2e-downloads-${Date.now()}-liar`;
+    const result = await client.navigate(`${baseUrl}/download-liar`);
+    const link = Number(result.snapshot.raw.match(/\[__ref="(\d+)"\] a "Download"/)?.[1]);
+    await client.click(result.pageId, link).catch(() => undefined);
+    const saved = await client.claimDownload({ pageId: result.pageId, dir, waitMs: 15000 });
+    assert.strictEqual(saved.filename, "article.pdf");
+    assert.strictEqual(saved.kind, "html", "the type comes from the bytes, never the name");
+  });
+
+  test("a download never overwrites the previous one of the same name", async () => {
+    const dir = `/tmp/my-claw-e2e-downloads-${Date.now()}-dup`;
+    const first = await client.navigate(`${baseUrl}/downloadpage`);
+    const link = Number(first.snapshot.raw.match(/\[__ref="(\d+)"\] a "Download"/)?.[1]);
+    await client.click(first.pageId, link).catch(() => undefined);
+    const a = await client.claimDownload({ pageId: first.pageId, dir, waitMs: 15000 });
+    await client.click(first.pageId, link).catch(() => undefined);
+    const b = await client.claimDownload({ pageId: first.pageId, dir, waitMs: 15000 });
+    assert.notStrictEqual(a.path, b.path);
+    assert.strictEqual(b.filename, "hello (2).txt");
+  });
+
+  test("a claim cannot write outside the directory it was given", async () => {
+    const dir = `/tmp/my-claw-e2e-downloads-${Date.now()}-escape`;
+    const result = await client.navigate(`${baseUrl}/downloadpage`);
+    const link = Number(result.snapshot.raw.match(/\[__ref="(\d+)"\] a "Download"/)?.[1]);
+    await client.click(result.pageId, link).catch(() => undefined);
+    const saved = await client.claimDownload({ pageId: result.pageId, dir, filename: "../../etc/escaped.txt", waitMs: 15000 });
+    assert.ok(saved.path.startsWith(dir), `${saved.path} must stay in ${dir}`);
+    assert.strictEqual(saved.filename, "escaped.txt");
+  });
+
+  test("navigating to a URL that is a download reports it instead of failing", async () => {
+    // 54 navigations over 1631 runs were killed by "Download is starting", 18 of them re-attempted
+    // as errors. The tab keeps the previous page and the file is in the registry.
+    const result = await client.navigate(`${baseUrl}/file`, { newTab: true });
+    assert.strictEqual(result.downloaded, true);
+    const [record] = await client.downloads({ windowId: await windowOf(result.pageId) });
+    assert.ok(record, "the download the navigation started must be recorded");
+  });
+
   test("download_wait fails fast on a stale page instead of burning the timeout", async () => {
     const started = Date.now();
-    await assert.rejects(client.waitForDownload("bogus-page-id", "/tmp", 20000), /Unknown pageId/);
+    // A page that is gone is not an error any more: the record outlives it, so no record is the
+    // only thing the caller can act on, and it must say so at once rather than wait.
+    await assert.rejects(client.claimDownload({ pageId: "bogus-page-id", dir: "/tmp", waitMs: 20000 }), /No download to save/);
     assert.ok(Date.now() - started < 3000, "it must not wait for the timeout");
   });
 

@@ -7,6 +7,9 @@ export interface BrowserResult {
   pageId: string;
   snapshot: BrowserSnapshot;
   url: string;
+  /** The address was itself a download: Chromium handed it to the download manager instead of
+   *  rendering it. The tab still holds the previous page; browser_download saves the file. */
+  downloaded?: boolean;
 }
 
 export interface BrowserAttachment {
@@ -99,8 +102,34 @@ export interface BrowserCdpResult {
 }
 
 export interface BrowserDownloadResult {
+  /** The record the sidecar kept, usable with browser_download to save it again elsewhere. */
+  id?: number;
   path: string;
   filename: string;
+  /** Bytes on disk, as the claim found them. */
+  bytes?: number;
+  /** Sniffed from the first bytes, never from the name: a PDF link answered with an HTML error
+   *  page is the most common way an agent reports a file it does not have. */
+  kind?: string;
+  /** The URL Chromium actually downloaded from. */
+  url?: string;
+  /** The name the page asked for, before sanitising. */
+  suggested?: string;
+}
+
+/** One file Chromium downloaded, as the sidecar holds it. `claimedInto` names where it went. */
+export interface BrowserDownloadRecord {
+  id: number;
+  pageId: string;
+  windowId?: number;
+  suggested: string;
+  url: string;
+  state: "saving" | "ready" | "failed";
+  error?: string;
+  bytes?: number;
+  kind?: string;
+  createdAt: number;
+  claimedInto?: string;
 }
 
 export interface BrowserFindResult {

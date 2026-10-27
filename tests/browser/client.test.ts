@@ -288,7 +288,8 @@ describe("BrowserClient", () => {
       evaluate: { value: '"t"' },
       cdp: { result: "{}" },
       "handle-dialog": {},
-      "download-wait": { path: "/d/f.pdf", filename: "f.pdf" },
+      downloads: { downloads: [] },
+      "download-claim": { path: "/d/f.pdf", filename: "f.pdf" },
       pdf: { path: "/d/p.pdf" },
     });
     try {
@@ -303,15 +304,22 @@ describe("BrowserClient", () => {
       await client.handleDialog("p1", false, "typed");
       const dl = await client.waitForDownload("p1", "/d", 1000);
       assert.strictEqual(dl.filename, "f.pdf");
+      assert.deepStrictEqual(await client.downloads({ windowId: 3 }), []);
+      await client.claimDownload({ id: 7, dir: "/d", filename: "x.pdf", overwrite: true, waitMs: 500 });
       await client.pdf("p1", "/d/p.pdf");
 
       const byPath = new Map(m.calls.map((c) => [c.path, c.body]));
+      const allOf = (path: string) => m.calls.filter((c) => c.path === path).map((c) => c.body);
       assert.deepStrictEqual(byPath.get("click-at"), { pageId: "p1", x: 0.25, y: 0.75 });
       assert.deepStrictEqual(byPath.get("wait-for"), { pageId: "p1", text: "Loaded", timeoutMs: 4000 });
       assert.deepStrictEqual(byPath.get("drag"), { pageId: "p1", fromRef: 3, toRef: 4 });
       assert.deepStrictEqual(byPath.get("cdp"), { pageId: "p1", method: "DOM.getDocument", params: { depth: 1 } });
       assert.deepStrictEqual(byPath.get("handle-dialog"), { pageId: "p1", accept: false, promptText: "typed" });
-      assert.deepStrictEqual(byPath.get("download-wait"), { pageId: "p1", dir: "/d", timeoutMs: 1000 });
+      // A download is claimed, never waited for: the bytes are secured by the sidecar the moment
+      // Chromium starts downloading, so the wait is how long an unclaimed record may take to appear.
+      assert.deepStrictEqual(allOf("download-claim")[0], { pageId: "p1", dir: "/d", waitMs: 1000 });
+      assert.deepStrictEqual(m.calls.filter((c) => c.path === "downloads")[0]?.body, { windowId: 3 });
+      assert.deepStrictEqual(allOf("download-claim")[1], { id: 7, dir: "/d", filename: "x.pdf", overwrite: true, waitMs: 500 });
     } finally {
       m.restore();
     }

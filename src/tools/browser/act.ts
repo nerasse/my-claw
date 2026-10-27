@@ -4,6 +4,8 @@ import type { BrowserClient } from "../../browser/client.ts";
 import { resolveWorkspacePath } from "../workspace.ts";
 import { formatSnapshot, guardUrl, windowed, workspaceOf } from "./state.ts";
 import type { BrowserWindows } from "./windows.ts";
+import { downloadRoot, resolveInRoot } from "./downloads.ts";
+import type { BrowserConfig } from "../../core/config.ts";
 
 /** One action in a chain. The set mirrors the single-action tools, minus the ones that only
  *  read (`snapshot`, `find`, `network`, `screenshot`) and the tabs, which are not steps. */
@@ -15,7 +17,8 @@ type Step =
   | { action: "scroll"; direction?: string; amount?: number; ref?: number }
   | { action: "upload_file"; path: string; ref?: number }
   | { action: "wait_for"; text?: string; ref?: number; timeout_ms?: number }
-  | { action: "navigate"; url: string };
+  | { action: "navigate"; url: string }
+  | { action: "download"; filename?: string; dir?: string; timeout_ms?: number };
 
 const ACTIONS = [
   "click",
@@ -26,6 +29,7 @@ const ACTIONS = [
   "upload_file",
   "wait_for",
   "navigate",
+  "download",
 ] as const;
 
 function optionalNumber(value: unknown): number | undefined {
@@ -102,6 +106,17 @@ function parseStep(raw: unknown, index: number): Step {
       if (url === undefined) throw new Error(`${at} (navigate) needs a url`);
       return { action: "navigate", url };
     }
+    case "download": {
+      const filename = optionalText(o.filename);
+      const dir = optionalText(o.dir);
+      const timeout = optionalNumber(o.timeout_ms);
+      return {
+        action: "download",
+        ...(filename ? { filename } : {}),
+        ...(dir ? { dir } : {}),
+        ...(timeout !== undefined ? { timeout_ms: timeout } : {}),
+      };
+    }
   }
 }
 
@@ -114,28 +129,29 @@ async function runStep(
   windowId: number,
   step: Step,
   workspaceDir?: string,
-): Promise<void> {
+  config?: BrowserConfig,
+): Promise<string | undefined> {
   const pageId = await pages.page(args);
   switch (step.action) {
     case "click":
       await client.click(pageId, step.ref);
-      return;
+      return undefined;
     case "type":
       await client.type(pageId, step.ref, step.text);
       if (step.submit) await client.pressKey(pageId, "Enter", step.ref);
-      return;
+      return undefined;
     case "select_option":
       await client.selectOption(pageId, step.ref, step.value);
-      return;
+      return undefined;
     case "press_key":
       await client.pressKey(pageId, step.key, step.ref);
-      return;
+      return undefined;
     case "scroll":
       await client.scroll(pageId, step.direction ?? "down", step.amount, step.ref);
-      return;
+      return undefined;
     case "wait_for":
       await client.waitFor(pageId, { text: step.text, ref: step.ref, timeoutMs: step.timeout_ms });
-      return;
+      return undefined;
     case "upload_file": {
       const resolved = resolveWorkspacePath(step.path, workspaceDir);
       try {
@@ -144,13 +160,26 @@ async function runStep(
         throw new Error(`File not found: ${resolved}`);
       }
       await client.uploadFile(pageId, [resolved], step.ref);
-      return;
+      return undefined;
     }
     case "navigate": {
       await guardUrl(step.url);
       const result = await client.navigate(step.url, { pageId, windowId });
       pages.moved(args, windowId, result.pageId, false);
-      return;
+      return result.downloaded ? "this URL is a download, saved by the browser" : undefined;
+    }
+    case "download": {
+      const root = downloadRoot(config, args, workspaceDir);
+      const dir = step.dir ? resolveInRoot(root, step.dir) : root;
+      // No id: the oldest unclaimed record of this page, which is what the click just produced.
+      const claimed = await client.claimDownload({
+        ...(step.filename !== undefined ? { filename: step.filename } : {}),
+        pageId,
+        dir,
+        overwrite: false,
+        waitMs: step.timeout_ms ?? 15000,
+      });
+      return `${claimed.filename} -> ${claimed.path}${claimed.kind ? ` (${claimed.kind})` : ""}`;
     }
   }
 }
@@ -161,11 +190,16 @@ async function runStep(
  * runs the same calls back to back and answers with ONE snapshot at the end. It stops at the
  * first step that fails, because a blind chain that keeps going acts on the wrong page.
  */
-export function createBrowserActTool(client: BrowserClient, pages: BrowserWindows, workspaceDir?: string): Tool {
+export function createBrowserActTool(
+  client: BrowserClient,
+  pages: BrowserWindows,
+  workspaceDir?: string,
+  config?: () => BrowserConfig | undefined,
+): Tool {
   return {
     name: "browser_act",
     description:
-      "Run a sequence of actions in ONE step, and get a single page snapshot at the end instead of one per action. Use it for a safe, known sequence (fill a form field by field, then submit) where you do not need to look between the actions. Each step's ref is re-resolved when it runs, and the chain stops at the first failure. Same actions as the single tools: click, type (submit:true presses Enter on the field), select_option, press_key, scroll, upload_file, wait_for, navigate.",
+      "Run a sequence of actions in ONE step, and get a single page snapshot at the end instead of one per action. Use it for a safe, known sequence (fill a form field by field, then submit) where you do not need to look between the actions. Each step's ref is re-resolved when it runs, and the chain stops at the first failure. Same actions as the single tools: click, type (submit:true presses Enter on the field), select_option, press_key, scroll, upload_file, wait_for, navigate, download. A download step ({action:'download', filename?, dir?}) saves a file the step before it just triggered: put it right after the click that starts the download, and it reports the path it landed on.",
     parameters: windowed({
       type: "object",
       properties: {
@@ -203,15 +237,15 @@ export function createBrowserActTool(client: BrowserClient, pages: BrowserWindow
       const stopOnError = args["stop_on_error"] !== false;
       const signal = args["__signal"] instanceof AbortSignal ? args["__signal"] : undefined;
       const dir = workspaceOf(args, workspaceDir);
-      const done: { index: number; action: string; ok: boolean; error?: string }[] = [];
+      const done: { index: number; action: string; ok: boolean; error?: string; note?: string }[] = [];
       let stoppedAt: number | undefined;
 
       for (let i = 0; i < steps.length; i++) {
         if (signal?.aborted) break;
         const step = steps[i]!;
         try {
-          await runStep(client, pages, args, windowId, step, dir);
-          done.push({ index: i, action: step.action, ok: true });
+          const note = await runStep(client, pages, args, windowId, step, dir, config?.());
+          done.push({ index: i, action: step.action, ok: true, ...(note ? { note } : {}) });
         } catch (e) {
           done.push({ index: i, action: step.action, ok: false, error: String(e) });
           stoppedAt = i;
@@ -227,7 +261,9 @@ export function createBrowserActTool(client: BrowserClient, pages: BrowserWindow
       }
       const okCount = done.filter((d) => d.ok).length;
       const head = `${okCount}/${steps.length} steps ok${stoppedAt !== undefined ? `, stopped at step ${stoppedAt + 1}` : ""}.`;
-      const lines = done.map((d) => `${d.ok ? "ok  " : "FAIL"} ${d.index + 1}. ${d.action}${d.error ? `: ${d.error}` : ""}`).join("\n");
+      const lines = done
+        .map((d) => `${d.ok ? "ok  " : "FAIL"} ${d.index + 1}. ${d.action}${d.error ? `: ${d.error}` : d.note ? `: ${d.note}` : ""}`)
+        .join("\n");
       const report = `${head}\n${lines}\n\n${snapshotText}`;
       return stoppedAt === undefined
         ? { success: true, output: report }

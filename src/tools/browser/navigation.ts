@@ -29,7 +29,12 @@ export function createBrowserNavigateTool(client: BrowserClient, pages: BrowserW
           ? await client.navigate(url, { windowId, newTab: true })
           : await client.navigate(url, { pageId: await pages.page(args), windowId });
         pages.moved(args, windowId, result.pageId, newTab);
-        return { success: true, output: formatSnapshot(result.snapshot) };
+        // A URL that is a file downloads instead of rendering: saying so saves the agent the
+        // guesswork that cost 54 navigations and a re-attempt in 18 of them.
+        const note = result.downloaded
+          ? `\n\n[This URL is a download: Chromium saved the file instead of rendering it. Call browser_download to place it, then browser_downloads to see what it is.]\n`
+          : "";
+        return { success: true, output: `${formatSnapshot(result.snapshot)}${note}` };
       } catch (e) {
         return { success: false, output: "", error: String(e) };
       }

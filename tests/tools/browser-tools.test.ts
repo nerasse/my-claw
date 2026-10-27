@@ -47,6 +47,8 @@ function createMockClient(): BrowserClient {
     cdp: createMock(() => Promise.resolve({ result: '{"root":{}}' })),
     handleDialog: createMock(() => Promise.resolve()),
     waitForDownload: createMock(() => Promise.resolve({ path: "/ws/downloads/f.pdf", filename: "f.pdf" })),
+    claimDownload: createMock(() => Promise.resolve({ path: "/ws/downloads/f.pdf", filename: "f.pdf", bytes: 12, kind: "pdf" })),
+    downloads: createMock(() => Promise.resolve([])),
     pdf: createMock((_p: string, path: string) => Promise.resolve({ path })),
     selectOption: createMock(() => Promise.resolve({ via: "role=option" })),
     pressKey: createMock(() => Promise.resolve()),
@@ -395,12 +397,12 @@ describe("browser low-level tools", () => {
     assert.deepStrictEqual(call?.arguments.slice(1, 3), [false, "hello"]);
   });
 
-  test("download defaults to a downloads folder inside the workspace", async () => {
+  test("download saves into the workspace's downloads folder", async () => {
     const client = createMockClient();
     const tool = createBrowserDownloadTool(client, activeState(), { workspaceDir: "/ws" });
     await tool.execute({ window: 1, __sessionId: "run" });
-    const call = (client.waitForDownload as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
-    assert.strictEqual(call?.arguments[1], "/ws/downloads");
+    const call = (client.claimDownload as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
+    assert.strictEqual((call?.arguments[0] as { dir: string }).dir, "/ws/downloads");
   });
 
   test("download honours a configured directory", async () => {
@@ -410,8 +412,36 @@ describe("browser low-level tools", () => {
       config: { downloadDir: "/data/dl" },
     });
     await tool.execute({ window: 1, __sessionId: "run" });
-    const call = (client.waitForDownload as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
-    assert.strictEqual(call?.arguments[1], "/data/dl");
+    const call = (client.claimDownload as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
+    assert.strictEqual((call?.arguments[0] as { dir: string }).dir, "/data/dl");
+  });
+
+  test("download renames and files a file, and refuses a name that escapes the directory", async () => {
+    const client = createMockClient();
+    const tool = createBrowserDownloadTool(client, activeState(), { workspaceDir: "/ws" });
+    await tool.execute({ window: 1, __sessionId: "run", filename: "paper-2023.pdf", dir: "papers" });
+    const call = (client.claimDownload as unknown as { calls: Array<{ arguments: unknown[] }> }).calls[0];
+    const options = call?.arguments[0] as { dir: string; filename: string };
+    assert.strictEqual(options.dir, "/ws/downloads/papers");
+    assert.strictEqual(options.filename, "paper-2023.pdf");
+
+    const escaped = await tool.execute({ window: 1, __sessionId: "run", dir: "../../etc" });
+    assert.strictEqual(escaped.success, false);
+    assert.match(escaped.error ?? "", /leaves the download directory/);
+  });
+
+  test("download reports the real type, and warns when a PDF name holds an HTML page", async () => {
+    const client = {
+      ...createMockClient(),
+      claimDownload: createMock(() =>
+        Promise.resolve({ path: "/ws/downloads/report.pdf", filename: "report.pdf", bytes: 4096, kind: "html", url: "https://x/report.pdf" }),
+      ),
+    } as unknown as BrowserClient;
+    const tool = createBrowserDownloadTool(client, activeState(), { workspaceDir: "/ws" });
+    const result = await tool.execute({ window: 1, __sessionId: "run" });
+    assert.strictEqual(result.success, true);
+    assert.ok(result.output.includes("4.0 KB"), result.output);
+    assert.match(result.output, /WARNING: The site answered with an HTML page/);
   });
 
   test("pdf takes a destination outside the workspace", async () => {

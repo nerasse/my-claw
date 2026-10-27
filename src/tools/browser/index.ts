@@ -30,9 +30,19 @@ export {
   createBrowserEvalTool,
   createBrowserCdpTool,
   createBrowserHandleDialogTool,
-  createBrowserDownloadTool,
   createBrowserPdfTool,
 } from "./lowlevel.ts";
+export {
+  type DownloadToolsOptions,
+  createBrowserDownloadTool,
+  createBrowserDownloadsTool,
+  createBrowserFileListTool,
+  createBrowserFileMoveTool,
+  createBrowserFileRemoveTool,
+  createBrowserFileStatTool,
+  downloadRoot,
+  resolveInRoot,
+} from "./downloads.ts";
 export { createDelegateBrowserTool } from "./delegate.ts";
 export {
   BrowserSession,

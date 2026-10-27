@@ -3,6 +3,7 @@ import type {
   BrowserCdpResult,
   BrowserClickAtResult,
   BrowserDownloadResult,
+  BrowserDownloadRecord,
   BrowserEvalResult,
   BrowserFetchResult,
   BrowserFindResult,
@@ -34,7 +35,7 @@ const DEFAULT_TIMEOUTS_MS: Record<string, number> = {
   upload: 60000,
   "select-option": 45000,
   "wait-for": 35000,
-  "download-wait": 125000,
+  "download-claim": 40000,
   pdf: 60000,
   // The probe waits up to 3 s for a page by design: it must never inherit a shorter default.
   probe: 10000,
@@ -104,7 +105,10 @@ export class BrowserClient {
 
   /** A call that asks the sidecar to wait (`wait_for`, a download) gets that wait, and a margin for the answer. */
   private budgetFor(path: string, body: Record<string, unknown>): number {
-    const asked = typeof body["timeoutMs"] === "number" ? body["timeoutMs"] + 5000 : 0;
+    // `timeoutMs` and `waitMs` are the two names a handler uses to say how long it may wait.
+    const asked = [body["timeoutMs"], body["waitMs"]]
+      .filter((value): value is number => typeof value === "number")
+      .reduce((max, value) => Math.max(max, value + 5000), 0);
     return Math.max(this.timeoutFor(path), asked);
   }
 
@@ -363,7 +367,27 @@ export class BrowserClient {
   }
 
   async waitForDownload(pageId: string, dir: string, timeoutMs?: number): Promise<BrowserDownloadResult> {
-    return this.call<BrowserDownloadResult>("download-wait", { pageId, dir, timeoutMs });
+    return this.call<BrowserDownloadResult>("download-claim", { pageId, dir, waitMs: timeoutMs });
+  }
+
+  /** The files Chromium downloaded, for a page or a whole window. Survives the tab: the bytes are
+   *  staged the moment the browser starts downloading (sidecar/downloads.mjs). */
+  async downloads(opts: { pageId?: string; windowId?: number } = {}): Promise<BrowserDownloadRecord[]> {
+    const { downloads } = await this.call<{ downloads: BrowserDownloadRecord[] }>("downloads", opts);
+    return downloads;
+  }
+
+  /** Saves a download under `dir`, optionally renamed, and reports what it turned out to be. */
+  async claimDownload(opts: {
+    id?: number;
+    pageId?: string;
+    windowId?: number;
+    dir: string;
+    filename?: string;
+    overwrite?: boolean;
+    waitMs?: number;
+  }): Promise<BrowserDownloadResult> {
+    return this.call<BrowserDownloadResult>("download-claim", opts);
   }
 
   async pdf(pageId: string, path: string): Promise<{ path: string }> {

@@ -11,6 +11,8 @@ import { chromium } from "playwright-core";
 // socket Playwright itself ships is the one already installed.
 import { ws as WebSocket } from "playwright-core/lib/utilsBundle";
 
+import { registerDownload } from "./downloads.mjs";
+
 export const CDP_URL = process.env.CDP_URL || "http://127.0.0.1:9222";
 
 let browser = null;
@@ -26,10 +28,6 @@ const watchedContexts = new WeakSet();
 // or dismiss a confirm() deliberately. Auto-accept stays the default: an unanswered
 // native dialog blocks the whole page indefinitely.
 const dialogOverrides = new Map(); // pageId -> { accept, promptText }
-
-// Downloads are queued as they happen: an agent typically clicks first and only then asks
-// for the file, so waiting on the event alone would miss downloads already completed.
-const pendingDownloads = new Map(); // pageId -> Download[]
 
 // A native file chooser a click opened. Without a listener Chromium shows GTK's "Open File"
 // window, whose modal grab freezes every click on the display (2026-09-21, src/browser/unblock.ts)
@@ -53,11 +51,6 @@ export function recordedResponses(pageId) {
 
 export function forgetResponses(pageId) {
   pageResponses.delete(pageId);
-}
-
-export function popDownload(pageId) {
-  const queue = pendingDownloads.get(pageId);
-  return queue?.length ? queue.shift() : null;
 }
 
 export function takeChooser(pageId) {
@@ -210,6 +203,19 @@ export async function ensureContext(viewport) {
     })));
   if (!watchedContexts.has(ctx)) {
     watchedContexts.add(ctx);
+    // One listener for the whole context, not one per page: a download Chromium starts on a tab
+    // this process has not adopted yet (a fresh window, a blob:, a redirect) is the one an agent
+    // loses, and it is the one that matters. The record outlives its tab on purpose
+    // (downloads.mjs).
+    ctx.on("download", (download) => {
+      void adopt(download.page())
+        .catch(() => undefined)
+        .then(async (pageId) => {
+          const windowId = pageId ? await windowOf(pageId).catch(() => undefined) : undefined;
+          await registerDownload(download, pageId ?? "", windowId);
+        })
+        .catch((e) => console.error("[sidecar] could not secure a download:", e));
+    });
     // Adopted as soon as they exist, popups included: the file chooser listener has to be on a
     // page before anything clicks in it, and a popup's opener has to be known to hand it to the
     // run that caused it.
@@ -299,11 +305,6 @@ export function adopt(page) {
     page.on("filechooser", (chooser) => {
       pendingChoosers.set(id, chooser);
     });
-    page.on("download", (download) => {
-      const queue = pendingDownloads.get(id) ?? [];
-      queue.push(download);
-      pendingDownloads.set(id, queue);
-    });
     page.on("response", (response) => {
       const type = response.headers()["content-type"] ?? "";
       if (!RECORDED_TYPES.test(type)) return;
@@ -354,7 +355,6 @@ export function dropPage(pageId) {
   births.delete(pageId);
   fronts.delete(pageId);
   dialogOverrides.delete(pageId);
-  pendingDownloads.delete(pageId);
   pendingChoosers.delete(pageId);
   pageResponses.delete(pageId);
 }

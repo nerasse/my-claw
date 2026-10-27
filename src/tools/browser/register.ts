@@ -15,9 +15,16 @@ import {
 } from "./actions.ts";
 import { createBrowserFindTool, createBrowserNetworkTool, createBrowserResponseTool, createBrowserFetchTool, createBrowserTextTool } from "./inspect.ts";
 import {
+  createBrowserDownloadTool,
+  createBrowserDownloadsTool,
+  createBrowserFileListTool,
+  createBrowserFileMoveTool,
+  createBrowserFileRemoveTool,
+  createBrowserFileStatTool,
+} from "./downloads.ts";
+import {
   type BrowserLowLevelOptions,
   createBrowserCdpTool,
-  createBrowserDownloadTool,
   createBrowserEvalTool,
   createBrowserHandleDialogTool,
   createBrowserPdfTool,
@@ -75,9 +82,14 @@ export function registerBrowserTools(registry: ToolRegistry, config: MyClawConfi
     createBrowserDragTool(client, windows),
     createBrowserClickAtTool(client, windows),
     createBrowserWaitForTool(client, windows),
-    createBrowserActTool(client, windows, config.workspace),
+    createBrowserActTool(client, windows, config.workspace, () => config.browser),
     createBrowserHandleDialogTool(client, windows),
     createBrowserDownloadTool(client, windows, lowLevel),
+    createBrowserDownloadsTool(client, windows),
+    createBrowserFileListTool(lowLevel),
+    createBrowserFileStatTool(lowLevel),
+    createBrowserFileMoveTool(lowLevel),
+    createBrowserFileRemoveTool(lowLevel),
     createBrowserPdfTool(client, windows, lowLevel),
     createBrowserEvalTool(client, windows, lowLevel),
     createBrowserCdpTool(client, windows, lowLevel),

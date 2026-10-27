@@ -1,6 +1,6 @@
 // Operations exposed over HTTP. One export per endpoint name; the server only routes.
 import { mkdir, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import {
   CDP_URL,
   adopt,
@@ -19,7 +19,6 @@ import {
   isConnected,
   pageForTarget,
   pageTargets,
-  popDownload,
   recordedResponses,
   responsive,
   setDialogOverride,
@@ -28,6 +27,7 @@ import {
   withFocus,
 } from "./browser.mjs";
 import { OFFSTAGE, go, input, settleWindows, stage, standardSize, stagedWindows } from "./live.mjs";
+import { claimDownload, listDownloads } from "./downloads.mjs";
 import { healRef, injectRefLabels, removeRefLabels, resolveRef, screenshotPath, snapshotPage } from "./snapshot.mjs";
 
 /**
@@ -61,10 +61,21 @@ const CDP_DENIED = [
 ];
 
 async function settle(page, url) {
-  await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+  let download = false;
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 30000 });
+  } catch (e) {
+    // A URL that IS a download (a PDF link, a file.php endpoint, a blob:) aborts the navigation:
+    // Chromium hands the response to the download manager instead. That is the expected
+    // outcome for those links, not a failure -- measured 54 times over 1631 runs (2026-10-27),
+    // of which 18 were reported as errors and re-attempted.
+    if (!/Download is starting|ERR_ABORTED/i.test(String(e))) throw e;
+    download = true;
+  }
   // SPAs (Instagram, TikTok...) are still blank at domcontentloaded: give the JS a
   // chance to render before snapshotting, without hanging on never-idle pages.
   await page.waitForLoadState("load", { timeout: 8000 }).catch(() => undefined);
+  return download;
 }
 
 /** A new tab in the given window. CDP has no parameter for it: a new target opens in the window
@@ -110,8 +121,8 @@ export const handlers = {
       page = await ctx.newPage();
     }
     const pageId = await adopt(page);
-    await settle(page, body.url);
-    return { pageId, snapshot: await snapshotPage(page, pageId), url: page.url() };
+    const downloaded = await settle(page, body.url);
+    return { pageId, snapshot: await snapshotPage(page, pageId), url: page.url(), ...(downloaded ? { downloaded: true } : {}) };
   },
 
   // A real window, in the one context: same profile, same logins, its own tabs and focus.
@@ -596,21 +607,33 @@ export const handlers = {
     return { armed: true, accept: Boolean(body.accept) };
   },
 
-  async "download-wait"(body) {
-    await getPage(body.pageId); // fail fast: a stale pageId would otherwise burn the whole timeout
-    const timeout = Number(body.timeoutMs ?? 30000);
-    const deadline = Date.now() + timeout;
-    let download = popDownload(body.pageId);
-    while (!download && Date.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      download = popDownload(body.pageId);
-    }
-    if (!download) throw new Error(`No download started within ${timeout}ms.`);
-    const filename = download.suggestedFilename();
-    await mkdir(body.dir, { recursive: true });
-    const path = join(body.dir, filename);
-    await download.saveAs(path);
-    return { path, filename };
+  // The files Chromium downloaded, as records: a claimed one names where it went, an unclaimed
+  // one is still waiting in the staging area. Reading this is safe at any time, including for a
+  // tab that has already closed.
+  async downloads(body) {
+    const pageId = body.pageId ? String(body.pageId) : undefined;
+    const windowId = body.windowId !== undefined && body.windowId !== null ? Number(body.windowId) : undefined;
+    return { downloads: listDownloads({ pageId, windowId }) };
+  },
+
+  // Saves one of those records under the caller's directory, and says what the file turned out
+  // to be. `dir` is absolute and comes from the Bun side, which knows the run's workspace; the
+  // name may come from the page, so it is sanitised and proven inside `dir` in downloads.mjs.
+  async "download-claim"(body) {
+    // A closed tab is not an error any more: its records outlive it. It only means one thing --
+    // it cannot start a NEW download -- so waiting for one would burn the caller's whole timeout.
+    const pageCanStillDownload = body.pageId ? Boolean(await getPage(body.pageId).catch(() => undefined)) : true;
+    const result = await claimDownload({
+      id: body.id !== undefined && body.id !== null ? Number(body.id) : undefined,
+      pageId: body.pageId ? String(body.pageId) : undefined,
+      windowId: body.windowId !== undefined && body.windowId !== null ? Number(body.windowId) : undefined,
+      dir: String(body.dir ?? ""),
+      filename: body.filename ? String(body.filename) : undefined,
+      overwrite: body.overwrite === true,
+      waitMs: Number(body.waitMs ?? 0),
+      pageCanStillDownload,
+    });
+    return result;
   },
 
   // page.pdf() is headless-only and this Chromium runs headful on Xvfb, so go through CDP.
