@@ -174,6 +174,7 @@ knobs hot-reload as soon as they are read live per run — no restart, nothing t
 | **P1 — DONE** | `click_at` (normalized), `wait_for`, `hover`, `drag`, iframe/shadow DOM, ladder in the prompt, budget 60 | Shipped. e2e proves cross-frame clicking, shadow-root controls, hover-revealed menus, and that `click_at` lands on the exact pixel the fraction maps to | ~1-2 d |
 | **P2 — DONE** | `eval`, `cdp` (allowlist), `handle_dialog`, downloads, `pdf` | Shipped. Flags off by default and the tools are not even registered when off; sidecar denylist verified in e2e; dialog override proven one-shot | ~1 d |
 | **P3 — DONE** | Config + per-endpoint timeouts, audit log, tests, docs, skill | Shipped. `bun test` green, 22 e2e green against a live Chromium, docs and skill aligned | ~1 d |
+| **P4 — DONE** | Downloads: staged the moment Chromium starts them, records that outlive the tab, `filename`/`dir`/`id`/`overwrite`, `browser_downloads`, `browser_file_list/stat/move/remove` fenced to the download root, real type sniffed from the bytes, download-by-navigation accepted, `download` step in `browser_act` | Measured first, over 1631 runs: 155 of 511 calls failed (30%), 118 of them burning 73 minutes, 522 `browser_eval` calls working around it, 6 `ENAMETOOLONG`, 30 silent overwrites, 54 navigations killed by a download. Shipped with 34 e2e green, 7 new: tab closing under the download, 300-char name, lying extension, duplicate name, path escape, download by navigation | ~2 d |
 
 P0 carries most of the real value. Doing P2 first would ship the *feeling* of power while
 leaving the actual holes open.
@@ -206,6 +207,7 @@ leaving the actual holes open.
 
 ```
 sidecar/server.mjs                     # new endpoints (upload, select, key, scroll, wait, eval, cdp...)
+sidecar/downloads.mjs                  # download registry: staged on the event, safe names, claims
 src/browser/client.ts                  # one method per endpoint + per-tool timeouts
 src/browser/types.ts                   # viewport in screenshot result, upload/cdp payloads
 src/tools/browser.ts                   # tool factories + workspace validation for uploads

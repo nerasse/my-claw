@@ -70,6 +70,17 @@ delegate_browser_task(url, instructions, model: "synthetic/hf:deepseek-ai/DeepSe
 - How to see which tags and ids exist on this install, and how to pick one from the shape of the
   task: read `references/models.md`.
 
+## Downloads come back as files, not as a click
+
+A task that produces a file (a report, an invoice, a paper) ends with a path you can use. Say
+explicitly in the instructions what to name it and where it belongs: the page's own name is
+often unreadable or truncated, and the browser agent can only choose it if you say so.
+
+> Download the PDF of this article and save it as `hobart-2023.pdf` in `papers/`.
+
+The browser agent reports the real type and size of what it saved, and flags a `.pdf` that is
+actually an HTML page (a login wall, an error page) instead of claiming success. Relay that.
+
 ## The browser persists
 
 Windows, tabs and logins stay open between tasks: the subagent is told which windows are open and

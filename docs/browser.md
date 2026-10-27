@@ -81,9 +81,14 @@ app see the runs it creates like any other one-shot.
 | `browser_drag(from_ref, to_ref)` | Drag and drop (sliders, reorderable lists, drop zones) |
 | `browser_click_at(x, y)` | Click by position, as **fractions** of the viewport. Reaches anything with no ref: canvas, WebGL, maps |
 | `browser_wait_for(text?, ref?, timeout_ms?)` | Wait for text/ref/delay instead of re-snapshotting in a loop |
-| `browser_act(steps, stop_on_error?)` | Run a sequence of actions in ONE call, one snapshot at the end. Stops at the first failing step, which the report names |
+| `browser_act(steps, stop_on_error?)` | Run a sequence of actions in ONE call, one snapshot at the end. Stops at the first failing step, which the report names. Includes a `download` step: it saves what the step before it triggered |
 | `browser_handle_dialog(accept, prompt_text?)` | Decide the answer to the NEXT native dialog (one-shot; auto-accept otherwise) |
-| `browser_download(timeout_ms?)` | Save a downloaded file into the sandboxed download dir, return its path |
+| `browser_download(filename?, dir?, id?, overwrite?, timeout_ms?)` | Save a file the page downloaded: secured the moment Chromium starts it, so the tab may be gone. Renames (`filename`), files into a subdirectory (`dir`), reports the real type and size |
+| `browser_downloads()` | The files this window downloaded: id, the page's name, state, size, real type, where each went |
+| `browser_file_list(dir?)` | What is in the download directory, with sizes and types |
+| `browser_file_stat(path)` | Whether one downloaded file exists, plus its size and type |
+| `browser_file_move(from, to, overwrite?)` | Rename or move a downloaded file, inside the download directory |
+| `browser_file_remove(path, recursive?)` | Delete a file or a directory, inside the download directory |
 | `browser_pdf(path?)` | Save the page as a PDF (headful-safe: goes through CDP `Page.printToPDF`) |
 | `browser_eval(js)` | **Gated** by `allowEval`. JS in the page, statement body with `return` |
 | `browser_cdp(method, params)` | **Gated** by `allowCdp` + allowlist. Raw CDP on the current page |
@@ -240,8 +245,13 @@ systemd and Playwright only attaches over CDP, never launches it.
   and the `Network` cookie/header methods are refused by the sidecar itself, so no config value
   can expose the session's credentials or let the subagent escape its own page.
 - **Filesystem sandbox**: upload paths and `browser_pdf` destinations go through
-  `resolveWorkspacePath` in Bun before the sidecar sees them; downloads land in
-  `browser.downloadDir` (default `<workspace>/downloads`).
+  `resolveWorkspacePath` in Bun before the sidecar sees it. Downloads are the one place a page
+  chooses a path, so they get the strictest rule: a single download root
+  (`browser.downloadDir`, default `<workspace>/downloads`), the page's name sanitised and
+  shortened in bytes, and every `browser_file_*` path resolved inside that root or refused
+  (`src/tools/browser/downloads.ts`) — `sidecar/downloads.mjs` proves it again before writing.
+  `browser_pdf` is the exception, by design: its path comes from the agent, not from a page, and
+  it archives into the workspace the application lives in (`~/career/...`).
 - **Per-endpoint timeouts**: one 90s global budget was either too short for slow operations or
   too long for a wedged fast one. Each endpoint has its own, set just above the sidecar's own
   limit so the server-side error wins and the agent gets a real message.
