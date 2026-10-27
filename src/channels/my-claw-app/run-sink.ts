@@ -17,6 +17,7 @@ export function runReasoningSink(current: () => MyClawAppStreamer): ReasoningSin
   return {
     onText: (delta) => current().pushReasoning(delta),
     onCount: (count) => current().pushReasoningCount(count),
-    onCallStart: () => current().beginThinking(),
+    onCallStart: () => current().beginWait(),
+    onFirstOutput: (ms) => current().pushWait(ms),
   };
 }

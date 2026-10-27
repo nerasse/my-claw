@@ -684,6 +684,7 @@ export function displayOf(
         ...reasoningOf(entry.reasoning, lazyReasoning),
         ...(entry.reasoningTokens ? { reasoningTokens: entry.reasoningTokens } : {}),
         ...(entry.reasoningMs !== undefined ? { reasoningMs: entry.reasoningMs } : {}),
+        ...(entry.waitMs !== undefined ? { waitMs: entry.waitMs } : {}),
       }));
       continue;
     }

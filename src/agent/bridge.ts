@@ -923,8 +923,15 @@ export class AgentBridge implements AgentBackend {
         // Anything the failing call already wrote -- a token, a reasoning delta -- is text the
         // owner can see, and a retry on another provider would write it twice. Read per attempt.
         let callEmitted = false;
+        // When this call first put something on screen, whichever it was: a word of reasoning or a
+        // word of the answer. Read from the sinks below and nowhere else, so what it measures is
+        // "the first thing the reader could see" and not "the first token of prose". A provider
+        // fallback inside this one call (`callModel`) does not reset it -- the wait is the one the
+        // reader sat through, and which provider finally answered is not part of the question.
+        let firstOutputAt: number | undefined;
         const markEmitted = (): void => {
           callEmitted = true;
+          if (firstOutputAt === undefined) firstOutputAt = Date.now();
         };
         const tokenSink = onToken
           ? async (token: string): Promise<void> => {
@@ -1087,6 +1094,17 @@ export class AgentBridge implements AgentBackend {
         }
         emptyTurnRetries = 0;
 
+        // The wait this call made the reader sit through, reported before anything else so the line
+        // can carry it from the moment the answer starts. A call that wrote nothing at all reports
+        // its whole length: the wait was real either way, and an empty turn is exactly the case
+        // where the reader has nothing else to go on.
+        const waitMs = (firstOutputAt ?? Date.now()) - llmStartedAt;
+        try {
+          await reasoningSink?.onFirstOutput?.(waitMs);
+        } catch {
+          // A display frame must never abort the run.
+        }
+
         // Before the turn is recorded and before its tools open their cards: the count belongs to
         // the bubble this call wrote into, and the recorder claims that bubble's id.
         const reasoningTokens = response.usage?.reasoningTokens;
@@ -1110,6 +1128,7 @@ export class AgentBridge implements AgentBackend {
             content: transformedResponse,
             ...(response.reasoning ? { reasoning: response.reasoning } : {}),
             ...(response.reasoningMs !== undefined ? { reasoningMs: response.reasoningMs } : {}),
+            waitMs,
             ...(reasoningTokens ? { reasoningTokens } : {}),
             ...(segments ? { segments } : {}),
             ...(response.providerMeta ? { providerMeta: response.providerMeta } : {}),
@@ -1206,6 +1225,7 @@ export class AgentBridge implements AgentBackend {
           content: response.content,
           ...(response.reasoning ? { reasoning: response.reasoning } : {}),
           ...(response.reasoningMs !== undefined ? { reasoningMs: response.reasoningMs } : {}),
+          waitMs,
           ...(reasoningTokens ? { reasoningTokens } : {}),
           ...(response.segments ? { segments: response.segments } : {}),
           ...(replayable ? { providerMeta: response.providerMeta } : {}),

@@ -32,12 +32,26 @@ describe("a run's reasoning sink", () => {
     await sink.onCallStart!();
     await sink.onText!("weighing");
     await sink.onCount!({ tokens: 120 });
+    await sink.onFirstOutput!(4_200);
     expect(types(frames)).toEqual([
       "chat.stream.start",
-      "chat.turn.thinking",
+      "chat.turn.wait",
       "chat.reasoning.delta",
       "chat.reasoning.tokens",
+      "chat.turn.wait",
     ]);
+    // The second one is the figure, on the bubble the call wrote into.
+    const [, , , , measured] = frames;
+    expect(measured).toMatchObject({ type: "chat.turn.wait", id: (frames[1] as { id: string }).id, ms: 4200 });
+  });
+
+  test("the wait figure never opens a bubble of its own", async () => {
+    // A call that went straight to a tool produced nothing to attach a duration to, and the card
+    // that follows is the story. A bubble holding one quiet figure above it would say nothing.
+    const frames: MyClawAppServerFrame[] = [];
+    const sink = runReasoningSink(() => streamerFor(frames));
+    await sink.onFirstOutput!(4_200);
+    expect(types(frames)).toEqual([]);
   });
 
   test("follows the streamer that is open now: a folded message swaps it mid-run", async () => {
@@ -48,7 +62,7 @@ describe("a run's reasoning sink", () => {
     await sink.onCallStart!();
     current = streamerFor(second);
     await sink.onCallStart!();
-    expect(types(first)).toEqual(["chat.stream.start", "chat.turn.thinking"]);
-    expect(types(second)).toEqual(["chat.stream.start", "chat.turn.thinking"]);
+    expect(types(first)).toEqual(["chat.stream.start", "chat.turn.wait"]);
+    expect(types(second)).toEqual(["chat.stream.start", "chat.turn.wait"]);
   });
 });

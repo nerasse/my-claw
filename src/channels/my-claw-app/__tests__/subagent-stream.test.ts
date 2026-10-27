@@ -46,7 +46,7 @@ describe("a sub-agent's stream", () => {
     const streamers = new Map([["child", streamerFor(frames)]]);
     const stream = subAgentStreamFor(streamers, new Map(), "child", () => {});
     await stream!.reasoning!.onCallStart!();
-    expect(types(frames)).toEqual(["chat.stream.start", "chat.turn.thinking"]);
+    expect(types(frames)).toEqual(["chat.stream.start", "chat.turn.wait"]);
     expect((frames[1] as MyClawAppServerFrame & { threadId: string }).threadId).toBe("child-thread");
   });
 

@@ -41,6 +41,16 @@ export interface ReasoningSink {
    * a mid-run message wore two (2026-10-01).
    */
   onCallStart?: () => Promise<void>;
+  /**
+   * How long the call took to put its first thing on screen, once per call, whether that thing was
+   * a word of reasoning or a word of the answer. A call that produced nothing at all reports the
+   * whole call: that is still the wait the reader sat through.
+   *
+   * Measured here and not on the device, because the device only knows when a frame reached it --
+   * queueing, the socket and the app's own clock all sit in between -- and because a thread
+   * reopened an hour later has to show the same figure as the one that was live.
+   */
+  onFirstOutput?: (ms: number) => Promise<void>;
 }
 
 /**

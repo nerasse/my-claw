@@ -1566,6 +1566,8 @@ export type MyClawAppHistoryEntry =
       reasoningTokens?: number;
       /** How long that thinking lasted, so a reopened thread shows the span it took. */
       reasoningMs?: number;
+      /** How long the call took to say anything at all, so a reopened thread shows the wait. */
+      waitMs?: number;
       /** The answer to a slash command, drawn as its own kind of bubble rather than as a reply. */
       command?: boolean;
       /** The aside folded under a command answer (a compaction summary). */
@@ -1809,26 +1811,33 @@ export interface MyClawAppRunStopping {
 }
 
 /**
- * The model is working on this thread and nothing has come out of the call yet.
+ * A model call opened this bubble and the answer has not started: how long it waited, or is still
+ * waiting, before its first output.
  *
  * A turn is minutes of silence on the engines that think before they write (Codex at effort max,
  * an Anthropic model with a long thinking block, a provider being retried), and the app had
  * nothing to draw for it: the owner stared at a thread that looked dead, the Stop button being
  * the only sign a run was on (2026-09-30). This is the line that says the wait is progress.
  *
- * It carries the id of the bubble the turn will write into -- minted here, before the call has
- * produced anything -- so the live journal drops the frame with that bubble when it settles: a
- * window that syncs mid-thought is replayed it, a window that syncs after the answer is not
- * (docs/live-turn-replay.md).
+ * Two shapes, one frame, in the order they happen:
  *
- * `since` is the instant the call began, server-dated like MyClawAppReasoningDelta.since, so a
- * window that joins late counts from the same start rather than from its own arrival.
+ * - `since` alone, sent when the call begins, for the counter that climbs while nothing is on
+ *   screen. Server-dated like MyClawAppReasoningDelta.since, so a window that joins late counts
+ *   from the same start rather than from its own arrival. It carries the id of the bubble the call
+ *   will write into -- minted here, before the call has produced anything -- so the live journal
+ *   drops the frame with that bubble when it settles (docs/live-turn-replay.md).
+ * - `ms` alone, sent once the call has produced something: the wait is over and this is what it
+ *   cost. It replaces the counter with a figure that survives a reload, and it is the only such
+ *   figure on a call that streamed no reasoning at all.
  */
-export interface MyClawAppTurnThinking {
-  type: "chat.turn.thinking";
+export interface MyClawAppTurnWait {
+  type: "chat.turn.wait";
   id: string;
   threadId: string;
-  since: string;
+  /** The instant the call began, while nothing has come out of it yet. */
+  since?: string;
+  /** How long it waited, once something has. */
+  ms?: number;
 }
 
 export interface MyClawAppStreamStart {
@@ -4577,7 +4586,7 @@ export type MyClawAppServerFrame =
   | MyClawAppRunStart
   | MyClawAppRunEnd
   | MyClawAppRunStopping
-  | MyClawAppTurnThinking
+  | MyClawAppTurnWait
   | MyClawAppStreamStart
   | MyClawAppStreamDelta
   | MyClawAppReasoningDelta

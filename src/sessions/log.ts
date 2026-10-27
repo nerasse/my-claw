@@ -87,6 +87,12 @@ export interface PhaseEntry extends EntryBase {
   reasoningTokens?: number;
   /** How long the thinking that produced `reasoning` lasted. Kept so a reopened thread shows it. */
   reasoningMs?: number;
+  /**
+   * How long the call took to put its first thing on screen, word of reasoning or word of answer.
+   * On the first phase of the call, kept for the same reason as `reasoningMs`: the wait is a fact
+   * about the turn, and a thread reopened an hour later cannot re-measure it.
+   */
+  waitMs?: number;
   /** Phases of one model turn share this, which is what lets the prompt fold them back together. */
   runId: string;
   /** Opaque provider state, replayed verbatim -- docs/reasoning-replay.md. Omitted on a truncated turn. */

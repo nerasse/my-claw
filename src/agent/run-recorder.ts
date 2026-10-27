@@ -48,6 +48,12 @@ export interface RecordedTurn {
   reasoning?: string;
   /** How long the turn spent thinking, when it thought as one phase. */
   reasoningMs?: number;
+  /**
+   * How long the call took to put its first thing on screen, before any phase had a word to show.
+   * On the first phase alone: it is one wait per call, and every later phase of the same call was
+   * reached through the first.
+   */
+  waitMs?: number;
   /** Set only when one call produced more than one thinking phase. */
   segments?: RecordedPhase[];
   /** What the call spent thinking, as the endpoint counted it, words or none. */
@@ -231,6 +237,8 @@ export class RunRecorder {
         text: phase.content,
         ...(phase.reasoning ? { reasoning: phase.reasoning } : {}),
         ...(phase.reasoningMs !== undefined ? { reasoningMs: phase.reasoningMs } : {}),
+        // The wait belongs to the call, and the call opened its first phase.
+        ...(index === 0 && recorded.waitMs !== undefined ? { waitMs: recorded.waitMs } : {}),
         // One number for the whole turn: repeated per phase, every reader adding them up would
         // multiply what the model actually thought.
         ...(last && recorded.reasoningTokens ? { reasoningTokens: recorded.reasoningTokens } : {}),

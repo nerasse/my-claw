@@ -84,7 +84,7 @@ none: `Reasoning · 516 tokens · 4.2 s`.
 - **It lands on the bubble its call wrote into, and never seals it.** The count arrives after the
   answer, and a thought sealing an answer is the rule for *words*: applied to a count, it gave the
   count a bubble of its own under the reply. A call that wrote nothing still has its bubble, opened
-  by `beginThinking` when the call started, so the count fills it and the bubble survives the end of
+  by `beginWait` when the call started, so the count fills it and the bubble survives the end of
   the stream.
 - **It opens no span and closes none.** The words are timed where they stream (`since`, below); a
   count is a figure about a thought that is over.
@@ -281,12 +281,14 @@ Three additive server frames, and one additive history field.
 /** What the call that wrote into bubble `id` spent thinking, once it has answered. */
 { type: "chat.reasoning.tokens"; id: string; threadId: string; tokens: number; ms?: number }
 
-/** A call began and has produced nothing yet. See "While nothing has come out of it". */
-{ type: "chat.turn.thinking"; id: string; threadId: string; since: string }
+/** A call began and has produced nothing yet -- `since`; or has just produced its first thing and
+ *  this is what the wait cost -- `ms`. See "While nothing has come out of it". */
+{ type: "chat.turn.wait"; id: string; threadId: string; since?: string; ms?: number }
 ```
 
 `MyClawAppHistoryEntry`'s assistant entry gains `reasoning?: string`, filled by
-`sessions.ts:211` from the mirror field.
+`sessions.ts:211` from the mirror field, plus `waitMs?: number` from the phase, so a thread reopened
+an hour later shows the same wait the live one did.
 
 A replayed turn is walked phase by phase (`HistoryPhase`), so a turn with `segments` becomes one
 entry per phase and a turn without them stays one entry. A phase that thought and then called a
@@ -370,9 +372,9 @@ reasoning characters, four seconds each), and the first token of a turn that doe
 nothing through all of that -- the thread looked dead, the Stop button its only sign a run was on
 (owner, 2026-09-30).
 
-So the run announces the call: `MyClawAppStreamer.beginThinking()`, through the reasoning sink it
+So the run announces the call: `MyClawAppStreamer.beginWait()`, through the reasoning sink it
 already hands the bridge (`ReasoningSink.onCallStart`). It opens the bubble the turn will write
-into and sends `chat.turn.thinking` with the instant the call began.
+into and sends `chat.turn.wait` with the instant the call began.
 
 - **On the sink, never a global hook.** It went through `hooks.on("llm:call:start")` first, and a
   hook is heard by every listener on the session -- a message folded into a run in flight has one
@@ -383,7 +385,7 @@ into and sends `chat.turn.thinking` with the instant the call began.
   token count, a tool card, an abort, the run's end. The server does not track what is on screen;
   the client is the one that knows.
 - **The app decides when it is worth drawing**: the line waits three seconds of silence before it
-  appears, because the engines that stream their thinking answer in one to two seconds and the line
+  appears, because the engines that stream their reasoning answer in one to two seconds and the line
   was a flicker there (measured: deepseek-v4.1-flash, 1658 ms). What it is for is the silence.
 - **It carries the bubble's id**, so the live journal drops it with that bubble when it settles: a
   window that syncs mid-call is replayed the line, a window that syncs after the answer is not
@@ -423,13 +425,13 @@ span now read from two clocks it is also what a device running ahead of the serv
 
 One line, at the top of the agent's own bubble. Not a separate bubble: the reasoning belongs to the
 answer it produced, and a second bubble would double the vertical rhythm and orphan itself whenever
-the answer is one sentence. During the thinking phase the bubble holds only this line, which is
+the answer is one sentence. During the reasoning phase the bubble holds only this line, which is
 precisely the "it is working" affordance; it then grows into the answer without anything jumping.
 
 **Collapsed — the default, always.**
 
 ```
-▸ Thinking…                      (while reasoning streams, no text yet)
+▸ Reasoning · 4 s                (while reasoning streams, no text yet)
 ▸ Reasoning                      (text arrived, or the run ended)
 ▸ Reasoning · 1.2k tokens 12 s   (words, and what the call spent on them)
   Reasoning · 516 tokens 4.2 s   (no words: a count, because there is nothing to open)
@@ -444,7 +446,7 @@ selectable. Whole, however long it ran.
 
 **Two phases are two blocks.** The app groups consecutive bubbles of one author into a single
 visual block (4px instead of 10px, timestamp on the last one only). A bubble that opens on a
-thinking phase leaves that block (`core/grouping.ts`), because grouping it put back exactly what
+reasoning phase leaves that block (`core/grouping.ts`), because grouping it put back exactly what
 the seal had separated: the thought read as a note stuck under the answer already on screen, and
 the words after it as that same message continuing. This is the same bug as the merged replay,
 seen one layer higher.
@@ -470,13 +472,13 @@ Server, each one failing before the change:
   emit once; an absent sink is a no-op; a chunk with neither field changes nothing.
 - `codex.ts`: `response.reasoning_summary_text.delta` and `response.reasoning_text.delta` reach the
   sink; unknown `response.reasoning_*` events are ignored rather than throwing.
-- `stream.ts` (`beginThinking`): it opens the bubble the turn will write into and dates the frame
+- `stream.ts` (`beginWait`): it opens the bubble the turn will write into and dates the frame
   with the segment's id; the first token lands on that same bubble; a call after a tool or after
   prose announces its own; a finished run announces nothing.
 - `live-turn.ts`: the wait is replayed mid-call and forgotten with its bubble.
-- `subagent-stream.ts`: the child's thinking reaches the child's own thread, through the streamer of
+- `subagent-stream.ts`: the child's reasoning reaches the child's own thread, through the streamer of
   the moment; no streamer, no stream.
-- `run-sink.ts`: the run's own sink carries the thinking, the count and the wait, read through the
+- `run-sink.ts`: the run's own sink carries the reasoning, the count and the wait, read through the
   streamer that is open now -- and a folded message announcing its own calls is asserted to be
   impossible: a run's calls reach the run's sink, a folded message's sink hears nothing
   (`tests/e2e/injection.test.ts`).
@@ -488,9 +490,13 @@ Server, each one failing before the change:
   first delta. `usage-capture.test.ts` and `anthropic.test.ts`: the count on the other two wires.
 - `call-start-hook.test.ts`: every call of a streamed run is announced on its own sink before its
   first token, a sink that throws does not take the run down, and the call names its session.
-- App: `turnThinking.test.ts` (the frame starts the line, every content frame and the run end take
-  it down, a replay does not redraw it), `turnThinking.test.tsx` (the counter is formatted from the
-  server instant), `turnThinkingLine.test.tsx` (the screen draws it at the bottom of the thread).
+- `first-output.test.ts`: a call reports how long it took to say anything, once, at the first word
+  of reasoning rather than at the answer; the log keeps it on the phase; a sink that throws does not
+  stop the run; a call that produced nothing still reports its wait.
+- App: `turnWait.test.ts` (the frame starts the line, every content frame and the run end take it
+  down, a replay does not redraw it, the measured figure replaces the counter), `waitLine.test.tsx`
+  (the counter is formatted from the server instant), `waitLine` in the app suite (the screen draws
+  it in the bubble the call opened).
 - `claude-sdk/backend.ts`: `thinking_tokens` reaches `onTokens`; `text_delta` still reaches
   `onToken` and never `onText`.
 - `stream.ts`: reasoning before any text opens the bubble; a tool seals and resets the accumulator;

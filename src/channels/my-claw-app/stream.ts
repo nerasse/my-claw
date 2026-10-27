@@ -84,8 +84,8 @@ export class MyClawAppStreamer {
    * delta, a tool card) or the run's end, and the app decides that: it is the one that knows
    * what is already on screen.
    */
-  async beginThinking(): Promise<void> {
-    return this.enqueue(() => this.thinkingInternal());
+  async beginWait(): Promise<void> {
+    return this.enqueue(() => this.waitInternal());
   }
 
   /**
@@ -96,6 +96,27 @@ export class MyClawAppStreamer {
   async pushReasoningCount(count: ReasoningCount): Promise<void> {
     if (!Number.isFinite(count.tokens) || count.tokens <= 0) return;
     return this.enqueue(() => this.reasoningCountInternal(count));
+  }
+
+  /**
+   * How long this call took to put its first thing on screen, sent once per call.
+   *
+   * It annotates the bubble the call wrote into and never opens one: a call that went straight to a
+   * tool produced nothing for the reader to attach a duration to, and a bubble holding one quiet
+   * figure above the card would be a line about nothing. There is also nothing to time in that
+   * case -- the card is the story.
+   */
+  async pushWait(ms: number): Promise<void> {
+    if (!Number.isFinite(ms) || ms < 0) return;
+    return this.enqueue(async () => {
+      if (this.finished || !this.started) return;
+      await this.opts.send({
+        type: "chat.turn.wait",
+        id: this.currentId(),
+        threadId: this.opts.threadId,
+        ms: Math.round(ms),
+      });
+    });
   }
 
   async finish(finalText?: string): Promise<void> {
@@ -268,14 +289,14 @@ export class MyClawAppStreamer {
     await this.emitDelta();
   }
 
-  private async thinkingInternal(): Promise<void> {
+  private async waitInternal(): Promise<void> {
     if (this.finished) return;
     // A call that follows prose belongs to the next bubble: the line would otherwise be appended
     // under an answer the reader has already read.
     await this.sealBeforeReasoning();
     if (!this.started) await this.startSegment();
     await this.opts.send({
-      type: "chat.turn.thinking",
+      type: "chat.turn.wait",
       id: this.currentId(),
       threadId: this.opts.threadId,
       since: new Date().toISOString(),
