@@ -8,7 +8,7 @@
 
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { isOutageClass, isPolicyRefusal, isProviderOutage } from "../../src/llm/outage.ts";
+import { isOutageClass, isPolicyRefusal, isProviderOutage, isQuotaSpent } from "../../src/llm/outage.ts";
 
 function failure(status: number, message: string): Error & { status?: number } {
   const err = new Error(message) as Error & { status?: number };
@@ -68,5 +68,39 @@ test("the gateway's envelope says nothing about whose fault it is: the bracketed
   assert.equal(
     isProviderOutage(failure(400, "Error from provider (Console Go): Upstream request failed: [invalid_request_error] Content Exists Risk")),
     true,
+  );
+});
+
+/**
+ * The quota phrases the providers actually send.
+ *
+ * Every one below was read as an ordinary 429 before 2026-10-27, which is why the run waited 30 s,
+ * 60 s and 120 s on a wall that does not open inside a run, while the transport added three
+ * requests of its own on each of those four turns -- twelve requests and 210 seconds for one
+ * account, measured on `chatgpt-2` at 22:16.
+ */
+test("a plan limit is a spent quota, whichever words the provider picked", () => {
+  const quota = (status: number, message: string): Error & { status?: number } => failure(status, message);
+
+  // ChatGPT plan, verbatim from the log.
+  assert.equal(
+    isQuotaSpent(quota(429, 'Codex request failed: HTTP 429 — {"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus","resets_at":1793141751}}')),
+    true,
+  );
+  // OpenCode Go, verbatim.
+  assert.equal(isQuotaSpent(quota(429, "LLM request failed: HTTP 429 — Go usage limit exceeded")), true);
+  // litellm, which already worked: kept so the widen does not become a replace.
+  assert.equal(isQuotaSpent(quota(429, "litellm.RateLimitError: Custom_openaiException - quota exhausted")), true);
+  assert.equal(isQuotaSpent(quota(402, "insufficient credits")), true);
+});
+
+test("a rate limit is not a quota: waiting is exactly what it is for", () => {
+  // The distinction is the noun. A rate limit clears on its own inside a run; a plan limit does not,
+  // and waiting on it only delays the move to a provider that can still answer.
+  assert.equal(isQuotaSpent(failure(429, "rate limit reached for requests per minute")), false);
+  assert.equal(isQuotaSpent(failure(429, "Too many concurrent requests")), false);
+  assert.equal(
+    isQuotaSpent(failure(429, '{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}}')),
+    false,
   );
 });

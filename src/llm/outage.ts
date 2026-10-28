@@ -63,8 +63,19 @@ export function isOutageClass(err: unknown): boolean {
  * A quota or a balance spent. Rerouted like any outage, but never waited for: no wait inside a run
  * refills it, and the three waits it used to get cost the veille of 2026-09-29 four minutes per
  * volet before it moved on.
+ *
+ * The phrases are the ones the providers actually send, not the ones that sound right. Measured
+ * 2026-10-27, both of these were read as an ordinary 429 and waited 30 s, 60 s and 120 s on a wall
+ * that does not open inside a run, with the transport adding three requests of its own each time:
+ *
+ * - ChatGPT plan: `{"type":"usage_limit_reached","message":"The usage limit has been reached",
+ *   "plan_type":"plus","resets_at":...}`
+ * - OpenCode Go: `Go usage limit exceeded`
+ *
+ * A rate limit is deliberately *not* here: it clears on its own, which is exactly what a wait is
+ * for. The distinction is the noun -- a **limit** of the plan, not a **rate**.
  */
-const QUOTA_SPENT = /quota (?:exhausted|exceeded)|insufficient[_ ]quota|exceeded your current quota|insufficient (?:credits|balance|funds)|out of credits|credit balance is too low|can only afford/i;
+const QUOTA_SPENT = /quota (?:exhausted|exceeded)|insufficient[_ ]quota|exceeded your current quota|insufficient (?:credits|balance|funds)|out of credits|credit balance is too low|can only afford|usage_limit_reached|usage limit (?:has been |was )?(?:exceeded|reached)/i;
 
 export function isQuotaSpent(err: unknown): boolean {
   const status = (err as { status?: number } | undefined)?.status;

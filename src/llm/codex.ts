@@ -7,6 +7,7 @@ import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
 import { ReasoningSegmenter } from "./reasoning-segments.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ReasoningItem, ToolCall } from "./provider.ts";
 import { checkCircuitBreaker, recordCircuitFailure, recordCircuitSuccess, countsTowardBreaker } from "./provider.ts";
+import { isQuotaSpent } from "./outage.ts";
 import { CODEX_TIMEOUT_MS, llmFetchInit, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
 
 const MAX_ATTEMPTS = 3;
@@ -507,7 +508,8 @@ async function runCodex(
         const detail = (await response.text().catch(() => "")).slice(0, 500);
         const err = new Error(`Codex request failed: HTTP ${response.status} — ${detail}`) as Error & { status?: number };
         err.status = response.status;
-        if (attempt < MAX_ATTEMPTS && !tokensDelivered && isRetryableStatus(response.status)) {
+        // A spent quota is a 429 too, and no backoff refills it: straight to the caller's fallback.
+        if (attempt < MAX_ATTEMPTS && !tokensDelivered && !isQuotaSpent(err) && isRetryableStatus(response.status)) {
           const delay = retryDelayMs(attempt, parseRetryAfterMs(response));
           await log("warn", `Codex ${response.status}, retrying in ${delay}ms (${attempt}/${MAX_ATTEMPTS})`);
           await sleep(delay, signal);

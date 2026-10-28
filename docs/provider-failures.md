@@ -120,9 +120,10 @@ provider is a property of the provider, not of the agent talking to it.
 There is no new setting. A `tag:` with a `route` **is** a chain, and `providerFallbackTargets`
 (`src/llm/provider-fallback.ts`) reads it in order:
 
-1. **The route's remaining candidates**, skipping the one that just failed, any marked unavailable
-   before the run, and anything this run already tried. A candidate the resolver refuses is skipped
-   rather than fatal.
+1. **The route the run carries**, then the route its stored `tag:` pick names, when the run arrived
+   without one (see below). Its remaining candidates come first, skipping the one that just failed,
+   any marked unavailable before the run, and anything this run already tried. A candidate the
+   resolver refuses is skipped rather than fatal.
 2. **The tag's global default**, when the route says `fallbackToGlobalDefault`, unless the route
    already tried it.
 3. **The agent's configured default**, for a run that is not on a route -- and only when the run is
@@ -133,13 +134,48 @@ There is no new setting. A `tag:` with a `route` **is** a chain, and `providerFa
    opus never tried). A run on its default has no target, because the target would be the model
    that just failed; the schedule is all it gets, and the failure is then real.
 
+### The route does not always travel with the run
+
+`RunModel.route` is what step 1 walks, and two of the three doors into the bridge lose it:
+
+- **The dispatcher** hands the bridge the *concrete* winner as a forced model
+  (`resolved.route ? resolved.model : undefined`). A forced model resolves to no tag, so the run
+  arrives with no route at all.
+- **A sub-agent** hands the bridge a `ResolvedLlmConfig`, and the bridge skips resolution entirely
+  (`this.llmOverride ? undefined : resolveRunModel(...)`).
+
+A run with no route fell through to step 3 and walked the *agent's* default. Measured 2026-10-27 on
+`tag:CubeFlowSol` -- two ChatGPT subscriptions, `fallbackToGlobalDefault` absent: `chatgpt-2` hit
+its plan limit and the run answered on `Medium route candidate 1` (`synthetic`), while `chatgpt-3`
+answered fine ninety seconds later. Eight runs that day, every one of them out of a route it had
+never left.
+
+The fix is not to thread the route through every backend signature: `session.modelOverride` still
+holds `tag:<name>`, and the bridge passes it to `providerFallbackTargets` as `tagRef`. The walk then
+uses `routeOfTagRef`, which only speaks when the run is **on** one of that tag's candidates -- a
+tag the preflight already fell through to the global default must not be walked, or the run would
+retry a model the resolver had judged unavailable. A route that did arrive always wins over the
+reference: it knows the preflight's verdicts and where the effort and ceiling came from.
+
 One schedule per run (`llm.providerRetry`), then one visit per target. A chain that rearmed at every
 attempt would be a loop.
 
-A **spent quota** (`isQuotaSpent`: `quota exhausted`, `insufficient_quota`, `out of credits`, ...
-on a 402 or 429) is never waited for, by the run or by the transport's own backoff: nothing inside a
-run refills it. It goes straight to the next target. It cost each volet of that veille four minutes
-of waits before it moved on.
+A **spent quota** (`isQuotaSpent`: `quota exhausted`, `insufficient_quota`, `out of credits`,
+`usage_limit_reached`, `usage limit exceeded`, ... on a 402 or 429) is never waited for, by the run
+or by the transport's own backoff: nothing inside a run refills it. It goes straight to the next
+target. It cost each volet of that veille four minutes of waits before it moved on.
+
+The phrase list is the providers' own words, not the ones that sound right. Measured 2026-10-27,
+both of these were read as an ordinary 429 and paid three transport retries plus 30 s, 60 s and
+120 s of waits -- twelve requests and 210 seconds for one wall:
+
+```
+{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus","resets_at":...}}
+Go usage limit exceeded
+```
+
+A **rate limit** stays out on purpose: it clears on its own, which is exactly what a wait is for.
+The distinction is the noun -- a *limit* of the plan, not a *rate*.
 
 ## What counts as the provider's own failure
 
@@ -154,6 +190,20 @@ of waits before it moved on.
 - **Not included**: a `400` naming a shape we sent wrong. That is our bug, and rerouting it would
   hide it behind a model that happens to tolerate the shape -- measured the same evening, when
   `glm-5.3` refused the parts array our system prompt was sent as.
+
+## A spent quota never counts toward the circuit breaker
+
+`countsTowardBreaker` (`src/llm/provider.ts`) refuses a quota for the same reason it refuses a
+malformed request: neither is evidence that the endpoint is down. It is worse than the malformed
+case, because the breaker is keyed on `baseUrl` -- and the subscriptions share one.
+
+Measured 2026-10-27: `chatgpt-2`'s five `usage_limit_reached` refusals opened the breaker on
+`https://chatgpt.com/backend-api` at 22:45:11. That endpoint is what `chatgpt`, `chatgpt-2` and
+`chatgpt-3` all point at, so the exhausted plan took the other two accounts with it. `chatgpt-3`
+answered perfectly at 22:46:36. The plan is out of money; the endpoint is fine.
+
+A rate limit still counts: there the endpoint really is struggling, and a cooldown is what protects
+it.
 
 ## The switch, on the phone
 
@@ -185,11 +235,19 @@ error text — so an outage is countable and its cost is visible.
   run continued from its result); a policy refusal reroutes; a `400` naming our own shape does not;
   a failure after the call wrote something does not either; a route walks its remaining candidates
   then the tag's global default; the owner's turn is written once; a run already on its default gets
-  the schedule and nothing else. The failures there are `402` and `400` on purpose: a `503` would be
-  retried three times by the provider layer, blurring every model sequence the tests assert.
-- `tests/llm/outage.test.ts` — what is the provider's fault and what is ours.
-- `tests/llm/provider-fallback.test.ts` — the order of the targets, and the case that must stay
-  empty.
+  the schedule and nothing else; **a run forced onto its tag's first candidate still walks that tag**
+  (the dispatcher's hand-off, measured 2026-10-27); **a spent plan limit gets one request, no wait,
+  and the next account**. The failures there are `402`, `400` and a quota-shaped `429` on purpose: a
+  `503` would be retried three times by the provider layer, blurring every model sequence the tests
+  assert.
+- `tests/llm/outage.test.ts` — what is the provider's fault and what is ours, and the quota phrases
+  the providers actually send (`usage_limit_reached`, `Go usage limit exceeded`) against the rate
+  limit that must stay waitable.
+- `tests/llm/provider-fallback.test.ts` — the order of the targets, the case that must stay empty,
+  and the tag reference that stands in when the route did not travel with the run.
+- `tests/llm/codex.test.ts` / `tests/llm/anthropic-provider-generic.test.ts` — a spent plan limit
+  gets one request from each transport; a rate limit keeps its three.
+- `tests/llm/provider-retry.test.ts` — a quota does not count toward the breaker, a rate limit does.
 - `tests/agent/dispatcher.test.ts` — resolution and engine choice only now; the failure handling
   moved out of it, and so did its tests.
 - `tests/config.test.ts` — the default schedule, `enabled: false` beating a declared list, junk

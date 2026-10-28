@@ -398,3 +398,82 @@ test("the streaming path announces the fallback as it happens", async () => {
     mock.restore();
   }
 });
+
+/**
+ * The conversation's tag survives the hand-off to the bridge.
+ *
+ * Measured 2026-10-27 on `tag:CubeFlowSol` (two ChatGPT subscriptions): `chatgpt-2` hit its plan
+ * limit, and the run answered on `Medium route candidate 1` -- `synthetic` -- while the tag's own
+ * second account was answering fine. The dispatcher hands the bridge the concrete winner as a
+ * forced model (`dispatcher.ts`, `resolved.route ? resolved.model : undefined`), a forced model
+ * resolves to no tag, so `RunModel.route` was `undefined` and the walk fell through to the agent's
+ * default. Eight runs that day, all of them, out of a route they had never left.
+ */
+test("a run forced onto its tag's first candidate still walks that tag", async () => {
+  const cfg = config();
+  cfg.tags = {
+    TwoAccounts: { route: [{ model: "alpha-1" }, { model: "alpha-2" }], fallbackToGlobalDefault: false },
+  };
+  cfg.agents = { orchestrator: { llm: { defaultModel: "tag:Cheap" } } };
+  cfg.tags["Cheap"] = { route: [{ model: "beta-1" }], fallbackToGlobalDefault: true };
+
+  const models: string[] = [];
+  const mock = mockFetch(async (_input, init) => {
+    const model = modelOf(init);
+    models.push(model);
+    if (model === "alpha-1") return failure(429, "usage limit exceeded");
+    return jsonAnswer("le deuxieme compte");
+  });
+  const bridge = new AgentBridge(cfg, new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+
+  try {
+    // Exactly what the dispatcher does: the concrete candidate, plus the session's own tag pick.
+    const text = await bridge.handleMessage(createMessage(), createSession("tag:TwoAccounts"), signal, "alpha-1");
+    assert.match(text, /le deuxieme compte/, text);
+    assert.match(text, /\(TwoAccounts route candidate 2\)/, text);
+    assert.deepEqual(models, ["alpha-1", "alpha-2"], "the tag's second account, never the default");
+    assert.doesNotMatch(text, /beta-1/, "the agent default is not the answer to an exhausted route");
+  } finally {
+    end();
+    mock.restore();
+  }
+});
+
+/**
+ * A plan limit costs one request, not twelve.
+ *
+ * Measured 2026-10-27, run `5602d4f5` on `chatgpt-2`: each of the four turns made three requests
+ * (the transport's own backoff), then the run waited 30 s, 60 s and 120 s on top. Twelve requests
+ * and 210 seconds for a wall that does not open inside a run -- the second account answered all
+ * along, and the tag was not consulted because the route had been lost (test above).
+ *
+ * The 429 body here is the real one, so this also pins that `isQuotaSpent` reads it.
+ */
+test("a spent plan limit gets one request, no wait, and the next account", async () => {
+  const cfg = config();
+  cfg.tags = { TwoAccounts: { route: [{ model: "alpha-1" }, { model: "alpha-2" }] } };
+  const models: string[] = [];
+  const mock = mockFetch(async (_input, init) => {
+    const model = modelOf(init);
+    models.push(model);
+    if (model === "alpha-1") {
+      return failure(429, '{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus"}}');
+    }
+    return jsonAnswer("le deuxieme compte");
+  });
+  const bridge = new AgentBridge(cfg, new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+
+  try {
+    const text = await bridge.handleMessage(createMessage(), createSession("tag:TwoAccounts"), signal, "alpha-1");
+    assert.match(text, /le deuxieme compte/, text);
+    assert.doesNotMatch(text, /\[retry\]/, "nothing is waited for: no wait refills a plan");
+    assert.match(text, /\[fallback\]/, text);
+    // One request to the exhausted account -- the transport's three attempts are gone too.
+    assert.deepEqual(models, ["alpha-1", "alpha-2"]);
+  } finally {
+    end();
+    mock.restore();
+  }
+});

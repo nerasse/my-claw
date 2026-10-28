@@ -80,7 +80,14 @@ export function resetCircuitBreaker(): void {
 
 // A non-retryable 4xx (e.g. one malformed request) is request-specific, not a provider outage:
 // counting it would let a single bad call push the breaker toward opening for ALL traffic.
+//
+// A spent quota is not an outage either, and counting it was worse than the malformed case: the
+// breaker is keyed on `baseUrl`, so the five refusals of one exhausted account opened it for every
+// model behind `https://chatgpt.com/backend-api` -- the other two subscriptions included. Measured
+// 2026-10-27: the breaker opened at 22:45:11 on `chatgpt-2`'s `usage_limit_reached`, and
+// `chatgpt-3` answered perfectly at 22:46:36. The plan is out of money; the endpoint is fine.
 export function countsTowardBreaker(err: unknown): boolean {
+  if (isQuotaSpent(err)) return false;
   const status = (err as { status?: number } | undefined)?.status;
   if (typeof status === "number" && status >= 400 && status < 500 && status !== 429) return false;
   return true;

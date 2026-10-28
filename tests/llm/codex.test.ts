@@ -186,3 +186,40 @@ test("a tool's images ride its function_call_output as output items", async () =
   assert.deepEqual(items.map((i) => i.type), ["input_text", "input_image"]);
   assert.equal(items[1]!.image_url, "data:image/png;base64,AAAA");
 });
+
+/**
+ * A spent plan limit costs one request, not three.
+ *
+ * The Codex transport retried every retryable status, 429 included, without asking whether the
+ * refusal was the plan running dry. Measured 2026-10-27 on `chatgpt-2`: three requests per turn,
+ * four turns (30 s, 60 s, 120 s), twelve requests for one wall.
+ */
+test("a spent plan limit is not retried by the transport", async () => {
+  writeAuth();
+  let requests = 0;
+  mock = mockFetch(async () => {
+    requests += 1;
+    return new Response(
+      JSON.stringify({ error: { type: "usage_limit_reached", message: "The usage limit has been reached", plan_type: "plus" } }),
+      { status: 429, headers: { "Content-Type": "application/json" } },
+    );
+  });
+  await assert.rejects(() => codexResponse(config, [{ role: "user", content: "go" }], undefined), /usage limit/i);
+  assert.equal(requests, 1, "one request, then the caller's fallback owns the decision");
+});
+
+test("a rate limit is still retried by the transport: it clears on its own", async () => {
+  writeAuth();
+  let requests = 0;
+  mock = mockFetch(async () => {
+    requests += 1;
+    // Fails every time here: what is pinned is that the transport *tried* again, which is the
+    // behaviour a spent quota must not get.
+    return new Response(
+      JSON.stringify({ error: { type: "rate_limit_error", message: "Too many concurrent requests" } }),
+      { status: 429, headers: { "Content-Type": "application/json" } },
+    );
+  });
+  await assert.rejects(() => codexResponse(config, [{ role: "user", content: "go" }], undefined));
+  assert.equal(requests, 3, "three attempts, as every other retryable status gets");
+});

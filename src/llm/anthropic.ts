@@ -7,6 +7,7 @@ import { log } from "../utils/logger.ts";
 import { anthropicAuthHeaders } from "./anthropic-auth.ts";
 import { claudeRelease, claudeUserAgent } from "./anthropic-release.ts";
 import { checkCircuitBreaker, recordCircuitFailure, recordCircuitSuccess, countsTowardBreaker } from "./provider.ts";
+import { isQuotaSpent } from "./outage.ts";
 import { OWNER_STEERING_NOTE } from "../agent/owner-steering.ts";
 import { clampEffortToLadder } from "./effort-ladder.ts";
 import { ReasoningSegmenter } from "./reasoning-segments.ts";
@@ -868,7 +869,8 @@ async function runAnthropic(
           lastErr = err;
           continue;
         }
-        if (attempt < MAX_ATTEMPTS && !tokensDelivered && isRetryableStatus(response.status)) {
+        // A spent quota is a 429 too, and no backoff refills it: straight to the caller's fallback.
+        if (attempt < MAX_ATTEMPTS && !tokensDelivered && !isQuotaSpent(err) && isRetryableStatus(response.status)) {
           const delay = retryDelayMs(attempt, parseRetryAfterMs(response));
           await log("warn", `Anthropic ${response.status}, retrying in ${delay}ms (${attempt}/${MAX_ATTEMPTS})`);
           await sleep(delay, signal);

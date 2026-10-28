@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from "bun:test";
 import { mockFetch } from "../helpers/mock-fetch.ts";
-import { chatCompletion, chatCompletionStream, resetCircuitBreaker } from "../../src/llm/provider.ts";
+import { chatCompletion, chatCompletionStream, countsTowardBreaker, resetCircuitBreaker } from "../../src/llm/provider.ts";
 import { clearOpenRouterCache } from "../../src/llm/openrouter-endpoints.ts";
 import type { ResolvedLlmConfig } from "../../src/core/config.ts";
 
@@ -540,5 +540,36 @@ describe("a stop reaches a run that is waiting to retry", () => {
     } finally {
       mock.restore();
     }
+  });
+});
+
+describe("a spent quota is not an endpoint outage", () => {
+  test("five exhausted-account refusals do not open the breaker for the other accounts", async () => {
+    resetCircuitBreaker();
+    // Measured 2026-10-27: `chatgpt-2`'s `usage_limit_reached` opened the breaker keyed on
+    // `https://chatgpt.com/backend-api`, which is the endpoint all three ChatGPT subscriptions
+    // share. `chatgpt-3` answered fine ninety seconds later and the run had already been rerouted.
+    const mock = mockFetch(async () => errorResponse(429, '{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached"}}') as never);
+    try {
+      for (let i = 0; i < 6; i++) {
+        await chatCompletion(config, simpleMessages).catch(() => {});
+      }
+      // The seventh still reaches the backend: the endpoint is fine, one plan is out.
+      await expect(chatCompletion(config, simpleMessages)).rejects.toThrow("HTTP 429");
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("a rate limit still counts: it is the endpoint struggling, not a plan running dry", () => {
+    const quota = Object.assign(new Error('{"error":{"type":"usage_limit_reached"}}'), { status: 429 });
+    const rate = Object.assign(new Error("Too many concurrent requests"), { status: 429 });
+    const outage = Object.assign(new Error("server"), { status: 503 });
+    const malformed = Object.assign(new Error("bad request"), { status: 400 });
+
+    expect(countsTowardBreaker(quota)).toBe(false);
+    expect(countsTowardBreaker(rate)).toBe(true);
+    expect(countsTowardBreaker(outage)).toBe(true);
+    expect(countsTowardBreaker(malformed)).toBe(false);
   });
 });

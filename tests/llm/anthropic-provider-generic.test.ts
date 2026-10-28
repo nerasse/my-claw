@@ -214,3 +214,31 @@ test("each provider is discovered from its own endpoint under its own credential
     env.restore();
   }
 });
+
+/**
+ * The same rule as the Codex transport, pinned here because they are two files that had drifted
+ * apart once already: a spent plan limit gets one request, and a rate limit keeps its three.
+ *
+ * Measured 2026-10-27 on the Anthropic lane: `Anthropic 429, retrying in 30000ms (1/3)` then `(2/3)`
+ * on `{"type":"rate_limit_error"}` -- correct, that one is waitable -- while a plan limit would have
+ * been given the same three trips and then the run's four waits on top.
+ */
+test("a spent plan limit is not retried by the anthropic transport", async () => {
+  const env = withEnv({ CLAUDE_CODE_OAUTH_TOKEN: "sk-ant-oat-sub" });
+  let calls = 0;
+  const mock = mockFetch(async () => {
+    calls++;
+    return new Response(
+      JSON.stringify({ type: "error", error: { type: "usage_limit_reached", message: "Go usage limit exceeded" } }),
+      { status: 429, headers: { "Content-Type": "application/json" } },
+    );
+  });
+  try {
+    const resolved = resolveLlmConfig(config({}), "claude/claude-opus-5");
+    await assert.rejects(() => anthropicResponseStream(resolved, [{ role: "user", content: "hi" }], () => {}), /usage limit/i);
+    assert.equal(calls, 1, "one request, then the caller's fallback owns the decision");
+  } finally {
+    mock.restore();
+    env.restore();
+  }
+});

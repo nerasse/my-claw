@@ -355,6 +355,9 @@ export class AgentBridge implements AgentBackend {
           config: this.config,
           agent: params.agentToolType,
           ...(params.runModel?.route ? { route: params.runModel.route } : {}),
+          // The route does not always travel with the run (a forced model from the dispatcher, a
+          // sub-agent's resolved config); what the conversation picked does, and it names the chain.
+          ...(params.session.modelOverride ? { tagRef: params.session.modelOverride } : {}),
           current: failed,
           hasImages: params.message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
           attempted: params.attempted,

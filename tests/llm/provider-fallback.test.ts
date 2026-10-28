@@ -140,3 +140,85 @@ test("a model the run already tried is never handed back", () => {
   });
   assert.deepEqual(targets, []);
 });
+
+/**
+ * The route the conversation picked, when the run did not carry it.
+ *
+ * Measured 2026-10-27: a chat pinned on `tag:CubeFlowSol` -- two ChatGPT subscriptions -- spent the
+ * first account's quota, and the run answered on `Medium`'s first candidate instead of the tag's own
+ * second account. `chatgpt-3` answered fine ninety seconds later, so the target had been there and
+ * was simply not looked at.
+ *
+ * `RunModel.route` is what the walk wants, and it does not always survive the trip: the dispatcher
+ * hands the bridge the concrete winner as a forced model (which resolves to no tag), and a sub-agent
+ * hands it a resolved config. Both lose the route; what the conversation picked does not.
+ */
+test("a tag still names the chain when the run arrives without its route", () => {
+  const cfg = config();
+  cfg.tags = {
+    TwoAccounts: {
+      route: [{ model: "claude-sonnet-5" }, { model: "claude-opus-5" }],
+      fallbackToGlobalDefault: false,
+    },
+  };
+  const targets = providerFallbackTargets({
+    config: cfg,
+    agent: "main",
+    tagRef: "tag:TwoAccounts",
+    current: { model: "claude-sonnet-5", provider: "anthropic" },
+    hasImages: false,
+    attempted: attempted(["claude-sonnet-5"]),
+  });
+  // The tag's own second candidate, never the global default: the tag does not say so.
+  assert.deepEqual(targets.map((t) => t.model), ["claude-opus-5"]);
+  assert.equal(targets[0]?.label, "TwoAccounts route candidate 2");
+});
+
+test("a run that left its tag is not dragged back onto it", () => {
+  // The preflight already fell through this tag to the global default (both candidates were
+  // unavailable before the run). Walking the route now would retry a model the resolver refused.
+  const cfg = config();
+  cfg.tags = { TwoAccounts: { route: [{ model: "claude-sonnet-5" }, { model: "claude-opus-5" }] } };
+  const targets = providerFallbackTargets({
+    config: cfg,
+    agent: "main",
+    tagRef: "tag:TwoAccounts",
+    current: { model: "mimo", provider: "litellm" },
+    hasImages: false,
+    attempted: attempted(["mimo"]),
+  });
+  assert.deepEqual(targets, []);
+});
+
+test("a deleted tag leaves the run on the ordinary chain", () => {
+  const targets = providerFallbackTargets({
+    config: config(),
+    agent: "main",
+    tagRef: "tag:Gone",
+    current: { model: "claude-sonnet-5", provider: "anthropic" },
+    hasImages: false,
+    attempted: attempted(["claude-sonnet-5"]),
+  });
+  assert.deepEqual(targets.map((t) => t.model), ["mimo"]);
+  assert.equal(targets[0]?.label, "configured default");
+});
+
+test("the route wins over the tag reference when both are present", () => {
+  // The resolved route knows things the stored pick does not: which candidates the preflight judged
+  // unavailable, and where the effort and ceiling come from.
+  const cfg = config();
+  cfg.tags = {
+    Cheap: { route: [{ model: "claude-sonnet-5" }, { model: "mimo" }, { model: "claude-opus-5" }] },
+    Other: { route: [{ model: "claude-opus-5" }] },
+  };
+  const targets = providerFallbackTargets({
+    config: cfg,
+    agent: "main",
+    route: { tag: "Cheap", candidates: [{ model: "claude-sonnet-5" }, { model: "mimo" }], fallbackToGlobalDefault: false, selectedIndex: 0 },
+    tagRef: "tag:Other",
+    current: { model: "claude-sonnet-5", provider: "anthropic" },
+    hasImages: false,
+    attempted: attempted(["claude-sonnet-5"]),
+  });
+  assert.deepEqual(targets.map((t) => t.model), ["mimo"]);
+});

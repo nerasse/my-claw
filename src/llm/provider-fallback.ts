@@ -10,9 +10,8 @@
  * would be the model that just failed.
  */
 
-import { resolveAgentLlm, type MyClawConfig, type ResolvedLlmConfig } from "../core/config.ts";
+import { resolveAgentLlm, tagNameOf, tagRouteOf, type EffortLevel, type MyClawConfig, type ResolvedLlmConfig } from "../core/config.ts";
 import { resolveLlmConfigForAgentMessage } from "./resolver.ts";
-import type { EffortLevel } from "../core/config.ts";
 import { directRouteOf, type RunModelRoute } from "./run-model.ts";
 
 export interface ProviderFallbackTarget {
@@ -29,6 +28,17 @@ export interface ProviderFallbackRequest {
   /** The agent the run belongs to ("main", "cron", a sub-agent's kind). */
   agent: string;
   route?: RunModelRoute;
+  /**
+   * What the conversation picked, as stored: `tag:<name>` when it picked a tag.
+   *
+   * The run does not always arrive here carrying its route. The dispatcher hands the bridge the
+   * concrete winner as a forced model, and a sub-agent runs on a resolved config, so both lose
+   * `RunModel.route` -- and a run whose route is unknown walked the *agent's* default instead of its
+   * own tag. Measured 2026-10-27: a chat pinned on a two-account tag fell out of the route on the
+   * first account's spent quota and answered on `Medium`'s first candidate, while the tag's own
+   * second account answered fine ninety seconds later.
+   */
+  tagRef?: string;
   /** The model that just failed. */
   current: { model: string; provider?: string };
   hasImages: boolean;
@@ -73,6 +83,13 @@ export function providerFallbackTargets(request: ProviderFallbackRequest): Provi
 
   if (route) return walk(route);
 
+  // The conversation's own tag still names the chain when the resolved route did not travel with
+  // the run. Only when the run is *on* one of its candidates: a tag that the preflight fell through
+  // to the global default has already been judged unavailable, and walking it would retry a model
+  // the resolver refused rather than continue past it.
+  const ownRoute = routeOfTagRef(config, request.tagRef, request.current.model);
+  if (ownRoute) return walk(ownRoute);
+
   // Off its route -- a model the caller picked, like a spawn's `model` -- a run whose agent default
   // is a tag falls back along that tag's whole route, not only its first candidate: taking the first
   // alone left a volet dead when mimo's quota and then deepseek failed, with opus unused further down
@@ -92,4 +109,33 @@ export function providerFallbackTargets(request: ProviderFallbackRequest): Provi
   if (attempted.has(agentDefault.model)) return targets;
   targets.push({ model: agentDefault.model, config: agentDefault, label: "configured default" });
   return targets;
+}
+
+/**
+ * The route a stored `tag:<name>` pick names, with the candidate the run is on as its selection.
+ *
+ * `undefined` when there is nothing to walk without inventing one: no tag pick, a tag that no longer
+ * exists, or a run whose current model is not one of that tag's candidates (it already left the
+ * route, so the route is not the answer).
+ */
+function routeOfTagRef(
+  config: MyClawConfig,
+  tagRef: string | undefined,
+  currentModel: string,
+): RunModelRoute | undefined {
+  const name = tagRef === undefined ? undefined : tagNameOf(tagRef);
+  if (name === undefined || name === "Default") return undefined;
+  const tag = (config.tags ?? config.llm.tags)?.[name];
+  const candidates = tagRouteOf(tag);
+  if (candidates.length === 0) return undefined;
+  // A nested tag would need a second expansion nobody resolved for this run.
+  if (candidates.some((candidate) => tagNameOf(candidate.model) !== undefined)) return undefined;
+  const selectedIndex = candidates.findIndex((candidate) => candidate.model === currentModel);
+  if (selectedIndex < 0) return undefined;
+  return {
+    tag: name,
+    candidates,
+    fallbackToGlobalDefault: tag?.fallbackToGlobalDefault === true,
+    selectedIndex,
+  };
 }
