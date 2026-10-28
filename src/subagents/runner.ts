@@ -2,6 +2,7 @@ import { join, resolve } from "node:path";
 import type { MyClawConfig } from "../core/config.ts";
 import { resolveAgentWorkspace, resolveWorkspaceKey, workspaceKeyForDir } from "../core/config.ts";
 import { resolveRunModel, type RunModel, type RunModelRequest } from "../llm/run-model.ts";
+import type { EffortLevel } from "../core/config.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { ToolRegistry } from "../tools/registry.ts";
@@ -32,6 +33,21 @@ import { nodeRecord } from "../nodes/store.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 import { formatLocationForModel } from "../agent/preprocess.ts";
 import { withChildRunContext } from "../utils/run-context.ts";
+
+/**
+ * The pins a caller asked for, on the session that is about to run.
+ *
+ * A sub-agent's session is a session: `effortOverride` and `contextOverride` are exactly the two
+ * fields a chat's `/effort` and `/cap` write, and the resolver and the window reader already put
+ * them above the tag and the scope. Writing them at creation is therefore the whole feature -- no
+ * second precedence to keep in step, and a session-mode sub-agent keeps them across `send()` the
+ * way a chat keeps its own.
+ */
+function applyPins(session: SessionData, pins?: { effort?: EffortLevel; contextCap?: number }): void {
+  if (!pins) return;
+  if (pins.effort) session.effortOverride = pins.effort;
+  if (pins.contextCap !== undefined) session.contextOverride = pins.contextCap;
+}
 
 /**
  * Where a sub-agent's run reports itself while a human watches it. Absent for a parent-driven run:
@@ -282,6 +298,13 @@ export class SubAgentRunner {
     visibility: "global" | "workspace" | "private";
     signal?: AbortSignal;
     model?: string;
+    /**
+     * The reasoning and the context ceiling the caller asked for, over the agent's own pins. Set on
+     * the sub-agent's session, which is a session like any other: `effortOverride` and
+     * `contextOverride` are what a chat's `/effort` and `/cap` write, and they outrank the tag and
+     * the scope exactly the same way (docs/subagents.md).
+     */
+    pins?: { effort?: EffortLevel; contextCap?: number };
     // Same per-agent queue as send(): without it, a send() issued while the spawn's first
     // run is still going races it on the session file (and the SDK session resume).
     enqueue?: <T>(id: string, task: () => Promise<T>) => Promise<T>;
@@ -295,7 +318,7 @@ export class SubAgentRunner {
      */
     streamProvider?: (id: string) => SubAgentStream | undefined;
   }): Promise<{ id: string; result: string; attachments: Attachment[] }> {
-    const { type, mode, task, workspaceDir, parentWorkspaceDir, parentMessage, existingIds, generateId, parentSessionId, visibility, signal, model, enqueue, toolCallId, streamProvider } = opts;
+    const { type, mode, task, workspaceDir, parentWorkspaceDir, parentMessage, existingIds, generateId, parentSessionId, visibility, signal, model, pins, enqueue, toolCallId, streamProvider } = opts;
     // Sanitized here rather than only inside SubAgentRegistry.generateId: that function arrives as
     // a callback, so this is the one place every caller passes through, and it keeps the stored
     // displayName equal to the name inside the id.
@@ -321,7 +344,7 @@ export class SubAgentRunner {
     if (offline) return { id: "", result: offline, attachments: [] };
 
     if (mode === "run") {
-      return this.runOneShot(displayName, type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, signal, model, toolCallId, streamProvider, enqueue);
+      return this.runOneShot(displayName, type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, signal, model, toolCallId, streamProvider, enqueue, pins);
     }
 
     const id = generateId(displayName, existingIds);
@@ -340,6 +363,7 @@ export class SubAgentRunner {
     };
 
     const session = this.createSession(id, parentMessage.platform, parentMessage.chatType, meta, resolved.key);
+    applyPins(session, pins);
     session.invokedBy = parentSessionId;
     session.parentFolderId = spawnedFrom.folderId;
     recordSubAgentCaller(session, parentSessionId);
@@ -773,6 +797,8 @@ export class SubAgentRunner {
      * the one-shot on the session file.
      */
     enqueue?: <T>(id: string, task: () => Promise<T>) => Promise<T>,
+    /** The caller's effort and ceiling, set on the session this one-shot creates. */
+    pins?: { effort?: EffortLevel; contextCap?: number },
   ): Promise<{ id: string; result: string; attachments: Attachment[] }> {
     const id = `subagent/run-${crypto.randomUUID()}`;
     // A one-shot keeps its session now: the app lists it as a temporary sub-agent and can open it
@@ -788,6 +814,7 @@ export class SubAgentRunner {
       visibility: "private",
       createdAt: new Date().toISOString(),
     }, workspaceKey);
+    applyPins(session, pins);
     session.invokedBy = parentSessionId;
     session.parentFolderId = spawnedFrom.folderId;
     recordSubAgentCaller(session, parentSessionId);
@@ -884,6 +911,10 @@ export class SubAgentRunner {
       agent: type,
       ...(fileModel ? { fileModel } : {}),
       ...(pick ? { sessionModel: pick } : {}),
+      // The sub-agent's own pins, which nothing read before: a `/effort` typed in a sub-agent's
+      // thread was stored and then ignored by its next run, and a spawn's `effort` would have
+      // joined it. A chat's pins reach the resolver through these two fields, so these are the two.
+      ...(session.effortOverride ? { sessionEffort: session.effortOverride } : {}),
     };
     let resolved: RunModel;
     try {

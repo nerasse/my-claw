@@ -56,6 +56,23 @@ spawn, and `executeRunWithSession` hard-codes `depth = 1`.
   the orchestrator (measured 2026-10-04), and the enum moved whenever discovery found a model while
   the tool definitions open the cached prefix. The tags, a handful that change only with the
   config, are named in the parameter's description.
+- `effort` and `contextCap` — optional, and they are the sub-agent's own pins. A sub-agent's
+  session is a session: they are written to `effortOverride` and `contextOverride`, exactly the
+  two fields a chat's `/effort` and `/cap` set, so the resolver and the window reader apply them
+  with the precedence that already exists (session > tag > agent > global) and no second one to
+  keep in step. A `mode: "session"` sub-agent keeps them across `send()` the way a chat keeps its
+  own. Omitted, nothing is written and the agent's own scope decides — a spawn only ever adds to
+  what the agent file and the config say.
+
+The same three parameters are on `delegate_browser_task` (a browsing run is pinned like a spawned
+one), and they are read by `judgePins` in `src/tools/model-choice.ts` so one door cannot accept an
+effort the other refuses. The effort ladder is the resolver's own, not the model's trimmed list:
+which levels a model accepts is clamped downstream.
+
+`model` takes the whole `provider/model` reference and nothing less. A label the app shows
+("GPT-6 Luna") and a bare id tail (`gpt-6-luna`) are both refused with the ids that look like
+them: an install carries six models under that name, and picking one for the caller is picking
+whose quota gets spent.
 
 ### `send(id, message, attachments?)`
 

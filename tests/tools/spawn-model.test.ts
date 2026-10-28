@@ -10,7 +10,7 @@
 
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { closestModels, subagentModelIds } from "../../src/tools/model-choice.ts";
+import { closestModels, judgePins, subagentModelIds } from "../../src/tools/model-choice.ts";
 import { createSpawnTool } from "../../src/tools/spawn.ts";
 import type { SubAgentRunner } from "../../src/subagents/runner.ts";
 import type { SubAgentRegistry } from "../../src/subagents/registry.ts";
@@ -155,4 +155,82 @@ test("a node agent is marked with the machine's state, and a local agent is not"
   assert.match(gone, /\[gone\]/);
   await resetNodesStore();
   hub.resetNodeHub();
+});
+
+/**
+ * The two optional pins a caller may set on a sub-agent run. They ride on the sub-agent's session
+ * -- `effortOverride` and `contextOverride`, exactly what a chat's `/effort` and `/cap` write --
+ * so the resolver and the window reader apply them with no second precedence to keep in step.
+ */
+test("the effort and the ceiling are optional, and both reach the runner as pins", async () => {
+  const pins: Array<{ effort?: string; contextCap?: number } | undefined> = [];
+  const runner = {
+    spawn: async (opts: { pins?: { effort?: string; contextCap?: number } }) => {
+      pins.push(opts.pins);
+      return { id: "subagent/x-1", result: "done", attachments: [] };
+    },
+  } as unknown as SubAgentRunner;
+  const registry = {
+    listExistingIds: async () => [],
+    generateId: () => "subagent/x-1",
+    enqueue: <T,>(_id: string, run: () => Promise<T>) => run(),
+  } as unknown as SubAgentRegistry;
+  const tool = createSpawnTool(runner, registry, () => IDS, catalog);
+  const call = (extra: Record<string, unknown>) =>
+    tool.execute({ name: "x", type: "research", mode: "run", task: "t", __message: message, ...extra });
+
+  // Omitted: no pins at all, so the agent's own scope decides.
+  assert.equal((await call({})).success, true);
+  assert.equal((await call({ effort: "HIGH", contextCap: "720000" })).success, true);
+  assert.equal((await call({ effort: "inherit" })).success, true);
+  assert.deepEqual(pins, [undefined, { effort: "high", contextCap: 720000 }, undefined]);
+
+  // A level the ladder does not carry, and a cap that is not a positive number, are refused
+  // before any run starts.
+  const badLevel = await call({ effort: "turbo" });
+  assert.equal(badLevel.success, false);
+  assert.match(badLevel.error ?? "", /Unknown effort/);
+  const badCap = await call({ contextCap: -5 });
+  assert.equal(badCap.success, false);
+  assert.match(badCap.error ?? "", /positive number/);
+  assert.equal(pins.length, 3, "a refused pin never reaches the runner");
+});
+
+test("the two new parameters are optional and described, and the definition stays small", () => {
+  const { tool } = harness();
+  const schema = tool.parameters as Schema;
+  assert.equal(schema.properties["effort"]!.type, "string");
+  assert.ok(Array.isArray(schema.properties["effort"]!.enum));
+  assert.match(schema.properties["effort"]!.description ?? "", /Optional/);
+  assert.equal(schema.properties["contextCap"]!.type, "number");
+  assert.match(schema.properties["contextCap"]!.description ?? "", /Optional/);
+  assert.deepEqual((tool.parameters as { required?: string[] }).required, ["name", "type", "mode", "task"]);
+  assert.ok(JSON.stringify(tool.parameters).length < 3_000);
+});
+
+test("judgePins: one vocabulary, so both doors accept the same words", () => {
+  assert.deepEqual(judgePins({}), { ok: true, pins: {} });
+  assert.deepEqual(judgePins({ effort: "max" }), { ok: true, pins: { effort: "max" } });
+  assert.deepEqual(judgePins({ effort: "  HIGH  " }), { ok: true, pins: { effort: "high" } });
+  assert.deepEqual(judgePins({ effort: "default" }), { ok: true, pins: {} });
+  assert.deepEqual(judgePins({ contextCap: 512000 }), { ok: true, pins: { contextCap: 512000 } });
+  assert.deepEqual(judgePins({ contextCap: "512000.7" }), { ok: true, pins: { contextCap: 512000 } });
+  assert.equal(judgePins({ effort: "none-of-them" }).ok, false);
+  assert.equal(judgePins({ contextCap: 0 }).ok, false);
+  assert.equal(judgePins({ contextCap: "beaucoup" }).ok, false);
+});
+
+/**
+ * The whole `provider/model` reference and nothing less: six providers serve "gpt-6-luna" on a
+ * real install, so a label or a bare id tail is refused rather than resolved.
+ */
+test("only the whole provider/model reference is accepted as a model", async () => {
+  const { asked, call } = harness();
+  assert.equal((await call("openrouter/anthropic/claude-sonnet-5.5")).success, true);
+  for (const guess of ["Claude Sonnet 5.5", "claude-sonnet-5.5", "sonnet-5.5"]) {
+    const result = await call(guess);
+    assert.equal(result.success, false, `${guess} must be refused`);
+    assert.match(result.error ?? "", /provider\/model/);
+  }
+  assert.deepEqual(asked, ["openrouter/anthropic/claude-sonnet-5.5"], "only the exact reference reached the runner");
 });

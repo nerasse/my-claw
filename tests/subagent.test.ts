@@ -867,3 +867,58 @@ test("one-shot runs have no concurrency cap: a fourth and a fifth start while th
     fetchMock.restore();
   }
 });
+
+/**
+ * A spawn may pin its sub-agent's reasoning and its context ceiling, and both have to survive on
+ * the session: they are `effortOverride` and `contextOverride`, the two fields a chat's `/effort`
+ * and `/cap` write, so the resolver and the window reader apply them with no second precedence.
+ */
+test("a spawn's effort and ceiling land on the sub-agent's session, and outlive it", async () => {
+  const registry = new ToolRegistry();
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const fetchMock = mockFetch(async () => new Response(
+    JSON.stringify({ choices: [{ message: { content: "pinned" } }] }),
+    { status: 200 },
+  ) as never);
+
+  try {
+    const { id } = await runner.spawn({
+      displayName: "pinned", type: "research", mode: "session", task: "go",
+      parentMessage: createMessage(), existingIds: await reg.listExistingIds(),
+      generateId: (n, e) => reg.generateId(n, e), parentSessionId: "my-claw-app/thread/u1/c1",
+      visibility: "global",
+      pins: { effort: "high", contextCap: 720_000 },
+    });
+    const stored = await loadSession(id);
+    assert.equal(stored?.effortOverride, "high");
+    assert.equal(stored?.contextOverride, 720_000);
+  } finally {
+    fetchMock.restore();
+  }
+});
+
+/** Omitted, they stay absent: a spawn that says nothing must not overwrite the agent's own scope. */
+test("a spawn without pins leaves the sub-agent's own scope alone", async () => {
+  const registry = new ToolRegistry();
+  const runner = new SubAgentRunner(config, registry, new SkillRegistry(), voiceManager, sttPipeline);
+  const reg = new SubAgentRegistry();
+  const fetchMock = mockFetch(async () => new Response(
+    JSON.stringify({ choices: [{ message: { content: "plain" } }] }),
+    { status: 200 },
+  ) as never);
+
+  try {
+    const { id } = await runner.spawn({
+      displayName: "plain", type: "research", mode: "session", task: "go",
+      parentMessage: createMessage(), existingIds: await reg.listExistingIds(),
+      generateId: (n, e) => reg.generateId(n, e), parentSessionId: "my-claw-app/thread/u1/c1",
+      visibility: "global",
+    });
+    const stored = await loadSession(id);
+    assert.equal(stored?.effortOverride, undefined);
+    assert.equal(stored?.contextOverride, undefined);
+  } finally {
+    fetchMock.restore();
+  }
+});

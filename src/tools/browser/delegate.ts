@@ -4,7 +4,8 @@ import type { UnifiedMessage } from "../../channels/types.ts";
 import { isAbort, rethrowIfAborted } from "../../core/aborted.ts";
 import type { SubAgentRegistry } from "../../subagents/registry.ts";
 import type { SubAgentRunner, SubAgentStream } from "../../subagents/runner.ts";
-import { refuseUnknownModel, tagsOf } from "../model-choice.ts";
+import { judgePins, refuseUnknownModel, tagsOf } from "../model-choice.ts";
+import { EFFORT_LEVELS } from "../../llm/resolver.ts";
 import { DEFAULT_NOVNC_URL, takeBrowserOutcome, type BrowserSession } from "./session.ts";
 import { keptWindows } from "./held.ts";
 
@@ -47,6 +48,15 @@ export function createDelegateBrowserTool(
             type: "string",
             description: `Optional model for this browsing run: ${tags.length > 0 ? `a tag (${tags.join(", ")}) or ` : ""}a model id (provider/model). Default: the browser agent's own model.`,
           },
+          effort: {
+            type: "string",
+            enum: [...EFFORT_LEVELS],
+            description: "Optional reasoning effort for this browsing run, overriding the browser agent's own. Omit to keep the scope's.",
+          },
+          contextCap: {
+            type: "number",
+            description: "Optional ceiling on the context window this browsing run may use, in tokens. Omit to keep the scope's ceiling.",
+          },
           kept: { type: "string", enum: ["list", "release", "extend"], description: "Instead of a task: act on the windows kept for this conversation" },
           window: { type: "number", description: "kept: the window number to release or extend" },
           hold: { type: "string", description: "kept=extend: how long to keep it from now, e.g. 24h. Capped at browser.holdMax." },
@@ -73,6 +83,9 @@ export function createDelegateBrowserTool(
       // The same refusal spawn gives, from the same place: a browser run is pinned, not guessed.
       const refused = refuseUnknownModel(model, modelIds());
       if (refused) return { success: false, output: "", error: refused };
+      // The same two optional pins as a spawn, judged by the same function.
+      const asked = judgePins(args);
+      if (!asked.ok) return { success: false, output: "", error: asked.error };
       const message = args["__message"] as UnifiedMessage | undefined;
       if (!message) {
         return { success: false, output: "", error: "Missing parent message context" };
@@ -96,6 +109,7 @@ export function createDelegateBrowserTool(
           visibility: "private",
           signal,
           ...(model ? { model } : {}),
+          ...(asked.pins.effort || asked.pins.contextCap !== undefined ? { pins: asked.pins } : {}),
           enqueue: <T,>(runId: string, run: () => Promise<T>) => registry.enqueue(runId, run),
           ...(toolCallId ? { toolCallId } : {}),
           ...(streamProvider ? { streamProvider } : {}),

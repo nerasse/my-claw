@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
-import { refuseUnknownModel, tagsOf } from "./model-choice.ts";
+import { EFFORT_LEVELS } from "../llm/resolver.ts";
+import { judgePins, refuseUnknownModel, tagsOf } from "./model-choice.ts";
 import { resumeHint, subagentIdOf, SubAgentRunner, type SubAgentStream } from "../subagents/runner.ts";
 import { SubAgentRegistry } from "../subagents/registry.ts";
 import type { UnifiedMessage } from "../channels/types.ts";
@@ -73,6 +74,15 @@ export function createSpawnTool(
             type: "string",
             description: `Optional model for this sub-agent: ${tags.length > 0 ? `a tag (${tags.join(", ")}) or ` : ""}a model id (provider/model). Default: the configured sub-agent model.`,
           },
+          effort: {
+            type: "string",
+            enum: [...EFFORT_LEVELS],
+            description: "Optional reasoning effort for this sub-agent, overriding its agent's own. Omit to keep the scope's.",
+          },
+          contextCap: {
+            type: "number",
+            description: "Optional ceiling on the context window this sub-agent may use, in tokens. Omit to keep the scope's ceiling.",
+          },
         },
         required: ["name", "type", "mode", "task"],
       };
@@ -92,6 +102,8 @@ export function createSpawnTool(
           const refused = refuseUnknownModel(model, listModelIds?.() ?? []);
           if (refused) return { success: false, output: "", error: refused };
         }
+        const asked = judgePins(args);
+        if (!asked.ok) return { success: false, output: "", error: asked.error };
         // The confinement check lives in the runner: only it knows the sub-agent's base
         // workspace (the agent's configured one, else the parent's). See docs/multi-workspace.md.
         const parentWorkspaceDir = typeof args["__workspaceDir"] === "string"
@@ -136,6 +148,7 @@ export function createSpawnTool(
           visibility,
           signal,
           model,
+          ...(asked.pins.effort || asked.pins.contextCap !== undefined ? { pins: asked.pins } : {}),
           enqueue: <T,>(i: string, task2: () => Promise<T>) => registry.enqueue(i, task2),
           ...(toolCallId ? { toolCallId } : {}),
           ...(streamProvider ? { streamProvider } : {}),
