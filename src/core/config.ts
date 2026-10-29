@@ -467,6 +467,16 @@ export interface ResolvedLlmConfig {
    * Supported levels: high, low, max, medium."
    */
   effortLevels?: EffortLevel[];
+  /**
+   * This run may not continue on another model when its provider fails -- docs/provider-failures.md.
+   *
+   * Set by a caller that named a model on purpose: an implementation pass that has to stay on GPT,
+   * a review that has to be done by the model it vouches for. Measured 2026-10-28: an explicit GPT
+   * request on a spent account answered on DeepSeek through the agent's own tagged default, and
+   * the note announcing it arrived after the work was done. Announcing an unauthorised fallback
+   * does not authorise it, so the run stops instead and the caller chooses.
+   */
+  forbidFallback?: true;
   baseUrl: string;
   model: string;
   // The model id the API actually receives. When `model` is a tag reference (`tag:<name>`)

@@ -88,6 +88,78 @@ export function isQuotaSpent(err: unknown): boolean {
   return (status === undefined || status === 402 || status === 429) && QUOTA_SPENT.test(message);
 }
 
+/**
+ * Why a run stopped, in the terms a caller chooses its next move with.
+ *
+ * A single string was not enough: `String(err)` made a parent read prose to tell a spent quota from
+ * a one-minute rate limit, and those two call for opposite decisions -- change account, or wait.
+ * The predicates above already knew the difference; this only names it.
+ */
+export type ProviderFailure =
+  | "quota_exhausted"
+  | "rate_limited"
+  | "auth"
+  | "transport"
+  | "invalid_request"
+  | "policy_refusal"
+  | "capability";
+
+/**
+ * The class of a provider failure, or undefined when it is not one (a tool bug, a caller's own
+ * mistake). Read off the same evidence the fallback and the retry schedule read, so a caller is
+ * never told a story the run did not act on.
+ */
+export function classifyProviderFailure(err: unknown): ProviderFailure | undefined {
+  if (isQuotaSpent(err)) return "quota_exhausted";
+  if (isCapabilityRefusal(err)) return "capability";
+  if (isPolicyRefusal(err)) return "policy_refusal";
+  const status = (err as { status?: number } | undefined)?.status;
+  const message = String((err as Error | undefined)?.message ?? err ?? "");
+  if (status === 401 || /auth|unauthori[sz]ed|credential|api[- ]?key/i.test(message)) return "auth";
+  if (!isOutageClass(err)) return undefined;
+  // A 429 that is not a spent quota is the provider asking for patience, which is the one case a
+  // wait inside the run can fix.
+  if (status === 429 || /rate limit|too many requests/i.test(message)) return "rate_limited";
+  return "transport";
+}
+
+/**
+ * When the provider said its limit reopens, when it said so with the failure.
+ *
+ * The structured fields come first: the transports lift them off the payload onto the error
+ * (`resetAtMs`, `resetInSeconds`, `retryAfterMs`), so nothing downstream parses a sentence a
+ * gateway may have rewritten. A provider that says nothing yields `source: "none"` rather than a
+ * guessed hour -- an invented recovery time parks a task on a wall that never opens.
+ */
+export function quotaHintOf(err: unknown, now: number = Date.now()): { eligibleAt?: string; source: "provider_hint" | "none" } {
+  const target = err as { resetAtMs?: unknown; resetInSeconds?: unknown; retryAfterMs?: unknown } | undefined;
+  if (typeof target?.resetAtMs === "number" && Number.isFinite(target.resetAtMs)) {
+    const at = new Date(target.resetAtMs);
+    if (!Number.isNaN(at.getTime())) return { eligibleAt: at.toISOString(), source: "provider_hint" };
+  }
+  if (typeof target?.resetInSeconds === "number" && Number.isFinite(target.resetInSeconds)) {
+    return { eligibleAt: new Date(now + target.resetInSeconds * 1000).toISOString(), source: "provider_hint" };
+  }
+  // A `Retry-After` is the provider saying when to come back, in the one field every 429 may carry.
+  if (typeof target?.retryAfterMs === "number" && Number.isFinite(target.retryAfterMs)) {
+    return { eligibleAt: new Date(now + target.retryAfterMs).toISOString(), source: "provider_hint" };
+  }
+  // Last resort: a gateway that folded the payload into its own sentence. Read here and nowhere
+  // else, because this is the only place with no structured field left to prefer.
+  const message = String((err as Error | undefined)?.message ?? err ?? "");
+  const epoch = /["']?resets_at["']?\s*:\s*(\d{9,13})/.exec(message);
+  if (epoch) {
+    const raw = Number(epoch[1]);
+    const at = new Date(raw > 1e12 ? raw : raw * 1000);
+    if (!Number.isNaN(at.getTime())) return { eligibleAt: at.toISOString(), source: "provider_hint" };
+  }
+  const inSeconds = /["']?resets_in_seconds["']?\s*:\s*(\d+)/.exec(message);
+  if (inSeconds) {
+    return { eligibleAt: new Date(now + Number(inSeconds[1]) * 1000).toISOString(), source: "provider_hint" };
+  }
+  return { source: "none" };
+}
+
 /** A refusal the provider owns: the content, not the request. */
 export function isPolicyRefusal(err: unknown): boolean {
   const status = (err as { status?: number } | undefined)?.status;

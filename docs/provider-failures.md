@@ -177,6 +177,66 @@ Go usage limit exceeded
 A **rate limit** stays out on purpose: it clears on its own, which is exactly what a wait is for.
 The distinction is the noun -- a *limit* of the plan, not a *rate*.
 
+## A run can refuse to leave its model at all
+
+The chain above is a best-effort policy: it answers the owner's question on whatever can answer it.
+That is the right default for a chat and the wrong one for a task whose **model is part of the
+requirement** -- an implementation pass that has to stay on GPT, a review that has to be done by the
+model it vouches for, a benchmark measuring one endpoint.
+
+Measured 2026-10-28: a research run pinned on `chatgpt-2` hit `usage_limit_reached`; the research
+agent's configured default was a Cheap tag whose first candidate is DeepSeek, so the run continued
+there and the `[fallback]` note announcing it arrived **after** the work was done. The parent
+discarded the investigation, because evidence produced by a model it never approved is not evidence
+about the model it asked for. Announcing an unauthorised fallback does not authorise it.
+
+`SessionData.fallbackPolicy` is the switch, and it is a session field like `/effort` and `/cap`:
+
+```ts
+fallbackPolicy?: "forbid";   // absent = the inherited chain, which is what every run had before
+```
+
+- **Enforced where the decision is made** (`AgentBridge.callModel`, before
+  `providerFallbackTargets` is even consulted), not after the fact. A policy read after the answer
+  would be a warning, and a warning is what this replaced.
+- **The failure travels with its provider.** `withFailureContext` stamps `provider` and `model` on
+  the error, so a caller that is told "blocked" can still tell a spent account from an outage.
+- **The wait schedule still runs.** A `forbid` run that hits a one-minute rate limit may still retry
+  the *same* model -- that is not a fallback. Only leaving the model is refused.
+- **It is per invocation by default.** `send` writes it run-scoped unless the caller asked for
+  `scope: "session"`, and a run-scoped setting is put back before the session is persisted: the run
+  rewrites `modelOverride` with what it resolved, so restoring afterwards is what keeps a one-off
+  account choice from becoming the agent's standing one.
+
+## A blocked run reports itself, in fields
+
+`String(err)` was the whole answer a parent got. It had to read prose to choose between waiting,
+changing account and giving up, and it had no way at all to know whether the run had already
+done something. `blockedReportOf` (`src/subagents/blocked.ts`) answers in fields:
+
+```json
+{ "status": "blocked", "agentId": "subagent/x-1", "reason": "quota_exhausted",
+  "requested": { "model": "gptacct/gpt-6.1-sol", "provider": "gptacct" },
+  "partialWork": "possible", "historyPreserved": true, "resumable": true,
+  "retry": { "eligibleAt": "2026-10-29T08:47:12.000Z", "source": "provider_hint" },
+  "nextActions": ["resume_with_allowed_config", "wait", "resume", "inspect"] }
+```
+
+- **`reason`** comes from `classifyProviderFailure` (`src/llm/outage.ts`), which names what the
+  predicates above already knew: `quota_exhausted`, `rate_limited`, `auth`, `transport`,
+  `invalid_request`, `policy_refusal`, `capability`. Two of those call for opposite decisions and
+  used to be the same string.
+- **`partialWork`** is `possible` once a tool entry settled past the last user turn, and `unknown`
+  otherwise -- **never `none`**. A call cut off mid-flight settles no entry, so an empty log does not
+  prove nothing happened, and a parent told "nothing happened" is a parent that redoes work already
+  done.
+- **`retry.eligibleAt`** comes from the provider's own fields, lifted off the payload by the
+  transports (`resetAtMs`, `resetInSeconds`, `Retry-After`) rather than parsed out of a sentence a
+  gateway may have rewritten. A provider that names no time yields `source: "none"`, never a
+  guessed hour.
+- The same text also carries the report as one `blocked: {...}` line, so a parent that wants the
+  fields does not have to parse prose, and a parent that just reads gets the sentence.
+
 ## What counts as the provider's own failure
 
 `src/llm/outage.ts`, one answer for every path that talks to a model:

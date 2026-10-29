@@ -26,6 +26,16 @@ function harness() {
       calls.push(`kill ${id} ${caller}`);
       return id === "subagent/gone" ? "Error: Sub-agent subagent/gone not found" : `Killed ${id}`;
     },
+    inspect: async (id: string, _registry: unknown, caller: string) => {
+      calls.push(`inspect ${id} ${caller}`);
+      if (id === "subagent/gone") return undefined;
+      return {
+        id: "subagent/a-1", displayName: "a", type: "general", messageCount: 3, status: "idle",
+        visibility: "global", createdAt: new Date().toISOString(), lifecycle: "failed",
+        lastTool: { name: "bash", ok: true }, resumable: true,
+        nextActions: ["send(id) to resume", "send(id, message)"],
+      };
+    },
     reset: async (id: string, caller: string) => {
       calls.push(`reset ${id} ${caller}`);
       return `Reset ${id}`;
@@ -71,13 +81,71 @@ test("an action it does not know is refused, not taken for a list", async () => 
   const { tool, calls } = harness();
   const result = await tool.execute({ action: "delete", id: "subagent/a-1" });
   assert.equal(result.success, false);
-  assert.match(result.error ?? "", /list, kill or reset/);
+  assert.match(result.error ?? "", /list, inspect, kill or reset/);
   assert.deepEqual(calls, []);
 });
 
-test("the schema says which action wants the id", () => {
+test("the schema names the actions, and only `action` is required", () => {
   const { tool } = harness();
   const props = (tool.parameters as { properties: Record<string, { enum?: string[] }>; required: string[] }).properties;
-  assert.deepEqual(props["action"]!.enum, ["list", "kill", "reset"]);
+  assert.deepEqual(props["action"]!.enum, ["list", "inspect", "kill", "reset"]);
   assert.deepEqual((tool.parameters as { required: string[] }).required, ["action"]);
+});
+
+test("inspect needs an id, and says so instead of listing", async () => {
+  const { tool, calls } = harness();
+  const result = await tool.execute({ action: "inspect", __sessionId: "s1" });
+  assert.equal(result.success, false);
+  assert.match(result.error ?? "", /id/);
+  assert.deepEqual(calls, []);
+});
+
+test("inspect describes the agent the runner knows, and refuses one it does not", async () => {
+  const { tool, calls } = harness();
+  const detail = await tool.execute({ action: "inspect", id: "subagent/a-1", __sessionId: "s1" });
+  assert.equal(detail.success, true);
+  assert.match(detail.output, /subagent\/a-1 \| a \| general/);
+  assert.match(detail.output, /state: failed/);
+  assert.match(detail.output, /last tool: bash \(ok\)/);
+  assert.match(detail.output, /resumable: yes/);
+  assert.match(detail.output, /next: send\(id\) to resume/);
+  assert.deepEqual(calls, ["inspect subagent/a-1 s1"]);
+
+  const missing = await tool.execute({ action: "inspect", id: "subagent/gone", __sessionId: "s1" });
+  assert.equal(missing.success, false);
+  assert.match(missing.error ?? "", /not found/);
+});
+
+/**
+ * A long install has dozens of shared workers. The filters and the page are what let a parent find
+ * the one it just drove; none of them may change what an unfiltered `list` returns.
+ */
+test("list filters on what the roster carries, and pages with a footer that names the total", async () => {
+  const many = Array.from({ length: 60 }, (_, i) => ({
+    id: `subagent/w-${i}`, displayName: `w${i}`, type: i % 2 === 0 ? "general" : "research",
+    messageCount: 1, status: i < 5 ? "running" : "idle", visibility: "global" as const,
+  }));
+  const runner = { list: async () => many } as unknown as SubAgentRunner;
+  const tool = createAgentsTool(runner, {} as SubAgentRegistry);
+
+  const filtered = await tool.execute({ action: "list", query: "RESEARCH", __sessionId: "s1" });
+  assert.equal(filtered.success, true);
+  assert.match(filtered.output, /subagent\/w-1 /);
+  assert.doesNotMatch(filtered.output, /subagent\/w-2 /);
+  assert.equal(filtered.output.split("\n").filter((l) => l.startsWith("- ")).length, 30, "only the research half");
+  assert.doesNotMatch(filtered.output, /Next page/, "a complete result needs no page footer");
+
+  const running = await tool.execute({ action: "list", status: "running", __sessionId: "s1" });
+  assert.equal(running.output.split("\n").filter((l) => l.startsWith("- ")).length, 5);
+
+  const paged = await tool.execute({ action: "list", limit: 10, __sessionId: "s1" });
+  assert.equal(paged.output.split("\n").filter((l) => l.startsWith("- ")).length, 10);
+  assert.match(paged.output, /10 of 60 matching agents\. Next page: offset=10\./);
+
+  const second = await tool.execute({ action: "list", limit: 10, offset: 10, __sessionId: "s1" });
+  assert.match(second.output, /subagent\/w-10 /);
+  assert.match(second.output, /offset=20/);
+
+  const none = await tool.execute({ action: "list", query: "nothing-like-it", __sessionId: "s1" });
+  assert.match(none.output, /No agent matches those filters/);
 });

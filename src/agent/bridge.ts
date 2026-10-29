@@ -322,6 +322,8 @@ export class AgentBridge implements AgentBackend {
     streaming: boolean;
     signal?: AbortSignal;
     onToken?: TokenCallback;
+    /** The run named its model on purpose: no other one may answer for it. */
+    forbidFallback?: boolean;
   }): Promise<{ response: LlmResponse; config: ResolvedLlmConfig }> {
     let config = params.config;
     let targets: ReturnType<typeof providerFallbackTargets> | undefined;
@@ -350,6 +352,12 @@ export class AgentBridge implements AgentBackend {
           await sleep(wait, params.signal);
           continue;
         }
+
+        // The run may not leave its model at all: a caller that named one on purpose gets that
+        // model or the failure, never a sibling it did not approve (docs/provider-failures.md).
+        // The failure travels with the provider that produced it, so the caller can still tell a
+        // spent account from an outage.
+        if (params.forbidFallback) throw withFailureContext(err, config);
 
         targets ??= providerFallbackTargets({
           config: this.config,
@@ -526,6 +534,8 @@ export class AgentBridge implements AgentBackend {
     // sub-agent carries its own id on purpose: it has its own system prompt, so sharing the
     // parent's key would point two different prefixes at one cache entry.
     let llmConfig: ResolvedLlmConfig = { ...resolvedModel, cacheKey: resolvedModel.cacheKey ?? session.id };
+    // A session that forbade the fallback says so once, here: the run's own model or the failure.
+    const forbidFallback = session.fallbackPolicy === "forbid";
     // What this run may do when the provider itself fails: the waits it owes (spent once, in
     // order), the models it already tried, and the notes it owes the reader for both.
     const providerWaits = providerRetryDelays(this.config.llm);
@@ -981,6 +991,7 @@ export class AgentBridge implements AgentBackend {
             streaming,
             signal,
             onToken,
+            ...(forbidFallback ? { forbidFallback } : {}),
           });
           // The run adopts whichever target answered: its context window, its vision, its usage
           // rows and its cache key all follow from here, for every turn that is left.

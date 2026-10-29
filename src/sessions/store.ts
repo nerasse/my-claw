@@ -353,6 +353,14 @@ export interface SessionData {
   modelOverride?: string;
   effortOverride?: import("../core/config.ts").EffortLevel;
   /**
+   * Whether this session's runs may continue on another model when their provider fails.
+   *
+   * Absent means the inherited chain, which is what every chat and every sub-agent had before. A
+   * session set to `forbid` runs its own model or stops -- the caller named that model on purpose.
+   * See docs/provider-failures.md.
+   */
+  fallbackPolicy?: "forbid";
+  /**
    * Effort of the scope this run belongs to (a cron job's own pin). Sits under the session's
    * `/effort` and under a tag's pin: it is the config of the run, not a per-chat choice. Never
    * persisted: the scheduler sets it from the job before each run, exactly like `scopeOverride`,

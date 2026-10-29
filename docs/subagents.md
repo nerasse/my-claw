@@ -74,20 +74,48 @@ which levels a model accepts is clamped downstream.
 them: an install carries six models under that name, and picking one for the caller is picking
 whose quota gets spent.
 
-### `send(id, message, attachments?)`
+### `send(id, message?, attachments?, model?, effort?, contextCap?, fallback?, scope?)`
 
 Loads the session, appends the message (with optional attachments), executes an `AgentBridge` run, saves the session.
 
 **FIFO queueing**: concurrent `send` to the same sub-agent chains sequentially. No reject, no error. The second `send` waits for the first to complete, then executes.
 
-### `agents(action, id?)`
+**The run's execution is part of the call.** The same `model`/`effort`/`contextCap` a `spawn`
+takes, judged by the same `refuseUnknownModel` and `judgePins`, plus a fallback policy:
 
-One tool for the three rare actions on persistent sub-agents (they were `list_agents`,
+| Field | What it does |
+|---|---|
+| `model` | A tag or a whole `provider/model` id for this run. Applied as `session.modelOverride` inside the child's queue entry, so it never lands on a live iteration. |
+| `effort`, `contextCap` | `effortOverride` / `contextOverride`, exactly as `/effort` and `/cap` write them. |
+| `fallback: "forbid"` | The run uses that model or stops -- no other model, no other family. See `docs/provider-failures.md`. `"inherit"` or absent keeps the configured chain. |
+| `scope: "run"` (default) | The four fields apply to this invocation, and are put back before the session is persisted. This is the default because changing an agent's standing model as a side effect of resuming it is a choice the caller states, not one it walks into. |
+| `scope: "session"` | They stay for the agent's later runs. |
+
+Omitted fields are absent, not cleared: a `send` that names nothing leaves the agent exactly as it
+was, which is what every pre-existing caller relies on.
+
+**A provider failure answers in fields**, not prose -- `blockedReportOf` in
+`src/subagents/blocked.ts`: `reason` (quota_exhausted, rate_limited, auth, transport, ...),
+`requested` model and provider, `partialWork` (`possible` | `unknown`, never `none`),
+`historyPreserved`, `resumable`, `retry.eligibleAt` when the provider named one, and `nextActions`.
+The readable sentence comes first and the same report rides after it as one `blocked: {...}` line.
+
+### `agents(action, id?, query?, status?, type?, limit?, offset?)`
+
+One tool for the rare actions on persistent sub-agents (they were `list_agents`,
 `kill_agent` and `reset_agent` until 2026-10-04: three definitions on every request for one shape).
 `spawn` and `send` stay their own, they are the hot path.
 
 - `list` — scans `sessions/subagent/`. Returns: id, displayName, type, messageCount, status
-  (`idle` | `running`), visibility.
+  (`idle` | `running`), visibility, and the model when the session records one. Narrow it with
+  `query` (substring on id, display name and type), `status` and `type`; page it with `limit`
+  (default 50, max 200) and `offset`. A page that is shorter than the match set says so, so a
+  filtered answer cannot be read as a total.
+- `inspect` (id) — one agent in detail, read off its own log: `lifecycle` (`never-run`,
+  `running`, `complete`, `failed`, `stopped`, `lost`, `blocked`), its last tool and whether it
+  succeeded, `resumable`, the armed quota wait when the owner's retry is what stopped it, and
+  `nextActions` in the words of the tools that do them. `blocked` is a `failed` run with the quota
+  retry pending: the only thing wrong with it is the clock.
 - `kill` (id) — deletes the session permanently. Workspace directory is NOT touched.
 - `reset` (id) — archives the current session to `sessions-archive/`, then recreates an empty
   session with the same `meta` (preserving name, type, workspaceDir).
@@ -183,12 +211,13 @@ LLM → agents(action="kill", id="subagent/code-explorer-a7b3")
 
 | File | Role |
 |---|---|
-| `src/subagents/types.ts` | `SubAgentMeta`, `SubAgentInfo`, `SubAgentType` |
+| `src/subagents/types.ts` | `SubAgentMeta`, `SubAgentInfo`, `SubAgentDetail`, `SubAgentLifecycle`, `SubAgentType` |
 | `src/subagents/registry.ts` | `SubAgentRegistry` — ID generation, FIFO enqueue, scan |
-| `src/subagents/runner.ts` | `SubAgentRunner` — spawn, send, kill, reset, list |
+| `src/subagents/runner.ts` | `SubAgentRunner` — spawn, send (with execution), inspect, kill, reset, list |
+| `src/subagents/blocked.ts` | `blockedReportOf` — what a caller is told when a provider refused the run |
 | `src/tools/spawn.ts` | `spawn` tool |
-| `src/tools/send.ts` | `send` tool with attachments |
-| `src/tools/agents.ts` | `agents` tool (list, kill, reset) |
+| `src/tools/send.ts` | `send` tool: message, attachments, model, effort, contextCap, fallback, scope |
+| `src/tools/agents.ts` | `agents` tool (list with filters and pages, inspect, kill, reset) |
 | `src/tools/workspace.ts` | `resolveWorkspacePath(input, workspaceDir?)` |
 | `src/agent/bridge.ts` | Injects `__workspaceDir` into tool args |
 
@@ -202,3 +231,16 @@ also race the one-shot on its session file, which is the thing the session path'
 said it was there to prevent.
 
 Both paths enqueue now. See `tests/subagent.test.ts`.
+
+## Tests
+
+- `tests/subagents/send-execution.test.ts` — `fallback: "forbid"` against a spent account: **one**
+  request, nothing on another family; the same call without the policy still walks to the default;
+  the blocked report's fields; a run-scoped model put back on disk, a session-scoped one kept; a
+  refused id reaching no wire; a nonsense `fallback`/`scope` refused before any run.
+- `tests/subagents/model-resolution.test.ts` — the model a spawn/pick resolves, read off the wire.
+- `tests/tools/agents-tool.test.ts` — list filters and pages, `inspect` describing a log, an
+  unknown action refused, and the schema's required fields.
+- `tests/continue/subagent-resume.test.ts` — `send(id)` with no message adds no turn and picks up
+  where the run stopped.
+- `tests/llm/provider-fallback.test.ts` — the order of the targets and the case that must stay empty.

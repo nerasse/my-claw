@@ -19,6 +19,7 @@ import { sessionLogOf } from "../sessions/log-access.ts";
 import { metaOf, readMeta, writeMeta } from "../sessions/meta.ts";
 import type { SessionLog, UserEntry } from "../sessions/log.ts";
 import { continuable, lastAnswer } from "../sessions/resume.ts";
+import { pathOf, type Entry, type ToolEntry } from "../sessions/log.ts";
 import { log } from "../utils/logger.ts";
 import type { SessionManager } from "../sessions/manager.ts";
 import { hooks } from "../hooks/index.ts";
@@ -26,7 +27,7 @@ import { isAbort } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
 import { stopOutcomeOf, type StopOutcome } from "../core/stop.ts";
 import { indexSessionEntries } from "../conversations/store.ts";
-import type { SubAgentType, SubAgentMeta, SubAgentInfo, SubAgentCallerInfo } from "./types.ts";
+import type { SubAgentType, SubAgentMeta, SubAgentInfo, SubAgentCallerInfo, SubAgentDetail, SubAgentLifecycle } from "./types.ts";
 import { sanitizeDisplayName } from "./registry.ts";
 import { nodeOnline } from "../nodes/hub.ts";
 import { nodeRecord } from "../nodes/store.ts";
@@ -113,6 +114,106 @@ function isReachableFrom(meta: SubAgentMeta, caller: SubAgentCaller): boolean {
     return (meta.workspaceKey ?? undefined) === (caller.workspaceKey ?? undefined);
   }
   return true;
+}
+
+/**
+ * The execution settings a caller may change as part of driving an existing sub-agent.
+ *
+ * They are applied under the same per-child queue as the run itself, so a configuration never
+ * lands on a session mid-iteration: `send` either configures and runs, or does neither.
+ * `scope` says how long it lasts -- this invocation, or the session's own settings from then on.
+ *
+ * docs/subagents.md, docs/provider-failures.md.
+ */
+export interface SubAgentExecution {
+  /** A tag or a whole `provider/model` id, already judged by the caller's own door. */
+  model?: string;
+  effort?: EffortLevel;
+  contextCap?: number;
+  /** `forbid` runs the named model or stops: no other model may answer for it. */
+  fallback?: "forbid";
+  scope: "run" | "session";
+}
+
+/**
+ * The session fields an execution touches, so a run-scoped one can put them back exactly.
+ *
+ * Restoring rather than recomputing: the run rewrites `modelOverride` with what it actually
+ * resolved, and a stored `forbid` is a decision about this invocation, not about the agent.
+ */
+type ExecutionSnapshot = Pick<SessionData, "modelOverride" | "effortOverride" | "contextOverride" | "fallbackPolicy">;
+
+function snapshotOf(session: SessionData): ExecutionSnapshot {
+  return {
+    modelOverride: session.modelOverride,
+    effortOverride: session.effortOverride,
+    contextOverride: session.contextOverride,
+    fallbackPolicy: session.fallbackPolicy,
+  };
+}
+
+function restoreExecution(session: SessionData, snapshot: ExecutionSnapshot): void {
+  for (const [key, value] of Object.entries(snapshot) as Array<[keyof ExecutionSnapshot, unknown]>) {
+    if (value === undefined) delete session[key];
+    else (session as unknown as Record<string, unknown>)[key] = value;
+  }
+}
+
+/**
+ * Writes an execution onto the session the run is about to use.
+ *
+ * The fields are the ones a chat's `/model`, `/effort` and `/cap` already write, so the resolver
+ * and the window reader apply them with no second precedence to keep in step. `fallback: forbid`
+ * is the one new field, read by the bridge where the fallback is decided.
+ */
+function applyExecution(session: SessionData, execution: SubAgentExecution | undefined): void {
+  if (!execution) return;
+  if (execution.model) session.modelOverride = execution.model;
+  if (execution.effort) session.effortOverride = execution.effort;
+  if (execution.contextCap !== undefined) session.contextOverride = execution.contextCap;
+  if (execution.fallback) session.fallbackPolicy = execution.fallback;
+}
+
+/**
+ * How a sub-agent's last run ended, read from its own markers.
+ *
+ * `blocked` is deliberately absent from the markers: the log does not know why a provider refused.
+ * It is derived from the armed quota wait, which is the owner's own record that the run died on a
+ * spent plan -- the one blocked state that clears itself with time.
+ */
+function lifecycleOf(path: readonly Entry[], running: boolean): SubAgentLifecycle {
+  let lastStart = -1;
+  for (let i = path.length - 1; i >= 0; i--) {
+    if (path[i]!.type === "run_start") {
+      lastStart = i;
+      break;
+    }
+  }
+  if (lastStart < 0) return running ? "running" : "never-run";
+  const end = path.slice(lastStart + 1).find((entry) => entry.type === "run_end");
+  if (!end) return running ? "running" : "lost";
+  if (end.type !== "run_end") return running ? "running" : "lost";
+  if (end.reason === "done") return "complete";
+  return end.reason === "aborted" ? "stopped" : "failed";
+}
+
+/** What a caller can do with an agent in this state, in the words of the tools that do it. */
+function nextActionsOf(lifecycle: SubAgentLifecycle, running: boolean): string[] {
+  if (running) return ["wait", "agents(action='inspect')"];
+  switch (lifecycle) {
+    case "never-run":
+      return ["send(id, message)", "agents(action='kill')"];
+    case "complete":
+      return ["send(id, message)", "agents(action='reset')", "agents(action='kill')"];
+    case "failed":
+    case "lost":
+    case "stopped":
+      return ["send(id) to resume", "send(id, message)", "agents(action='reset')"];
+    case "blocked":
+      return ["wait for the quota", "send(id) to resume", "send(id, model=...) with fallback='forbid'"];
+    default:
+      return ["agents(action='inspect')"];
+  }
 }
 
 interface ActiveSubAgentRun {
@@ -470,6 +571,14 @@ export class SubAgentRunner {
     // card to annotate, so the lifecycle events below would target a card that does not exist.
     toolCallId?: string,
     streamProvider?: (id: string) => SubAgentStream | undefined,
+    /**
+     * Model, effort, ceiling and fallback policy to apply as part of this call -- docs/subagents.md.
+     *
+     * Applied under the same queue entry as the run itself, so nothing lands on a live iteration.
+     * A `run`-scoped execution is put back in the finally, which is what keeps a one-off "stay on
+     * this account" from becoming the agent's permanent setting.
+     */
+    execution?: SubAgentExecution,
   ): Promise<string> {
     id = await this.canonicalId(id, callerSessionId);
     return this.runTracked(id, signal, (trackedSignal) => registry.enqueue(id, async () => {
@@ -482,8 +591,10 @@ export class SubAgentRunner {
         return `Error: sub-agent ${id} not found.`;
       }
       const entryLog = await sessionLogOf(id);
+      const before = execution?.scope === "run" ? snapshotOf(session) : undefined;
+      applyExecution(session, execution);
       if (message === undefined) {
-        return this.resume(id, session, entryLog, parentMessage, callerSessionId, caller.folderId, trackedSignal, stream, toolCallId, streamProvider);
+        return this.resume(id, session, entryLog, parentMessage, callerSessionId, caller.folderId, trackedSignal, stream, toolCallId, streamProvider, before);
       }
 
       const userContent = this.buildUserContent(message, attachments, parentMessage.location);
@@ -547,6 +658,7 @@ export class SubAgentRunner {
       } finally {
         // In the finally, not after: a failed run used to lose the question too, and the thread
         // came back from disk with no trace that anything had been sent.
+        if (before) restoreExecution(session, before);
         await this.persistSession(id, session);
         await this.indexForSearch(id, session);
       }
@@ -664,6 +776,10 @@ export class SubAgentRunner {
     stream: SubAgentStream | undefined,
     toolCallId: string | undefined,
     streamProvider: ((id: string) => SubAgentStream | undefined) | undefined,
+    /** What the session's execution fields were before a `run`-scoped `send`, put back before the
+     *  write: the run rewrites `modelOverride` with what it resolved, and persisting that would
+     *  make a one-off account choice the agent's permanent one. */
+    executionBefore?: ExecutionSnapshot,
   ): Promise<string> {
     session.invokedBy = callerSessionId;
     session.parentFolderId = folderId;
@@ -704,6 +820,7 @@ export class SubAgentRunner {
       }
       throw err;
     } finally {
+      if (executionBefore) restoreExecution(session, executionBefore);
       await this.persistSession(id, session);
       await this.indexForSearch(id, session);
     }
@@ -750,6 +867,57 @@ export class SubAgentRunner {
       // no subagents dir
     }
     return out;
+  }
+
+  /**
+   * One agent in detail: its roster row, how its last run ended, and what a caller may do next.
+   *
+   * The lifecycle is read off the log rather than kept anywhere, because the log is the only record
+   * of what a run did -- `agents(action='list')` answers "how many, still running", and a caller
+   * choosing between waiting, resuming and giving up needs the run's ending and its last tool.
+   * Reachability is the same rule as the roster: an agent this caller cannot drive is not described.
+   */
+  async inspect(id: string, registry: { isRunning: (id: string) => boolean }, callerSessionId: string): Promise<SubAgentDetail | undefined> {
+    const canonical = await this.canonicalId(id, callerSessionId);
+    const caller = await this.resolveCaller(callerSessionId);
+    const stored = await readMeta(canonical).catch(() => null);
+    const session = stored?.meta ? undefined : await loadSession(canonical);
+    const meta = stored?.meta ?? session?.meta;
+    if (!meta || !isReachableFrom(meta, caller)) return undefined;
+
+    const log = await sessionLogOf(canonical);
+    const entries = log.entries();
+    const leaf = log.leaf();
+    const path = pathOf(entries, leaf);
+    const running = registry.isRunning(canonical) || this.isRunningSession(canonical);
+    const lastToolEntry = [...path].reverse().find((entry): entry is ToolEntry => entry.type === "tool");
+    const quota = (stored ? stored.quotaRetry : session?.quotaRetry)?.pending;
+    // A failed run with the owner's quota wait armed is blocked, not broken: the only thing wrong
+    // with it is the clock, and saying "failed" would read as "needs a decision".
+    const ended = lifecycleOf(path, running);
+    const lifecycle: SubAgentLifecycle = ended === "failed" && quota ? "blocked" : ended;
+    const model = stored ? stored.modelOverride : session?.modelOverride;
+    const fallbackPolicy = stored ? stored.fallbackPolicy : session?.fallbackPolicy;
+    const picks = path.filter((entry) => entry.type === "user").length;
+
+    return {
+      id: canonical,
+      displayName: meta.displayName,
+      type: meta.type,
+      messageCount: picks,
+      status: running ? "running" : "idle",
+      visibility: meta.visibility,
+      ...(meta.workspaceKey ? { workspaceKey: meta.workspaceKey } : {}),
+      ...(meta.workspaceDir ? { workspaceDir: meta.workspaceDir } : {}),
+      ...(model ? { model } : {}),
+      createdAt: meta.createdAt,
+      lifecycle,
+      ...(fallbackPolicy ? { fallbackPolicy } : {}),
+      ...(lastToolEntry ? { lastTool: { name: lastToolEntry.name, ok: lastToolEntry.ok } } : {}),
+      ...(quota ? { quotaRetry: { at: quota.at, attempts: quota.attempts, windows: quota.windows } } : {}),
+      resumable: lifecycle !== "running" && continuable(entries, leaf).ok,
+      nextActions: nextActionsOf(lifecycle, running),
+    };
   }
 
   /**

@@ -3238,7 +3238,7 @@ function registerSubAgentTools(
     () => agentRegistry.list(),
     streamProvider,
   ));
-  registry.register(createSendTool(runner, subRegistry, streamProvider));
+  registry.register(createSendTool(runner, subRegistry, streamProvider, modelIds));
   // The browser is a sub-agent like the others, reached through its own door rather than `spawn`:
   // one shared Chromium, one task at a time (docs/browser.md). Its door takes a model too, so a
   // page that needs another one is the caller's call rather than a config edit.

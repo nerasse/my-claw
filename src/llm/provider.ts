@@ -631,19 +631,72 @@ async function clampOutputToPinnedEndpoint(config: ResolvedLlmConfig, body: Reco
   });
 }
 
-async function readErrorBody(response: Response): Promise<string> {
+/**
+ * The body as a readable sentence, and with it the provider's own hints.
+ *
+ * `retryAfterMs` is the header. The reset fields are in the payload (`resets_at`,
+ * `resets_in_seconds`) and used to be thrown away here: the sentence kept only `error.message`,
+ * so a caller downstream had no way to know when the limit reopens and invented one or gave up.
+ * Values only, no content -- the same rule the rest of this file follows.
+ */
+interface ErrorDetail {
+  message: string;
+  retryAfterMs?: number;
+  resetAtMs?: number;
+  resetInSeconds?: number;
+}
+
+async function readErrorBody(response: Response): Promise<ErrorDetail> {
+  const retryAfterMs = parseRetryAfterHeader(response);
+  let payload: Record<string, unknown> | undefined;
+  let message = "(unreadable)";
   try {
     const body = await response.text();
     const trimmed = body.slice(0, 500);
     try {
-      const json = JSON.parse(trimmed);
-      return json?.error?.message ?? json?.message ?? trimmed;
+      const json = JSON.parse(trimmed) as Record<string, unknown>;
+      payload = json;
+      const error = json["error"];
+      message = typeof error === "object" && error !== null
+        ? String((error as Record<string, unknown>)["message"] ?? trimmed)
+        : String(json["message"] ?? trimmed);
     } catch {
-      return trimmed;
+      message = trimmed;
     }
   } catch {
-    return "(unreadable)";
+    // keep the unreadable marker
   }
+  const at = payload?.["resets_at"] ?? (payload?.["error"] as Record<string, unknown> | undefined)?.["resets_at"];
+  const seconds = payload?.["resets_in_seconds"] ?? (payload?.["error"] as Record<string, unknown> | undefined)?.["resets_in_seconds"];
+  return {
+    message,
+    ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+    ...(typeof at === "number" && Number.isFinite(at) ? { resetAtMs: at > 1e12 ? at : at * 1000 } : {}),
+    ...(typeof seconds === "number" && Number.isFinite(seconds) ? { resetInSeconds: seconds } : {}),
+  };
+}
+
+/** `Retry-After` as milliseconds, both forms the header allows. */
+function parseRetryAfterHeader(response: Response): number | undefined {
+  const raw = response.headers.get("retry-after");
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
+  const date = Date.parse(raw);
+  if (!Number.isFinite(date)) return undefined;
+  const delta = date - Date.now();
+  return delta > 0 ? delta : undefined;
+}
+
+/**
+ * The provider's own timing on the error, so every caller downstream reads a field instead of a
+ * sentence. The outage classifier and the blocked report both need it, and neither may parse prose
+ * that a translation or a gateway rewrite would break.
+ */
+function attachHints(err: Error & { retryAfterMs?: number; resetAtMs?: number; resetInSeconds?: number }, body: ErrorDetail): void {
+  if (body.retryAfterMs !== undefined) err.retryAfterMs = body.retryAfterMs;
+  if (body.resetAtMs !== undefined) err.resetAtMs = body.resetAtMs;
+  if (body.resetInSeconds !== undefined) err.resetInSeconds = body.resetInSeconds;
 }
 
 /**
@@ -835,12 +888,14 @@ export async function chatCompletion(
       const response = await fetch(url, llmFetchInit({ method: "POST", headers, body, signal: fetchSignal }));
 
         if (!response.ok) {
-          const detail = await readErrorBody(response);
+          const failure = await readErrorBody(response);
+          const detail = failure.message;
           const pinned404 = await pinnedRoute404(config, response.status, detail, bodyObject);
           const err = new Error(
             pinned404?.message ?? `LLM request failed: HTTP ${response.status} — ${detail}`,
-          ) as Error & { status?: number; stalePin?: boolean; capability?: string };
+          ) as Error & { status?: number; stalePin?: boolean; capability?: string; retryAfterMs?: number; resetAtMs?: number; resetInSeconds?: number };
           err.status = response.status;
+          attachHints(err, failure);
           if (pinned404) err.stalePin = true;
 
           // A refusal that names what to change is a change we can make: the same call, repaired,
@@ -984,12 +1039,14 @@ export async function chatCompletionStream(
       const response = await fetch(url, llmFetchInit({ method: "POST", headers, body, signal: fetchSignal }));
 
       if (!response.ok) {
-        const detail = await readErrorBody(response);
+        const failure = await readErrorBody(response);
+        const detail = failure.message;
         const pinned404 = await pinnedRoute404(config, response.status, detail, bodyObject);
         const err = new Error(
           pinned404?.message ?? `LLM stream request failed: HTTP ${response.status} — ${detail}`,
-        ) as Error & { status?: number; stalePin?: boolean; capability?: string };
+        ) as Error & { status?: number; stalePin?: boolean; capability?: string; retryAfterMs?: number; resetAtMs?: number; resetInSeconds?: number };
         err.status = response.status;
+        attachHints(err, failure);
         if (pinned404) err.stalePin = true;
 
         // A refusal that names what to change is a change we can make: the same call, repaired,

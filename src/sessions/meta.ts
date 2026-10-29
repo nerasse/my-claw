@@ -92,6 +92,7 @@ export interface SessionMeta {
   folderId?: string;
   modelOverride?: string;
   effortOverride?: SessionData["effortOverride"];
+  fallbackPolicy?: SessionData["fallbackPolicy"];
   contextOverride?: SessionData["contextOverride"];
   workspace?: string;
   roomId?: string;
@@ -151,6 +152,7 @@ const META_KEYS: Record<keyof SessionMeta, "session" | "carried"> = {
   folderId: "session",
   modelOverride: "session",
   effortOverride: "session",
+  fallbackPolicy: "session",
   contextOverride: "session",
   workspace: "session",
   roomId: "session",
@@ -236,6 +238,7 @@ export function metaOf(
     folderId: session.folderId,
     modelOverride: session.modelOverride,
     effortOverride: session.effortOverride,
+    fallbackPolicy: session.fallbackPolicy,
     contextOverride: session.contextOverride,
     workspace: session.workspace,
     roomId: session.roomId,
