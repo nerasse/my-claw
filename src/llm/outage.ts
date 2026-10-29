@@ -71,11 +71,16 @@ export function isOutageClass(err: unknown): boolean {
  * - ChatGPT plan: `{"type":"usage_limit_reached","message":"The usage limit has been reached",
  *   "plan_type":"plus","resets_at":...}`
  * - OpenCode Go: `Go usage limit exceeded`
+ * - Synthetic, measured 2026-10-28: `{"error":"You've exceeded your subscription rate limits.
+ *   Upgrade, or try again later. You can view your usage at https://synthetic.new/billing"}`.
+ *   It says "rate limits", but the plan is what ran out: `/quotas` answered with its weekly bar at
+ *   100 % and a tick a couple of hours out. Read as a rate limit, it waited 30 s, 60 s and 120 s
+ *   and opened the breaker on `https://api.synthetic.new/openai/v1`.
  *
  * A rate limit is deliberately *not* here: it clears on its own, which is exactly what a wait is
  * for. The distinction is the noun -- a **limit** of the plan, not a **rate**.
  */
-const QUOTA_SPENT = /quota (?:exhausted|exceeded)|insufficient[_ ]quota|exceeded your current quota|insufficient (?:credits|balance|funds)|out of credits|credit balance is too low|can only afford|usage_limit_reached|usage limit (?:has been |was )?(?:exceeded|reached)/i;
+const QUOTA_SPENT = /quota (?:exhausted|exceeded)|insufficient[_ ]quota|exceeded your current quota|insufficient (?:credits|balance|funds)|out of credits|credit balance is too low|can only afford|usage_limit_reached|usage limit (?:has been |was )?(?:exceeded|reached)|exceeded your subscription (?:rate )?limits?/i;
 
 export function isQuotaSpent(err: unknown): boolean {
   const status = (err as { status?: number } | undefined)?.status;

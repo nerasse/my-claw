@@ -40,6 +40,11 @@ reset, though — the usage endpoint does:
 This is what makes OpenCode Go waitable at all: its 429 body says nothing, its usage endpoint names
 every reset. A plain per-minute 429 reads every window below full and arms nothing.
 
+Synthetic is the case where the wording lies: its refusal says "You've exceeded your subscription
+**rate** limits", while `/quotas` answers with the plan's weekly bar at 100 % and the next 2 % tick
+a couple of hours out. The text is read as a spent quota, so the run stops on the wall instead of
+waiting 30 s, 60 s and 120 s on it and opening the endpoint's breaker for every model behind it.
+
 ## The wait
 
 `pending: { at, attempts, windows, error }` lives in the session's own `meta.json`, so it survives

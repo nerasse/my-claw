@@ -15,6 +15,7 @@ import { opencodeGoQuota } from "../../src/llm/quota/opencode-go.ts";
 import { openrouterQuota } from "../../src/llm/quota/openrouter.ts";
 import { syntheticQuota } from "../../src/llm/quota/synthetic.ts";
 import { quotaFor, quotaSourceOf, resetQuotaCache } from "../../src/llm/quota/index.ts";
+import { quotaWaitFrom, QUOTA_RETRY_BUFFER_MS } from "../../src/llm/quota/retry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 
 beforeEach(() => resetQuotaCache());
@@ -294,6 +295,24 @@ test("synthetic reads the rolling window when the plan answers in the newer shap
   }
 });
 
+test("synthetic: an empty weekly bar names the tick a retry can go through", async () => {
+  // The 429 Synthetic sends when the plan is out says nothing about when it comes back; its own
+  // weekly bar does, and the next 2 % tick is exactly that moment.
+  const mock = mockFetch(async () =>
+    json({ planWeeklyLimit: { percentRemaining: 0, nextRegenAt: "2026-10-29T04:00:00.000Z", nextRegenPercent: 2 } }),
+  );
+  try {
+    const result = await syntheticQuota("synthetic", "key");
+    assert.equal(result.ok, true);
+    const wait = quotaWaitFrom(result, Date.parse("2026-10-29T00:00:00.000Z"));
+    assert.ok(wait);
+    assert.deepEqual(wait.windows, ["Week"]);
+    assert.equal(wait.at, new Date(Date.parse("2026-10-29T04:00:00.000Z") + QUOTA_RETRY_BUFFER_MS).toISOString());
+  } finally {
+    mock.restore();
+  }
+});
+
 test("synthetic: a refused key is a sign-in fault, an unknown body is a failed read", async () => {
   let mock = mockFetch(async () => json({ error: "no" }, 401));
   try {
@@ -467,7 +486,9 @@ const CEDAR = {
       resets_total: 1,
       resets_left: 1,
       starts_at: null,
-      ends_at: "2026-10-29T00:00:00Z",
+      // Far out on purpose: an expired grant is filtered out, and a date near the day it was
+      // captured turned these tests red a week later without the code changing at all.
+      ends_at: "2030-01-01T00:00:00Z",
       clears: ["five_hour", "seven_day"],
       paused: false,
       usable_now: true,
@@ -486,7 +507,7 @@ test("claude reports its saved resets, and whether a claim would be accepted", a
     if (result.ok) {
       assert.deepEqual(result.snapshot.resets, {
         available: 1,
-        nextExpiresAt: "2026-10-29T00:00:00.000Z",
+        nextExpiresAt: "2030-01-01T00:00:00.000Z",
         clears: "5 h + weekly",
       });
     }

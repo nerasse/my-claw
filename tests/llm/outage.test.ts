@@ -89,6 +89,17 @@ test("a plan limit is a spent quota, whichever words the provider picked", () =>
   );
   // OpenCode Go, verbatim.
   assert.equal(isQuotaSpent(quota(429, "LLM request failed: HTTP 429 — Go usage limit exceeded")), true);
+  // Synthetic, verbatim from the 2026-10-28 log: it says "rate limits", the plan is what ran out
+  // (its weekly bar answered 100 % used), so it must not be waited on as a per-minute limit.
+  assert.equal(
+    isQuotaSpent(
+      quota(
+        429,
+        `LLM stream request failed: HTTP 429 — {"error":"You've exceeded your subscription rate limits. Upgrade, or try again later. You can view your usage at https://synthetic.new/billing"}`,
+      ),
+    ),
+    true,
+  );
   // litellm, which already worked: kept so the widen does not become a replace.
   assert.equal(isQuotaSpent(quota(429, "litellm.RateLimitError: Custom_openaiException - quota exhausted")), true);
   assert.equal(isQuotaSpent(quota(402, "insufficient credits")), true);
