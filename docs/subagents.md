@@ -114,8 +114,10 @@ One tool for the rare actions on persistent sub-agents (they were `list_agents`,
 - `inspect` (id) — one agent in detail, read off its own log: `lifecycle` (`never-run`,
   `running`, `complete`, `failed`, `stopped`, `lost`, `blocked`), its last tool and whether it
   succeeded, `resumable`, the armed quota wait when the owner's retry is what stopped it, and
-  `nextActions` in the words of the tools that do them. `blocked` is a `failed` run with the quota
-  retry pending: the only thing wrong with it is the clock.
+  `nextActions` in the words of the tools that do them. `blocked` is a failed run whose
+  `run_end.failure` is `quota_exhausted`: the one failure that clears itself with time. The class
+  is written by the bridge from `classifyProviderFailure`, not inferred from the owner's chat-level
+  wait -- a sub-agent never has one.
 - `kill` (id) — deletes the session permanently. Workspace directory is NOT touched.
 - `reset` (id) — archives the current session to `sessions-archive/`, then recreates an empty
   session with the same `meta` (preserving name, type, workspaceDir).

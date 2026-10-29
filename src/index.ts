@@ -121,6 +121,7 @@ import { createSpawnTool } from "./tools/spawn.ts";
 import { subagentModelIds } from "./tools/model-choice.ts";
 import { createSendTool } from "./tools/send.ts";
 import { createAgentsTool } from "./tools/agents.ts";
+import { createQuotaTool } from "./tools/quota.ts";
 import { createSkillsTool } from "./tools/skills.ts";
 import { createAudioTool } from "./tools/audio.ts";
 import { createWebSearchTool } from "./tools/web-search.ts";
@@ -609,6 +610,9 @@ async function main() {
   });
   registerCoreTools(toolRegistry, config);
   registerVoiceTools(toolRegistry, sttPipeline, ttsPipeline, voiceManager);
+  // Registered here with the core set: it is a read of the install's own providers, and the config
+  // it closes over is the live object the hot-reload appliers mutate in place.
+  toolRegistry.register(createQuotaTool(config));
   // Registered via a reusable closure so the config hot-reload watcher can (re)register
   // web_search when webSearch.baseUrl is added or changed at runtime.
   const registerWebSearch = (): void => {

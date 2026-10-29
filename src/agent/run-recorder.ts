@@ -153,11 +153,13 @@ export class RunRecorder {
    * The media is written here rather than on the phase because the phase exists before the tools
    * run: this is the first entry that can name what they attached to the answer.
    */
-  runEnd(reason: "done" | "aborted" | "error", media?: string[], mediaIds?: Array<string | null>): Entry {
+  runEnd(reason: "done" | "aborted" | "error", media?: string[], mediaIds?: Array<string | null>, failure?: string): Entry {
     return this.entries.append({
       type: "run_end",
       prompt: false,
       reason,
+      // Only ever on an error: a `done` that carried one would be a contradiction to read later.
+      ...(failure && reason === "error" ? { failure } : {}),
       ...(media && media.length > 0 ? { media } : {}),
       // Written only when the run had somewhere to store them: a marker without this field is one
       // the sweep at boot still has to pair, and one with nulls has already been looked for.

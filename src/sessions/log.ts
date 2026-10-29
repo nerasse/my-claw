@@ -292,6 +292,14 @@ export interface RunEndEntry extends EntryBase {
   prompt: false;
   reason: "done" | "aborted" | "error";
   /**
+   * Why an `error` run failed, in the same vocabulary the caller is told (`classifyProviderFailure`).
+   *
+   * Written because the marker alone answered "it broke" and nothing else: a roster deciding
+   * between "wait for the plan to reopen" and "this needs a decision" had to open the log's prose,
+   * or guess -- and a `blocked` state derived from a guess is worse than no state at all.
+   */
+  failure?: string;
+  /**
    * What the run's tools produced, as the paths they were written to.
    *
    * A tool attaches its files to the answer and the prose never names them, so this marker is the

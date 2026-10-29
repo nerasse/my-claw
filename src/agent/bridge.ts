@@ -24,7 +24,7 @@ import { selectRelevantSkills } from "../skills/retrieval.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ProviderMeta } from "../llm/provider.ts";
 import { llmComplete, llmCompleteStream } from "../llm/transport.ts";
 import { resolveRunModel, type RunModel, type RunModelOverride } from "../llm/run-model.ts";
-import { isCapabilityRefusal, isProviderOutage, isQuotaSpent } from "../llm/outage.ts";
+import { classifyProviderFailure, isCapabilityRefusal, isProviderOutage, isQuotaSpent } from "../llm/outage.ts";
 import { providerFallbackTargets } from "../llm/provider-fallback.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
@@ -1484,7 +1484,7 @@ export class AgentBridge implements AgentBackend {
       // reads the work rather than doing it again. What that costs is the dead attempt's tokens in
       // the next prompt -- docs/session-log.md 2.6.
       const media = await this.mediaForMarker(message, session);
-      recorder.runEnd("error", media.paths, media.ids);
+      recorder.runEnd("error", media.paths, media.ids, classifyProviderFailure(err) ?? "internal");
       hooks.emit("agent:run:error", {
         messageId: message.id,
         sessionId: session.id,

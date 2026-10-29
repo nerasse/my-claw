@@ -61,6 +61,27 @@ describe("RunRecorder: what a run produced", () => {
 
     expect((await openSessionLog(SESSION)).entries().at(-1)).not.toHaveProperty("media");
   });
+
+  test("an error marker carries why, so a roster never has to guess the reason", async () => {
+    const recorder = new RunRecorder(entries);
+    recorder.runEnd("error", undefined, undefined, "quota_exhausted");
+    await entries.flush();
+
+    expect((await openSessionLog(SESSION)).entries().at(-1)).toMatchObject({
+      type: "run_end",
+      reason: "error",
+      failure: "quota_exhausted",
+    });
+  });
+
+  test("a run that ended well never claims a failure", async () => {
+    // A `done` with a class on it would be a contradiction to read later, whatever a caller passed.
+    const recorder = new RunRecorder(entries);
+    recorder.runEnd("done", undefined, undefined, "quota_exhausted");
+    await entries.flush();
+
+    expect((await openSessionLog(SESSION)).entries().at(-1)).not.toHaveProperty("failure");
+  });
 });
 
 describe("newTurnId", () => {

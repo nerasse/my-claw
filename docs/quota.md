@@ -91,9 +91,33 @@ nothing, its usage endpoint names every reset.
 
 The decision and the UI of that wait live in `docs/quota-retry.md`.
 
+## The same numbers, as a tool
+
+`quota` (`src/tools/quota.ts`) is the orchestrator's read of the same module: one provider by key,
+or every provider that publishes an endpoint when none is named. It exists because a parent
+deciding whether to wait, spend a banked reset, or move a task to another account was choosing
+blind -- and because a `blocked` sub-agent report can name a re-opening time that nothing could
+confirm had arrived.
+
+- **Read-only, and cached by default.** `force: true` is the only thing that probes again. The
+  module's TTL and the app's provider page share one cache, so a page the owner has open keeps the
+  tool's answers free. A model that probed on every turn would burn a request to learn nothing, and
+  on a provider whose usage endpoint is rate limited that request has a cost of its own.
+- **It walks only what can answer.** A key-based provider with no usage endpoint is left out of
+  the no-argument call rather than listed as `no-source` on every turn; naming it explicitly still
+  answers that refusal, which is the honest answer to a direct question.
+- **The "spent until" line is `quotaWaitFrom`**, the same function the retry arms on. Two answers
+  to "when does this come back" is how a tool and a pill end up disagreeing in front of the owner.
+- **It invents nothing.** A provider that names no remaining time has no `resetAt`; one that cannot
+  be read says which failure it was (`not-signed-in`, `rate-limited`, `failed`) instead of drawing
+  an empty plan.
+
 ## Tests
 
 `tests/llm/quota.test.ts`: each adapter against a response captured from the live endpoint
 (assainie: emails, account ids and tokens removed), the window identified by duration rather than
 slot, 401 and 429 paths, the TTL, `force`, the stale-on-429 rule, and a provider with no source.
 Synthetic has both `planWeeklyLimit` and the older `weeklyTokenLimit` name, the weekly bar read as its complement since the endpoint states what is *left*, and the `subscription` counter that must stay out of `windows` even though it looks like one.
+`tests/tools/quota-tool.test.ts`: the tool's own decisions -- which providers the no-argument call
+walks, that a second read is free and `force` is the only probe, that the spent line matches the
+retry's own buffer, and that an unreadable provider is named rather than drawn empty.

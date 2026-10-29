@@ -177,9 +177,10 @@ function applyExecution(session: SessionData, execution: SubAgentExecution | und
 /**
  * How a sub-agent's last run ended, read from its own markers.
  *
- * `blocked` is deliberately absent from the markers: the log does not know why a provider refused.
- * It is derived from the armed quota wait, which is the owner's own record that the run died on a
- * spent plan -- the one blocked state that clears itself with time.
+ * `blocked` is a `failed` run the provider refused on a spent plan, which is the one failure that
+ * clears itself with time rather than needing a decision. The class comes from the run's own
+ * `run_end.failure` -- written by the bridge from `classifyProviderFailure` -- and never from the
+ * owner's chat-level quota wait, which only ever exists for a conversation.
  */
 function lifecycleOf(path: readonly Entry[], running: boolean): SubAgentLifecycle {
   let lastStart = -1;
@@ -194,7 +195,8 @@ function lifecycleOf(path: readonly Entry[], running: boolean): SubAgentLifecycl
   if (!end) return running ? "running" : "lost";
   if (end.type !== "run_end") return running ? "running" : "lost";
   if (end.reason === "done") return "complete";
-  return end.reason === "aborted" ? "stopped" : "failed";
+  if (end.reason === "aborted") return "stopped";
+  return end.failure === "quota_exhausted" ? "blocked" : "failed";
 }
 
 /** What a caller can do with an agent in this state, in the words of the tools that do it. */
@@ -892,10 +894,9 @@ export class SubAgentRunner {
     const running = registry.isRunning(canonical) || this.isRunningSession(canonical);
     const lastToolEntry = [...path].reverse().find((entry): entry is ToolEntry => entry.type === "tool");
     const quota = (stored ? stored.quotaRetry : session?.quotaRetry)?.pending;
-    // A failed run with the owner's quota wait armed is blocked, not broken: the only thing wrong
-    // with it is the clock, and saying "failed" would read as "needs a decision".
-    const ended = lifecycleOf(path, running);
-    const lifecycle: SubAgentLifecycle = ended === "failed" && quota ? "blocked" : ended;
+    // A failed run carries its own reason now, so the roster reads the run rather than inferring
+    // from the owner's chat-level wait -- which a sub-agent never has.
+    const lifecycle = lifecycleOf(path, running);
     const model = stored ? stored.modelOverride : session?.modelOverride;
     const fallbackPolicy = stored ? stored.fallbackPolicy : session?.fallbackPolicy;
     const picks = path.filter((entry) => entry.type === "user").length;
