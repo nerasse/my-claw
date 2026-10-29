@@ -370,6 +370,16 @@ export interface MyClawAppSubAgentsController {
     /** `ask` opens a run in the target so the orchestrator acts on it; `note` only files it. */
     mode: "ask" | "note";
   }): Promise<MyClawAppSubAgentHandoffOutcome[]>;
+  /**
+   * The conversation that owns this sub-agent, so a wait that fires can report where the owner is
+   * looking. A child has no chat thread of its own to push a frame to.
+   */
+  parentOf(threadId: string): Promise<string | undefined>;
+  /**
+   * Resumes a sub-agent whose quota wait came due -- the same no-turn Continue the runner performs
+   * for `send(id)`, driven by the tick that owns every armed wait (docs/quota-retry.md).
+   */
+  resumeAfterQuota(threadId: string): Promise<{ ok: true } | { ok: false; reason: string }>;
 }
 
 /**

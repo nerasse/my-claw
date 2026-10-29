@@ -34,6 +34,8 @@ import { nodeRecord } from "../nodes/store.ts";
 import type { VoiceManager, SttPipeline } from "../voice/index.ts";
 import { formatLocationForModel } from "../agent/preprocess.ts";
 import { withChildRunContext } from "../utils/run-context.ts";
+import { decideQuotaWait } from "../llm/quota/arm.ts";
+import { quotaFor } from "../llm/quota/index.ts";
 
 /**
  * The pins a caller asked for, on the session that is about to run.
@@ -656,6 +658,9 @@ export class SubAgentRunner {
           if (isAbort(err, trackedSignal)) hooks.emit("subagent:aborted", { id, parentSessionId: callerSessionId });
           else hooks.emit("subagent:error", { id, error: err, parentSessionId: callerSessionId });
         }
+        // A spent plan on the child's provider arms the child's own wait, which the channel's one
+        // tick will fire -- docs/quota-retry.md.
+        if (!isAbort(err, trackedSignal)) await this.armQuotaWait(session, err);
         throw err;
       } finally {
         // In the finally, not after: a failed run used to lose the question too, and the thread
@@ -665,6 +670,78 @@ export class SubAgentRunner {
         await this.indexForSearch(id, session);
       }
     }));
+  }
+
+  /**
+   * Arms the child's own quota wait when its run died on a spent plan.
+   *
+   * The app adapter owns the tick, but it cannot know that a sub-agent failed: the error surfaces
+   * here, in the queue entry that drove the run. So the runner writes the wait on the child's own
+   * session, and the one tick finds it there -- docs/quota-retry.md. A child whose session never
+   * turned the switch on arms nothing, exactly like a conversation.
+   */
+  private async armQuotaWait(session: SessionData, err: unknown): Promise<void> {
+    if (session.quotaRetry?.enabled !== true) return;
+    const decision = await decideQuotaWait({
+      readQuota: (provider) => quotaFor(this.config, provider, { force: true }),
+      err,
+      switchOff: false,
+      previousAttempts: session.quotaRetry.pending?.attempts ?? 0,
+    });
+    if (!decision.wait) return;
+    session.quotaRetry = { enabled: true, pending: decision.wait };
+    await log("info", "sub-agent quota wait armed", {
+      id: session.id,
+      at: decision.wait.at,
+      attempts: decision.wait.attempts,
+      windows: decision.wait.windows,
+    });
+  }
+
+  /**
+   * Resumes a sub-agent whose quota wait came due, whoever is ticking.
+   *
+   * No caller, no reachability check, and no new turn: the wait was armed by the run that died, on
+   * the child's own session, and the only thing left is to pick the conversation back up
+   * (docs/quota-retry.md). A finished child answers with what it already said instead of running
+   * again -- `continuable` decides, exactly as it does behind the Continue button.
+   */
+  async resumeArmedWait(id: string, registry: { enqueue: <T>(id: string, task: () => Promise<T>) => Promise<T>; isRunning: (id: string) => boolean }): Promise<{ ok: true } | { ok: false; reason: string }> {
+    if (this.isRunningSession(id) || registry.isRunning(id)) return { ok: false, reason: "A run is already going here." };
+    const session = await loadSession(id);
+    if (!session?.meta) return { ok: false, reason: `Sub-agent ${id} not found.` };
+    const entryLog = await sessionLogOf(id);
+    if (!continuable(entryLog.entries(), entryLog.leaf()).ok) return { ok: false, reason: "Nothing to continue: the last run finished." };
+    const resumed = this.resume(
+      id, session, entryLog, this.waitMessage(session), "", session.parentFolderId, new AbortController().signal,
+      undefined, undefined, undefined, undefined,
+    );
+    // Never awaited by the tick: a resumed run is minutes long, and a tick that blocked on it would
+    // stop firing every other wait.
+    void this.runTracked(id, undefined, async () => {
+      try {
+        await registry.enqueue(id, async () => { await resumed; });
+      } catch (err) {
+        void log("warn", "sub-agent quota retry failed", { id, error: String(err) });
+      }
+    });
+    return { ok: true };
+  }
+
+  /** The message a headless resume carries: no text, no attachment, the session's own identity. */
+  private waitMessage(session: SessionData): UnifiedMessage {
+    return {
+      id: `quota-wait-${crypto.randomUUID()}`,
+      platform: session.platform as UnifiedMessage["platform"],
+      chatType: session.chatType as UnifiedMessage["chatType"],
+      chatId: session.invokedBy ?? session.id,
+      userId: "",
+      text: "",
+      attachments: [],
+      isForwarded: false,
+      resume: true,
+      raw: { type: "quota.retry" },
+    };
   }
 
   /**
@@ -820,6 +897,7 @@ export class SubAgentRunner {
         if (isAbort(err, signal)) hooks.emit("subagent:aborted", { id, parentSessionId: callerSessionId });
         else hooks.emit("subagent:error", { id, error: err, parentSessionId: callerSessionId });
       }
+      if (!isAbort(err, signal)) await this.armQuotaWait(session, err);
       throw err;
     } finally {
       if (executionBefore) restoreExecution(session, executionBefore);

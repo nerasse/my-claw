@@ -1,14 +1,11 @@
 import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
 import { resumeHint, SubAgentRunner, type SubAgentStream, type SubAgentExecution } from "../subagents/runner.ts";
 import { SubAgentRegistry } from "../subagents/registry.ts";
-import { blockedReportOf, describeBlocked } from "../subagents/blocked.ts";
+import { blockedReportOf, describeBlocked, handoffCallsIn } from "../subagents/blocked.ts";
 import { classifyProviderFailure } from "../llm/outage.ts";
 import { judgePins, refuseUnknownModel } from "./model-choice.ts";
 import type { UnifiedMessage, Attachment } from "../channels/types.ts";
 import { isAbort, rethrowIfAborted } from "../core/aborted.ts";
-import { loadSession } from "../sessions/store.ts";
-import { sessionLogOf } from "../sessions/log-access.ts";
-import { pathOf } from "../sessions/log.ts";
 
 /**
  * The execution settings a `send` may carry: the same model/effort/ceiling a `spawn` takes, plus
@@ -139,7 +136,8 @@ export function createSendTool(
         // instead of prose: what class of failure, whether tools already ran, when the provider said
         // its limit reopens, and what the kept history still allows.
         if (canonical && classifyProviderFailure(e)) {
-          const report = blockedReportOf({ agentId: canonical, err: e, toolsRan: await toolsRanIn(canonical) });
+          const calls = await handoffCallsIn(canonical);
+          const report = blockedReportOf({ agentId: canonical, err: e, toolsRan: calls.length > 0, calls });
           const text = describeBlocked(report, String(e));
           return { success: false, output: text, error: text };
         }
@@ -149,27 +147,4 @@ export function createSendTool(
   };
 }
 
-/**
- * Whether the agent's log shows a tool that settled since its last user turn.
- *
- * The answer only ever raises the report's confidence: `blockedReportOf` says `unknown` when this is
- * false rather than `none`, because a call cut off mid-flight leaves no entry at all. A parent told
- * "nothing happened" on that evidence would redo work that was already done.
- */
-export async function toolsRanIn(id: string): Promise<boolean> {
-  if (!(await loadSession(id).catch(() => null))) return false;
-  try {
-    const log = await sessionLogOf(id);
-    const path = pathOf(log.entries(), log.leaf());
-    let lastUser = -1;
-    for (let i = path.length - 1; i >= 0; i--) {
-      if (path[i]!.type === "user") {
-        lastUser = i;
-        break;
-      }
-    }
-    return path.slice(lastUser + 1).some((entry) => entry.type === "tool");
-  } catch {
-    return false;
-  }
-}
+

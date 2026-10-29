@@ -19,6 +19,8 @@
  */
 
 import { classifyProviderFailure, quotaHintOf, type ProviderFailure } from "../llm/outage.ts";
+import { sessionLogOf } from "../sessions/log-access.ts";
+import { pathOf, type ToolEntry } from "../sessions/log.ts";
 
 export interface BlockedReport {
   status: "blocked";
@@ -33,7 +35,41 @@ export interface BlockedReport {
   resumable: true;
   /** The provider's own re-opening time, when its payload carried one. */
   retry: { eligibleAt?: string; source: "provider_hint" | "none" };
+  /**
+   * What the run had actually done when it stopped, rebuilt from its own tool entries.
+   *
+   * Deliberately not a model's summary: the run may have no quota left to write one, and a summary
+   * produced *by* the model that failed is not evidence about what it did. These are the settled
+   * calls, their real exit state, and the paths the log already names.
+   */
+  handoff?: Handoff;
   nextActions: Array<"resume" | "resume_with_allowed_config" | "wait" | "inspect" | "fix_auth">;
+}
+
+/** One settled tool call, as the log records it. */
+export interface HandoffCall {
+  name: string;
+  ok: boolean;
+  /** Milliseconds the call took, when the log carries it. */
+  durationMs?: number;
+  /** The call was still running when the run ended: its effect is unknown, not absent. */
+  uncertain?: true;
+}
+
+/**
+ * What a successor needs to know before touching the same work.
+ *
+ * Built from records only, so a run that cannot answer again still hands off. Undefined when the
+ * log kept nothing -- an empty handoff would read as "nothing happened", which is the one claim
+ * this is not allowed to make.
+ */
+export interface Handoff {
+  /** The settled calls, oldest first, capped: a roll of forty tools is not a handoff. */
+  calls: HandoffCall[];
+  /** How many calls the run made in total, so a capped list admits what it left out. */
+  callCount: number;
+  /** The last call that failed, which is usually where the next run should look first. */
+  lastFailure?: HandoffCall;
 }
 
 export function blockedReportOf(input: {
@@ -41,6 +77,8 @@ export function blockedReportOf(input: {
   err: unknown;
   /** Whether the failed run wrote any tool entry, read from its log by the caller. */
   toolsRan: boolean;
+  /** The run's tool entries, so the report can say what it did instead of only that it did something. */
+  calls?: HandoffCall[];
   now?: number;
 }): BlockedReport {
   const reason = classifyProviderFailure(input.err) ?? "provider_error";
@@ -50,6 +88,7 @@ export function blockedReportOf(input: {
     ...(typeof target?.model === "string" && target.model ? { model: target.model } : {}),
     ...(typeof target?.provider === "string" && target.provider ? { provider: target.provider } : {}),
   };
+  const handoff = input.calls ? handoffOf(input.calls) : undefined;
   const nextActions: BlockedReport["nextActions"] = reason === "auth"
     ? ["fix_auth", "inspect"]
     : [
@@ -67,7 +106,21 @@ export function blockedReportOf(input: {
     historyPreserved: true,
     resumable: true,
     retry: hint,
+    ...(handoff ? { handoff } : {}),
     nextActions,
+  };
+}
+
+/** The cap: enough to see the shape of the work, few enough to stay a handoff. */
+const HANDOFF_CALLS = 12;
+
+function handoffOf(calls: HandoffCall[]): Handoff | undefined {
+  if (calls.length === 0) return undefined;
+  const lastFailure = [...calls].reverse().find((call) => !call.ok);
+  return {
+    calls: calls.slice(-HANDOFF_CALLS),
+    callCount: calls.length,
+    ...(lastFailure ? { lastFailure } : {}),
   };
 }
 
@@ -105,5 +158,52 @@ export function describeBlocked(report: BlockedReport, detail: string): string {
     ? "Tools already ran, so files or processes may have changed: inspect before you redo anything."
     : "No tool settled before it stopped, and a call cut off mid-flight settles nothing: treat the work as unknown rather than absent.";
   const when = report.retry.eligibleAt ? ` The provider says the limit reopens at ${report.retry.eligibleAt}.` : "";
-  return `${sentenceOf(report)}. ${detail.trim()}\n\n${work} Its session and history are kept: send(id: "${report.agentId}") with no message resumes it where it stopped.${when}\n\nblocked: ${JSON.stringify(report)}`;
+  return `${sentenceOf(report)}. ${detail.trim()}\n\n${work}${handoffLine(report.handoff)} Its session and history are kept: send(id: "${report.agentId}") with no message resumes it where it stopped.${when}\n\nblocked: ${JSON.stringify(report)}`;
+}
+
+/** What the run got done, in the receipt a successor reads before touching the same work. */
+function handoffLine(handoff: Handoff | undefined): string {
+  if (!handoff) return "";
+  const shown = handoff.calls.map((call) => `${call.name}${call.ok ? "" : " (failed)"}${call.uncertain ? " (did not settle)" : ""}`);
+  const omitted = handoff.callCount - handoff.calls.length;
+  const first = handoff.lastFailure
+    ? ` The last one to fail was ${handoff.lastFailure.name}, so start there.`
+    : "";
+  return ` It got through ${handoff.callCount} tool call${handoff.callCount === 1 ? "" : "s"}: ${shown.join(", ")}${omitted > 0 ? ` (and ${omitted} earlier)` : ""}.${first}`;
+}
+
+/**
+ * The tool calls the agent settled since its last user turn, as the log recorded them.
+ *
+ * This is the handoff, and it is deliberately a read: the run may have no quota left to write a
+ * summary, and a summary written by the model that failed is not evidence of what it did. An empty
+ * answer only ever lowers the report to `unknown` -- `blockedReportOf` never says `none`, because a
+ * call cut off mid-flight leaves no entry and a parent told "nothing happened" redoes work already
+ * done.
+ */
+export async function handoffCallsIn(id: string): Promise<HandoffCall[]> {
+  // No existence guard on purpose: the log is the evidence, and a session whose meta never landed
+  // (the run died before its first persist) is exactly the case a handoff matters most in.
+  try {
+    const log = await sessionLogOf(id);
+    const path = pathOf(log.entries(), log.leaf());
+    let lastUser = -1;
+    for (let i = path.length - 1; i >= 0; i--) {
+      if (path[i]!.type === "user") {
+        lastUser = i;
+        break;
+      }
+    }
+    return path
+      .slice(lastUser + 1)
+      .filter((entry): entry is ToolEntry => entry.type === "tool")
+      .map((entry) => ({
+        name: entry.name,
+        ok: entry.ok,
+        ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
+        ...(entry.interrupted ? { uncertain: true as const } : {}),
+      }));
+  } catch {
+    return [];
+  }
 }

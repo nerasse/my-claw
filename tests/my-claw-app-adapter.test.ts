@@ -318,12 +318,29 @@ class FakeSessionStore {
     if (state) this.quotaRetry.set(threadId, { enabled: state.enabled });
   }
 
-  async listQuotaWaits(): Promise<Array<{ owner: string; threadId: string; at: string; attempts: number; windows: string[] }>> {
-    const waits: Array<{ owner: string; threadId: string; at: string; attempts: number; windows: string[] }> = [];
+  async listQuotaWaits(): Promise<Array<{ sessionId: string; at: string; attempts: number; windows: string[] }>> {
+    const waits: Array<{ sessionId: string; at: string; attempts: number; windows: string[] }> = [];
     for (const [threadId, state] of this.quotaRetry) {
-      if (state.waiting) waits.push({ owner: "owner", threadId, ...state.waiting });
+      if (state.waiting) waits.push({ sessionId: `my-claw-app/thread/${DEVICE_ID}/${threadId}`, ...state.waiting });
     }
     return waits;
+  }
+
+  async quotaRetrySettingOf(_deviceId: string, threadId: string) {
+    const state = this.quotaRetry.get(threadId);
+    return state ? { enabled: state.enabled, ...(state.waiting ? { pending: state.waiting } : {}) } : undefined;
+  }
+
+  async pendingQuotaWaitBySession(sessionId: string) {
+    const threadId = sessionId.split("/").at(-1) ?? "";
+    const state = this.quotaRetry.get(threadId);
+    return state?.enabled === true ? state.waiting : undefined;
+  }
+
+  async clearQuotaWaitBySession(sessionId: string): Promise<void> {
+    const threadId = sessionId.split("/").at(-1) ?? "";
+    const state = this.quotaRetry.get(threadId);
+    if (state) this.quotaRetry.set(threadId, { enabled: state.enabled });
   }
 
   patches: Array<{ threadId: string; patch: MyClawAppSessionInstructionPatch }> = [];
@@ -5835,6 +5852,11 @@ describe("subagents frames", () => {
     handoff: async (input: { threadId: string; targets: string[]; body: string; mode: string }) => {
       asked.push(`handoff:${input.threadId}:${input.mode}:${input.targets.join(",")}:${input.body}`);
       return input.targets.map((t) => ({ sessionId: t, threadId: "main", ok: true }));
+    },
+    parentOf: async () => "my-claw-app/thread/test-device/main",
+    resumeAfterQuota: async (threadId: string) => {
+      asked.push(`resumeAfterQuota:${threadId}`);
+      return { ok: true as const };
     },
     ...over,
   });

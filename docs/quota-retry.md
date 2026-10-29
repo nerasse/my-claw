@@ -63,8 +63,34 @@ because the owner chose the reset over a shorter schedule.
 wait immediately, and `session.quotaRetry.state` is pushed to every device when either changes.
 `session.sync.result` carries the same state so a window that opens later shows it without asking.
 
+## A sub-agent waits too
+
+The wait used to belong to the app channel alone, because that is where the tick runs. A sub-agent
+has no chat thread: it died on a wall, stayed `blocked` in the roster, and nothing ever resumed it.
+
+The decision and the ownership are now separate, and that split is the whole design:
+
+- **`decideQuotaWait`** (`src/llm/quota/arm.ts`) answers "should a wait be armed, and for when" and
+  starts nothing. Both paths call it, so the app's pill and a child's roster entry cannot disagree
+  about a reopening time or about the attempt ceiling.
+- **The runner arms** (`SubAgentRunner.armQuotaWait`), in the `catch` that saw the failure. It
+  writes the wait on the child's own `meta.json`, which is where a conversation keeps its own.
+- **One tick fires both.** `listQuotaWaits` scans `sessions/subagent/` as well as the app threads,
+  the set is keyed by session id, and `fireSubAgentQuotaRetry` routes a sub-agent to
+  `resumeArmedWait` -- the same no-turn Continue, driven through the runner because a child has no
+  chat thread of its own. The outcome is reported on the parent's roster, which is where the owner
+  is looking.
+
+What stays identical is what made the feature safe in the first place: `continuable` decides
+whether there is anything to pick up, so a timer never makes a finished agent run again, and a
+child with the switch off arms nothing at all. `tests/subagents/quota-retry.test.ts` pins all four.
+
 ## Tests
 
 `tests/llm/quota-retry.test.ts`: a spent window with a future reset arms at that second plus the
 buffer; the earliest of several spent windows wins; a window at 98% does not arm; a past reset does
 not; a balance-only answer does not.
+`tests/subagents/quota-retry.test.ts`: a child with the switch off arms nothing; with it on, the
+provider's published reset becomes the wait, on the child's own session, with the same buffer; the
+attempt count climbs across walls; `resumeArmedWait` refuses a finished child and resumes an
+unanswered one without adding a turn.

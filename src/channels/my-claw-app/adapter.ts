@@ -35,7 +35,7 @@ import { SocketRegistry } from "./socket-registry.ts";
 import { LiveTurnJournal } from "./live-turn.ts";
 import { StatusWatch } from "./status-watch.ts";
 import { QuotaWatch } from "./quota-watch.ts";
-import { isQuotaFailure, quotaWaitFrom, QUOTA_RETRY_MAX_ATTEMPTS } from "../../llm/quota/retry.ts";
+import { decideQuotaWait } from "../../llm/quota/arm.ts";
 import { LruMap } from "../../utils/lru-map.ts";
 import { questionAskFrame, questionPendingFrame } from "./questions.ts";
 import { newEntryId } from "../../sessions/log.ts";
@@ -330,6 +330,12 @@ function waitKey(owner: string, threadId: string): string {
 }
 /** The id `SessionManager` builds for a conversation of this channel, read back the other way. */
 const APP_THREAD_SESSION = /^my-claw-app\/thread\/([^/]+)\/(.+)$/;
+
+/** `owner` and `threadId` out of a conversation's session id, or nothing for any other session. */
+function threadOf(sessionId: string): { owner: string; threadId: string } | undefined {
+  const match = APP_THREAD_SESSION.exec(sessionId);
+  return match ? { owner: match[1]!, threadId: match[2]! } : undefined;
+}
 interface PendingApproval {
   resolve: (decision: ApprovalDecision) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -3237,33 +3243,32 @@ export class MyClawAppAdapter implements ChannelAdapter {
   async settleQuotaRetry(owner: string, threadId: string, err: unknown): Promise<void> {
     if (!this.quota) return;
     const key = waitKey(owner, threadId);
-    if (!isQuotaFailure(err)) {
-      await this.cancelQuotaWait(owner, threadId);
-      return;
-    }
-    const provider = (err as { provider?: string } | undefined)?.provider;
-    const outcome = provider ? await this.quota.get(provider, true).catch(() => undefined) : undefined;
-    const wait = outcome ? quotaWaitFrom(outcome) : undefined;
-    if (!wait) {
-      await this.cancelQuotaWait(owner, threadId);
-      return;
-    }
-    const attempts = (this.quotaAttempts.get(key) ?? 0) + 1;
-    if (attempts > QUOTA_RETRY_MAX_ATTEMPTS) {
-      await myClawAppLog("warn", "quota retry gave up", { owner, threadId, attempts, provider });
-      await this.cancelQuotaWait(owner, threadId);
-      return;
-    }
-    const armed = await this.store.armQuotaRetry(owner, threadId, {
-      ...wait,
-      attempts,
-      error: (err instanceof Error ? err.message : String(err)).slice(0, 200),
+    // The decision is shared with the sub-agent path (llm/quota/arm.ts): two answers to "when does
+    // this plan reopen" is how a pill and a roster end up disagreeing.
+    const setting = await this.store.quotaRetrySettingOf(owner, threadId).catch(() => undefined);
+    const decision = await decideQuotaWait({
+      readQuota: (provider) => this.quota!.get(provider, true),
+      err,
+      switchOff: setting?.enabled !== true,
+      previousAttempts: this.quotaAttempts.get(key) ?? 0,
     });
+    if (!decision.wait) {
+      await this.cancelQuotaWait(owner, threadId);
+      return;
+    }
+    const armed = await this.store.armQuotaRetry(owner, threadId, decision.wait);
     if (!armed) return;
-    this.quotaAttempts.set(key, attempts);
+    this.quotaAttempts.set(key, decision.wait.attempts);
     this.quotaWaits.add(key);
     this.broadcast(owner, await this.store.quotaRetryOf(owner, threadId));
-    await myClawAppLog("info", "quota retry armed", { owner, threadId, provider, at: wait.at, attempts, windows: wait.windows });
+    await myClawAppLog("info", "quota retry armed", {
+      owner,
+      threadId,
+      provider: (err as { provider?: string } | undefined)?.provider,
+      at: decision.wait.at,
+      attempts: decision.wait.attempts,
+      windows: decision.wait.windows,
+    });
   }
 
   private async cancelQuotaWait(owner: string, threadId: string): Promise<void> {
@@ -3291,35 +3296,65 @@ export class MyClawAppAdapter implements ChannelAdapter {
     if (!result.ok) this.quotaAttempts.delete(key);
   }
 
+  /**
+   * Fires a sub-agent's wait: the same Continue, driven through the runner.
+   *
+   * A child has no chat thread of its own, so `startContinue` cannot reach it. The runner is the one
+   * that can resume it, and the parent's card is where the owner is looking -- so the outcome is
+   * reported on the parent's thread, not on a thread the child does not have.
+   */
+  private async fireSubAgentQuotaRetry(sessionId: string): Promise<void> {
+    const parentSessionId = await this.subagents?.parentOf(sessionId).catch(() => undefined);
+    this.quotaWaits.delete(sessionId);
+    const result = this.subagents
+      ? await this.subagents.resumeAfterQuota(sessionId)
+      : { ok: false as const, reason: "Sub-agents are unavailable." };
+    await this.store.clearQuotaWaitBySession(sessionId).catch(() => undefined);
+    if (parentSessionId) void this.notifyRoster(parentSessionId);
+    await myClawAppLog(result.ok ? "info" : "warn", "sub-agent quota retry fired", {
+      sessionId,
+      started: result.ok,
+      ...(result.ok ? {} : { reason: result.reason }),
+    });
+    if (!result.ok) this.quotaAttempts.delete(sessionId);
+  }
+
   /** Reads the armed waits off disk and starts the tick; a restart does not lose one. */
   private async startQuotaRetries(): Promise<void> {
     if (this.quotaRetryTimer) return;
     const waits = await this.store.listQuotaWaits().catch(() => []);
-    for (const wait of waits) this.quotaWaits.add(waitKey(wait.owner, wait.threadId));
+    for (const wait of waits) this.quotaWaits.add(wait.sessionId);
     this.quotaRetryTimer = setInterval(() => void this.tickQuotaRetries(), QUOTA_RETRY_TICK_MS);
     this.quotaRetryTimer.unref?.();
     if (this.quotaWaits.size > 0) void this.tickQuotaRetries();
   }
 
+  /**
+   * One tick for every armed wait, whatever owns it.
+   *
+   * A conversation and a sub-agent are both sessions on disk, and both store the wait the same way;
+   * what differs is only who can resume them. Keeping two timers would have been two schedulers for
+   * one rule, and the second one would have drifted -- docs/quota-retry.md.
+   */
   private async tickQuotaRetries(): Promise<void> {
     if (this.quotaWaits.size === 0) return;
     const now = Date.now();
-    for (const key of [...this.quotaWaits]) {
-      const [owner, threadId] = key.split("\u0000");
-      if (!owner || !threadId) {
-        this.quotaWaits.delete(key);
+    for (const sessionId of [...this.quotaWaits]) {
+      const pending = await this.store.pendingQuotaWaitBySession(sessionId).catch(() => undefined);
+      if (!pending) {
+        this.quotaWaits.delete(sessionId);
         continue;
       }
-      const state = await this.store.quotaRetryOf(owner, threadId).catch(() => null);
-      if (!state?.waiting) {
-        this.quotaWaits.delete(key);
-        continue;
-      }
-      if (Date.parse(state.waiting.at) > now) continue;
-      const sessionId = this.store.resolveSessionId(owner, threadId);
+      if (Date.parse(pending.at) > now) continue;
       // A run of the owner's own is going: the wait is moot, it will be settled by that run.
       if (runRegistry.isRunning(sessionId) || runRegistry.canInject(sessionId)) continue;
-      await this.fireQuotaRetry(owner, threadId);
+      if (sessionId.startsWith("subagent/")) {
+        await this.fireSubAgentQuotaRetry(sessionId);
+        continue;
+      }
+      const where = threadOf(sessionId);
+      if (where) await this.fireQuotaRetry(where.owner, where.threadId);
+      else this.quotaWaits.delete(sessionId);
     }
   }
 

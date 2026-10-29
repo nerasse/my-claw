@@ -98,13 +98,21 @@ export interface MyClawAppSessionStore {
   recordFailure(owner: string, threadId: string, error: string, bubbleId?: string): Promise<void>;
   /** The conversation's quota-retry setting, and the wait it has armed. */
   quotaRetryOf(owner: string, threadId: string): Promise<MyClawAppSessionQuotaRetryState>;
+  /** The stored retry setting alone, for the one decision that needs it before arming. */
+  quotaRetrySettingOf(owner: string, threadId: string): Promise<SessionQuotaRetry | undefined>;
   /** Turns it on or off; turning it off cancels a wait in the same write. */
   setQuotaRetryEnabled(owner: string, threadId: string, enabled: boolean): Promise<MyClawAppSessionQuotaRetryState>;
   /** Arms a wait, refused when the owner never turned the setting on. */
   armQuotaRetry(owner: string, threadId: string, wait: { at: string; attempts: number; windows: string[]; error?: string }): Promise<boolean>;
   clearQuotaRetryPending(owner: string, threadId: string): Promise<void>;
-  /** Every armed wait on disk, for the boot that has to pick them back up. */
-  listQuotaWaits(): Promise<Array<{ owner: string; threadId: string; at: string; attempts: number; windows: string[]; error?: string }>>;
+  /** Every armed wait on disk -- conversations and sub-agents alike -- for the boot that picks them back up. */
+  listQuotaWaits(): Promise<Array<{ sessionId: string; at: string; attempts: number; windows: string[]; error?: string }>>;
+  /**
+   * The armed wait of any session by its id, and its clearing. The tick owns both kinds of session,
+   * so it reads and clears them the same way rather than through the conversation-only helpers.
+   */
+  pendingQuotaWaitBySession(sessionId: string): Promise<{ at: string; attempts: number; windows: string[]; error?: string } | undefined>;
+  clearQuotaWaitBySession(sessionId: string): Promise<void>;
   /** Files the thread away, reversibly: no message is moved, deleted or snapshotted. */
   archive(owner: string, threadId: string): Promise<void>;
   unarchive(owner: string, threadId: string): Promise<void>;
@@ -937,6 +945,25 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     };
   }
 
+  async pendingQuotaWaitBySession(sessionId: string): Promise<{ at: string; attempts: number; windows: string[]; error?: string } | undefined> {
+    const meta = await readMeta(sessionId).catch(() => null);
+    return meta?.quotaRetry?.enabled === true ? meta.quotaRetry.pending : undefined;
+  }
+
+  async clearQuotaWaitBySession(sessionId: string): Promise<void> {
+    const session = await this.sessionManager.peek(sessionId);
+    if (!session?.quotaRetry) return;
+    const next: SessionQuotaRetry = { ...session.quotaRetry };
+    delete next.pending;
+    session.quotaRetry = next;
+    await this.sessionManager.persist(session.id);
+  }
+
+  async quotaRetrySettingOf(owner: string, threadId: string): Promise<SessionQuotaRetry | undefined> {
+    const session = await this.sessionManager.read(this.resolveSessionId(owner, threadId));
+    return session?.quotaRetry;
+  }
+
   /** Turning it off is also what cancels a wait: one switch, one meaning. */
   async setQuotaRetryEnabled(owner: string, threadId: string, enabled: boolean): Promise<MyClawAppSessionQuotaRetryState> {
     // `peek`, like every other mutator here: `read` leaves a session it had to load out of the
@@ -980,16 +1007,19 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
    * The pending wait lives in the session's own meta, which is why this scans rather than keeping
    * a second index that could disagree with it. A deleted conversation takes its wait with it.
    */
-  async listQuotaWaits(): Promise<Array<{ owner: string; threadId: string; at: string; attempts: number; windows: string[]; error?: string }>> {
-    const ids = await this.sessionManager.listSessions("my-claw-app/thread/");
-    const waits: Array<{ owner: string; threadId: string; at: string; attempts: number; windows: string[]; error?: string }> = [];
+  async listQuotaWaits(): Promise<Array<{ sessionId: string; at: string; attempts: number; windows: string[]; error?: string }>> {
+    const ids = [
+      ...(await this.sessionManager.listSessions("my-claw-app/thread/")),
+      // A sub-agent arms its own wait on its own session -- docs/quota-retry.md. The runner writes
+      // it, the tick here fires it, and neither keeps a second index that could disagree.
+      ...(await this.sessionManager.listSessions("subagent/")),
+    ];
+    const waits: Array<{ sessionId: string; at: string; attempts: number; windows: string[]; error?: string }> = [];
     for (const id of ids) {
       const meta = await readMeta(id).catch(() => null);
       const pending = meta?.quotaRetry?.pending;
       if (!pending) continue;
-      const [, , owner, threadId] = id.split("/");
-      if (!owner || !threadId) continue;
-      waits.push({ owner, threadId, ...pending });
+      waits.push({ sessionId: id, ...pending });
     }
     return waits;
   }

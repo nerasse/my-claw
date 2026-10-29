@@ -15,10 +15,14 @@ A sub-agent is a `SessionData` object with `meta: SubAgentMeta` stored on disk. 
 
 ```
 ~/.my-claw/sessions/subagent/
-└── <displayName>-<hex4>.json   # SessionData + SubAgentMeta
+└── <displayName>-<hex4>/          # one directory per agent, since the storage switch
+    ├── entries.jsonl              # the conversation, append-only -- docs/session-log.md
+    └── meta.json                  # settings, SubAgentMeta, and the quota wait
 ```
 
-The filesystem is the source of truth. `SubAgentRegistry` scans `sessions/subagent/` on boot. No separate registry file.
+The filesystem is the source of truth. `SubAgentRegistry` scans `sessions/subagent/` on boot, and
+`subagentSessionIdsSync` accepts both shapes: a name that is a directory today was a `<id>.json`
+before the switch, and a name that is both is one id. No separate registry file.
 
 ## Types
 
@@ -28,9 +32,14 @@ The filesystem is the source of truth. `SubAgentRegistry` scans `sessions/subage
 | `research` | Read-only: read, search, ls, fetch | Exploration, analysis |
 | `browser` | The `browser_*` tools and nothing else | Web tasks. Not offered by `spawn`: reached through `delegate_browser_task`, which frames the task, runs it in windows of its own on the one Chromium and reads the handoff back (`docs/browser.md`, `docs/browser-windows.md`). Its runs are private one-shots of the caller, listed, opened and driven like any other. The door takes the same `model` a spawn does, pinned on the run |
 
-Depth 0 (orchestrator) can spawn depth 1. `MAX_DEPTH` is 2, but **depth 2 is currently unreachable**:
-`spawn` is in `SUBAGENT_EXCLUDED_TOOLS` (`src/tools/registry.ts`), so no sub-agent of any type can
-spawn, and `executeRunWithSession` hard-codes `depth = 1`.
+Depth is read off the sessions' own parent links (`depthUnder`), not assumed: the orchestrator is
+level 0, a spawned agent level 1, and a browser task it delegates level 2. `MAX_SUBAGENT_DEPTH` is 2
+and the check lives in `spawn`, which both doors pass through, whatever tools a role happens to hold
+-- a role that read the wrong field handed every sub-agent of a cron job the delegation tools, and
+browser tasks delegated to browser tasks 325 levels deep for six hours (2026-09-28).
+
+`spawn` is still in `SUBAGENT_EXCLUDED_TOOLS`, so a sub-agent cannot *spawn*; the second level is
+reached through `delegate_browser_task`, which is the one door deliberately open below the root.
 
 ## Lifecycle
 
@@ -41,7 +50,7 @@ spawn, and `executeRunWithSession` hard-codes `depth = 1`.
   the app lists it as a temporary sub-agent and can open and drive it like any other. It is always
   `private`, so only the conversation that asked for it sees it, and it dies with that conversation
   (the app's delete cascades, see `docs/subagent-navigation.md`).
-- `mode: "session"` — persistent. Creates `sessions/subagent/<name>-<hex4>.json`. The answer ends with
+- `mode: "session"` — persistent. Creates `sessions/subagent/<name>-<hex4>/`. The answer ends with
   `[sub-agent id: subagent/<name>-<hex4>]`: the id is the only way back to that agent, and the caller
   has no other source for it. A one-shot gets no such line, nothing is meant to drive it again.
 - A **session spawn whose first run fails** is undone: the session is deleted before the error is
@@ -236,6 +245,13 @@ Both paths enqueue now. See `tests/subagent.test.ts`.
 
 ## Tests
 
+- `tests/subagents/quota-retry.test.ts` — a child arms its own wait (switch on, provider reset
+  published, same one-minute buffer), arms nothing with the switch off, counts attempts across
+  walls, and `resumeArmedWait` refuses a finished child while resuming an unanswered one.
+- `tests/subagents/handoff.test.ts` — the blocked report's handoff: settled calls in order, calls
+  from a previous turn excluded, an interrupted one marked uncertain, a cap with the count admitting
+  what it left out, and an empty log that never becomes "nothing happened".
+- `tests/subagents/inspect.test.ts` — the lifecycle read off the markers, `blocked` included.
 - `tests/subagents/send-execution.test.ts` — `fallback: "forbid"` against a spent account: **one**
   request, nothing on another family; the same call without the policy still walks to the default;
   the blocked report's fields; a run-scoped model put back on disk, a session-scoped one kept; a

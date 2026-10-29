@@ -2542,6 +2542,19 @@ async function main() {
           };
         });
       },
+      // The meta is on disk, read the same way the roster reads it. `undefined` only means the
+      // parent cannot be named right now; the retry still fires, it just reports to the log.
+      parentOf: async (threadId) => {
+        const sessionId = subagentThreadToSession(threadId);
+        if (!sessionId) return undefined;
+        const meta = await readMeta(sessionId).catch(() => null);
+        return meta?.meta?.parentSessionId;
+      },
+      resumeAfterQuota: async (threadId) => {
+        const sessionId = subagentThreadToSession(threadId);
+        if (!sessionId) return { ok: false as const, reason: `Sub-agent ${threadId} not found.` };
+        return subAgentRunner.resumeArmedWait(sessionId, subAgentRegistry);
+      },
       handoff: async ({ threadId, callerSessionId, targets, body: handed, note, mode }) => {
         const sessionId = subagentThreadToSession(threadId);
         if (!sessionId) return targets.map((t) => ({ sessionId: t, ok: false, error: "sub-agent not found" }));

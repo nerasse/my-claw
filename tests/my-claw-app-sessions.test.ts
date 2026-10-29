@@ -2313,9 +2313,11 @@ describe("MyClawAppSessionStoreImpl quota retry", () => {
 
     const restarted = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore());
     const waits = await restarted.listQuotaWaits();
+    // Keyed by the session, not by a thread: the same list now also carries sub-agents' waits, and
+    // a conversation's id is the only thing both kinds have in common -- docs/quota-retry.md.
     assert.deepEqual(
-      waits.filter((wait) => wait.threadId === THREAD).map((wait) => [wait.threadId, wait.attempts]),
-      [[THREAD, 2]],
+      waits.filter((wait) => wait.sessionId.endsWith(`/${THREAD}`)).map((wait) => [wait.sessionId, wait.attempts]),
+      [[`my-claw-app/thread/${DEVICE}/${THREAD}`, 2]],
     );
   });
 });
