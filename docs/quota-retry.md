@@ -61,7 +61,18 @@ because the owner chose the reset over a shorter schedule.
 
 `session.quotaRetry.set` is the switch (turning it off cancels), `session.quotaRetry.now` fires the
 wait immediately, and `session.quotaRetry.state` is pushed to every device when either changes.
-`session.sync.result` carries the same state so a window that opens later shows it without asking.
+`session.sync.result` carries the same state, because a push only ever reaches the windows that
+were connected at that second.
+
+Two ways that promise broke, both worth keeping in mind when touching either side:
+
+- The store built `quotaRetry` on every page and the adapter dropped it when it composed the
+  frame, so the field was in the type and in the doc and never on the wire. A page is not carried
+  by constructing it: check the frame, not the object it came from.
+- The app's conversation menu is composed once and opened from two places -- a drawer row and the
+  chat header. It read the setting through the drawer's own selection, which is null for the
+  header, and had no listing row to fall back on: the row drew `off` forever and every tap sent
+  `enabled: true` again. Whatever composes a shared menu takes its subject as an argument.
 
 ## A sub-agent waits too
 

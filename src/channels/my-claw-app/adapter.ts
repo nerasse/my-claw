@@ -3560,6 +3560,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
         // Only on the answer that replaces the client's thread; a delta carries neither.
         ...(page.draft ? { draft: page.draft } : {}),
         ...(page.files ? { files: page.files } : {}),
+        // The switch and the waiting pill read this: the store built it on every page, and it was
+        // dropped here, so a window that opened after the setting was turned on -- or that turned
+        // it on from the chat menu, which holds no listing row -- had no way to learn it.
+        ...(page.quotaRetry ? { quotaRetry: page.quotaRetry } : {}),
         ...(this.runActive ? { activeRun: this.runActive(this.store.resolveSessionId(ws.data.owner, threadId)) } : {}),
         ...(page.lastRun ? { lastRun: page.lastRun } : {}),
       };

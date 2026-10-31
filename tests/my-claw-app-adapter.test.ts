@@ -272,13 +272,16 @@ class FakeSessionStore {
     head: string | null;
     reset?: "unknown-cursor" | "branch-switch";
     truncated?: boolean;
-    quotaRetry: { enabled: boolean };
+    quotaRetry: { enabled: boolean; waiting?: { at: string; attempts: number; windows: string[] } };
   }> {
     this.syncCalls.push({ since, leaf, limit, ...(lazyReasoning ? { lazyReasoning } : {}) });
     const all = this.historyMap.get(threadId) ?? [];
     const head = all.length > 0 ? all[all.length - 1]!.id : null;
-    return { entries: all, leaf: head, head, quotaRetry: { enabled: false }, ...(this.lastRun ? { lastRun: this.lastRun } : {}) };
+    return { entries: all, leaf: head, head, quotaRetry: this.syncQuotaRetry, ...(this.lastRun ? { lastRun: this.lastRun } : {}) };
   }
+
+  /** What the page says about the owner's retry switch; a test sets it before a sync. */
+  syncQuotaRetry: { enabled: boolean; waiting?: { at: string; attempts: number; windows: string[] } } = { enabled: false };
 
   lastRun?: { id: string; status: "running" | "done" | "aborted" | "error" | "interrupted"; startTs: string; endTs?: string };
 
@@ -567,6 +570,22 @@ describe("MyClawAppAdapter", () => {
     });
     assert.equal(JSON.stringify(frame).includes(TOKEN), false);
     capable.ws.close();
+  });
+
+  test("a sync page carries the retry switch, so a window that never got the push still draws it", async () => {
+    // The store builds `quotaRetry` on every page and the adapter dropped it: a browser that
+    // opened the conversation after the switch was turned on -- or that turned it on from the
+    // chat menu, which holds no listing row -- had no frame to learn it from and drew "off".
+    store.syncQuotaRetry = {
+      enabled: true,
+      waiting: { at: "2026-11-01T00:00:00.000Z", attempts: 2, windows: ["Week"] },
+    };
+    client.ws.send(JSON.stringify({ type: "session.sync", threadId: "default" }));
+    const page = await nextFrame(client);
+    assert.deepEqual(page["quotaRetry"], {
+      enabled: true,
+      waiting: { at: "2026-11-01T00:00:00.000Z", attempts: 2, windows: ["Week"] },
+    });
   });
 
   test("a quota wait keeps its attempt count across the retry's own run, and a finished run ends the episode", async () => {
