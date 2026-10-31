@@ -242,7 +242,7 @@ function resolveFromMerged(
       provider: providerName,
       headers: provider.headers,
       vision: model?.vision ?? merged.vision,
-      limit: model?.limit ?? merged.limit,
+      limit: mergedLimit(model?.limit, merged.limit),
       thinkingTypes: model?.thinkingTypes,
       effortLevels: model?.supportedEffortLevels,
       fallbackModel: provider.fallbackModel,
@@ -262,7 +262,7 @@ function resolveFromMerged(
       provider: providerName,
       headers: provider.headers,
       vision: model?.vision ?? merged.vision,
-      limit: model?.limit ?? merged.limit,
+      limit: mergedLimit(model?.limit, merged.limit),
       effort: computeEffort(merged, model, true, effortOverride, scopeEffort, tagEffort),
       ...resolveTimeout(merged, model),
     };
@@ -277,7 +277,7 @@ function resolveFromMerged(
     apiKey: resolveApiKey(provider, merged.apiKey),
     headers: provider.headers,
     vision: model?.vision ?? merged.vision,
-    limit: pinnedLimit(model?.limit ?? merged.limit, wireModel, providerRoute.providerRoute),
+    limit: pinnedLimit(mergedLimit(model?.limit, merged.limit), wireModel, providerRoute.providerRoute),
     effort: computeEffort(merged, model, false, effortOverride, scopeEffort, tagEffort),
     promptCache: provider.promptCache ?? true,
     reasoningReplay: provider.reasoningReplay,
@@ -310,6 +310,28 @@ function resolveTimeout(
 function declaredTimeout(value: number | undefined): number | undefined {
   if (value === undefined || !Number.isFinite(value) || value < 0) return undefined;
   return Math.floor(value);
+}
+
+/**
+ * A model's own limits, completed field by field from the global ones.
+ *
+ * Assigning the whole block instead (`model.limit ?? global.limit`) let a model that declares only
+ * `context` drop `output` entirely, so `max_tokens` was never sent and the engine fell back to its
+ * own default: a local llama.cpp with `n_predict = -1` filled the whole 262144-token window, 231352
+ * tokens of output in 72 minutes, and every tool call of that turn was refused as truncated
+ * (2026-10-30). Each field is now resolved on its own, so a partial declaration inherits what it
+ * did not say and can never silently disarm a ceiling.
+ */
+function mergedLimit(
+  own: { context?: number; output?: number } | undefined,
+  global: { context?: number; output?: number } | undefined,
+): { context?: number; output?: number } | undefined {
+  if (!own) return global;
+  if (!global) return own;
+  const context = own.context ?? global.context;
+  const output = own.output ?? global.output;
+  if (context === undefined && output === undefined) return undefined;
+  return { ...(context === undefined ? {} : { context }), ...(output === undefined ? {} : { output }) };
 }
 
 /**

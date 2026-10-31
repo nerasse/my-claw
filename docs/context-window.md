@@ -93,6 +93,21 @@ test it on, and an unverifiable network probe is not worth shipping.
 For these models the operator is the only reliable source, because the operator is who passed
 `--ctx-size`. Rung 1 exists for exactly this.
 
+### A declared limit is merged field by field, never replaced wholesale
+
+`limit` carries two independent numbers and a declaration may name only one of them. Assigning
+the block (`model.limit ?? llm.limit`) then dropped the field the model did not name: an entry
+declaring only `context` lost `output` entirely, `max_tokens` was never sent, and the engine fell
+back to its own default. On a local llama.cpp the default is `n_predict = -1`, which fills the
+whole window: measured 2026-10-30, 231 352 tokens of output in 72 minutes at 53 tok/s, the turn
+cut on `length`, 6 421 tool calls refused as truncated in a single session, and the loop repeated
+five times across two days.
+
+`mergedLimit` (`src/llm/resolver.ts`) resolves each field on its own, so a partial declaration
+inherits the half it did not state. A model that states neither still receives `llm.limit` as a
+whole. The global `output` is therefore a real ceiling, not a suggestion: an operator who leaves
+it at 127 000 accepts that a model which says nothing may be asked for 127 000 tokens.
+
 ## 2. Cap
 
 Very long contexts degrade attention quality and bill linearly. A global ceiling therefore

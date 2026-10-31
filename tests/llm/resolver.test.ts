@@ -175,6 +175,46 @@ test("model limit overrides global limit", () => {
   assert.deepEqual(resolved.limit, { context: 2000, output: 1000 });
 });
 
+// A model that names only half a limit used to lose the other half, so no max_tokens went out and
+// the engine filled its own default. Measured on a local llama.cpp: 231352 tokens in 72 minutes.
+test("a partial model limit inherits the global field it does not name", () => {
+  const config: LlmConfig = {
+    defaultProvider: "p",
+    defaultModel: "m",
+    limit: { context: 1000, output: 500 },
+    providers: { p: { baseUrl: "https://p.com" } },
+    models: [{ id: "m", label: "M", provider: "p", limit: { context: 2000 } }],
+  };
+  const resolved = resolveLlmConfig(config);
+  assert.deepEqual(resolved.limit, { context: 2000, output: 500 });
+});
+
+test("a model limit naming only output keeps the global context", () => {
+  const config: LlmConfig = {
+    defaultProvider: "p",
+    defaultModel: "m",
+    limit: { context: 1000, output: 500 },
+    providers: { p: { baseUrl: "https://p.com" } },
+    models: [{ id: "m", label: "M", provider: "p", limit: { output: 2000 } }],
+  };
+  const resolved = resolveLlmConfig(config);
+  assert.deepEqual(resolved.limit, { context: 1000, output: 2000 });
+});
+
+// The reverse of the bug above: a declaration that says nothing at all must still pick up the
+// global ceiling, or the transport sends no max_tokens and the engine decides for itself.
+test("a model that declares no limit at all still gets the global one", () => {
+  const config: LlmConfig = {
+    defaultProvider: "p",
+    defaultModel: "m",
+    limit: { context: 1000, output: 500 },
+    providers: { p: { baseUrl: "https://p.com" } },
+    models: [{ id: "m", label: "M", provider: "p" }],
+  };
+  const resolved = resolveLlmConfig(config);
+  assert.deepEqual(resolved.limit, { context: 1000, output: 500 });
+});
+
 test("resolveLlmConfig with custom provider", () => {
   const config: LlmConfig = {
     defaultProvider: "custom",
