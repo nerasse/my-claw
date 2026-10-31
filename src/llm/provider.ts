@@ -1,7 +1,7 @@
 import type { ReasoningField, ResolvedLlmConfig } from "../core/config.ts";
 import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError, sleep } from "../core/aborted.ts";
-import { isRetryableStatus, retryDelayMs, parseRetryAfterMs } from "./retry.ts";
+import { isRetryableStatus, retryDelayMs, parseRetryAfterMs, wallAhead } from "./retry.ts";
 import { isQuotaSpent } from "./outage.ts";
 import {
   repairFor,
@@ -923,7 +923,7 @@ export async function chatCompletion(
           }
 
           // A spent quota is a 429 too, and no backoff refills it: straight to the caller's fallback.
-          if (attempt < LLM_RETRY_ATTEMPTS && !isQuotaSpent(err) && (isRetryableStatus(response.status) || pinned404?.retryable)) {
+          if (attempt < LLM_RETRY_ATTEMPTS && !isQuotaSpent(err) && !(await wallAhead(config, err)) && (isRetryableStatus(response.status) || pinned404?.retryable)) {
             const delay = retryDelayMs(attempt, parseRetryAfterMs(response));
             hooks.emit("llm:call:error", { model: config.model, error: err, attempt, willRetry: true });
             await log("warn", `LLM ${response.status}, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS})`);
@@ -1073,7 +1073,7 @@ export async function chatCompletionStream(
           if (repaired) err.capability = repair.id;
         }
 
-        if (attempt < LLM_RETRY_ATTEMPTS && !tokensDelivered && !isQuotaSpent(err) && (isRetryableStatus(response.status) || pinned404?.retryable)) {
+        if (attempt < LLM_RETRY_ATTEMPTS && !isQuotaSpent(err) && !(await wallAhead(config, err)) && (isRetryableStatus(response.status) || pinned404?.retryable)) {
           const delay = retryDelayMs(attempt, parseRetryAfterMs(response));
           await log("warn", `LLM stream ${response.status}, retrying in ${Math.round(delay)}ms (${attempt}/${LLM_RETRY_ATTEMPTS})`);
           await sleep(delay, signal);

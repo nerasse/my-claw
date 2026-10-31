@@ -55,3 +55,23 @@ export function parseRetryAfterMs(response: Response): number | undefined {
   }
   return undefined;
 }
+
+/**
+ * Whether the status in hand is a wall, asked of whoever attached the knowledge.
+ *
+ * A 429 is the only status where it matters: every other retryable one is a fault of the far side
+ * or of the wire, and no plan closes on it. The predicate is optional and its absence means "keep
+ * the usual attempts", which is what every caller that predates the oracle gets.
+ *
+ * Never throws: a probe that fails does not become a decision, it leaves the transport's ordinary
+ * behaviour in place.
+ */
+export async function wallAhead(
+  config: { isWall?: (err: unknown) => Promise<boolean> } | undefined,
+  err: unknown,
+): Promise<boolean> {
+  if (!config?.isWall) return false;
+  const status = (err as { status?: number } | undefined)?.status;
+  if (status !== 429) return false;
+  return config.isWall(err).catch(() => false);
+}

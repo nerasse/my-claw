@@ -40,6 +40,66 @@ reset, though — the usage endpoint does:
 This is what makes OpenCode Go waitable at all: its 429 body says nothing, its usage endpoint names
 every reset. A plain per-minute 429 reads every window below full and arms nothing.
 
+## A plan is several bars, and they reopen on different clocks
+
+`kindOfWindow` classifies every window as `5h`, `day`, `week`, `month` or `other`, from the duration
+when the provider publishes one (`windowSeconds`: Claude, Codex, OpenCode Go, Synthetic) and from the
+id or label when it does not. The four periods are the ones plans actually use:
+
+| Source | 5 h | Week | Month |
+|---|---|---|---|
+| `claude` | `session` | `weekly_all`, `weekly_scoped:<model>` | -- |
+| `codex` | `18000` | `604800` | `2628000` when the plan has one |
+| `opencode-go` | `rolling` | `weekly` | `monthly` |
+| `synthetic` | `rollingFiveHourLimit` | `planWeeklyLimit` | -- |
+| `openrouter` | -- | -- | -- (`key-limit` is a spend cap, not a period) |
+
+The wait reasons about **which** bar is full, never about "the quota":
+
+- `spentWindowOf` names the narrowest spent bar, because that is the one a single call hit. A plan
+  at 100 % on its 5 h and 11 % on its week does not refuse for the week, and telling the reader the
+  week is what blocked them is a bug in the message.
+- `quotaWaitFrom` takes the earliest future reset among all spent bars, plus the buffer. A monthly
+  wall waits a month, because that is when it opens.
+- The whole spent set travels with the wait, labelled, so the pill can say which bars are full.
+
+## A wall costs one request, not twelve
+
+Two things used to burn requests on a bar that does not move, and both are now closed:
+
+1. **The run's own schedule** (30 s, 60 s, 120 s). The bridge asks `quotaWallOf` before spending it:
+   a confirmed wall skips the waits and moves to the next candidate at once.
+2. **Each transport's three attempts.** They see a 429 before the bridge does, and they cannot await
+   a probe at that instant. `ResolvedLlmConfig.isWall` is the predicate they await instead: the
+   first 429 of a run asks the oracle, `cachedWallOf` makes every later one free, and a status that
+   is not a 429 never reaches it.
+
+Measured 2026-10-31, career session on `claude-2`: `{"type":"rate_limit_error","message":"This
+request would exceed your account's rate limit."}` — word for word what a per-minute burst says —
+with the 5 h bar at 100 % and a reset twenty-two minutes out. Twelve requests and 210 seconds for
+one wall, before the run moved at all.
+
+## The switch outranks the fallback
+
+A conversation with **Retry when the quota returns** on does not fall back when the oracle confirms
+a wall: it stops, the adapter arms the wait, and the run resumes at the reset. A conversation
+without it moves to the next candidate immediately — the other model answers now, and the note says
+which bar was full.
+
+The asymmetry is deliberate. Without the switch the run's job is to answer; with it the owner has
+said the wall is what they want to wait for, and a silent fallback would look exactly like a run
+that respected the setting.
+
+## Which failures consult the oracle
+
+`needsQuotaOracle` is the filter, because a probe is a request:
+
+- **Already decisive, no probe**: `isQuotaSpent` phrases (`usage_limit_reached`, `quota exhausted`,
+  `exceeded your subscription limits`), a 402, a balance phrase (`out of credits`).
+- **Ambiguous, probe once**: any other 429 or quota-shaped failure — the bare `rate_limit_error`, a
+  429 with no body, an unknown gateway.
+- **Never**: anything that is not quota-shaped. An ordinary 500 keeps its backoff.
+
 Synthetic is the case where the wording lies: its refusal says "You've exceeded your subscription
 **rate** limits", while `/quotas` answers with the plan's weekly bar at 100 % and the next 2 % tick
 a couple of hours out. The text is read as a spent quota, so the run stops on the wall instead of

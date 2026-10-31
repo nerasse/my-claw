@@ -1,7 +1,7 @@
 import type { ResolvedLlmConfig } from "../core/config.ts";
 import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError, sleep } from "../core/aborted.ts";
-import { isRetryableStatus, retryDelayMs, parseRetryAfterMs } from "./retry.ts";
+import { isRetryableStatus, retryDelayMs, parseRetryAfterMs, wallAhead } from "./retry.ts";
 import { log } from "../utils/logger.ts";
 import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
 import { ReasoningSegmenter } from "./reasoning-segments.ts";
@@ -509,7 +509,7 @@ async function runCodex(
         const err = new Error(`Codex request failed: HTTP ${response.status} — ${detail}`) as Error & { status?: number };
         err.status = response.status;
         // A spent quota is a 429 too, and no backoff refills it: straight to the caller's fallback.
-        if (attempt < MAX_ATTEMPTS && !tokensDelivered && !isQuotaSpent(err) && isRetryableStatus(response.status)) {
+        if (attempt < MAX_ATTEMPTS && !tokensDelivered && !isQuotaSpent(err) && !(await wallAhead(config, err)) && isRetryableStatus(response.status)) {
           const delay = retryDelayMs(attempt, parseRetryAfterMs(response));
           await log("warn", `Codex ${response.status}, retrying in ${delay}ms (${attempt}/${MAX_ATTEMPTS})`);
           await sleep(delay, signal);

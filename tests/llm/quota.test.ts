@@ -159,6 +159,13 @@ test("opencode go reads its three windows as published", async () => {
       ["weekly", 57, "2026-10-26T00:00:00.000Z"],
       ["monthly", 79, "2026-11-02T00:09:03.000Z"],
     ]);
+    // The period travels with the bar: the wait reasons about which one is full, never about a
+    // label it had to guess (docs/quota-retry.md).
+    assert.deepEqual(result.snapshot.windows.map((w) => [w.label, w.windowSeconds]), [
+      ["5 h", 18_000],
+      ["Week", 604_800],
+      ["Month", 2_628_000],
+    ]);
   } finally {
     mock.restore();
   }
@@ -241,7 +248,7 @@ test("synthetic reads the weekly credit bar and the search allowance, and ignore
     if (!result.ok) return;
     // `subscription` renews five hours out but never counts down, so it is not a window.
     assert.deepEqual(result.snapshot.windows, [
-      { id: "weekly", label: "Week", usedPercent: 24, resetAt: "2026-10-23T17:07:02.000Z" },
+      { id: "weekly", label: "Week", usedPercent: 24, windowSeconds: 604_800, resetAt: "2026-10-23T17:07:02.000Z" },
     ]);
     assert.deepEqual(result.snapshot.extras, [
       { label: "Search", value: "238 / 250 per hour" },
@@ -267,8 +274,8 @@ test("synthetic still offers the 5 h window to a subscription that is charged on
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.deepEqual(result.snapshot.windows, [
-      { id: "five_hour", label: "5 h", usedPercent: 0, resetAt: "2026-10-23T18:00:00.000Z" },
-      { id: "weekly", label: "Week", usedPercent: 24, resetAt: "2026-10-23T17:07:02.000Z" },
+      { id: "five_hour", label: "5 h", usedPercent: 0, windowSeconds: 18_000, resetAt: "2026-10-23T18:00:00.000Z" },
+      { id: "weekly", label: "Week", usedPercent: 24, windowSeconds: 604_800, resetAt: "2026-10-23T17:07:02.000Z" },
     ]);
   } finally {
     mock.restore();
@@ -287,8 +294,8 @@ test("synthetic reads the rolling window when the plan answers in the newer shap
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.deepEqual(result.snapshot.windows, [
-      { id: "five_hour", label: "5 h", usedPercent: 85, resetAt: "2026-10-23T14:15:00.000Z" },
-      { id: "weekly", label: "Week", usedPercent: 100, resetAt: "2026-10-23T15:00:00.000Z" },
+      { id: "five_hour", label: "5 h", usedPercent: 85, windowSeconds: 18_000, resetAt: "2026-10-23T14:15:00.000Z" },
+      { id: "weekly", label: "Week", usedPercent: 100, windowSeconds: 604_800, resetAt: "2026-10-23T15:00:00.000Z" },
     ]);
   } finally {
     mock.restore();

@@ -15,10 +15,10 @@ const USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
 const MEMBERS_URL = "https://opencode.ai/console/api/v1/budgets/members";
 const IDENTITY_TIMEOUT_MS = 4_000;
 
-const WINDOWS: ReadonlyArray<{ key: string; id: string; label: string }> = [
-  { key: "rolling", id: "rolling", label: "5 h" },
-  { key: "weekly", id: "weekly", label: "Week" },
-  { key: "monthly", id: "monthly", label: "Month" },
+const WINDOWS: ReadonlyArray<{ key: string; id: string; label: string; windowSeconds: number }> = [
+  { key: "rolling", id: "rolling", label: "5 h", windowSeconds: 18_000 },
+  { key: "weekly", id: "weekly", label: "Week", windowSeconds: 604_800 },
+  { key: "monthly", id: "monthly", label: "Month", windowSeconds: 2_628_000 },
 ];
 
 export async function opencodeGoQuota(provider: string, apiKey: string): Promise<QuotaProbe> {
@@ -42,7 +42,7 @@ export async function opencodeGoQuota(provider: string, apiKey: string): Promise
 
   const windows: QuotaWindow[] = [];
   const limited: string[] = [];
-  for (const { key, id, label } of WINDOWS) {
+  for (const { key, id, label, windowSeconds } of WINDOWS) {
     const entry = recordOf(usage[key]);
     if (!entry) continue;
     const percent = numberOf(entry.percent);
@@ -53,6 +53,7 @@ export async function opencodeGoQuota(provider: string, apiKey: string): Promise
       id,
       label,
       usedPercent: clampPercent(percent),
+      windowSeconds,
       ...(resetAt ? { resetAt } : {}),
     });
   }

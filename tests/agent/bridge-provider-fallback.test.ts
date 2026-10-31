@@ -477,3 +477,112 @@ test("a spent plan limit gets one request, no wait, and the next account", async
     mock.restore();
   }
 });
+
+/**
+ * Anthropic's wall has no phrase of its own, and neither does any provider that answers a full
+ * bar with the same words it uses for a burst: `{"type":"rate_limit_error","message":"This
+ * request would exceed your account's rate limit."}`. Measured 2026-10-31 in a career session on
+ * `claude-2`: its five-hour bar read 100 % with a reset twenty-two minutes out, and the run still
+ * spent three transport retries and 30 s + 60 s + 120 s of waits before moving on.
+ *
+ * The provider here is a Synthetic one, because it publishes a usage endpoint the test can stub
+ * and the shape is the point: the refusal says "rate limit", the oracle says "the week is full".
+ * One request to the refusing model, no wait, then the next account -- and the note names the bar
+ * rather than the provider's own misleading sentence.
+ */
+function walledConfig(): MyClawConfig {
+  const cfg = config();
+  cfg.llm = {
+    ...cfg.llm!,
+    providers: {
+      quenched: { baseUrl: "https://api.synthetic.new/openai/v1", apiKeyEnv: "SYNTHETIC_KEY_FOR_TEST" },
+      beta: { baseUrl: "https://beta.local/v1" },
+    },
+    models: [
+      { id: "quenched-1", label: "Quenched", provider: "quenched" },
+      { id: "beta-1", label: "Beta", provider: "beta" },
+    ],
+    defaultProvider: "beta",
+    defaultModel: "beta-1",
+    providerRetry: { delaysMs: [1] },
+  };
+  cfg.tags = { Quenched: { route: [{ model: "quenched-1" }, { model: "beta-1" }] } };
+  return cfg;
+}
+
+const SYNTHETIC_SPENT = {
+  planWeeklyLimit: { percentRemaining: 0, nextRegenAt: "2026-11-04T09:43:54.000Z", nextRegenPercent: 2 },
+};
+
+test("a bare rate_limit_error on a full bar skips the waits, the retries, and names the bar", async () => {
+  process.env["SYNTHETIC_KEY_FOR_TEST"] = "sk-test";
+  const models: string[] = [];
+  const mock = mockFetch(async (input, init) => {
+    if (String(input).includes("/v2/quotas")) {
+      return new Response(JSON.stringify(SYNTHETIC_SPENT), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    const model = modelOf(init);
+    models.push(model);
+    if (model === "quenched-1") {
+      return failure(429, '{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}}');
+    }
+    return jsonAnswer("le deuxieme compte");
+  });
+  const bridge = new AgentBridge(walledConfig(), new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+
+  try {
+    const text = await bridge.handleMessage(createMessage(), createSession("tag:Quenched"), signal, "quenched-1");
+    assert.match(text, /le deuxieme compte/, text);
+    // The schedule is not spent on a bar that does not move, and the transport's own three
+    // attempts are gone with it: this is the "twelve requests and 210 seconds" case.
+    assert.doesNotMatch(text, /\[retry\]/, "no wait on a confirmed wall");
+    // The bar is named, not the provider's misleading sentence: the note reads the oracle.
+    assert.match(text, /\[quota\] quenched-1 is out of its week allowance \(Week at 100%\)/, text);
+    // One request to the refusing model: the transport's three attempts are gone with the waits.
+    assert.deepEqual(models, ["quenched-1", "beta-1"]);
+  } finally {
+    delete process.env["SYNTHETIC_KEY_FOR_TEST"];
+    end();
+    mock.restore();
+  }
+});
+
+/**
+ * The owner's decision outranks the run's: a conversation told to wait out its wall waits, even
+ * when another model could answer this second. Anything else makes the switch a guess.
+ */
+test("a conversation set to wait stops on a confirmed wall instead of falling back", async () => {
+  process.env["SYNTHETIC_KEY_FOR_TEST"] = "sk-test";
+  const models: string[] = [];
+  const mock = mockFetch(async (input, init) => {
+    if (String(input).includes("/v2/quotas")) {
+      return new Response(JSON.stringify(SYNTHETIC_SPENT), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    const model = modelOf(init);
+    models.push(model);
+    if (model === "quenched-1") {
+      return failure(429, '{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}}');
+    }
+    return jsonAnswer("ne doit pas arriver");
+  });
+  const bridge = new AgentBridge(walledConfig(), new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+  const session = createSession("tag:Quenched");
+  session.quotaRetry = { enabled: true };
+
+  try {
+    const outcome = await bridge
+      .handleMessage(createMessage(), session, signal, "quenched-1")
+      .then((text) => ({ text }))
+      .catch((err: unknown) => ({ error: err }));
+    // Either the run dies with the failure (which arms the wait in the adapter) or it refuses to
+    // move; what it must never do is answer on the other account.
+    if ("text" in outcome) assert.doesNotMatch(outcome.text, /ne doit pas arriver/);
+    assert.ok(!models.includes("beta-1"), `the run must not leave its model, saw ${models.join(", ")}`);
+  } finally {
+    delete process.env["SYNTHETIC_KEY_FOR_TEST"];
+    end();
+    mock.restore();
+  }
+});

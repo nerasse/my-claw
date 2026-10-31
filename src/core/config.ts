@@ -526,6 +526,19 @@ export interface ResolvedLlmConfig {
   timeoutMs?: number;
   // Which of the two declarations answered, so a timed-out run can name the one to edit.
   timeoutFrom?: "model" | "global";
+  /**
+   * Ask whether this failure is a wall rather than a burst limit -- docs/quota-retry.md.
+   *
+   * Attached by the caller that can afford a probe (the bridge owns the config), awaited by each
+   * transport on a 429 that says nothing decisive. Without it a wall costs every transport its own
+   * three attempts before the run's path is even reached: measured 2026-10-31 on a full five-hour
+   * window, twelve requests and 210 s for one bar that does not move.
+   *
+   * A predicate rather than a boolean because the first 429 is the one that has to ask: the answer
+   * is not known until something reads the provider's usage endpoint. `cachedWallOf` makes the
+   * second and later calls free.
+   */
+  isWall?: (err: unknown) => Promise<boolean>;
 }
 
 export interface AgentLlmConfig {

@@ -46,6 +46,7 @@ export async function syntheticQuota(provider: string, apiKey: string): Promise<
       id: "five_hour",
       label: "5 h",
       usedPercent: clampPercent(((max - remaining) / max) * 100),
+      windowSeconds: 18_000,
       ...(resetAt ? { resetAt } : {}),
     });
   }
@@ -58,6 +59,7 @@ export async function syntheticQuota(provider: string, apiKey: string): Promise<
       id: "weekly",
       label: "Week",
       usedPercent: clampPercent(100 - percentRemaining),
+      windowSeconds: 604_800,
       ...(resetAt ? { resetAt } : {}),
     });
   }

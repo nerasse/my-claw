@@ -25,6 +25,8 @@ import type { ChatMessage, LlmResponse, LlmUsage, ProviderMeta } from "../llm/pr
 import { llmComplete, llmCompleteStream } from "../llm/transport.ts";
 import { resolveRunModel, type RunModel, type RunModelOverride } from "../llm/run-model.ts";
 import { classifyProviderFailure, isCapabilityRefusal, isProviderOutage, isQuotaSpent } from "../llm/outage.ts";
+import { needsQuotaOracle, spentWindowOf, kindOfWindow, labelOfKind } from "../llm/quota/retry.ts";
+import { quotaFor, cachedWallOf } from "../llm/quota/index.ts";
 import { providerFallbackTargets } from "../llm/provider-fallback.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
@@ -331,7 +333,7 @@ export class AgentBridge implements AgentBackend {
     for (;;) {
       const startedAt = Date.now();
       try {
-        const response = await params.call(config);
+        const response = await params.call(this.walledConfig(config));
         return { response, config };
       } catch (err) {
         rethrowIfAborted(err, params.signal);
@@ -341,8 +343,18 @@ export class AgentBridge implements AgentBackend {
         const failed = { model: config.model, provider: config.provider };
         // A capability the model does not have is not a wait: the next target is the only cure.
         const capability = (err as { capability?: string }).capability;
-        // Nor is a spent quota: nothing refills it within the run.
-        const wait = capability || isQuotaSpent(err) ? undefined : params.waits.shift();
+        // A wall, decided by the oracle when the sentence cannot say so on its own. The bare
+        // `rate_limit_error` twice -- Anthropic sends it for a full five-hour window, word for
+        // word like a per-minute burst -- and treating it as a burst costs three transport retries
+        // plus 30 s, 60 s and 120 s on a bar that does not move (measured 2026-10-31).
+        const wall = capability ? undefined : await this.quotaWallOf(err, config.provider);
+        // The owner's decision outranks the run's: a conversation told to wait out its wall waits,
+        // even when another model could answer right now. Anything else makes the switch a guess.
+        if (wall && params.session.quotaRetry?.enabled === true) {
+          throw withFailureContext(err, config);
+        }
+        // A spent quota is never waited for: nothing refills it within the run.
+        const wait = capability || wall || isQuotaSpent(err) ? undefined : params.waits.shift();
         if (wait !== undefined) {
           this.recordFailedCall({ ...params, config, durationMs: Date.now() - startedAt, error: err });
           await this.noteFallback(
@@ -351,6 +363,14 @@ export class AgentBridge implements AgentBackend {
           );
           await sleep(wait, params.signal);
           continue;
+        }
+        // The wall is worth saying out loud once, in the words of the bar that is full rather than
+        // the provider's own rate-limit phrasing: the reader is about to see another model answer.
+        if (wall) {
+          await this.noteFallback(
+            `[quota] ${failed.model} is out of its ${labelOfKind(kindOfWindow(wall))} allowance (${wall.label} at ${Math.round(wall.usedPercent)}%). Moving on now instead of waiting for a bar that does not move.`,
+            params,
+          );
         }
 
         // The run may not leave its model at all: a caller that named one on purpose gets that
@@ -384,6 +404,51 @@ export class AgentBridge implements AgentBackend {
         );
       }
     }
+  }
+
+  /**
+   * The window that refused this call, when the failure is a wall rather than a burst limit.
+   *
+   * The provider's own usage endpoint is the only oracle, and it is asked only when the sentence
+   * left the question open (`needsQuotaOracle`): a phrase that already says "the plan ran out" is
+   * believed as written, and an ordinary transport fault never reaches here at all.
+   *
+   * The probe is cached per provider by `quotaFor`, which is what keeps a burst of 429s on one
+   * endpoint from becoming a burst of usage reads; `force` is not set, so a per-minute rate limit
+   * costs one read and then rides the cache.
+   */
+  private async quotaWallOf(err: unknown, provider: string | undefined): Promise<ReturnType<typeof spentWindowOf>> {
+    if (!needsQuotaOracle(err)) {
+      // A phrase that names a spent plan is a wall without a probe; the windows are only needed for
+      // the message, and the caller tolerates their absence.
+      return undefined;
+    }
+    // The provider comes from the config that just failed, not from the error: `withFailureContext`
+    // stamps it on the way out, and the catch that asks this question holds the error before that.
+    if (!provider) return undefined;
+    const outcome = await quotaFor(this.config, provider).catch(() => undefined);
+    return outcome ? spentWindowOf(outcome) : undefined;
+  }
+
+  /**
+   * The fail config for a run whose provider is known to be behind a full bar.
+   *
+   * The transports decide whether to retry a 429 the instant they see it, so the answer has to
+   * ride on the config: a wall whose probe has already run must not cost the next call its three
+   * attempts, or the twelve requests and 210 seconds come straight back.
+   */
+  private walledConfig(config: ResolvedLlmConfig): ResolvedLlmConfig {
+    // The predicate rides on every call: the first 429 of a run asks the oracle, and the cache
+    // makes the second and later ones free -- `cachedWallOf` is what the probe leaves behind.
+    return { ...config, isWall: (err) => this.isWallFor(config.provider, err) };
+  }
+
+  /** The one answer to "is this a wall", shared by the transports and by this run's own path. */
+  private async isWallFor(provider: string | undefined, err: unknown): Promise<boolean> {
+    if (!needsQuotaOracle(err)) return isQuotaSpent(err);
+    if (cachedWallOf(provider)) return true;
+    const outcome = provider ? await quotaFor(this.config, provider).catch(() => undefined) : undefined;
+    return outcome ? spentWindowOf(outcome) !== undefined : false;
   }
 
   /** The note goes to the reader twice: live, and in front of the answer the history keeps. */
