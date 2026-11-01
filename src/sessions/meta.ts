@@ -91,6 +91,8 @@ export interface SessionMeta {
    */
   folderId?: string;
   modelOverride?: string;
+  /** Siphon: the model this whole tree runs on, read from the root session -- docs/siphon.md. */
+  pinModel?: string;
   effortOverride?: SessionData["effortOverride"];
   fallbackPolicy?: SessionData["fallbackPolicy"];
   contextOverride?: SessionData["contextOverride"];
@@ -151,6 +153,7 @@ const META_KEYS: Record<keyof SessionMeta, "session" | "carried"> = {
   archivedAt: "session",
   folderId: "session",
   modelOverride: "session",
+  pinModel: "session",
   effortOverride: "session",
   fallbackPolicy: "session",
   contextOverride: "session",
@@ -237,6 +240,7 @@ export function metaOf(
     archivedAt: session.archivedAt,
     folderId: session.folderId,
     modelOverride: session.modelOverride,
+    pinModel: session.pinModel,
     effortOverride: session.effortOverride,
     fallbackPolicy: session.fallbackPolicy,
     contextOverride: session.contextOverride,

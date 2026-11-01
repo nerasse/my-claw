@@ -19,6 +19,7 @@ import { sessionLogOf } from "../sessions/log-access.ts";
 import { metaOf, readMeta, writeMeta } from "../sessions/meta.ts";
 import type { SessionLog, UserEntry } from "../sessions/log.ts";
 import { continuable, lastAnswer } from "../sessions/resume.ts";
+import { pinModelOf, rootSessionOf } from "../sessions/siphon.ts";
 import { pathOf, type Entry, type ToolEntry } from "../sessions/log.ts";
 import { log } from "../utils/logger.ts";
 import type { SessionManager } from "../sessions/manager.ts";
@@ -681,17 +682,26 @@ export class SubAgentRunner {
    * turned the switch on arms nothing, exactly like a conversation.
    */
   private async armQuotaWait(session: SessionData, err: unknown): Promise<void> {
-    if (session.quotaRetry?.enabled !== true) return;
+    // The switch is the conversation's, and a sub-agent is that conversation's work -- so the
+    // child reads it at the root instead of looking for a toggle of its own that nothing ever
+    // sets. Reading the child's own field made a whole delegated chain silently exempt from a
+    // switch the owner had visibly turned on (2026-11-01).
+    const root = await rootSessionOf(session, loadSession);
+    const setting = root.id === session.id ? session : root;
+    if (setting.quotaRetry?.enabled !== true) return;
     const decision = await decideQuotaWait({
       readQuota: (provider) => quotaFor(this.config, provider, { force: true }),
       err,
       switchOff: false,
-      previousAttempts: session.quotaRetry.pending?.attempts ?? 0,
+      // Each session keeps its own count and its own wait: a child resuming is its own run, and the
+      // eight-attempt ceiling has always been per session (docs/quota-retry.md).
+      previousAttempts: session.quotaRetry?.pending?.attempts ?? 0,
     });
     if (!decision.wait) return;
     session.quotaRetry = { enabled: true, pending: decision.wait };
     await log("info", "sub-agent quota wait armed", {
       id: session.id,
+      ...(root.id === session.id ? {} : { switchFrom: root.id }),
       at: decision.wait.at,
       attempts: decision.wait.attempts,
       windows: decision.wait.windows,
@@ -1154,10 +1164,17 @@ export class SubAgentRunner {
     // via the modelOverride recorded on the first run.
     const fileModel = this.agentRegistry?.get(type, session.workspace)?.meta.model;
     const pick = model ?? session.modelOverride;
+    // Siphon: the root conversation decided this whole tree runs one model -- docs/siphon.md. It is
+    // read from the root at every run, never copied onto the child, so a change (or a removal)
+    // reaches the next run of every level. `forcedModel` is the step that skips the chain, which is
+    // what makes it outrank the explicit spawn `model` sitting just below it.
+    const pin = pinModelOf(await rootSessionOf(session, loadSession));
     const request: RunModelRequest = {
       agent: type,
       ...(fileModel ? { fileModel } : {}),
-      ...(pick ? { sessionModel: pick } : {}),
+      // A pick keeps its own step (it can be a tag, with a route to walk); only Siphon skips the
+      // chain outright, because pinning to one model is exactly the promise that nothing else runs.
+      ...(pin ? { forcedModel: pin } : pick ? { sessionModel: pick } : {}),
       // The sub-agent's own pins, which nothing read before: a `/effort` typed in a sub-agent's
       // thread was stored and then ignored by its next run, and a spawn's `effort` would have
       // joined it. A chat's pins reach the resolver through these two fields, so these are the two.

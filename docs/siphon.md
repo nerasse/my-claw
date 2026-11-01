@@ -1,0 +1,114 @@
+# Siphon: one model for a whole tree
+
+A conversation can pin every run under it to a single model -- the orchestrator, each sub-agent,
+each sub-agent of a sub-agent, the browser agent. The pin is read from the conversation at every
+run, so a change (or a removal) reaches the next run of every level without a restart and without
+a broadcast that could miss one.
+
+The mode is called **Siphon** in the UI. The code stays descriptive: `session.pinModel` is the pin,
+`forcedModel` is the one step in the model resolver that it takes, and `rootSessionOf` /
+`pinModelOf` are the two functions that read it.
+
+## What it is, and what it is not
+
+Siphon is **the pin**. It chooses which model the whole tree runs.
+
+It is **not** the resume. Waiting for a quota reset and picking the conversation back up is general
+behaviour, armed by **Retry when the quota returns** on the conversation, with or without Siphon --
+docs/quota-retry.md. The two share one engine, and Siphon changes only which model the resumed run
+lands on.
+
+That split matters for the menu: one entry turns Siphon on and off, and the retry switch stays the
+switch. Turning Siphon off leaves the retry exactly as it was.
+
+## Where the pin lives
+
+On the **root conversation's** session, in `meta.json`, beside the retry setting:
+
+```ts
+// SessionData
+pinModel?: string;   // an exact provider/model reference
+```
+
+Not in `config.json`: it is a decision about one conversation, it must survive a restart with
+that conversation, and it belongs to that conversation's account rather than the installation.
+
+**Children never carry a copy.** A copy would go stale the first time the owner changed the pin
+while a chain was running, and every level would then disagree about the model it is on. Each run
+walks to its root and reads the pin there -- `rootSessionOf` follows `attributionParent`
+(`invokedBy || meta.parentSessionId || self`) until it stops moving, bounded by the set of sessions
+already visited so a corrupted chain that loops cannot spin.
+
+## How it wins
+
+`forcedModel` is the one field in `RunModelRequest` that skips the precedence chain entirely. The
+resolver pushes it as the only step; nothing below it is considered. That is exactly the promise
+Siphon makes, and it is why the pin does **not** go through `modelOverride`:
+
+| Path | Where it applies | What it beats |
+|---|---|---|
+| `forcedModel` (Siphon) | `src/agent/bridge.ts`, `src/subagents/runner.ts` | everything, an explicit `spawn model:` included |
+| `sessionModel` (a pick) | the resolver's first step | the agent pin and the global default |
+| `session.modelOverride` | a conversation's own stored pick | the agent pin |
+| agent file `model:` | the agent's own chain | the global default |
+
+A pick can be a tag with a route to walk, so it keeps its own step. Siphon names one model, so it
+takes the step that admits no route and no sibling.
+
+## A pin that no longer resolves
+
+The pin is validated when it is set (`model.siphon.set` refuses an id the catalogue does not serve),
+so the case that remains is a model deleted after the pin was made. The resolver then behaves as it
+does for any stale step: it reports what it could not run, and the run fails with that named rather
+than silently running something else. A silent substitution is the one outcome this mode may not
+have -- the owner pinned a model, and a different one answering would be a lie.
+
+## The frames
+
+- `model.siphon.set` `{ threadId, model? }` -- sets the pin, or clears it when `model` is absent.
+  Validated like any other pick and answered with `model.result`, which every device already reads.
+- `model.result` carries `siphon?: string` next to `model`. Separate on purpose: `model` is what a
+  run of *this* thread resolves to, and a sub-agent under a pinned conversation runs the pin even
+  when its own row would name something else.
+
+## The UI
+
+The conversation menu (drawer row and chat header, same list) has one entry under the retry switch:
+
+| Row | Meaning |
+|---|---|
+| `Siphon · off` | each run picks its own model |
+| `Siphon · on · <model>, every agent` | the whole tree runs this model |
+
+It opens the model picker with the effort and window steps removed: the pin is a model, and an
+answer that also pinned an effort would change what sub-agents under it inherit, which is a
+different promise. There is no Apply screen -- the last decision applies, like every other picker.
+The row above the list turns the mode off, since off is the default a pin has no equivalent of.
+
+Tags are filtered out of that list: a tag names a route, and walking a route by available quota is
+phase 2, not a pin to one model.
+
+## Hot reload
+
+The pin is read at the start of every run, so:
+- changing it takes effect on the next run of every level, with no restart;
+- removing it takes effect the same way, including for a child that had been running on it (the
+  run already resolved keeps its model; the one after goes free);
+- it survives a restart, because it lives in the session's meta and not in memory.
+
+## What it does not do yet
+
+- **Tags and quota looping** (phase 2). A tag route ordered by available quota, returning to the
+  top of the list when a bar reopens, is drawn in docs/quota-pin-plan.md and not implemented.
+- **The vision reroute.** A model without image input plus an image is still a question this mode
+  does not answer by itself: the pin names a model, and the reroute that saves the run picks
+  another one. Current behaviour is the resolver's, unchanged by Siphon.
+
+## Tests
+
+`tests/subagents/siphon.test.ts`: an explicit spawn model loses to the root's pin; an agent file's
+own `model:` loses to it too; a child of a child reaches the same root; a removal reaches the next
+run without touching the child; with no pin the chain decides exactly as before; `rootSessionOf`
+terminates on a cycle.
+`tests/my-claw-app-adapter.test.ts`: the frame is validated, refused when the controller is absent,
+and answered with the state a device reads.

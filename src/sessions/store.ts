@@ -351,6 +351,17 @@ export interface SessionData {
    */
   folderId?: string;
   modelOverride?: string;
+  /**
+   * Siphon: the one model this whole tree runs on -- docs/siphon.md.
+   *
+   * Unlike `modelOverride`, which a conversation's own pick sets and a sub-agent's spawn may
+   * outrank, this is resolved from the **root** session and beats every other step, including an
+   * explicit `spawn model:`. Children never carry a copy: they read the root at every run, so a
+   * change (or a removal) reaches the next run of every level without a broadcast.
+   *
+   * Absent means no Siphon, which is every session today.
+   */
+  pinModel?: string;
   effortOverride?: import("../core/config.ts").EffortLevel;
   /**
    * Whether this session's runs may continue on another model when their provider fails.

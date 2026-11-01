@@ -28,6 +28,7 @@ import { classifyProviderFailure, isCapabilityRefusal, isProviderOutage, isQuota
 import { needsQuotaOracle, spentWindowOf, kindOfWindow, labelOfKind } from "../llm/quota/retry.ts";
 import { quotaFor, quotaSourceOf } from "../llm/quota/index.ts";
 import { wallConfig } from "../llm/quota/wall.ts";
+import { pinModelOf } from "../sessions/siphon.ts";
 import { providerFallbackTargets } from "../llm/provider-fallback.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
@@ -576,6 +577,12 @@ export class AgentBridge implements AgentBackend {
       nodeRemoteNames = new Set(remote.map((tool) => tool.name));
     }
     let openaiTools = toOpenAiToolDefinitions(tools);
+    // Siphon: a conversation pinned to one model runs it, whatever any other step would have picked
+    // -- docs/siphon.md. The pin takes `forcedModel`, the one step that skips the chain, so it also
+    // outranks a model the caller passed (a dispatcher's forced id). It is read here rather than
+    // copied onto sub-agents: only the root carries it, and a child that reaches this code is its
+    // own run, already resolved by the runner against the same root.
+    const pin = pinModelOf(session);
     // The same resolution the dispatcher used to pick this engine: calling a different chain
     // here is how a run ended up on an engine chosen for another model.
     // Resolved into its own binding so the run's chain keeps its type: an override from the
@@ -585,7 +592,7 @@ export class AgentBridge implements AgentBackend {
       {
         agent: agentToolType,
         ...(agent.fileModel ? { fileModel: agent.fileModel } : {}),
-        ...(modelId ? { forcedModel: modelId } : {}),
+        ...(pin ?? modelId ? { forcedModel: pin ?? modelId } : {}),
         ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}),
         ...((session.effortOverride ?? modelOverride?.effort) ? { sessionEffort: session.effortOverride ?? modelOverride?.effort } : {}),
         ...(session.scopeEffort ? { sessionScopeEffort: session.scopeEffort } : {}),
