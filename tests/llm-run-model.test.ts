@@ -371,6 +371,42 @@ describe("tags", () => {
   });
 });
 
+describe("a pin and an image", () => {
+  /** A catalogue where only one model reads pictures -- the case that decides the order. */
+  const withVision = (): MyClawConfig =>
+    config({
+      llm: {
+        ...config().llm,
+        visionFallback: "claude-opus-5",
+        models: [
+          { id: "claude-sonnet-5", label: "Sonnet 5", provider: "anthropic", vision: false },
+          { id: "claude-opus-5", label: "Opus 5", provider: "anthropic", vision: true },
+          { id: "qwen", label: "Qwen", provider: "litellm", vision: false },
+        ],
+      },
+    });
+
+  test("the vision reroute beats Siphon's forced model", () => {
+    // Siphon says "everything runs on this model", and a model that cannot read the image in the
+    // turn cannot do the turn: the reroute wins that once, and the pin is read again next run.
+    const run = resolveRunModel(withVision(), { agent: "main", forcedModel: "qwen", hasImages: true }, world());
+    expect(run.model).toBe("claude-opus-5");
+    expect(run.reroutedFrom).toBe("qwen");
+  });
+
+  test("with no image, the pin keeps the run", () => {
+    const run = resolveRunModel(withVision(), { agent: "main", forcedModel: "qwen" }, world());
+    expect(run.model).toBe("qwen");
+    expect(run.reroutedFrom).toBeUndefined();
+  });
+
+  test("a pin that reads pictures is never displaced", () => {
+    const run = resolveRunModel(withVision(), { agent: "main", forcedModel: "claude-opus-5", hasImages: true }, world());
+    expect(run.model).toBe("claude-opus-5");
+    expect(run.reroutedFrom).toBeUndefined();
+  });
+});
+
 describe("no surface keeps its own chain", () => {
   test("the shortcut that caused the incident exists nowhere in src", async () => {
     // `session.modelOverride ?? config.llm.defaultModel` skips the agent pin. It was written out
