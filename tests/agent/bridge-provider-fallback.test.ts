@@ -586,3 +586,43 @@ test("a conversation set to wait stops on a confirmed wall instead of falling ba
     mock.restore();
   }
 });
+
+/**
+ * A refusal that already names a spent plan is a wall without asking -- but it still has to name
+ * *which* bar, because that is what the adapter arms a wait on. Returning early there left every
+ * explicit-phrase provider (Codex's `usage_limit_reached`, OpenCode Go's "Go usage limit
+ * exceeded", Synthetic's subscription limits) with a wall the run knew about and no window: the
+ * conversation's retry switch did nothing on exactly the providers whose text is clearest.
+ */
+for (const [name, body] of [
+  ["codex", '{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus"}'],
+  ["opencode-go", "Go usage limit exceeded"],
+  ["synthetic", '{"error":"You\'ve exceeded your subscription rate limits. Upgrade, or try again later."}'],
+] as const) {
+  test(`an explicit spent-plan refusal from ${name} still names the bar it is waiting on`, async () => {
+    process.env["SYNTHETIC_KEY_FOR_TEST"] = "sk-test";
+    const models: string[] = [];
+    const mock = mockFetch(async (input, init) => {
+      if (String(input).includes("/v2/quotas")) {
+        return new Response(JSON.stringify(SYNTHETIC_SPENT), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      const model = modelOf(init);
+      models.push(model);
+      if (model === "quenched-1") return failure(429, body);
+      return jsonAnswer("le deuxieme compte");
+    });
+    const bridge = new AgentBridge(walledConfig(), new ToolRegistry(), new SkillRegistry());
+    const { signal, end } = runRegistry.startRoot(SESSION_ID);
+    try {
+      const text = await bridge.handleMessage(createMessage(), createSession("tag:Quenched"), signal, "quenched-1");
+      // The run still moves on (the switch is off here), but the note proves the oracle answered:
+      // it is the only thing that knows the bar, and the adapter arms off the same read.
+      assert.match(text, /\[quota\] quenched-1 is out of its week allowance \(Week at 100%\)/, text);
+      assert.doesNotMatch(text, /\[retry\]/, "no wait on a spent plan");
+    } finally {
+      delete process.env["SYNTHETIC_KEY_FOR_TEST"];
+      end();
+      mock.restore();
+    }
+  });
+}

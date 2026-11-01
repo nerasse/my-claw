@@ -324,9 +324,9 @@ const COMMAND_PENDING_NOTICE_MS = 400;
 const SWEEP_INTERVAL_MS = 30_000;
 const QUOTA_RETRY_TICK_MS = 30_000;
 
-/** One armed wait, keyed per conversation. The owner is part of it: the app is multi-device, not multi-owner. */
-function waitKey(owner: string, threadId: string): string {
-  return `${owner}\u0000${threadId}`;
+/** One armed wait, keyed by session id -- the one handle the boot scan and both owners share. */
+function waitKey(sessionId: string): string {
+  return sessionId;
 }
 /** The id `SessionManager` builds for a conversation of this channel, read back the other way. */
 const APP_THREAD_SESSION = /^my-claw-app\/thread\/([^/]+)\/(.+)$/;
@@ -421,7 +421,6 @@ export class MyClawAppAdapter implements ChannelAdapter {
   });
   /** The quota endpoints, injected by the composition root (it holds the install's providers). */
   private quota?: MyClawAppQuotaController;
-  /** Armed waits by `owner\0thread`, and the tick that fires them. */
   private readonly quotaWaits = new Set<string>();
   private readonly quotaAttempts = new Map<string, number>();
   private quotaRetryTimer: ReturnType<typeof setInterval> | null = null;
@@ -3209,8 +3208,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
     const owner = ws.data.owner;
     const state = await this.store.setQuotaRetryEnabled(owner, threadId, frame.enabled);
     if (!frame.enabled) {
-      this.quotaWaits.delete(waitKey(owner, threadId));
-      this.quotaAttempts.delete(waitKey(owner, threadId));
+      const key = waitKey(this.store.resolveSessionId(owner, threadId));
+      this.quotaWaits.delete(key);
+      this.quotaAttempts.delete(key);
     }
     this.broadcast(owner, state);
     this.statusChanged(this.store.resolveSessionId(owner, threadId));
@@ -3242,7 +3242,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
    */
   async settleQuotaRetry(owner: string, threadId: string, err: unknown): Promise<void> {
     if (!this.quota) return;
-    const key = waitKey(owner, threadId);
+    const key = waitKey(this.store.resolveSessionId(owner, threadId));
     // The decision is shared with the sub-agent path (llm/quota/arm.ts): two answers to "when does
     // this plan reopen" is how a pill and a roster end up disagreeing.
     const setting = await this.store.quotaRetrySettingOf(owner, threadId).catch(() => undefined);
@@ -3272,7 +3272,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   private async cancelQuotaWait(owner: string, threadId: string): Promise<void> {
-    const key = waitKey(owner, threadId);
+    const key = waitKey(this.store.resolveSessionId(owner, threadId));
     if (!this.quotaWaits.has(key) && !this.quotaAttempts.has(key)) return;
     this.quotaWaits.delete(key);
     this.quotaAttempts.delete(key);
@@ -3282,7 +3282,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
   /** Fires one armed wait: the Continue, then the wait stops existing either way. */
   private async fireQuotaRetry(owner: string, threadId: string): Promise<void> {
-    const key = waitKey(owner, threadId);
+    const key = waitKey(this.store.resolveSessionId(owner, threadId));
     this.quotaWaits.delete(key);
     const result = await this.startContinue(owner, threadId);
     await this.store.clearQuotaRetryPending(owner, threadId).catch(() => undefined);
@@ -3329,17 +3329,29 @@ export class MyClawAppAdapter implements ChannelAdapter {
     if (this.quotaWaits.size > 0) void this.tickQuotaRetries();
   }
 
+  /** One tick, driven by hand: the wait's own clock is tested against, not the 30 s timer. */
+  async tickQuotaRetriesNow(): Promise<void> {
+    await this.tickQuotaRetries();
+  }
+
   /**
    * One tick for every armed wait, whatever owns it.
    *
    * A conversation and a sub-agent are both sessions on disk, and both store the wait the same way;
    * what differs is only who can resume them. Keeping two timers would have been two schedulers for
    * one rule, and the second one would have drifted -- docs/quota-retry.md.
+   *
+   * The set is keyed by session id, which is the only handle both writers share: `settleQuotaRetry`
+   * arms a conversation, the runner arms a child, and the boot scan reads them all back by session.
+   * It used to hold `owner\0thread` for a conversation, which no scan or lookup ever produced --
+   * the tick then read no pending wait, deleted the entry, and the retry never fired.
    */
   private async tickQuotaRetries(): Promise<void> {
     if (this.quotaWaits.size === 0) return;
     const now = Date.now();
     for (const sessionId of [...this.quotaWaits]) {
+      // A wait whose session cannot be read is a bug, not something to forget: silently dropping
+      // it is what left an armed retry never firing -- docs/quota-retry.md.
       const pending = await this.store.pendingQuotaWaitBySession(sessionId).catch(() => undefined);
       if (!pending) {
         this.quotaWaits.delete(sessionId);

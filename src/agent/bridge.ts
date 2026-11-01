@@ -26,7 +26,7 @@ import { llmComplete, llmCompleteStream } from "../llm/transport.ts";
 import { resolveRunModel, type RunModel, type RunModelOverride } from "../llm/run-model.ts";
 import { classifyProviderFailure, isCapabilityRefusal, isProviderOutage, isQuotaSpent } from "../llm/outage.ts";
 import { needsQuotaOracle, spentWindowOf, kindOfWindow, labelOfKind } from "../llm/quota/retry.ts";
-import { quotaFor, cachedWallOf } from "../llm/quota/index.ts";
+import { quotaFor, cachedWallOf, quotaSourceOf } from "../llm/quota/index.ts";
 import { providerFallbackTargets } from "../llm/provider-fallback.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
@@ -418,14 +418,19 @@ export class AgentBridge implements AgentBackend {
    * costs one read and then rides the cache.
    */
   private async quotaWallOf(err: unknown, provider: string | undefined): Promise<ReturnType<typeof spentWindowOf>> {
-    if (!needsQuotaOracle(err)) {
-      // A phrase that names a spent plan is a wall without a probe; the windows are only needed for
-      // the message, and the caller tolerates their absence.
-      return undefined;
-    }
     // The provider comes from the config that just failed, not from the error: `withFailureContext`
     // stamps it on the way out, and the catch that asks this question holds the error before that.
     if (!provider) return undefined;
+    // A phrase that already says "the plan ran out" needs no probe to be a wall -- but it still
+    // needs one to say *which* bar, and to arm a wait for its reset. Returning early there left
+    // every provider whose refusal is explicit (Codex's `usage_limit_reached`, OpenCode Go's
+    // "Go usage limit exceeded", Synthetic's subscription limits) with a wall the run knew about
+    // and no window to wait on: the switch on the conversation did nothing.
+    if (!needsQuotaOracle(err)) {
+      // A text no source can read, or a provider that publishes no bars: a wall, no window.
+      if (!provider) return undefined;
+      if (!quotaSourceOf(this.config.llm?.providers?.[provider])) return undefined;
+    }
     const outcome = await quotaFor(this.config, provider).catch(() => undefined);
     return outcome ? spentWindowOf(outcome) : undefined;
   }

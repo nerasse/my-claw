@@ -100,6 +100,16 @@ that respected the setting.
   429 with no body, an unknown gateway.
 - **Never**: anything that is not quota-shaped. An ordinary 500 keeps its backoff.
 
+"Decisive" is only about the *verdict*, never about the window. A phrase that already says the plan
+is spent is a wall with no probe, but it still has to name the bar, because that bar is what the
+adapter arms a wait on. `quotaWallOf` therefore probes every wall whose provider publishes usage,
+decisive phrase or not -- and skips the probe only when the provider has no source at all. Without
+that, each provider whose refusal is explicit (Codex's `usage_limit_reached`, OpenCode Go's "Go
+usage limit exceeded", Synthetic's subscription limits) moved to the next candidate on a wall the
+conversation had asked to wait out: the switch did nothing on exactly the four providers it matters
+for. Verified 2026-11-01 against the live bars of claude-2, chatgpt/-2/-3/-4, opencode_go and
+synthetic.
+
 Synthetic is the case where the wording lies: its refusal says "You've exceeded your subscription
 **rate** limits", while `/quotas` answers with the plan's weekly bar at 100 % and the next 2 % tick
 a couple of hours out. The text is read as a spent quota, so the run stops on the wall instead of
@@ -114,6 +124,13 @@ memory, reads them back at boot, and ticks every 30 s:
 - due, no run on the session → `startContinue`, the exact function behind the Continue button;
 - a run is going → skip, the next tick settles it;
 - the run starts, ends well, is stopped, or the owner sends something → the wait is cancelled.
+
+The set of armed waits is keyed by **session id**, the one handle every writer and reader shares:
+`settleQuotaRetry` arms a conversation, the sub-agent runner arms a child, `listQuotaWaits` reads
+them both back by session. It held `owner\0thread` for conversations once, which no lookup ever
+produced -- the tick read no pending wait for that key, **deleted the entry**, and the retry never
+fired. The pill's manual "retry now" was the only path that worked, which is exactly what the owner
+reported on 2026-11-01: a wait armed for 22:30 was still sitting there at 03:00.
 
 A retry that dies on the quota again arms the next one with `attempts + 1`. Eight attempts is the
 guard against a provider that keeps saying no across resets; the wait itself has no ceiling,

@@ -346,6 +346,13 @@ class FakeSessionStore {
     if (state) this.quotaRetry.set(threadId, { enabled: state.enabled });
   }
 
+  /** Every `startContinue` the adapter asked for: a fired wait leaves one here. */
+  continues: string[] = [];
+
+  continued(threadId: string): void {
+    this.continues.push(threadId);
+  }
+
   patches: Array<{ threadId: string; patch: MyClawAppSessionInstructionPatch }> = [];
 
   async setInstructionPatch(deviceId: string, threadId: string, patch: MyClawAppSessionInstructionPatch): Promise<void> {
@@ -586,6 +593,49 @@ describe("MyClawAppAdapter", () => {
       enabled: true,
       waiting: { at: "2026-11-01T00:00:00.000Z", attempts: 2, windows: ["Week"] },
     });
+  });
+
+  test("an armed wait fires by itself at its deadline, not only when the owner presses retry now", async () => {
+    // The set the tick walks is keyed by session id -- the same handle the boot scan writes and
+    // the same one `pendingQuotaWaitBySession` accepts. Keying the arm by `owner\0thread` instead
+    // put a key in it that resolved to no session, so the tick read nothing, dropped the entry,
+    // and the wait never fired: the only path left was the pill's manual "retry now".
+    const spent = {
+      ok: true as const,
+      snapshot: {
+        provider: "claude-2",
+        source: "claude" as const,
+        windows: [{ id: "session", label: "5 h", usedPercent: 100, resetAt: new Date(Date.now() + 1000).toISOString() }],
+        balances: [],
+        extras: [],
+        fetchedAt: new Date().toISOString(),
+      },
+    };
+    adapter.onQuotaController({
+      get: async () => spent,
+      redeem: async () => ({ ok: false, code: "unsupported", message: "not under test" }),
+    });
+    store.quotaRetry.set("default", { enabled: true });
+    await adapter.settleQuotaRetry(
+      DEVICE_ID,
+      "default",
+      Object.assign(new Error("HTTP 429 — quota exhausted"), { status: 429, provider: "claude-2" }),
+    );
+    assert.notEqual(store.quotaRetry.get("default")?.waiting, undefined, "the wall arms a wait");
+
+    // A reset a second out, plus the minute of slack `quotaWaitFrom` adds: due right after it, and
+    // the tick that gets there spends the wait on its way through `fireQuotaRetry`, whatever the
+    // Continue then answers.
+    await new Promise((r) => setTimeout(r, 1200));
+    const armed = store.quotaRetry.get("default")?.waiting?.at;
+    assert.ok(armed && Date.parse(armed) > Date.now(), "the wait is armed for the reset, not for now");
+    await adapter.tickQuotaRetriesNow();
+    // The minute of slack is the provider's, not the tick's to wait out: the test moves the clock
+    // the store reports instead of sleeping a minute.
+    store.quotaRetry.set("default", { enabled: true, waiting: { ...store.quotaRetry.get("default")!.waiting!, at: new Date(Date.now() - 1000).toISOString() } });
+    await adapter.tickQuotaRetriesNow();
+    void armed;
+    assert.equal(store.quotaRetry.get("default")?.waiting, undefined, "the wait is spent once it fires");
   });
 
   test("a quota wait keeps its attempt count across the retry's own run, and a finished run ends the episode", async () => {
