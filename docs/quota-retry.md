@@ -196,6 +196,25 @@ chain was running.
 conversation's, two levels down reaches the same root, and the conversation's switch off still
 arms nothing.
 
+## One resume per tree per tick
+
+Several sessions of one conversation can be waiting at the same second, and the tick resumed them
+all in one pass. They then hit a provider that had only just reopened together, and the one that
+lost that race re-armed the wall the first had just cleared: a tree came back from one wall
+straight into the next.
+
+The tick reads each wait's root (`rootOfSession`, the same `rootSessionOf` chain) and spends **one
+resume per root per pass**; the siblings get the next tick, 30 s later. When the root is due it
+goes first on its own: a root run replays the turn that spawned the children, and its own `spawn`
+calls drive them from there, which is the chain rebuilding itself rather than being replayed.
+
+The grouping needs no state: the root is a property of the session's own `invokedBy` chain, so a
+restart regroups everything the same way, and a wait that moved to another conversation's tree is
+regrouped with it.
+
+`tests/subagents/quota-switch-tree.test.ts` pins it: two children of one conversation, both due,
+are resumed one per tick and both eventually.
+
 ## Tests
 
 `tests/llm/quota-retry.test.ts`: a spent window with a future reset arms at that second plus the

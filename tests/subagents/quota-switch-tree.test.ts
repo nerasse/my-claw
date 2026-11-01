@@ -29,6 +29,8 @@ import { deleteSession, loadSession } from "../../src/sessions/store.ts";
 import { metaOf, readMeta, writeMeta } from "../../src/sessions/meta.ts";
 import { sessionLogOf } from "../../src/sessions/log-access.ts";
 import { resetQuotaCache } from "../../src/llm/quota/index.ts";
+import { rootSessionOf } from "../../src/sessions/siphon.ts";
+import { MyClawAppAdapter } from "../../src/channels/my-claw-app/adapter.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import type { UnifiedMessage } from "../../src/channels/types.ts";
@@ -186,4 +188,93 @@ test("with the conversation's switch off, a child arms nothing", async () => {
   }
 
   assert.equal((await readMeta(id))?.quotaRetry, undefined, "off is off, at every level");
+});
+
+/**
+ * A tree that comes back from one wall does not come back all at once -- docs/quota-retry.md.
+ *
+ * The tick resumed every due wait in one pass. Two children of one conversation coming due at the
+ * same second were relaunched together against a provider that had only just reopened, and the one
+ * that lost that race re-armed the wall the first had just cleared. The tick now spends one resume
+ * per tree per pass; the next tick picks up the sibling.
+ *
+ * What this pins: the grouping key is the root the children actually share, read from the chain,
+ * and a conversation is never treated as its own child.
+ */
+test("children of one conversation report the same root, which is what serializes them", async () => {
+  const runner = makeRunner();
+  await writeRoot(true);
+  const child = await spawnChild(runner);
+  const sibling = await spawnChild(runner);
+  const grandchild = await spawnChild(runner, child);
+
+  const ofChild = await rootSessionOf((await loadSession(child))!, loadSession);
+  const ofSibling = await rootSessionOf((await loadSession(sibling))!, loadSession);
+  const ofGrandchild = await rootSessionOf((await loadSession(grandchild))!, loadSession);
+  assert.equal(ofChild.id, PARENT);
+  assert.equal(ofSibling.id, PARENT);
+  assert.equal(ofGrandchild.id, PARENT, "depth does not change the tree it belongs to");
+
+  // A root is its own root: the tick can tell a conversation from a child of one without a branch
+  // on the id's shape, which is what keeps the two halves of the loop from starving each other.
+  const ofRoot = await rootSessionOf((await loadSession(PARENT))!, loadSession);
+  assert.equal(ofRoot.id, PARENT);
+});
+
+/**
+ * The tick itself, on a real tree of sessions: a due wait resumes one session per tree per pass.
+ *
+ * The adapter is given a store that answers the wait lookups from disk (the children are real
+ * sessions here) and a sub-agent controller that records what it was asked to resume. What the
+ * test watches is the order and the count, which is the whole of the fix.
+ */
+test("two due children of one conversation are resumed one per tick, root before descendant", async () => {
+  const runner = makeRunner();
+  await writeRoot(true);
+  const first = await spawnChild(runner);
+  const second = await spawnChild(runner);
+  const due = new Date(Date.now() - 60_000).toISOString();
+
+  for (const id of [first, second]) {
+    const session = (await loadSession(id))!;
+    session.quotaRetry = { enabled: true, pending: { at: due, attempts: 1, windows: ["Week"] } };
+    await writeMeta(id, metaOf(session, (await sessionLogOf(id)).leaf()));
+  }
+
+  const resumed: string[] = [];
+  const adapter = new MyClawAppAdapter(
+    { devices: {}, web: {}, media: {} } as never,
+    {
+      listQuotaWaits: async () => [
+        { sessionId: first, at: due, attempts: 1, windows: ["Week"] },
+        { sessionId: second, at: due, attempts: 1, windows: ["Week"] },
+      ],
+      pendingQuotaWaitBySession: async (sessionId: string) =>
+        (await readMeta(sessionId).catch(() => null))?.quotaRetry?.pending,
+      clearQuotaWaitBySession: async () => {},
+      ...Object.fromEntries(
+        ["refuse", "sendFrame", "broadcast", "statusChanged", "broadcastFrame", "resolveSessionId"]
+          .map((name) => [name, () => undefined]),
+      ),
+    } as never,
+  );
+  adapter.onSubAgentsController({
+    parentOf: async () => PARENT,
+    resumeAfterQuota: async (threadId: string) => {
+      resumed.push(threadId);
+      return { ok: true as const };
+    },
+  } as never);
+  // The waits the boot scan would find, without the scan's own first tick: the count below is
+  // what this test is about, and a fired tick nobody awaited would make it indeterminate.
+  await adapter.seedQuotaWaitsForTest();
+
+  await adapter.tickQuotaRetriesNow();
+  assert.equal(resumed.length, 1, "one resume for the tree, not two in the same second");
+  const firstResumed = resumed[0]!;
+
+  await adapter.tickQuotaRetriesNow();
+  assert.equal(resumed.length, 2, "the sibling gets the next pass");
+  assert.notEqual(resumed[1], firstResumed, "and it is the other one");
+  assert.deepEqual(new Set(resumed), new Set([first, second]));
 });

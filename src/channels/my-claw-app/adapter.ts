@@ -308,6 +308,8 @@ import {
 } from "./files-http.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
 import { continuable } from "../../sessions/resume.ts";
+import { rootSessionOf } from "../../sessions/siphon.ts";
+import { loadSession } from "../../sessions/store.ts";
 
 const CONFIRM_TIMEOUT_MS = 2 * 60 * 1000;
 // Healthy connections are idle on data frames for long stretches (protocol-level pings keep
@@ -3339,6 +3341,17 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   /**
+   * The waits the boot scan would find, put in the tick's set without firing it -- a test seam.
+   *
+   * `startQuotaRetries` schedules its own first tick and never awaits it, which is right at boot
+   * and makes a test that wants to count ticks indeterminate.
+   */
+  async seedQuotaWaitsForTest(): Promise<void> {
+    const waits = await this.store.listQuotaWaits().catch(() => []);
+    for (const wait of waits) this.quotaWaits.add(wait.sessionId);
+  }
+
+  /**
    * One tick for every armed wait, whatever owns it.
    *
    * A conversation and a sub-agent are both sessions on disk, and both store the wait the same way;
@@ -3353,6 +3366,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private async tickQuotaRetries(): Promise<void> {
     if (this.quotaWaits.size === 0) return;
     const now = Date.now();
+    // One resume per tree per tick, whatever the level: several sessions of one conversation coming
+    // due at the same second were relaunched together against a provider that had only just
+    // reopened, and the one that lost that race re-armed the wall the first had just cleared.
+    // The root goes first when it is due; descendants follow one tick at a time, and a root run
+    // replays the turn that spawned them, so its own `spawn` calls drive the children anyway.
+    const busy = new Set<string>();
     for (const sessionId of [...this.quotaWaits]) {
       // A wait whose session cannot be read is a bug, not something to forget: silently dropping
       // it is what left an armed retry never firing -- docs/quota-retry.md.
@@ -3364,6 +3383,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
       if (Date.parse(pending.at) > now) continue;
       // A run of the owner's own is going: the wait is moot, it will be settled by that run.
       if (runRegistry.isRunning(sessionId) || runRegistry.canInject(sessionId)) continue;
+      const root = await this.rootOfSession(sessionId);
+      if (busy.has(root)) continue;
+      busy.add(root);
       if (sessionId.startsWith("subagent/")) {
         await this.fireSubAgentQuotaRetry(sessionId);
         continue;
@@ -3372,6 +3394,19 @@ export class MyClawAppAdapter implements ChannelAdapter {
       if (where) await this.fireQuotaRetry(where.owner, where.threadId);
       else this.quotaWaits.delete(sessionId);
     }
+  }
+
+  /**
+   * The conversation a session's work is billed to, which is the tree it belongs to.
+   *
+   * Read from the session chain rather than stored on the wait: a wait that named its own root
+   * would go stale the moment the agent was driven from another conversation, and the chain is
+   * already the answer `rootSessionOf` gives everywhere else.
+   */
+  private async rootOfSession(sessionId: string): Promise<string> {
+    const session = await loadSession(sessionId).catch(() => null);
+    if (!session) return sessionId;
+    return (await rootSessionOf(session, loadSession)).id;
   }
 
   private async handleChatStop(
