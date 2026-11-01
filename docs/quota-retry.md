@@ -224,3 +224,15 @@ not; a balance-only answer does not.
 provider's published reset becomes the wait, on the child's own session, with the same buffer; the
 attempt count climbs across walls; `resumeArmedWait` refuses a finished child and resumes an
 unanswered one without adding a turn.
+
+## The wait goes before the resume
+
+`fireQuotaRetry` started the Continue and cleared the wait afterwards, which read as equivalent
+and was not. The Continue opens a run, and that run writes the session it holds -- with the wait
+still in it, because nothing had removed it yet. The file then carried a wait that had already
+fired, its clock long past, so the pill sat at "retrying now" while the retry it described was the
+run on screen. Clearing first means the run's own snapshot can only ever write a session without
+one. The sub-agent path had the same order and the same fix.
+
+`tests/subagents/quota-switch-tree.test.ts` pins the order on the store calls themselves: the
+clear, then the resume, and what the resume sees on disk when it starts.
