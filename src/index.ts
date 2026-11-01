@@ -1152,6 +1152,9 @@ async function main() {
               })()
             : {}),
         },
+        // Siphon, when the conversation is pinned: the tree's model, which is not always the one
+        // `model` above names -- a sub-agent under it runs this one regardless (docs/siphon.md).
+        ...(session?.pinModel ? { siphon: session.pinModel } : {}),
       };
     };
     /** Provider keys served by OpenRouter: only their models can have a route pinned. */
@@ -1312,6 +1315,30 @@ async function main() {
         }));
       },
       current: (owner, threadId) => resolveModelState(owner, threadId),
+      /**
+       * Siphon: pin this whole tree to one model, or clear it -- docs/siphon.md.
+       *
+       * The pin lives on the **root conversation's** session, which is this one: a sub-agent's
+       * menu does not set it, because the tree has one decision and one place for it. Validated
+       * like any pick, so a typo lands as a refusal instead of a run that cannot resolve.
+       */
+      setSiphon: async (owner, threadId, modelId) => {
+        const sessionId = modelSessionId(owner, threadId);
+        const session =
+          (await sessionManager.peek(sessionId)) ??
+          (await sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
+        if (modelId === undefined || modelId === "") {
+          delete session.pinModel;
+        } else {
+          // Validated the way every other pick is: `knows` compares on the bare reference, so a
+          // staged route is not refused as an unknown model (docs/model-identity.md).
+          if (!modelPicker.knows(modelId)) throw new Error(`unknown model: ${modelId}`);
+          session.pinModel = modelId;
+        }
+        session.lastActiveAt = new Date().toISOString();
+        await sessionManager.persist(sessionId);
+        return resolveModelState(owner, threadId);
+      },
       set: async (owner, threadId, modelId) => {
         const sessionId = modelSessionId(owner, threadId);
         // Unlike rename, a missing session is not refused: the thread is already in the app's

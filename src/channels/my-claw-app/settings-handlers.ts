@@ -52,6 +52,7 @@ import type {
   MyClawAppMcpEnable,
   MyClawAppMcpRemove,
   MyClawAppModelContextSet,
+  MyClawAppModelSiphonSet,
   MyClawAppProviderEnvRemove,
   MyClawAppProviderEnvRename,
   MyClawAppProviderEnvSet,
@@ -1481,6 +1482,37 @@ export async function handleModelContext(
     d.statusChanged?.(ws.data.owner, safeThread);
   } catch (err) {
     await d.refuse(ws, "model", "model.context.set failed", { threadId: safeThread, error: String(err) });
+  }
+}
+
+/**
+ * Siphon: pin every run under this conversation to one model, or clear the pin -- docs/siphon.md.
+ *
+ * Refused on the spot when the reference is not in the catalogue: a pin that cannot resolve would
+ * stop the next run of every level at once, which is the one failure this mode must not have. The
+ * pin belongs to the tree's root and this frame is only ever sent from it, so nothing is written
+ * on a child.
+ */
+export async function handleModelSiphon(
+  d: MyClawAppSettingsDeps,
+  ws: ServerWebSocket<MyClawAppSessionData>,
+  frame: MyClawAppModelSiphonSet,
+): Promise<void> {
+  const safeThread = sanitizeThreadId(frame.threadId);
+  if (!safeThread) {
+    await d.refuse(ws, "model", "invalid threadId", { threadId: frame.threadId });
+    return;
+  }
+  if (!d.models?.setSiphon) {
+    await d.refuse(ws, "model", "siphon unavailable");
+    return;
+  }
+  try {
+    const state = await d.models.setSiphon(ws.data.owner, safeThread, frame.model);
+    d.broadcastFrame(ws.data.owner, { type: "model.result", threadId: safeThread, ...state });
+    d.statusChanged?.(ws.data.owner, safeThread);
+  } catch (err) {
+    await d.refuse(ws, "model", "model.siphon.set failed", { threadId: safeThread, error: String(err) });
   }
 }
 

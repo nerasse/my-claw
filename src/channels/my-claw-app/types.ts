@@ -754,6 +754,18 @@ export interface MyClawAppModelContextSet {
   choice: number | "full";
 }
 
+/**
+ * Siphon: pin the whole tree under this conversation to one model, or clear it -- docs/siphon.md.
+ *
+ * `model` absent means off. The app sends an exact `provider/model`: a tag is phase 2, and a pin
+ * that resolved to a route would not be the promise the owner is making here.
+ */
+export interface MyClawAppModelSiphonSet {
+  type: "model.siphon.set";
+  threadId: string;
+  model?: string;
+}
+
 /** Stops the run on this thread, whatever backend is driving it (the `/stop` of the app). */
 export interface MyClawAppChatStop {
   type: "chat.stop";
@@ -1298,6 +1310,7 @@ export type MyClawAppClientFrame =
   | MyClawAppModelSet
   | MyClawAppModelEffortSet
   | MyClawAppModelContextSet
+  | MyClawAppModelSiphonSet
   | MyClawAppChatStop
   | MyClawAppChatContinue
   | MyClawAppAgentsConfigGet
@@ -2742,6 +2755,14 @@ export interface MyClawAppModelState {
   source?: MyClawAppModelSource;
   effort: MyClawAppEffortState;
   context: MyClawAppContextState;
+  /**
+   * Siphon: the model this whole tree is pinned to, when one is -- docs/siphon.md.
+   *
+   * Separate from `model` on purpose: `model` is what a run of *this* thread resolves to, and a
+   * sub-agent under this conversation is on the pin even when its own menu would name something
+   * else. Absent means off, which is every conversation that never turned it on.
+   */
+  siphon?: string;
 }
 
 export interface MyClawAppModelResult extends MyClawAppModelState {

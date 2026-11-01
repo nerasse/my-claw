@@ -147,6 +147,12 @@ export interface MyClawAppModelController {
   current(owner: string, threadId: string): Promise<MyClawAppModelState>;
   /** Persists the override (or clears it, back to the default) and reports what was stored. */
   set(owner: string, threadId: string, modelId: string): Promise<MyClawAppModelState>;
+  /**
+   * Siphon: pin the whole tree under this conversation to one model, or clear it with undefined.
+   * Absent on a controller with no session store, which the handler refuses rather than reporting
+   * a silent success -- docs/siphon.md.
+   */
+  setSiphon?(owner: string, threadId: string, modelId: string | undefined): Promise<MyClawAppModelState>;
   setEffort(owner: string, threadId: string, level: string): Promise<MyClawAppModelState>;
   /** Persists this conversation's context ceiling ("full" for the model's own window). */
   setContext(owner: string, threadId: string, choice: number | "full"): Promise<MyClawAppModelState>;

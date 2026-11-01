@@ -177,8 +177,24 @@ The decision and the ownership are now separate, and that split is the whole des
   is looking.
 
 What stays identical is what made the feature safe in the first place: `continuable` decides
-whether there is anything to pick up, so a timer never makes a finished agent run again, and a
-child with the switch off arms nothing at all. `tests/subagents/quota-retry.test.ts` pins all four.
+whether there is anything to pick up, so a timer never makes a finished agent run again.
+
+## The switch is the conversation's, at every depth
+
+A sub-agent has no switch of its own, and nothing ever set one: the runner read
+`session.quotaRetry.enabled` on the **child**, which was always absent, so a whole delegated tree
+silently ignored a switch the owner had visibly turned on. `armQuotaWait` now walks to the root
+(`rootSessionOf`) and reads the setting there. A child with the conversation's switch off arms
+nothing, which is the same rule said the other way round.
+
+The wait itself stays on the child's own session: a resumed child is its own run, and the
+attempt ceiling has always been per session. What the root supplies is the decision, not the
+bookkeeping -- copying the switch down would go stale the moment the owner turned it off while a
+chain was running.
+
+`tests/subagents/quota-switch-tree.test.ts` pins it: a child with no switch of its own arms off the
+conversation's, two levels down reaches the same root, and the conversation's switch off still
+arms nothing.
 
 ## Tests
 

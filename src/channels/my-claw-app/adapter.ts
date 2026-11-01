@@ -229,6 +229,7 @@ import {
   handleModel,
   handleModelContext,
   handleModelEffort,
+  handleModelSiphon,
   handleModelEndpoints,
   handleModelList,
   handleModelRefresh,
@@ -1908,6 +1909,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "model.context.set":
         this.detach(handleModelContext(this.settingsDeps(), ws, frame), "handleModelContext");
+        break;
+      case "model.siphon.set":
+        this.detach(handleModelSiphon(this.settingsDeps(), ws, frame), "handleModelSiphon");
         break;
       case "agents.config.get":
         this.detach(handleAgentsConfigGet(this.settingsDeps(), ws, frame), "handleAgentsConfigGet");

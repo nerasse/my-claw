@@ -3439,6 +3439,15 @@ describe("model frames", () => {
       set: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       setEffort: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "medium", levels: ["low", "medium", "high"], supported: true }, context: { raw: 200000, effective: 200000 } }),
       setContext: async (_o, _t, choice) => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: choice === "full" ? 200000 : choice, ...(choice === "full" ? {} : { choice }) } }),
+      // The pin is answered like every other model frame: with the state the caller then reads.
+      // `model` is left alone on purpose -- the pin is the tree's, not this thread's own pick.
+      setSiphon: async (_o, _t, model) => ({
+        model: "fast-1",
+        defaultModel: "fast-1",
+        effort: { level: "", levels: [], supported: false },
+        context: { raw: 200000, effective: 200000 },
+        ...(model ? { siphon: model } : {}),
+      }),
     });
     await adapter.start();
     client = await connectClient(adapter.port);
@@ -3488,6 +3497,7 @@ describe("model frames", () => {
       set: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       setEffort: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       setContext: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setSiphon: async (_o, _t, model) => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 }, ...(model ? { siphon: model } : {}) }),
     });
     await refreshed.start();
     const asking = await connectClient(refreshed.port);
@@ -3551,6 +3561,7 @@ describe("model frames", () => {
       set: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       setEffort: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       setContext: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setSiphon: async (_o, _t, model) => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 }, ...(model ? { siphon: model } : {}) }),
     });
     await withProviders.start();
     try {
@@ -3578,6 +3589,7 @@ describe("model frames", () => {
       set: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       setEffort: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       setContext: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setSiphon: async (_o, _t, model) => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 }, ...(model ? { siphon: model } : {}) }),
       upsert: async (entry) => {
         written.push(entry as unknown as Record<string, unknown>);
         declared.push({ id: entry.id, label: entry.label ?? entry.id, declared: true });
@@ -3622,6 +3634,7 @@ describe("model frames", () => {
       set: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       setEffort: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       setContext: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setSiphon: async (_o, _t, model) => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 }, ...(model ? { siphon: model } : {}) }),
       upsert: async (entry) => {
         written.push(entry as unknown as Record<string, unknown>);
         declared.push({ id: entry.id, label: entry.label ?? entry.id, ...(entry.timeoutMs === undefined ? {} : { timeoutMs: entry.timeoutMs }) });
@@ -3702,6 +3715,26 @@ describe("model frames", () => {
     assert.equal(frame["scope"], "model");
   });
 
+  test("model.siphon.set pins the tree and answers with the state, pin included", async () => {
+    client.ws.send(JSON.stringify({ type: "model.siphon.set", threadId: "t1", model: "strong-2" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "model.result");
+    assert.equal(frame["siphon"], "strong-2");
+    // The pin does not rewrite what this thread resolves to on its own: that is the retry switch's
+    // neighbour, and conflating the two is how a sub-agent's row came to name the wrong model.
+    assert.equal(frame["model"], "fast-1");
+  });
+
+  test("model.siphon.set with no model clears the pin", async () => {
+    client.ws.send(JSON.stringify({ type: "model.siphon.set", threadId: "t1", model: "strong-2" }));
+    await nextFrame(client);
+    client.ws.send(JSON.stringify({ type: "model.siphon.set", threadId: "t1" }));
+    const frame = await nextFrame(client);
+    assert.equal(frame["type"], "model.result");
+    assert.equal(frame["siphon"], undefined, "no pin is off, not a pin to the default");
+  });
+
+
   test("model.effort.set answers with the resulting state", async () => {
     client.ws.send(JSON.stringify({ type: "model.effort.set", threadId: "t1", level: "medium" }));
     const frame = await nextFrame(client);
@@ -3734,6 +3767,7 @@ describe("model frames", () => {
       set: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       setEffort: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "high", levels: ["high"], supported: true }, context: { raw: 200000, effective: 200000 } }),
       setContext: async () => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 128000, choice: 128000 } }),
+      setSiphon: async (_o, _t, model) => ({ model: "strong-2", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 }, ...(model ? { siphon: model } : {}) }),
     });
     await shared.start();
     const phone = await connectClient(shared.port);
@@ -3779,6 +3813,7 @@ describe("model frames", () => {
       set: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       setEffort: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
       setContext: async () => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 } }),
+      setSiphon: async (_o, _t, model) => ({ model: "fast-1", defaultModel: "fast-1", effort: { level: "", levels: [], supported: false }, context: { raw: 200000, effective: 200000 }, ...(model ? { siphon: model } : {}) }),
     });
     await failing.start();
     const other = await connectClient(failing.port);
