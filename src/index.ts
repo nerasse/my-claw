@@ -238,6 +238,7 @@ import { envKeys, setEnvValue, renameEnvKey, removeEnvKey } from "./core/env-edi
 import { runReleaseKeyCli } from "./core/release-key.ts";
 import { claudeClaim } from "./llm/anthropic-release.ts";
 import { quotaFor, quotaSourceOf, redeemQuota } from "./llm/quota/index.ts";
+import { wallConfig } from "./llm/quota/wall.ts";
 import {
   readAgentFile,
   writeAgentFile,
@@ -3173,7 +3174,7 @@ function initMemory(config: MyClawConfig): ReturnType<typeof setInterval> | unde
       // "time with not one byte received", so a one-shot call turns it into a hard ceiling on the
       // whole generation -- 120 s on an OpenAI-compatible endpoint, whatever the work. The tokens
       // themselves are not wanted here, only the answer read out of them.
-      const res = await llmCompleteStream(llmCfg, [
+      const res = await llmCompleteStream(wallConfig(config, llmCfg), [
         { role: "system", content: system },
         { role: "user", content: user },
       ], () => {});

@@ -535,8 +535,9 @@ export interface ResolvedLlmConfig {
    * window, twelve requests and 210 s for one bar that does not move.
    *
    * A predicate rather than a boolean because the first 429 is the one that has to ask: the answer
-   * is not known until something reads the provider's usage endpoint. `cachedWallOf` makes the
-   * second and later calls free.
+   * is not known until something reads the provider's usage endpoint. Built by `wallConfig`
+   * (llm/quota/wall.ts) for every caller; read forced, since the question is asked when the 429
+   * arrives and a cached reading may predate the wall.
    */
   isWall?: (err: unknown) => Promise<boolean>;
 }

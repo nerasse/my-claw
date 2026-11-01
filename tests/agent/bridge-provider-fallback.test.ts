@@ -626,3 +626,62 @@ for (const [name, body] of [
     }
   });
 }
+
+/**
+ * The wall question is asked *now*, so the answer cannot come from a reading that predates it.
+ *
+ * Measured 2026-11-01 on `claude-2`: the quota card had read the plan a few minutes earlier, when
+ * the five-hour window was still open. The 429 arrived, `isWallFor` answered from that cached
+ * reading, and the run paid three transport attempts plus 30 s, 60 s and 120 s on a bar that had
+ * just filled. Four minutes later the cache expired, the same 429 was read as a wall, and the
+ * wait armed -- the same provider, the same run, two different answers.
+ */
+test("a cached reading older than the wall does not answer the wall question", async () => {
+  process.env["SYNTHETIC_KEY_FOR_TEST"] = "sk-test";
+  const { resetQuotaCache } = await import("../../src/llm/quota/index.ts");
+  resetQuotaCache();
+  let barsFull = false;
+  let probes = 0;
+  const models: string[] = [];
+  const mock = mockFetch(async (input, init) => {
+    if (String(input).includes("/v2/quotas")) {
+      probes += 1;
+      // Open at first, full afterwards: exactly a window that fills between the card and the 429.
+      return new Response(
+        JSON.stringify(
+          barsFull
+            ? SYNTHETIC_SPENT
+            : { planWeeklyLimit: { percentRemaining: 60, nextRegenAt: "2026-11-04T09:43:54.000Z", nextRegenPercent: 2 } },
+        ),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    const model = modelOf(init);
+    models.push(model);
+    if (model === "quenched-1") {
+      barsFull = true;
+      return failure(429, '{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}}');
+    }
+    return jsonAnswer("le deuxieme compte");
+  });
+  const bridge = new AgentBridge(walledConfig(), new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+  try {
+    // Warm the cache while the plan still has room, as the quota card would.
+    const { quotaFor } = await import("../../src/llm/quota/index.ts");
+    await quotaFor(walledConfig() as never, "quenched");
+    const warmed = probes;
+    assert.equal(warmed, 1, "one reading to warm the cache");
+
+    const text = await bridge.handleMessage(createMessage(), createSession("tag:Quenched"), signal, "quenched-1");
+    // The stale reading said "not a wall"; the forced one says otherwise, so the run moves on with
+    // the bar named and no wait spent on it.
+    assert.match(text, /\[quota\] quenched-1 is out of its week allowance/, text);
+    assert.doesNotMatch(text, /\[retry\]/, "no wait on a bar that is full now");
+  } finally {
+    resetQuotaCache();
+    delete process.env["SYNTHETIC_KEY_FOR_TEST"];
+    end();
+    mock.restore();
+  }
+});

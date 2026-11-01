@@ -26,7 +26,8 @@ import { llmComplete, llmCompleteStream } from "../llm/transport.ts";
 import { resolveRunModel, type RunModel, type RunModelOverride } from "../llm/run-model.ts";
 import { classifyProviderFailure, isCapabilityRefusal, isProviderOutage, isQuotaSpent } from "../llm/outage.ts";
 import { needsQuotaOracle, spentWindowOf, kindOfWindow, labelOfKind } from "../llm/quota/retry.ts";
-import { quotaFor, cachedWallOf, quotaSourceOf } from "../llm/quota/index.ts";
+import { quotaFor, quotaSourceOf } from "../llm/quota/index.ts";
+import { wallConfig } from "../llm/quota/wall.ts";
 import { providerFallbackTargets } from "../llm/provider-fallback.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
@@ -431,7 +432,9 @@ export class AgentBridge implements AgentBackend {
       if (!provider) return undefined;
       if (!quotaSourceOf(this.config.llm?.providers?.[provider])) return undefined;
     }
-    const outcome = await quotaFor(this.config, provider).catch(() => undefined);
+    // Forced: this runs inside the catch that just saw the 429, so a cached reading may predate
+    // the wall it is being asked to explain.
+    const outcome = await quotaFor(this.config, provider, { force: true }).catch(() => undefined);
     return outcome ? spentWindowOf(outcome) : undefined;
   }
 
@@ -443,17 +446,10 @@ export class AgentBridge implements AgentBackend {
    * attempts, or the twelve requests and 210 seconds come straight back.
    */
   private walledConfig(config: ResolvedLlmConfig): ResolvedLlmConfig {
-    // The predicate rides on every call: the first 429 of a run asks the oracle, and the cache
-    // makes the second and later ones free -- `cachedWallOf` is what the probe leaves behind.
-    return { ...config, isWall: (err) => this.isWallFor(config.provider, err) };
-  }
-
-  /** The one answer to "is this a wall", shared by the transports and by this run's own path. */
-  private async isWallFor(provider: string | undefined, err: unknown): Promise<boolean> {
-    if (!needsQuotaOracle(err)) return isQuotaSpent(err);
-    if (cachedWallOf(provider)) return true;
-    const outcome = provider ? await quotaFor(this.config, provider).catch(() => undefined) : undefined;
-    return outcome ? spentWindowOf(outcome) !== undefined : false;
+    // One predicate for the whole install: the agent loop, the summarizer and memory consolidation
+    // all carry it, and the probe it triggers is cached by the provider's own `blockedUntil` -- a
+    // burst of 429s on one endpoint costs one read, not one per attempt.
+    return wallConfig(this.config, config);
   }
 
   /** The note goes to the reader twice: live, and in front of the answer the history keeps. */

@@ -223,20 +223,3 @@ export async function redeemQuota(config: MyClawConfig, provider: string): Promi
   return result;
 }
 
-/**
- * The wall this provider is behind, from what the cache already holds.
- *
- * Synchronous on purpose: the transports decide whether to retry a status at the instant they see
- * it. A snapshot read within its TTL is free, and it is exactly the case that matters -- a run
- * that just hit the wall has already paid for the read, so the next call's transport attempts are
- * not spent on a bar the cache knows is full.
- *
- * `false` means "not known to be full", which is not the same as healthy: the caller keeps its
- * ordinary attempts and lets the oracle settle it properly.
- */
-export function cachedWallOf(provider: string | undefined): boolean {
-  if (!provider) return false;
-  const entry = cache.get(provider);
-  if (!entry?.outcome.ok) return false;
-  return spentWindowOf(entry.outcome) !== undefined;
-}

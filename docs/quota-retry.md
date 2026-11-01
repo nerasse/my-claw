@@ -70,9 +70,16 @@ Two things used to burn requests on a bar that does not move, and both are now c
 1. **The run's own schedule** (30 s, 60 s, 120 s). The bridge asks `quotaWallOf` before spending it:
    a confirmed wall skips the waits and moves to the next candidate at once.
 2. **Each transport's three attempts.** They see a 429 before the bridge does, and they cannot await
-   a probe at that instant. `ResolvedLlmConfig.isWall` is the predicate they await instead: the
-   first 429 of a run asks the oracle, `cachedWallOf` makes every later one free, and a status that
-   is not a 429 never reaches it.
+   a probe at that instant. `ResolvedLlmConfig.isWall` is the predicate they await instead, and
+   `wallConfig` (llm/quota/wall.ts) is the single place it is built -- the agent loop, the
+   compaction summarizer and memory consolidation all go through it, because the last two call the
+   transport directly and were paying the three attempts on every wall.
+
+**The predicate forces its read.** The question is asked at the moment the 429 arrives, so a cached
+reading must not answer it: `claude`'s TTL is five minutes, and on 2026-11-01 a reading taken while
+the five-hour window was still open made the same 429 answer "not a wall" at 13:20 (three transport
+attempts, 30 s then 60 s) and "wall" at 13:24, when the cache had expired. `quotaFor`'s
+`blockedUntil` still applies, so a 429 from the usage endpoint itself is its own answer.
 
 Measured 2026-10-31, career session on `claude-2`: `{"type":"rate_limit_error","message":"This
 request would exceed your account's rate limit."}` — word for word what a per-minute burst says —

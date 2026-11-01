@@ -3,6 +3,7 @@ import { DEFAULT_COMPACTION_TAIL_TOKENS, resolveAutoCompactThreshold, resolveCom
 import { resolveFullContextWindow } from "../llm/context-window.ts";
 import { resolveUtilityLlmConfig } from "../llm/utility-model.ts";
 import { llmCompleteStream } from "../llm/transport.ts";
+import { wallConfig } from "../llm/quota/wall.ts";
 import { tryResolveRunModel } from "../llm/run-model.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import type { SessionData } from "./store.ts";
@@ -528,14 +529,14 @@ export async function summarizeForCompaction(
   // goes uncapped. Anthropic requires the field: its transport falls back to the model's own
   // declared ceiling, which is the same thing codex gets from leaving it out.
   const { output: _uncapped, ...limit } = resolved.limit ?? {};
-  const llmConfig = {
+  const llmConfig = wallConfig(config, {
     ...resolved,
     limit,
     // Maintenance on a conversation is still that conversation: the prompt it sends is that
     // conversation's own prefix, and a gateway routing on the session key refuses a call without
     // one -- docs/session-affinity.md.
     cacheKey: resolved.cacheKey ?? session.id,
-  };
+  });
 
   /**
    * One summarizer call: the stream, its accounting, and what the response turned out to be.
