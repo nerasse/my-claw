@@ -278,3 +278,65 @@ test("two due children of one conversation are resumed one per tick, root before
   assert.notEqual(resumed[1], firstResumed, "and it is the other one");
   assert.deepEqual(new Set(resumed), new Set([first, second]));
 });
+
+/**
+ * The wait goes before the resume, not after -- docs/quota-retry.md.
+ *
+ * The order looked like a detail and was the reported symptom: the Continue opens a run, that run
+ * writes the session it holds, and the wait was still in it because nothing had removed it yet.
+ * The file then carried a wait that had already fired, its clock long past, so the pill sat at
+ * "retrying now" while the retry it described was the run on screen.
+ *
+ * Observed here on the store calls themselves, which is where the two steps meet.
+ */
+test("the tick clears a due wait before it resumes the session", async () => {
+  const runner = makeRunner();
+  await writeRoot(true);
+  const child = await spawnChild(runner);
+  const due = new Date(Date.now() - 60_000).toISOString();
+
+  const session = (await loadSession(child))!;
+  session.quotaRetry = { enabled: true, pending: { at: due, attempts: 1, windows: ["5 h"] } };
+  await writeMeta(child, metaOf(session, (await sessionLogOf(child)).leaf()));
+
+  const order: string[] = [];
+  const store = {
+    resolveSessionId: () => child,
+    listQuotaWaits: async () => [{ sessionId: child, at: due, attempts: 1, windows: ["5 h"] }],
+    pendingQuotaWaitBySession: async (id: string) => {
+      const meta = await readMeta(id).catch(() => null);
+      return meta?.quotaRetry?.pending;
+    },
+    clearQuotaWaitBySession: async (id: string) => {
+      order.push("clear");
+      const current = (await loadSession(id))!;
+      const next = { ...(current.quotaRetry ?? {}) };
+      delete next.pending;
+      current.quotaRetry = next;
+      await writeMeta(id, metaOf(current, (await sessionLogOf(id)).leaf()));
+    },
+    quotaRetryOf: async () => ({ type: "session.quotaRetry.state", threadId: child, enabled: true }),
+    ...Object.fromEntries(
+      ["refuse", "sendFrame", "broadcast", "statusChanged", "broadcastFrame"]
+        .map((name) => [name, () => undefined]),
+    ),
+  };
+  const adapter = new MyClawAppAdapter({ devices: {}, web: {}, media: {} } as never, store as never);
+  adapter.onSubAgentsController({
+    parentOf: async () => PARENT,
+    resumeAfterQuota: async () => {
+      order.push("resume");
+      // What the resumed run sees: the wait must already be gone from disk.
+      const meta = await readMeta(child).catch(() => null);
+      order.push(`resume-saw-wait:${meta?.quotaRetry?.pending !== undefined}`);
+      return { ok: true as const };
+    },
+  } as never);
+
+  await adapter.seedQuotaWaitsForTest();
+  await adapter.tickQuotaRetriesNow();
+
+  assert.equal(order[0], "clear", "the wait is cleared first");
+  assert.equal(order[1], "resume");
+  assert.equal(order[2], "resume-saw-wait:false", "and the resume cannot re-write what is already gone");
+});

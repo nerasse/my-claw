@@ -3286,13 +3286,22 @@ export class MyClawAppAdapter implements ChannelAdapter {
     this.broadcast(owner, await this.store.quotaRetryOf(owner, threadId));
   }
 
-  /** Fires one armed wait: the Continue, then the wait stops existing either way. */
+  /**
+   * Fires one armed wait: the wait stops existing first, then the Continue.
+   *
+   * The order is the whole point. Clearing after `startContinue` looked equivalent and was not:
+   * the Continue opens a run, and that run writes the session it is holding -- with the wait still
+   * in it, because nobody had removed it yet. The file then carried a wait that had already fired,
+   * its clock long past, so the pill sat there saying "retrying now" while the retry it described
+   * was the run on screen (2026-11-01). Clearing first means the run's own snapshot can only ever
+   * write a session without one.
+   */
   private async fireQuotaRetry(owner: string, threadId: string): Promise<void> {
     const key = waitKey(this.store.resolveSessionId(owner, threadId));
     this.quotaWaits.delete(key);
-    const result = await this.startContinue(owner, threadId);
     await this.store.clearQuotaRetryPending(owner, threadId).catch(() => undefined);
     this.broadcast(owner, await this.store.quotaRetryOf(owner, threadId));
+    const result = await this.startContinue(owner, threadId);
     await myClawAppLog(result.ok ? "info" : "warn", "quota retry fired", {
       owner,
       threadId,
@@ -3312,10 +3321,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private async fireSubAgentQuotaRetry(sessionId: string): Promise<void> {
     const parentSessionId = await this.subagents?.parentOf(sessionId).catch(() => undefined);
     this.quotaWaits.delete(sessionId);
+    // Same order as the conversation's: the wait goes first, so the resumed run can only write a
+    // session that no longer carries one -- docs/quota-retry.md.
+    await this.store.clearQuotaWaitBySession(sessionId).catch(() => undefined);
     const result = this.subagents
       ? await this.subagents.resumeAfterQuota(sessionId)
       : { ok: false as const, reason: "Sub-agents are unavailable." };
-    await this.store.clearQuotaWaitBySession(sessionId).catch(() => undefined);
     if (parentSessionId) void this.notifyRoster(parentSessionId);
     await myClawAppLog(result.ok ? "info" : "warn", "sub-agent quota retry fired", {
       sessionId,
