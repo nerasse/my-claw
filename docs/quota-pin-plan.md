@@ -1,9 +1,27 @@
-# Plan — épingler une conversation sur un modèle, et boucler sur les quotas
+# Plan — Siphon : épingler une conversation sur un modèle, et boucler sur les quotas
 
 Deux phases, dans l'ordre. La phase 1 est une option du retry ; la phase 2 change la forme de
 cette option.
 
 Statut : **proposition, rien n'est implémenté.** Rien n'entre dans le code avant ton accord.
+
+## Le nom
+
+Le mode s'appelle **Siphon** (choisi le 2026-11-01). Il couvre **les deux faces** : brider tout un
+arbre sur un modèle, et tout reprendre quand le quota revient. Le menu porte le nom ; le code reste
+descriptif, comme aujourd'hui (`Retry when the quota returns` à l'écran, `quotaRetry` dans le code) :
+
+| Écran | Code |
+|---|---|
+| `Siphon` · `one model for this whole tree, forever refilled` | `session.pinModel` |
+| `Siphon off` | absent |
+| `Siphon: returning to the top of the route` (phase 2) | `config.tags[].quotaOrder` |
+
+Une seule entrée de menu, pas deux : le pin **est** le mode. Mais la **reprise au reset n'est pas
+une propriété de Siphon** : elle reste ce qu'elle est déjà, active pour toute conversation dont le
+switch « Retry when the quota returns » est allumé, avec ou sans Siphon. Siphon choisit seulement
+**quel modèle** reprend. Le moteur (`quotaRetry.enabled` + le tick + `resumeArmedWait`) est partagé
+par les deux, et la reprise par la racine proposée plus bas s'applique donc à tous les cas.
 
 ---
 
@@ -208,7 +226,95 @@ de run.
 
 ---
 
-## Ordre proposé
+## Reprise : ce qui existe, et ce qui manque
+
+C'est la partie que je n'avais pas traitée, et elle n'est pas propre aujourd'hui. Voilà l'état
+exact, vérifié dans le code.
+
+### Ce qui marche
+
+- **Un enfant seul, arrêté sur un mur.** `armQuotaWait` écrit le `pending` sur la session de
+  l'enfant ; le tick de l'adaptateur le voit, `resumeArmedWait` reprend la conversation sans
+  nouveau tour, et `continuable` refuse proprement si l'enfant avait déjà fini. Ce chemin est
+  testé et il tient.
+- **Une attente survit à un restart** : elle vit dans `meta.json`, et `startQuotaRetries` la relit
+  au boot. C'est ce qui vient d'être réparé (clé de session).
+- **Un `run_start` sans `run_end`** (crash, kill, restart) n'est pas perdu : `continuable` répond
+  `{ ok: true, ended: "lost" }`, donc un parent peut reprendre un enfant que le crash a laissé
+  en plan.
+
+### Ce qui manque, et qui casse précisément ton cas
+
+1. **La chaîne ne remonte pas.** `spawn` **attend** l'enfant dans le même tour (`await
+   runner.spawn(...)` dans `src/tools/spawn.ts:137`). Si l'enfant meurt sur un mur, l'appel `spawn`
+   rend un échec, et c'est **le parent** qui décide de la suite — avec un tour de modèle, sur son
+   propre provider. Si le parent est lui-même épuisé, le mur l'attrape aussi et il s'arrête. À la
+   reprise, chaque session repart **de son côté** : l'enfant reprend sa tâche, mais le parent ne
+   récupère pas son résultat, et rien ne garantit qu'il l'attende.
+   Deux enfants en parallèle sous un même parent donnent deux reprises indépendantes, sans ordre.
+2. **Un parent mort ne reprend pas ses enfants.** Un run parent qui tombe (crash ou mur) et qui
+   avait des enfants vivants ne les réclame jamais : eux reprennent si **leur** attente est armée,
+   et sinon restent `interrupted` sur la carte.
+3. **La carte ment après un crash.** `spawnView` lit `running` + pas de run en cours comme
+   `interrupted` — donc l'état est correct à l'écran, mais **aucune reprise n'est armée** : elle est
+   purement visuelle. Un crash ne produit pas de `pending`, donc le tick n'a rien à faire, et
+   l'owner doit cliquer Continue sur chaque carte, à chaque niveau.
+4. **Rien ne réarme l'attente sur une chaîne.** Le plafond de huit tentatives est **par session** :
+   trois niveaux qui retombent chacun sur un mur donnent 3 × 8 tentatives indépendantes, sans
+   politique d'ensemble. Une chaîne qui boucle mal peut tourner longtemps.
+
+### Ce que je propose d'ajouter (phase 1, même travail)
+
+**Ce n'est pas du ressort de Siphon.** La reprise automatique existe déjà pour toute conversation
+dont le switch est allumé, et elle doit le rester : c'est un comportement **général**, pas une
+option du mode. Ce qui suit corrige donc le moteur partagé, et Siphon en hérite comme le retry simple.
+
+**Une reprise par la racine, pas par la feuille.** Une seule attente par **arbre**, portée par la
+session racine, avec la liste des sessions à reprendre et l'ordre parent-avant-enfant :
+
+```ts
+// sur la session racine, à côté du switch
+quotaRetry: { enabled, pending: { at, attempts, windows, tree: [sessionId, ...] } }
+```
+
+Le tick, quand il tire : reprend **la racine d'abord**. Le run racine ré-exécute le tour que le mur
+avait interrompu ; les `spawn` qu'il refait retrouvent les enfants existants (ils sont sur disque,
+`continuable` répond `lost` ou le texte déjà dit), donc la chaîne se reconstruit d'elle-même au lieu
+d'être rejouée depuis zéro.
+
+Concrètement, les points à tenir :
+
+- `armQuotaWait` écrit sur la racine (via `attributionParent`), avec l'ensemble des sessions mortes
+  du run — pas seulement la sienne.
+- `resumeArmedWait` accepte un id **de racine** et reprend les enfants **dans l'ordre de la chaîne**,
+  un à la fois : deux enfants relancés en parallèle sur un provider qui vient de se rouvrir le
+  saturent et le referment.
+- Une reprise de parent **ne rejoue pas** les enfants déjà terminés : `continuable` le dit déjà, il
+  suffit de le lire par enfant plutôt que de tout relancer.
+- Un enfant sans attente propre mais vivant dans l'arbre est repris **par la racine** ; un enfant
+  qui avait sa propre attente la garde, et la racine ne le double pas.
+- L'owner garde le dernier mot : `session.quotaRetry.now` sur une carte d'enfant reprend cet enfant
+  seul, comme aujourd'hui.
+
+### Ce qui ne se répare pas tout seul, et qu'il faut dire
+
+- **Un run interrompu par un `Stop` ne se reprend pas.** C'est la règle actuelle et elle est bonne :
+  l'owner a demandé l'arrêt. Un mur n'est pas un Stop, c'est ce qui rend la reprise légitime — la
+  distinction existe déjà dans `isAbort`.
+- **Un crash du serveur en plein run** ne peut pas être repris « au milieu du tour » : le tour est
+  rejoué depuis son début. C'est acceptable pour un mur (le travail des tours précédents est dans le
+  log, les outils ont déjà écrit), mais ça signifie qu'un tour avec des effets de bord non
+  idempotents peut les rejouer. À écrire dans la doc plutôt qu'à masquer.
+- **Les enfants orphelins d'un parent disparu** (kill manuel) restent à reprendre à la main : c'est
+  le prix de ne pas avoir de superviseur d'arbre. Je ne propose pas d'en ajouter un en phase 1.
+
+### Ce que ça coûte
+
+Une demi-journée de plus sur la phase 1, et les tests qui vont avec (chaîne de trois niveaux, parent
+mort, deux enfants, un enfant déjà fini). C'est le genre de chemin qu'on ne veut pas découvrir en
+production — c'est exactement celui que le bug de clé du 30/10 a rendu invisible pendant 12 heures.
+
+
 
 1. **Phase 1** maintenant : elle est petite, elle répond au besoin immédiat, et toutes ses décisions
    se retrouvent en phase 2 (le pin devient un tag, la politique s'y greffe).
