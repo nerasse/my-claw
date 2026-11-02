@@ -6,7 +6,7 @@ import { log } from "../utils/logger.ts";
 import { getCodexAccessToken, CODEX_BASE_URL } from "./codex-auth.ts";
 import { ReasoningSegmenter } from "./reasoning-segments.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ReasoningItem, ToolCall } from "./provider.ts";
-import { checkCircuitBreaker, recordCircuitFailure, recordCircuitSuccess, countsTowardBreaker } from "./provider.ts";
+import { checkCircuitBreaker, isToolName, recordCircuitFailure, recordCircuitSuccess, countsTowardBreaker } from "./provider.ts";
 import { isQuotaSpent } from "./outage.ts";
 import { CODEX_TIMEOUT_MS, llmFetchInit, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
 
@@ -393,8 +393,16 @@ async function processStream(
 
   const toolCalls: ToolCall[] = order
     .map((i) => slots.get(i)!)
-    .filter((s) => s.callId && s.name)
-    .map((s) => ({ id: s.callId, name: s.name, arguments: safeJson(s.args || "{}") }));
+    .filter((s) => s.callId)
+    .flatMap((s) => {
+      // A name the model mangled is not a call. Codex refuses a replayed one with HTTP 400, which
+      // broke a whole conversation that had one in its log -- docs/model-identity.md.
+      if (!isToolName(s.name)) {
+        if (s.name) void log("warn", "dropped a Codex tool call whose name is not an identifier", { name: String(s.name).slice(0, 120) });
+        return [];
+      }
+      return [{ id: s.callId, name: s.name, arguments: safeJson(s.args || "{}") }];
+    });
 
   const segments = segmenter.list();
   // The segmenter's span when the thought had words, since it is the one the live view measured;

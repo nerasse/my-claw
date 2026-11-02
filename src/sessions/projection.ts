@@ -11,6 +11,7 @@
  */
 
 import type { ChatMessage } from "../llm/provider.ts";
+import { isToolName } from "../llm/provider.ts";
 import type { CommandEntry, Entry, PhaseEntry, ToolEntry, CompactionEntry } from "./log.ts";
 import { pathOf } from "./log.ts";
 
@@ -86,6 +87,18 @@ export function promptOf(entries: readonly Entry[], leafId: string | null): Chat
  * 42-entry conversation as nine tokens -- which made every tail budget look satisfied and would
  * have disabled compaction outright.
  */
+/**
+ * The tool calls of a turn that can survive a replay.
+ *
+ * The log is history and history is not edited: a name a model mangled stays in the file, and it
+ * has to stop mattering at the boundary. Codex refuses a replayed call whose name is not
+ * `^[a-zA-Z0-9_-]+$` with HTTP 400, so one such entry made every later request of that
+ * conversation fail -- and the conversation could not be continued at all (2026-11-02).
+ */
+function callable(tools: readonly ToolEntry[]): ToolEntry[] {
+  return tools.filter((tool) => isToolName(tool.name));
+}
+
 export function messagesOf(context: readonly Entry[]): ChatMessage[] {
   const out: ChatMessage[] = [];
 
@@ -158,9 +171,9 @@ export function messagesOf(context: readonly Entry[]): ChatMessage[] {
     const assistant: ChatMessage = {
       role: "assistant",
       content: text,
-      ...(tools.length > 0
+      ...(callable(tools).length > 0
         ? {
-            tool_calls: tools.map((tool) => ({
+            tool_calls: callable(tools).map((tool) => ({
               id: tool.callId,
               type: "function" as const,
               function: { name: tool.name, arguments: JSON.stringify(tool.args) },
@@ -171,7 +184,9 @@ export function messagesOf(context: readonly Entry[]): ChatMessage[] {
     };
     out.push(assistant);
 
-    for (const tool of tools) {
+    // Only the calls the assistant message above could name: a tool result whose call is not there
+    // is a result the provider has nothing to attach to.
+    for (const tool of callable(tools)) {
       out.push({ role: "tool", tool_call_id: tool.callId, content: tool.output });
     }
     for (const filed of filedDuring) out.push(commandTurn(filed));

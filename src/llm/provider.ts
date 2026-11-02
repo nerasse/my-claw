@@ -263,6 +263,24 @@ export interface ToolCall {
 }
 
 /**
+ * A tool name that is an identifier, not a sentence.
+ *
+ * Every tool this install offers is `[a-z0-9_]+` (the MCP namespace adds `mcp__<server>__`), and
+ * the providers' own APIs say the same: Codex rejects a replayed call whose name is not
+ * `^[a-zA-Z0-9_-]+$` with HTTP 400, which broke a whole conversation that had one in its log
+ * (2026-11-02). The name arrives from the model, so it can carry anything -- a small model emitted
+ * the raw `<DSML| invoke>` markup with a shell redirect in the name field, and every later replay
+ * of that conversation failed on it.
+ *
+ * Everything before the call is executed goes through this: a name that fails is not a tool call,
+ * it is text the model got wrong, and answering it as an unknown tool keeps the tidy error while
+ * refusing the malformed name any chance to reach the log or the next request.
+ */
+export function isToolName(name: unknown): name is string {
+  return typeof name === "string" && /^[a-zA-Z0-9_-]+$/.test(name);
+}
+
+/**
  * The union of every usage shape the OpenAI-compatible endpoints in use actually emit. The cache
  * fields are the reason this type exists: they were previously undeclared, so `normalizeUsage`
  * could not see them and prompt caching had no instrumentation at all.
@@ -834,11 +852,21 @@ function parseToolCalls(
     function: { name: string; arguments: string };
   }>,
 ): ToolCall[] | undefined {
-  return toolCalls?.map((tc) => ({
-    id: tc.id,
-    name: tc.function.name,
-    arguments: safeJsonParse(tc.function.arguments, "tool_call.arguments"),
-  }));
+  return toolCalls?.flatMap((tc) => {
+    // A name the model mangled is not a call: dropping it hands the model a turn with no tool and
+    // the text it wrote, instead of a 400 on the next replay -- docs/model-identity.md.
+    if (!isToolName(tc.function?.name)) {
+      void log("warn", "dropped a tool call whose name is not an identifier", {
+        name: String(tc.function?.name ?? "").slice(0, 120),
+      });
+      return [];
+    }
+    return [{
+      id: tc.id,
+      name: tc.function.name,
+      arguments: safeJsonParse(tc.function.arguments, "tool_call.arguments"),
+    }];
+  });
 }
 
 export async function chatCompletion(
@@ -1195,11 +1223,21 @@ export async function chatCompletionStream(
 
       const streamedToolCalls = [...toolCalls.entries()]
         .sort((a, b) => a[0] - b[0])
-        .map(([, toolCall]) => ({
-          id: toolCall.id,
-          name: toolCall.name,
-          arguments: safeJsonParse(toolCall.arguments, "streamed tool_call.arguments"),
-        }));
+        .flatMap(([, toolCall]) => {
+          if (!isToolName(toolCall.name)) {
+            if (toolCall.name) {
+              void log("warn", "dropped a streamed tool call whose name is not an identifier", {
+                name: String(toolCall.name).slice(0, 120),
+              });
+            }
+            return [];
+          }
+          return [{
+            id: toolCall.id,
+            name: toolCall.name,
+            arguments: safeJsonParse(toolCall.arguments, "streamed tool_call.arguments"),
+          }];
+        });
 
       recordCircuitSuccess(config.baseUrl);
       const segments = segmenter.list();

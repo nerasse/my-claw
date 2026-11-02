@@ -260,3 +260,59 @@ test("the stream and the cache hints send the same shape", async () => {
     expect(urls(messages[3]!)).toEqual(["data:image/png;base64,A"]);
   }
 });
+
+/**
+ * A tool call whose name is not an identifier is not a call -- 2026-11-02.
+ *
+ * The name comes straight from the model. A small one emitted its own `<DSML| invoke>` markup with
+ * a shell redirect in that field; the call was answered as an unknown tool, which was tidy, but the
+ * entry reached the log and every later replay of that conversation failed on it at the provider.
+ * Dropping it at the transport keeps the malformed name out of both.
+ */
+describe("a tool call whose name is not an identifier", () => {
+  const bad = "docker 2>/dev/null; true</|DSML| parameter>";
+
+  test("is dropped from a plain completion, and a valid sibling stays", async () => {
+    const mock = mockFetch(async () =>
+      new Response(
+        JSON.stringify({
+          choices: [{
+            message: {
+              content: "",
+              tool_calls: [
+                { id: "tc1", function: { name: "bash", arguments: '{"command":"ls"}' } },
+                { id: "tc2", function: { name: bad, arguments: "{}" } },
+              ],
+            },
+            finish_reason: "tool_calls",
+          }],
+        }),
+        { status: 200 },
+      ),
+    );
+    try {
+      const res = await chatCompletion({ ...config, model: "m" } as never, [], undefined);
+      expect(res.toolCalls?.map((c) => c.id)).toEqual(["tc1"]);
+    } finally {
+      mock.restore();
+    }
+  });
+
+  test("is dropped from a streamed completion", async () => {
+    const chunk = (delta: unknown) => `data: ${JSON.stringify({ choices: [{ delta }] })}\n\n`;
+    const mock = mockFetch(async () =>
+      new Response(
+        chunk({ tool_calls: [{ index: 0, id: "tc1", function: { name: "bash", arguments: '{"command":"ls"}' } }] }) +
+          chunk({ tool_calls: [{ index: 1, id: "tc2", function: { name: bad, arguments: "{}" } }] }) +
+          "data: [DONE]\n\n",
+        { status: 200 },
+      ),
+    );
+    try {
+      const res = await chatCompletionStream({ ...config, model: "m" } as never, [], () => undefined);
+      expect(res.toolCalls?.map((c) => c.id)).toEqual(["tc1"]);
+    } finally {
+      mock.restore();
+    }
+  });
+});

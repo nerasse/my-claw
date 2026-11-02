@@ -362,3 +362,50 @@ describe("keepCurrentTurnReasoning: the reasoning a request may carry", () => {
     expect(keepCurrentTurnReasoning(messages)).toEqual(messages);
   });
 });
+
+/**
+ * A tool name the model mangled never reaches a request -- 2026-11-02.
+ *
+ * A small model emitted its own `<DSML| invoke>` markup with a shell redirect in the name field.
+ * The call was recorded as an unknown tool, which was tidy, but the entry stayed in the log and
+ * every later request of that conversation replayed it. Codex answers such a name with HTTP 400
+ * (`Invalid 'input[380].name': string does not match pattern`), so the conversation could not be
+ * continued at all -- Continue failed, and so did every new message.
+ *
+ * The log is history and is not edited. What stops mattering is the replay.
+ */
+describe("a tool name that is not an identifier", () => {
+  const mangled = (callId: string) =>
+    tool(callId, "r1", { name: "docker 2>/dev/null; true</|DSML| parameter>\n</|DSML| invoke>" });
+
+  test("is left out of the assistant turn and out of the tool results", () => {
+    const { entries, leaf } = chain([user("q"), phase("je regarde", "r1"), mangled("c1"), phase("voila", "r2")]);
+    const messages = promptOf(entries, leaf);
+    const assistant = messages.find((m) => m.role === "assistant" && m.tool_calls);
+    expect(assistant).toBeUndefined();
+    expect(messages.some((m) => m.role === "tool")).toBe(false);
+    // The prose is untouched: only the call that cannot be replayed is dropped.
+    expect(messages.some((m) => m.role === "assistant" && m.content === "je regarde")).toBe(true);
+  });
+
+  /** The calls the assistant turn of the prompt carries, as the provider would read them. */
+  const callsOf = (entries: Entry[], leaf: string) => {
+    const assistant = promptOf(entries, leaf).find(
+      (m): m is ChatMessage & { tool_calls: Array<{ id: string; function: { name: string } }> } =>
+        m.role === "assistant" && "tool_calls" in m && m.tool_calls !== undefined,
+    );
+    return assistant?.tool_calls ?? [];
+  };
+
+  test("does not take a valid sibling down with it", () => {
+    const { entries, leaf } = chain([user("q"), phase("", "r1"), tool("c1"), mangled("c2")]);
+    const messages = promptOf(entries, leaf);
+    expect(callsOf(entries, leaf).map((c) => c.id)).toEqual(["c1"]);
+    expect(messages.filter((m) => m.role === "tool").map((m) => m.tool_call_id)).toEqual(["c1"]);
+  });
+
+  test("every name this install offers passes the rule", () => {
+    const { entries, leaf } = chain([user("q"), phase("", "r1"), tool("c1", "r1", { name: "mcp__brave__search" })]);
+    expect(callsOf(entries, leaf).map((c) => c.function.name)).toEqual(["mcp__brave__search"]);
+  });
+});
