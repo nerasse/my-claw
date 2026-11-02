@@ -1846,3 +1846,23 @@ Ce que le test vérifie n'est donc pas un chiffre mais le mécanisme :
 
 Ce que le passage au synthétique a coûté : les chiffres du 2026-09-12 (1005 → 5520, 227 → 7316)
 ne sont plus vérifiés par personne. Ils sont ici, et là seulement.
+
+## A tool name that is not an identifier
+
+The name of a tool call is the model's, and a model can put anything there: one emitted its own
+`<DSML| invoke>` markup with a shell redirect in the field. Written to the log as-is, that entry
+became permanent, and every later request of the conversation replayed it -- Codex answers
+`Invalid 'input[N].name': string does not match pattern ^[a-zA-Z0-9_-]+$` with HTTP 400, which
+fails the whole request, Continue included. The conversation became unanswerable (2026-11-02).
+
+Four boundaries now agree, and each one covers what the others cannot:
+
+| Boundary | What it does | What it protects |
+|---|---|---|
+| transport (plain, stream) | drops the call as it arrives | the log of a session written from now on |
+| `RunRecorder.tool` | writes `unknown_tool`, keeps the original in the output | a malformed call that slipped through any path |
+| projection | leaves the pair out on replay | logs written before any of this existed |
+| call id | same rule, same reason | the provider validates it identically |
+
+The log stays history: nothing is edited in place, and the original name is still readable in the
+output of the entry that got rewritten. What changes is what can be replayed.
