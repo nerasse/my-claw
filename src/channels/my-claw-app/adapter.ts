@@ -2563,11 +2563,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
       const pending = quiet
         ? undefined
         : setTimeout(() => {
+            // A `/compact` typed during a run waits for it to end before it can start, and the
+            // wait is the whole run: saying "running" for ten minutes reads as a hung command.
+            const waiting =
+              command === "compact" && runRegistry.isRunning(this.store.resolveSessionId(owner, threadId));
             this.broadcast(owner, {
               type: "chat.command.pending",
               threadId,
               replyToId: frame.id,
-              text: `Running /${command}...`,
+              text: waiting ? "Waiting for the current run to finish, then compacting…" : `Running /${command}...`,
             });
           }, COMMAND_PENDING_NOTICE_MS);
       try {
@@ -3297,10 +3301,29 @@ export class MyClawAppAdapter implements ChannelAdapter {
    * write a session without one.
    */
   private async fireQuotaRetry(owner: string, threadId: string): Promise<void> {
-    const key = waitKey(this.store.resolveSessionId(owner, threadId));
+    const sessionId = this.store.resolveSessionId(owner, threadId);
+    const key = waitKey(sessionId);
+    // What the wait was armed for, read before it is cleared: a `/compact` queued on the wall runs
+    // now, where an ordinary wait resumes the conversation it interrupted.
+    const pending = await this.store.pendingQuotaWaitBySession(sessionId).catch(() => undefined);
     this.quotaWaits.delete(key);
     await this.store.clearQuotaRetryPending(owner, threadId).catch(() => undefined);
     this.broadcast(owner, await this.store.quotaRetryOf(owner, threadId));
+    if (pending?.task === "compact") {
+      const handler = this.commandHandler;
+      const output = handler ? await handler(owner, threadId, "compact", "") : "Compaction skipped: no command handler.";
+      // An answer means it did not compact (and may have queued itself again); nothing means the
+      // boundary was written, and the wait is spent.
+      const ok = output === undefined;
+      await myClawAppLog(ok ? "info" : "warn", "quota retry fired a queued compaction", {
+        owner,
+        threadId,
+        compacted: ok,
+        ...(ok ? {} : { reason: typeof output === "string" ? output : output.text }),
+      });
+      if (ok) this.quotaAttempts.delete(key);
+      return;
+    }
     const result = await this.startContinue(owner, threadId);
     await myClawAppLog(result.ok ? "info" : "warn", "quota retry fired", {
       owner,
@@ -3309,6 +3332,42 @@ export class MyClawAppAdapter implements ChannelAdapter {
       ...(result.ok ? {} : { reason: result.reason }),
     });
     if (!result.ok) this.quotaAttempts.delete(key);
+  }
+
+  /**
+   * Queues a `/compact` on the conversation's own quota switch, instead of letting it die on the
+   * wall.
+   *
+   * Same decision as a failed run's (`decideQuotaWait`, the provider's usage endpoint is the
+   * oracle): a per-minute burst arms nothing and the caller reports the failure, a real wall names
+   * the second it reopens and the compaction runs then. The wait carries `task: "compact"`, which
+   * is the only thing telling the tick which of the two jobs to fire.
+   */
+  async queueCompactQuotaRetry(owner: string, threadId: string, err: unknown): Promise<string | undefined> {
+    const quota = this.quota;
+    if (!quota) return undefined;
+    const key = waitKey(this.store.resolveSessionId(owner, threadId));
+    const setting = await this.store.quotaRetrySettingOf(owner, threadId).catch(() => undefined);
+    const decision = await decideQuotaWait({
+      readQuota: (provider) => quota.get(provider, true),
+      err,
+      switchOff: setting?.enabled !== true,
+      previousAttempts: this.quotaAttempts.get(key) ?? 0,
+    });
+    if (!decision.wait) return undefined;
+    const armed = await this.store.armQuotaRetry(owner, threadId, { ...decision.wait, task: "compact" });
+    if (!armed) return undefined;
+    this.quotaAttempts.set(key, decision.wait.attempts);
+    this.quotaWaits.add(key);
+    this.broadcast(owner, await this.store.quotaRetryOf(owner, threadId));
+    await myClawAppLog("info", "compaction queued on quota retry", {
+      owner,
+      threadId,
+      at: decision.wait.at,
+      attempts: decision.wait.attempts,
+      windows: decision.wait.windows,
+    });
+    return `Compaction queued: the plan reopens at ${new Date(decision.wait.at).toLocaleString()}. It compacts then.`;
   }
 
   /**

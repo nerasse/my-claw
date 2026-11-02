@@ -172,7 +172,11 @@ export class MessageRouter {
     // it on the session file and answer from a transcript that is about to be replaced, which is
     // how a compaction ends up written and then ignored. Waiting is the whole point: the run that
     // follows is the one that benefits from it.
-    if (runRegistry.isCompacting(sessionId)) {
+    //
+    // A compaction *queued behind a run* counts the same way, and it is the reason the marker is
+    // checked rather than the hold alone: without it a message sent after `/compact` folded into
+    // the run that was ending and was answered before the summary it was told to wait for.
+    if (runRegistry.isCompactionPending(sessionId)) {
       void log("info", "waiting for compaction before routing", { ...messageLogData(message), sessionId });
       hooks.emit("message:queued", { message, sessionId, reason: "compaction" });
       await runRegistry.waitForCompaction(sessionId);
@@ -264,6 +268,10 @@ export class MessageRouter {
     streaming: boolean,
     options: RouteOptions,
   ): Promise<RouteResult | undefined> {
+    // Inside the lock, not only before it: a compaction that started while this message waited for
+    // the session to free up would otherwise be overtaken by the run it is about to rewrite. Also
+    // covers `routeCronTraced`, which reaches a run without the early check.
+    await runRegistry.waitForCompaction(sessionId);
     const startedAt = Date.now();
     const { signal, end } = runRegistry.startRoot(sessionId);
 

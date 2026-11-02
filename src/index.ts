@@ -2452,6 +2452,9 @@ async function main() {
       onAuthChanged,
       accountFor,
       reloadConfigNow,
+      // A `/compact` that dies on a spent plan queues itself on the conversation's quota switch;
+      // the adapter owns the tick that will fire it.
+      queueCompactQuotaRetry: (owner, threadId, cause) => myClawApp.queueCompactQuotaRetry(owner, threadId, cause),
       toolRegistry,
       mcpStatus: () => mcpManager.status(),
       listSubAgents: (sessionId) => subAgentRunner.list(subAgentRegistry, sessionId),

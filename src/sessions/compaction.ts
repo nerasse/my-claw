@@ -1,7 +1,10 @@
-import type { MyClawConfig } from "../core/config.ts";
+import type { MyClawConfig, ResolvedLlmConfig } from "../core/config.ts";
 import { DEFAULT_COMPACTION_TAIL_TOKENS, resolveAutoCompactThreshold, resolveCompactionTailTokens } from "../core/config.ts";
 import { resolveFullContextWindow } from "../llm/context-window.ts";
 import { resolveUtilityLlmConfig } from "../llm/utility-model.ts";
+import { providerFallbackTargets } from "../llm/provider-fallback.ts";
+import { isCapabilityRefusal, isProviderOutage, isQuotaSpent } from "../llm/outage.ts";
+import { isQuotaFailure } from "../llm/quota/retry.ts";
 import { llmCompleteStream } from "../llm/transport.ts";
 import { wallConfig } from "../llm/quota/wall.ts";
 import { tryResolveRunModel } from "../llm/run-model.ts";
@@ -25,6 +28,7 @@ import { CONTINUE_SUMMARY, conversationSummaryPrompt, firstSummaryPrompt, splitS
 import { fileAnchorOf } from "./compaction-files.ts";
 import { newEntryId, type SessionLog } from "./log.ts";
 import { isAbort, rethrowIfAborted } from "../core/aborted.ts";
+import { log } from "../utils/logger.ts";
 
 const MIN_MESSAGES_TO_COMPACT = 10;
 
@@ -88,6 +92,14 @@ export interface CompactionResult {
   beforeCount: number;
   afterCount: number;
   summary?: string;
+  /**
+   * The pass died on a wall the conversation had asked to wait out (`quotaRetry.enabled`): the
+   * caller arms the wait and the compaction runs when the plan reopens, instead of falling to the
+   * next candidate the way an ordinary provider failure does -- docs/quota-retry.md.
+   */
+  retryableQuota?: boolean;
+  /** What failed, for the wait to be decided on (the provider rides on it). */
+  cause?: unknown;
   /** What the boundary archived, when it archived something (`CompactionEntry.archive`). */
   archive?: string;
   /**
@@ -381,7 +393,7 @@ const REFUSAL_PATTERNS = [
 
 export type SummaryResult =
   | { ok: true; summary: string; archive: string; elapsedMs: number }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; retryableQuota?: boolean; cause?: unknown };
 
 /** One summarizer pass, before the retry decision. `retryable` is what earns the one retry. */
 type SummaryAttempt =
@@ -529,14 +541,39 @@ export async function summarizeForCompaction(
   // goes uncapped. Anthropic requires the field: its transport falls back to the model's own
   // declared ceiling, which is the same thing codex gets from leaving it out.
   const { output: _uncapped, ...limit } = resolved.limit ?? {};
-  const llmConfig = wallConfig(config, {
-    ...resolved,
-    limit,
-    // Maintenance on a conversation is still that conversation: the prompt it sends is that
-    // conversation's own prefix, and a gateway routing on the session key refuses a call without
-    // one -- docs/session-affinity.md.
-    cacheKey: resolved.cacheKey ?? session.id,
-  });
+  const summarizerConfig = (from: ResolvedLlmConfig): ResolvedLlmConfig =>
+    wallConfig(config, {
+      ...from,
+      limit,
+      // Maintenance on a conversation is still that conversation: the prompt it sends is that
+      // conversation's own prefix, and a gateway routing on the session key refuses a call without
+      // one -- docs/session-affinity.md.
+      cacheKey: from.cacheKey ?? session.id,
+    });
+
+  /**
+   * The models this pass may use, best first: the one the session runs, then the rest of the chain
+   * it is on -- the tag's other candidates, and the tag's global default when it asked for it.
+   *
+   * The summarizer used to resolve exactly one model and call it once, so a tag whose first
+   * account was out of quota turned every summary into an HTTP 429 while the second account sat
+   * idle, where the same run would have answered on it (2026-11-02). A run walks
+   * `providerFallbackTargets` on a provider failure; this is the same walk, from the same list.
+   */
+  const candidates: ResolvedLlmConfig[] = [summarizerConfig(resolved)];
+  for (const target of providerFallbackTargets({
+    config,
+    agent: agentTypeOf(session),
+    ...(runModel?.route ? { route: runModel.route } : {}),
+    ...(session.modelOverride ? { tagRef: session.modelOverride } : {}),
+    current: { model: resolved.model, ...(resolved.provider ? { provider: resolved.provider } : {}) },
+    // A compaction prompt carries the conversation and its instructions, never an image: asking
+    // for a vision candidate would be asking for the wrong half of the route.
+    hasImages: false,
+    attempted: new Set([resolved.model]),
+  })) {
+    candidates.push(summarizerConfig(target.config));
+  }
 
   /**
    * One summarizer call: the stream, its accounting, and what the response turned out to be.
@@ -550,7 +587,7 @@ export async function summarizeForCompaction(
    * transport allows 600. Streaming also gives the summary a live mouth: the fragments go out as
    * they arrive, so a window can watch it being written -- docs/compaction.md.
    */
-  const callOnce = async (messages: ChatMessage[]): Promise<LlmResponse> => {
+  const callOnce = async (llmConfig: ResolvedLlmConfig, messages: ChatMessage[]): Promise<LlmResponse> => {
     const callStartedAt = Date.now();
     const progress = compactionProgress(session.id);
     // The thinking goes out too, batched the same way. A summarizer inheriting the session's effort
@@ -604,7 +641,7 @@ export async function summarizeForCompaction(
    * gate still holds: a summary that has not ended after `MAX_CONTINUATIONS` is refused, never
    * stored incomplete.
    */
-  const attemptOnce = async (): Promise<SummaryAttempt> => {
+  const attemptOnce = async (llmConfig: ResolvedLlmConfig): Promise<SummaryAttempt> => {
     const attemptStartedAt = now();
     const base: ChatMessage[] = prefix
       ? [
@@ -616,10 +653,10 @@ export async function summarizeForCompaction(
           { role: "system", content: SUMMARIZER_SYSTEM },
           { role: "user", content: prompt },
         ];
-    let response = await callOnce(base);
+    let response = await callOnce(llmConfig, base);
     let written = response.content;
     for (let round = 0; round < MAX_CONTINUATIONS && cutAfterWriting(response); round++) {
-      response = await callOnce([
+      response = await callOnce(llmConfig, [
         ...base,
         { role: "assistant", content: written },
         { role: "user", content: CONTINUE_SUMMARY },
@@ -630,13 +667,51 @@ export async function summarizeForCompaction(
     return classified.ok ? { ok: true, summary: classified.summary, elapsedMs: now() - attemptStartedAt } : classified;
   };
 
-  let attempt = await attemptOnce();
   // One retry, and one only, earned by a stream that never concluded. Decided here, where the
   // failure is seen, and not a transport policy: the transports already retry statuses and
   // transients, and a 200 that is cut mid-stream is neither. The aléa is measured -- 4 empty
   // streams in 18 deepseek-flash compactions behind opencode zen, the same call answering 6 689
   // tokens 30 s later, and two more cut mid-reasoning on 2026-09-20, one of which the retry landed.
-  if (!attempt.ok && attempt.retryable) attempt = await attemptOnce();
+  const attemptOn = async (llmConfig: ResolvedLlmConfig): Promise<SummaryAttempt> => {
+    const first = await attemptOnce(llmConfig);
+    if (!first.ok && first.retryable) return await attemptOnce(llmConfig);
+    return first;
+  };
+
+  let attempt: SummaryAttempt | undefined;
+  for (let index = 0; index < candidates.length; index++) {
+    const llmConfig = candidates[index]!;
+    try {
+      attempt = await attemptOn(llmConfig);
+      // A model answered or refused on its own terms (an empty or incomplete summary): another
+      // model would write the same absence, so the chain stops here. Only a provider failure, which
+      // is a throw, moves to the next candidate.
+      break;
+    } catch (err) {
+      rethrowIfAborted(err, signal);
+      const next = candidates[index + 1];
+      // The owner's decision outranks the chain, exactly as it does for a run: a conversation with
+      // the quota switch on waits the wall out instead of quietly answering on another model.
+      if (next && session.quotaRetry?.enabled === true && isQuotaFailure(err)) {
+        return {
+          ok: false,
+          reason: `Compaction error: ${err instanceof Error ? err.message : String(err)}`,
+          retryableQuota: true,
+          cause: withProvider(err, llmConfig),
+        };
+      }
+      if (!next || !(isProviderOutage(err) || isQuotaSpent(err) || isCapabilityRefusal(err))) throw err;
+      const reason = String((err as Error | undefined)?.message ?? err).slice(0, 200);
+      void log("warn", "compaction provider fallback", {
+        sessionId: session.id,
+        failedModel: llmConfig.model,
+        provider: llmConfig.provider,
+        targetModel: next.model,
+        reason,
+      });
+    }
+  }
+  if (!attempt) return { ok: false, reason: "Compaction error: no model could summarize this session" };
   if (!attempt.ok) return { ok: false, reason: attempt.reason };
 
   const { summary, archive } = splitSummaryOutput(attempt.summary);
@@ -650,6 +725,18 @@ export async function summarizeForCompaction(
 /** An answer the output ceiling stopped after it had started writing: the one worth continuing. */
 function cutAfterWriting(response: LlmResponse): boolean {
   return cutByOutputCeiling(response.finishReason) && response.content.trim().length > 0;
+}
+
+/**
+ * The failure, stamped with the provider that produced it.
+ *
+ * The quota oracle is asked per provider (`docs/quota-retry.md`), and by the time the error reaches
+ * the channel only the error is left. A summarizer that walked three candidates has no other record
+ * of which one refused.
+ */
+function withProvider(err: unknown, from: ResolvedLlmConfig): unknown {
+  if (typeof err !== "object" || err === null) return err;
+  return Object.assign(err as object, { provider: from.provider, model: from.model });
 }
 
 /**
@@ -803,7 +890,13 @@ async function runCompactionPass(
     try {
       const summarized = await summarizeForCompaction(config, session, plan, instructions, signal, "compaction", now, prefix);
       if (!summarized.ok) {
-        return { ok: false, reason: summarized.reason, beforeCount, afterCount: beforeCount };
+        return {
+          ok: false,
+          reason: summarized.reason,
+          beforeCount,
+          afterCount: beforeCount,
+          ...(summarized.retryableQuota === true ? { retryableQuota: true, cause: summarized.cause } : {}),
+        };
       }
       const boundary = await commitCompaction(log, plan, summarized.summary, summarized.archive, summarized.elapsedMs);
       indexCompactionArchive(session, boundary);

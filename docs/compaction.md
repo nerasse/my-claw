@@ -465,6 +465,23 @@ Le coût est réel et assumé : l'appel de fond est facturé même jeté. Il est
 run sur le transcript pré-compaction et le résumé est perdu. Sa fin ne notifie rien
 (`docs/notifications.md`) : ce qui compte est de la voir tourner, pas d'être prévenu qu'elle est finie.
 
+**Un `/compact` en plein run.** La commande ne passe pas par le routeur (les commandes slash
+s'exécutent hors du lock de session), donc elle ne pouvait pas attendre derrière un run : elle
+répondait « A run is active ». `runRegistry.beginQueuedCompaction` pose un marqueur
+(`pendingCompactions`) dès l'acceptation de la commande, attend la fin du run **entier**
+(`waitForIdle`), puis prend le hold en boucle (un run qui démarre entre-temps est simplement
+raté et retenté). Trois conséquences, et c'est l'ordre :
+
+- ce qui est envoyé **après** le `/compact` ne rejoint pas la mailbox du run en cours
+  (`enqueueInjection` et `canInject` refusent tant que le marqueur est levé) : la bulle est annoncée
+  « en attente », et le message passe après le compact ;
+- le routeur attend aussi à l'intérieur du lock (`routeInternal`), pas seulement avant : un compact
+  qui démarre pendant qu'un message attendait la session ne peut plus être doublé par le run ;
+- `/stop` prend le run d'abord, la compaction en file au stop suivant.
+
+Une deuxième compaction (en cours ou en file) est refusée : deux passes écriraient la même histoire
+deux fois, et la seconde paierait un résumé pour rien.
+
 Ce qui attend n'est pas perdu pour autant, et ne repart pas en file chacun son tour. Un message arrivé
 pendant la tenue attend la fin du hold, puis rejoint le prochain run au lieu d'en ouvrir un à lui : la
 session réclame sa mailbox avant de prendre la file, donc deux messages relâchés par le même compact
@@ -487,6 +504,16 @@ tant qu'elle tient la session, comme pendant un run, sinon la frontière se pose
 vers laquelle on vient de basculer.
 
 `/compact <instructions>` ajoute un focus au prompt et force un recalcul : jamais de résumé armé.
+
+**Un résumé voyage sur la route de la session.** `summarizeForCompaction` ne résout pas un modèle
+unique : il construit la même liste qu'un run (`providerFallbackTargets`, route de tag comprise) et,
+sur un échec de fournisseur (`isProviderOutage`, quota épuisé, capacité refusée), passe au candidat
+suivant. Un tag dont le premier compte est épuisé fait donc écrire le résumé par le second, au lieu
+de rendre un HTTP 429 sur un compte qui a encore de la place (mesuré le 2026-11-02). Une réponse
+vide ou tronquée n'est pas un échec de fournisseur : la chaîne s'arrête au modèle qui l'a produite.
+Et quand la conversation a le switch « Retry when the quota returns » actif, le mur arrête la
+chaîne : la compaction se met en file sur l'attente quota et part au reset — `task: "compact"` dans
+l'attente, `docs/quota-retry.md`.
 
 **La fenêtre.** Le découpage d'une compaction -- automatique ou commande -- se calcule sur la
 fenêtre du modèle **déclarée, entière** (`resolveFullContextWindow`, `retainedBudgetFor`), et n'en

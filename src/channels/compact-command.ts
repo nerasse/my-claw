@@ -23,17 +23,32 @@ export interface CompactCommandParams {
   persist: () => Promise<void>;
   /** The app thread this came from, carried through to the completion notification. */
   threadId?: string;
+  /**
+   * Arms the conversation's quota wait for the compaction that just died on a spent plan.
+   *
+   * Injected by the channel that owns the tick, because the decision ("is this a wall, and when
+   * does it reopen") lives there and must not have a second answer here. Resolves to what to tell
+   * the owner when a wait was armed, `undefined` when this failure earns none -- the command then
+   * reports the failure as before.
+   */
+  queueQuotaRetry?: (cause: unknown) => Promise<string | undefined>;
 }
 
 export async function handleCompactCommand(p: CompactCommandParams): Promise<CompactOutcome> {
-  const held = runRegistry.beginCompaction(p.session.id);
+  // A `/compact` typed during a run waits for that whole run to end, and its marker is up from
+  // here: a message sent after it queues behind the compaction instead of being folded into the
+  // run that is ending (docs/compaction.md).
+  const held = await runRegistry.beginQueuedCompaction(p.session.id);
   if (!held) {
     return {
-      text: runRegistry.isCompacting(p.session.id)
-        ? "A compaction is already running on this session."
-        : "A run is active on this session — try again once it finishes (or /stop first).",
+      text: "A compaction is already queued or running on this session.",
       ok: false,
     };
+  }
+  // `/stop` reached it while it waited: an answer, not a compaction that never started.
+  if (held.signal.aborted) {
+    held.release();
+    return { text: "Compaction stopped.", ok: false };
   }
   // A compaction runs for one to two minutes with nothing on the wire until it ends: whoever
   // asked for it has usually left the screen by then, so its end is announced (docs/notifications.md).
@@ -56,7 +71,15 @@ export async function handleCompactCommand(p: CompactCommandParams): Promise<Com
     // The hold's signal is the one `/stop` and the app's Stop button abort (`runRegistry.stop`):
     // handed to the summarizer, a stop reaches a compaction that has one to two minutes to run.
     const result = await compactSession(p.config, p.session, p.instructions, held.signal);
-    if (!result.ok) return finished({ text: result.reason ?? "Compaction failed.", ok: false });
+    if (!result.ok) {
+      // A wall the conversation asked to wait out: the compaction queues itself and the quota tick
+      // fires it, exactly as a failed run is resumed -- docs/quota-retry.md.
+      if (result.retryableQuota && p.queueQuotaRetry) {
+        const armed = await p.queueQuotaRetry(result.cause).catch(() => undefined);
+        if (armed) return finished({ text: armed, ok: false });
+      }
+      return finished({ text: result.reason ?? "Compaction failed.", ok: false });
+    }
     await p.persist();
     // Emitted after the session is written, so a window that reloads on the very next tick finds
     // the boundary in the history it asks for rather than only in this frame. An automatic pass

@@ -68,6 +68,12 @@ export interface MyClawAppCommandDeps {
   /** The provider key `/codex` and `/claude` act on: the first account of the kind, declared if none. */
   accountFor?: (kind: "codex" | "claude") => Promise<string>;
   reloadConfigNow?: () => Promise<{ changed: string[]; rebootRequired: string[] }>;
+  /**
+   * Queues a `/compact` that hit a spent quota on the conversation's own retry switch, and answers
+   * with what to tell the owner. Injected because the wait and its clock belong to the adapter's
+   * tick -- a second answer here would be a second scheduler.
+   */
+  queueCompactQuotaRetry?: (owner: string, threadId: string, cause: unknown) => Promise<string | undefined>;
   toolRegistry?: ToolRegistry;
   mcpStatus?: () => import("../../mcp/manager.ts").McpServerStatus[];
   listSubAgents?: (sessionId: string) => Promise<import("../../subagents/types.ts").SubAgentInfo[]>;
@@ -256,12 +262,14 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
       case "compact": {
         const session =
           existing ?? (await deps.sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm"));
+        const queueQuotaRetry = deps.queueCompactQuotaRetry;
         const outcome = await handleCompactCommand({
           config: deps.config,
           session,
           instructions: args.trim() || undefined,
           persist: () => deps.sessionManager.persist(sessionId),
           threadId,
+          ...(queueQuotaRetry ? { queueQuotaRetry: (cause: unknown) => queueQuotaRetry(owner, threadId, cause) } : {}),
         });
         // A successful compaction answers with nothing: the boundary rule the hook just drew is
         // the whole report, and it is already in the history. A result bubble here would repeat

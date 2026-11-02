@@ -4,6 +4,7 @@ import { myClawAppLog } from "../../utils/logger.ts";
 import { SessionManager } from "../../sessions/manager.ts";
 import { FAILURE_TEXT_LIMIT, attributionParent } from "../../sessions/store.ts";
 import { summaryBodyOf } from "../../sessions/compaction.ts";
+import type { ArmedQuotaWait } from "../../llm/quota/arm.ts";
 import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
 import { listingFactsOf, readMeta, type ListingFacts } from "../../sessions/meta.ts";
@@ -103,15 +104,15 @@ export interface MyClawAppSessionStore {
   /** Turns it on or off; turning it off cancels a wait in the same write. */
   setQuotaRetryEnabled(owner: string, threadId: string, enabled: boolean): Promise<MyClawAppSessionQuotaRetryState>;
   /** Arms a wait, refused when the owner never turned the setting on. */
-  armQuotaRetry(owner: string, threadId: string, wait: { at: string; attempts: number; windows: string[]; error?: string }): Promise<boolean>;
+  armQuotaRetry(owner: string, threadId: string, wait: ArmedQuotaWait): Promise<boolean>;
   clearQuotaRetryPending(owner: string, threadId: string): Promise<void>;
   /** Every armed wait on disk -- conversations and sub-agents alike -- for the boot that picks them back up. */
-  listQuotaWaits(): Promise<Array<{ sessionId: string; at: string; attempts: number; windows: string[]; error?: string }>>;
+  listQuotaWaits(): Promise<Array<ArmedQuotaWait & { sessionId: string }>>;
   /**
    * The armed wait of any session by its id, and its clearing. The tick owns both kinds of session,
    * so it reads and clears them the same way rather than through the conversation-only helpers.
    */
-  pendingQuotaWaitBySession(sessionId: string): Promise<{ at: string; attempts: number; windows: string[]; error?: string } | undefined>;
+  pendingQuotaWaitBySession(sessionId: string): Promise<ArmedQuotaWait | undefined>;
   clearQuotaWaitBySession(sessionId: string): Promise<void>;
   /** Files the thread away, reversibly: no message is moved, deleted or snapshotted. */
   archive(owner: string, threadId: string): Promise<void>;
@@ -945,7 +946,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     };
   }
 
-  async pendingQuotaWaitBySession(sessionId: string): Promise<{ at: string; attempts: number; windows: string[]; error?: string } | undefined> {
+  async pendingQuotaWaitBySession(sessionId: string): Promise<ArmedQuotaWait | undefined> {
     const meta = await readMeta(sessionId).catch(() => null);
     return meta?.quotaRetry?.enabled === true ? meta.quotaRetry.pending : undefined;
   }
@@ -983,7 +984,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
   async armQuotaRetry(
     owner: string,
     threadId: string,
-    wait: { at: string; attempts: number; windows: string[]; error?: string },
+    wait: ArmedQuotaWait,
   ): Promise<boolean> {
     const session = await this.sessionManager.peek(this.resolveSessionId(owner, threadId));
     if (!session || session.quotaRetry?.enabled !== true) return false;
@@ -1007,14 +1008,14 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
    * The pending wait lives in the session's own meta, which is why this scans rather than keeping
    * a second index that could disagree with it. A deleted conversation takes its wait with it.
    */
-  async listQuotaWaits(): Promise<Array<{ sessionId: string; at: string; attempts: number; windows: string[]; error?: string }>> {
+  async listQuotaWaits(): Promise<Array<ArmedQuotaWait & { sessionId: string }>> {
     const ids = [
       ...(await this.sessionManager.listSessions("my-claw-app/thread/")),
       // A sub-agent arms its own wait on its own session -- docs/quota-retry.md. The runner writes
       // it, the tick here fires it, and neither keeps a second index that could disagree.
       ...(await this.sessionManager.listSessions("subagent/")),
     ];
-    const waits: Array<{ sessionId: string; at: string; attempts: number; windows: string[]; error?: string }> = [];
+    const waits: Array<ArmedQuotaWait & { sessionId: string }> = [];
     for (const id of ids) {
       const meta = await readMeta(id).catch(() => null);
       const pending = meta?.quotaRetry?.pending;

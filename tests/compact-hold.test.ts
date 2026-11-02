@@ -118,7 +118,7 @@ test("a compaction in flight refuses a second one, and the hold is released afte
     // instead of rewriting the same history twice.
     while (!runRegistry.isCompacting("s2")) await Promise.resolve();
     const second = await handleCompactCommand({ config, session, persist: async () => {} });
-    assert.equal(second.text, "A compaction is already running on this session.");
+    assert.equal(second.text, "A compaction is already queued or running on this session.");
 
     release();
     const outcome = await first;
@@ -535,5 +535,154 @@ test("a /compact runs its pass on the declared window, not the session's capped 
   } finally {
     mock.restore();
     await setup.cleanup();
+  }
+});
+
+/**
+ * A `/compact` typed while a run is going waits for that whole run, and says so.
+ *
+ * It used to be refused outright ("A run is active on this session"), which left the owner with a
+ * full session and no way to compact until the run ended -- and then a second walk to the command.
+ * The marker is up from the moment the command is accepted, so what follows it queues behind it.
+ */
+test("a /compact typed during a run waits for it, then compacts", async () => {
+  const { session, setup } = await makeSessionWithLog("s9");
+  const mock = mockFetch(async () => summaryResponse(SUMMARY));
+  const run = runRegistry.startRoot("s9");
+  try {
+    let settled = false;
+    const pending = handleCompactCommand({ config: makeConfig(), session, persist: async () => {} }).then((outcome) => {
+      settled = true;
+      return outcome;
+    });
+
+    await Promise.resolve();
+    assert.equal(runRegistry.isCompactionPending("s9"), true, "the marker is up before anything else moves");
+    assert.equal(runRegistry.isCompacting("s9"), false, "the hold is not taken under a live run");
+    assert.equal(settled, false);
+
+    run.end();
+    const outcome = await pending;
+    assert.equal(outcome.ok, true, outcome.text);
+    assert.match(outcome.text, /Context compacted/);
+    assert.equal(runRegistry.isCompactionPending("s9"), false);
+  } finally {
+    mock.restore();
+    await setup.cleanup();
+  }
+});
+
+/**
+ * The message the owner types right after the `/compact` belongs *after* it.
+ *
+ * Folding it into the run that is ending is what made the summary useless: the run answered it
+ * from the transcript the compaction was about to replace, and the compaction then landed on a
+ * conversation that had already moved past it.
+ */
+test("a message sent after a queued /compact is not folded into the run it waits behind", async () => {
+  const run = runRegistry.startRoot("s10");
+  runRegistry.openMailbox("s10");
+  const queued = runRegistry.beginQueuedCompaction("s10");
+  try {
+    await Promise.resolve();
+    assert.equal(runRegistry.canInject("s10"), false, "no injection while a compaction is queued");
+    assert.equal(
+      runRegistry.enqueueInjection("s10", {
+        id: "m-after", platform: "my-claw-app", userId: "u", chatId: "c", chatType: "dm",
+        text: "after", attachments: [], isForwarded: false, raw: {},
+      }),
+      null,
+      "the message must fall through to a queued run, not the mailbox",
+    );
+
+    run.end();
+    const held = await queued;
+    assert.notEqual(held, null);
+    assert.equal(held!.signal.aborted, false);
+    held!.release();
+    assert.equal(runRegistry.isCompactionPending("s10"), false);
+  } finally {
+    runRegistry.clear();
+  }
+});
+
+/** `/stop` while it waits: the run first, then the queued compaction on the next stop. */
+test("/stop reaches the run first, and the queued compaction after it", async () => {
+  const { session, setup } = await makeSessionWithLog("s11");
+  const mock = mockFetch(async () => summaryResponse(SUMMARY));
+  const run = runRegistry.startRoot("s11");
+  try {
+    const pending = handleCompactCommand({ config: makeConfig(), session, persist: async () => {} });
+    await Promise.resolve();
+
+    assert.equal(runRegistry.stop("s11"), "stopped");
+    assert.equal(run.signal.aborted, true);
+    assert.equal(runRegistry.isCompactionPending("s11"), true, "the compaction is not what the first stop took");
+
+    run.end();
+    const outcome = await pending;
+    assert.equal(outcome.ok, true, "it compacts the history the stop left behind");
+  } finally {
+    mock.restore();
+    await setup.cleanup();
+  }
+});
+
+/**
+ * The whole point, at the router's own door: a message typed after the `/compact` while the run is
+ * still going is parked behind the compaction -- announced as queued, not folded into the run and
+ * answered before the summary it was told to wait for.
+ */
+test("a message sent after a queued /compact waits for the compaction, at the router's door", async () => {
+  runRegistry.clear();
+  const seen: HookEventMap["message:queued"][] = [];
+  const collect = (p: HookEventMap["message:queued"]): void => {
+    seen.push(p);
+  };
+  hooks.on("message:queued", collect);
+
+  const sessionId = "my-claw-app/dm/u-compact-queue";
+  const config: MyClawConfig = {
+    whitelist: ["u-compact-queue"], blacklist: [], channels: {},
+    llm: { provider: "x", baseUrl: "https://example.com", model: "test-model" },
+    agents: {},
+  } as unknown as MyClawConfig;
+  const router = new MessageRouter(new SessionManager(), {
+    async handleMessage() {
+      return "answered";
+    },
+    async handleMessageStreaming() { throw new Error("unused"); },
+    getResponseAttachments() { return []; },
+  } as never, config);
+
+  const run = runRegistry.startRoot(sessionId);
+  runRegistry.openMailbox(sessionId);
+  const queuedCompact = runRegistry.beginQueuedCompaction(sessionId);
+  try {
+    const routed = router.route({
+      id: "m-after-compact", platform: "my-claw-app", userId: "u-compact-queue", chatId: "c9", chatType: "dm",
+      text: "go on", attachments: [], isForwarded: false, raw: {},
+    });
+
+    const deadline = Date.now() + 5_000;
+    while (seen.length === 0) {
+      if (Date.now() > deadline) throw new Error("timed out waiting for message:queued");
+      await new Promise((r) => setTimeout(r, 2));
+    }
+    assert.equal(seen[0]?.reason, "compaction");
+    assert.equal(runRegistry.isRunning(sessionId), true, "the run in flight is still the one holding the session");
+
+    run.end();
+    const held = await queuedCompact;
+    assert.notEqual(held, null);
+    // The run must not start while the compaction is queued.
+    await new Promise((r) => setTimeout(r, 5));
+    assert.equal(runRegistry.isRunning(sessionId), false);
+
+    held!.release();
+    assert.equal((await routed)?.text, "answered");
+  } finally {
+    hooks.off("message:queued", collect);
+    runRegistry.clear();
   }
 });

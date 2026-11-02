@@ -79,12 +79,24 @@ class RunRegistry {
   private runs = new Map<AbortSignal, RunNode[]>();
   private mailboxes = new Map<string, Mailbox>();
   private compactions = new Map<string, Compaction>();
+  /** Resolved by `end()`, so a queued compaction can wait for the run in flight to be over. */
+  private runEnds = new Map<string, Promise<void>>();
+  /**
+   * A compaction asked for while a run holds the session. The marker is up from the instant the
+   * command is accepted, which is what orders everything that follows: a message sent after the
+   * `/compact` waits for the compaction instead of folding into the run that is ending.
+   */
+  private pendingCompactions = new Map<string, Compaction>();
 
   /** Called by the router when a top-level run starts. */
   startRoot(sessionId: string): { signal: AbortSignal; end: () => void } {
     const controller = new AbortController();
     this.controllers.set(sessionId, controller);
     this.runs.set(controller.signal, []);
+    let finishEnd!: () => void;
+    this.runEnds.set(sessionId, new Promise<void>((resolve) => {
+      finishEnd = resolve;
+    }));
     // Not a fresh mailbox: the session claims one when it takes the lock, and the messages
     // already in it are addressed by this run's next call. Replacing it would drop them. What it
     // does reopen, unconditionally, is `accepting`: `stop` closed it for its wind-down, and this
@@ -96,6 +108,8 @@ class RunRegistry {
       end: () => {
         if (this.controllers.get(sessionId) === controller) {
           this.controllers.delete(sessionId);
+          this.runEnds.delete(sessionId);
+          finishEnd();
         }
         this.runs.delete(controller.signal);
         this.mailboxes.delete(sessionId);
@@ -125,10 +139,16 @@ class RunRegistry {
    * lifted when the cycle ends -- the entry leaving the map is the whole transition.
    */
   stop(sessionId: string): StopOutcome {
-    const compaction = this.compactions.get(sessionId);
-    if (compaction) return stopOutcomeOf([compaction.controller]);
+    // The run first: a compaction queued behind it is the owner's later request, and it is the
+    // run they are looking at. The compaction is what a second stop reaches.
     const controller = this.controllers.get(sessionId);
-    if (!controller) return "idle";
+    if (!controller) {
+      const compaction = this.compactions.get(sessionId);
+      if (compaction) return stopOutcomeOf([compaction.controller]);
+      const queued = this.pendingCompactions.get(sessionId);
+      if (queued) return stopOutcomeOf([queued.controller]);
+      return "idle";
+    }
     const outcome = stopOutcomeOf([controller]);
     // A run that is winding down has no next iteration boundary to drain anything at, and
     // `settleMailbox` rejects whatever it never read. Leaving the mailbox accepting through the
@@ -179,13 +199,82 @@ class RunRegistry {
     return this.compactions.has(sessionId);
   }
 
+  /** True while a compaction holds the session or is queued behind the run in flight. */
+  isCompactionPending(sessionId: string): boolean {
+    return this.compactions.has(sessionId) || this.pendingCompactions.has(sessionId);
+  }
+
+  /** Resolves once the run in flight on this session has ended; immediate when none is. */
+  async waitForIdle(sessionId: string): Promise<void> {
+    for (;;) {
+      const ended = this.runEnds.get(sessionId);
+      if (!ended) return;
+      await ended;
+    }
+  }
+
+  /**
+   * The hold a `/compact` typed during a run gets: the marker goes up at once (so nothing started
+   * after this point can fold into the run that is ending), then the compaction waits for the run
+   * to be over and takes the session itself.
+   *
+   * Returns null when a compaction already holds or waits for this session: a second one would
+   * rewrite the same history twice. A signal already aborted means `/stop` caught it while it
+   * waited; the caller answers that and takes nothing.
+   */
+  async beginQueuedCompaction(sessionId: string): Promise<{ signal: AbortSignal; release: () => void } | null> {
+    if (this.isCompactionPending(sessionId)) return null;
+    let finish!: () => void;
+    const done = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const entry: Compaction = { controller: new AbortController(), done, finish };
+    this.pendingCompactions.set(sessionId, entry);
+    const abandon = (): void => {
+      if (this.pendingCompactions.get(sessionId) === entry) this.pendingCompactions.delete(sessionId);
+      finish();
+    };
+    const stopped = (): { signal: AbortSignal; release: () => void } => {
+      abandon();
+      return { signal: entry.controller.signal, release: () => {} };
+    };
+    for (;;) {
+      if (entry.controller.signal.aborted) return stopped();
+      await this.waitForIdle(sessionId);
+      if (entry.controller.signal.aborted) return stopped();
+      const held = this.beginCompaction(sessionId);
+      if (held) {
+        return {
+          signal: held.signal,
+          release: () => {
+            abandon();
+            held.release();
+          },
+        };
+      }
+      // A run started between the idle wait and the hold: it is what the next turn waits on.
+    }
+  }
+
   /**
    * Resolves once no compaction holds the session. Loops rather than awaiting once: releasing
    * the hold and taking it again is legal, and a caller must not slip in between the two.
    */
   async waitForCompaction(sessionId: string): Promise<void> {
-    for (let held = this.compactions.get(sessionId); held; held = this.compactions.get(sessionId)) {
-      await held.done;
+    for (;;) {
+      const held = this.compactions.get(sessionId);
+      if (held) {
+        await held.done;
+        continue;
+      }
+      // A compaction still queued behind a run counts: it has not started, but it will, and
+      // whatever arrives now belongs after it.
+      const queued = this.pendingCompactions.get(sessionId);
+      if (queued) {
+        await queued.done;
+        continue;
+      }
+      return;
     }
   }
 
@@ -221,7 +310,7 @@ class RunRegistry {
   /** True while a run can still absorb an injected message (mailbox open, not committed to ending). */
   canInject(sessionId: string): boolean {
     const mailbox = this.mailboxes.get(sessionId);
-    return mailbox !== undefined && mailbox.accepting;
+    return mailbox !== undefined && mailbox.accepting && !this.isCompactionPending(sessionId);
   }
 
   /** True while any top-level run or compaction is in flight, across every session. */
@@ -245,6 +334,9 @@ class RunRegistry {
    * the caller must then route it as a normal new run.
    */
   enqueueInjection(sessionId: string, message: UnifiedMessage): Promise<void> | null {
+    // A compaction is queued or running: this message belongs after it, not in the run it would
+    // then answer from a transcript the summary is about to replace.
+    if (this.isCompactionPending(sessionId)) return null;
     const mb = this.mailboxes.get(sessionId);
     if (!mb || !mb.accepting) return null;
     if (mb.pending.length + mb.claimed.length >= MAX_INJECTIONS_PER_RUN) return null;
@@ -320,8 +412,11 @@ class RunRegistry {
   clear(): void {
     for (const held of this.compactions.values()) held.finish();
     this.compactions.clear();
+    for (const queued of this.pendingCompactions.values()) queued.finish();
+    this.pendingCompactions.clear();
     this.controllers.clear();
     this.runs.clear();
+    this.runEnds.clear();
     this.mailboxes.clear();
   }
 }

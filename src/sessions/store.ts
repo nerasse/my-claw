@@ -29,6 +29,8 @@ export interface SessionQuotaRetry {
     windows: string[];
     /** What the run died on, short, so the pill can say it after a reload. */
     error?: string;
+    /** `compact` for a `/compact` queued behind the wall instead of a run to resume. */
+    task?: "compact";
   };
 }
 

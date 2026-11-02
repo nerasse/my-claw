@@ -143,6 +143,18 @@ A retry that dies on the quota again arms the next one with `attempts + 1`. Eigh
 guard against a provider that keeps saying no across resets; the wait itself has no ceiling,
 because the owner chose the reset over a shorter schedule.
 
+### A `/compact` queues on the same wait
+
+The wait carries what it will run when it fires: absent for the ordinary case (resume the
+conversation where it stopped), `task: "compact"` for a compaction that hit the wall. A compaction
+is a one-shot and there is nothing to "continue", so `fireQuotaRetry` reads the task before it
+clears the wait and runs the `/compact` command instead of `startContinue`.
+
+That is the switch doing what the owner asked for, and it is why the summarizer stops walking its
+route on a wall when the switch is on (`docs/compaction.md`): the compaction is queued, not
+quietly written by the next account. A burst limit arms nothing -- the oracle still decides -- and
+the failure is reported instead. A second wall re-arms with `attempts + 1`, up to the same eight.
+
 `session.quotaRetry.set` is the switch (turning it off cancels), `session.quotaRetry.now` fires the
 wait immediately, and `session.quotaRetry.state` is pushed to every device when either changes.
 `session.sync.result` carries the same state, because a push only ever reaches the windows that

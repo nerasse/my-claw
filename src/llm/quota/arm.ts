@@ -23,6 +23,11 @@ export interface ArmedQuotaWait {
   attempts: number;
   windows: string[];
   error?: string;
+  /**
+   * What the wait will run when it fires. Absent for the ordinary case, a conversation resumed
+   * where it stopped; `compact` is a `/compact` that hit the wall and queued itself behind it.
+   */
+  task?: "compact";
 }
 
 export interface QuotaWaitDecision {
