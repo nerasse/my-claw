@@ -94,9 +94,13 @@ export function promptOf(entries: readonly Entry[], leafId: string | null): Chat
  * has to stop mattering at the boundary. Codex refuses a replayed call whose name is not
  * `^[a-zA-Z0-9_-]+$` with HTTP 400, so one such entry made every later request of that
  * conversation fail -- and the conversation could not be continued at all (2026-11-02).
+ *
+ * The call id is the same kind of field, from the same source: it is echoed back beside its result
+ * and a provider validates it the same way. Both have to be identifiers for the pair to be
+ * replayable -- one without the other has no result to attach to and would fail on its own.
  */
 function callable(tools: readonly ToolEntry[]): ToolEntry[] {
-  return tools.filter((tool) => isToolName(tool.name));
+  return tools.filter((tool) => isToolName(tool.name) && isToolName(tool.callId));
 }
 
 export function messagesOf(context: readonly Entry[]): ChatMessage[] {

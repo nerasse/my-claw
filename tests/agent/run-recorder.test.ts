@@ -422,3 +422,48 @@ describe("a phase keeps the id of the bubble it was streamed into", () => {
     expect(promptOf(log.path(), phases[0]!.id).map((m) => m.content)).toContain("sans fenetre");
   });
 });
+
+/**
+ * A tool name the model mangled never enters the log as itself -- 2026-11-02.
+ *
+ * The log is replayed on every request, so one bad name made a conversation permanently
+ * unanswerable: Codex refuses a replayed call whose name is not `^[a-zA-Z0-9_-]+$`, and that
+ * failure is the whole request, Continue included. Refusing it at the write is the only place that
+ * can promise it never happens again -- the replay filter still covers logs written before this.
+ */
+describe("RunRecorder: a tool call whose name is not an identifier", () => {
+  const bad = "docker 2>/dev/null; true</|DSML| parameter>\n</|DSML| invoke>";
+
+  test("is written under a replayable name, with the original kept in the output", async () => {
+    const recorder = new RunRecorder(entries);
+    await recorder.tool(call("c1", { name: bad, output: `Error: unknown tool "${bad}"`, ok: false }));
+    await entries.flush();
+
+    const written = entries.entries().filter((e): e is ToolEntry => e.type === "tool");
+    expect(written.map((e) => e.name)).toEqual(["unknown_tool"]);
+    // Nothing about what happened is lost: the malformed name is still readable, just not replayable.
+    expect(written[0]!.output).toContain("malformed");
+    expect(written[0]!.output).toContain("docker 2>/dev/null");
+  });
+
+  test("a valid name is written exactly as the model wrote it", async () => {
+    const recorder = new RunRecorder(entries);
+    await recorder.tool(call("c1", { name: "mcp__brave__search" }));
+    await entries.flush();
+    const written = entries.entries().filter((e): e is ToolEntry => e.type === "tool");
+    expect(written.map((e) => e.name)).toEqual(["mcp__brave__search"]);
+  });
+
+  test("the prompt built from that log carries no unplayable call", async () => {
+    const recorder = new RunRecorder(entries);
+    recorder.user({ id: "u1", text: "q" });
+    await recorder.tool(call("c1", { name: bad, output: `Error: unknown tool`, ok: false }));
+    await entries.flush();
+
+    const messages = promptOf(entries.entries(), entries.leaf());
+    const calls = messages.flatMap((m) => ("tool_calls" in m ? m.tool_calls ?? [] : []));
+    for (const c of calls) {
+      expect(c.function.name).toMatch(/^[a-zA-Z0-9_-]+$/);
+    }
+  });
+});

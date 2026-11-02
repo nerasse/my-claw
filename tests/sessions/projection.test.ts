@@ -409,3 +409,13 @@ describe("a tool name that is not an identifier", () => {
     expect(callsOf(entries, leaf).map((c) => c.function.name)).toEqual(["mcp__brave__search"]);
   });
 });
+
+describe("a call id that is not an identifier", () => {
+  test("is left out with its result, so the provider is never handed an unpaired half", () => {
+    const { entries, leaf } = chain([user("q"), phase("", "r1"), tool("call with spaces", "r1")]);
+    const messages = promptOf(entries, leaf);
+    expect(messages.some((m) => m.role === "tool")).toBe(false);
+    const assistant = messages.find((m) => m.role === "assistant" && "tool_calls" in m && m.tool_calls);
+    expect(assistant).toBeUndefined();
+  });
+});

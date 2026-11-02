@@ -33,6 +33,7 @@ import type { SessionLog, Entry, PhaseEntry, ToolEntry, UserEntry } from "../ses
 import type { SessionAttachment } from "../sessions/store.ts";
 import type { ChatLocation } from "../channels/types.ts";
 import type { ProviderMeta } from "../llm/provider.ts";
+import { isToolName } from "../llm/provider.ts";
 
 /** One phase of a model turn: what it thought, then what it wrote. */
 export interface RecordedPhase {
@@ -75,6 +76,17 @@ export interface RecordedToolCall {
   attachments?: SessionAttachment[];
   /** The run ended under the call: the result is the interruption, not the tool's. */
   interrupted?: boolean;
+}
+
+/**
+ * What the log keeps of a call whose name was not an identifier.
+ *
+ * The name itself is kept, in the only place the log can hold arbitrary text: the output. Nothing
+ * about what the model did is lost, and the entry stays replayable -- docs/session-log.md.
+ */
+function mangledNameOutput(name: string, output: string): string {
+  const shown = name.replace(/\s+/g, " ").slice(0, 200);
+  return output.startsWith("Error:") ? `${output}\n(the call name was malformed: ${shown})` : output;
 }
 
 /**
@@ -258,13 +270,21 @@ export class RunRecorder {
    */
   async tool(call: RecordedToolCall): Promise<RecordedTool> {
     const spilled = await spillToolOutput(this.entries.sessionId, call.callId, call.output);
+    // A name the model mangled is recorded as one, never as itself -- 2026-11-02. The entry is the
+    // log, the log is replayed on every request, and a provider refuses a replayed call whose name
+    // is not an identifier: one bad name made a conversation permanently unanswerable, Continue
+    // included. The original is kept in the output so nothing about what happened is lost.
+    // Both fields are the model's, both are echoed back to the provider, and both are validated by
+    // it. A name is rewritten to keep the entry readable; a call id that is not an identifier has
+    // nothing to pair a result with, so the projection leaves the pair out on replay instead.
+    const mangled = isToolName(call.name) ? undefined : call.name;
     const entry = this.entries.append<ToolEntry>({
       type: "tool",
       prompt: true,
       callId: call.callId,
-      name: call.name,
+      name: mangled ? "unknown_tool" : call.name,
       args: parseArguments(call.arguments),
-      output: spilled.output,
+      output: mangled ? mangledNameOutput(mangled, call.output) : spilled.output,
       ...(spilled.outputPath ? { outputPath: spilled.outputPath } : {}),
       truncated: spilled.truncated,
       ok: call.ok,
