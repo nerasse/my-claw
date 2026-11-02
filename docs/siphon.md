@@ -85,8 +85,15 @@ answer that also pinned an effort would change what sub-agents under it inherit,
 different promise. There is no Apply screen -- the last decision applies, like every other picker.
 The row above the list turns the mode off, since off is the default a pin has no equivalent of.
 
-Tags are filtered out of that list: a tag names a route, and walking a route by available quota is
-phase 2, not a pin to one model.
+A tag is offered like any other subject, and the server resolves it exactly as any other path does:
+`apiModel` becomes the model the tag aliases, the tag's own effort travels with it, and a tag whose
+route lists several candidates keeps that whole route -- so a pin on a tag is a pin on what that tag
+means, kept as one decision rather than resolved in the client.
+
+What a tag does *not* do yet is choose among its candidates by available quota: the run lands on the
+first one that is reachable, which is the resolver's rule everywhere else. Ordering a route by what
+the bars say is phase 2 (docs/quota-pin-plan.md), and until then a pinned tag behaves exactly like
+the same tag picked as a model.
 
 ## Hot reload
 
