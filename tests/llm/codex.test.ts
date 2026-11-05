@@ -120,8 +120,8 @@ test("codex transport maps assistant tool calls and tool results to Responses it
 test("codex transport surfaces a response.failed event as an error", async () => {
   writeAuth();
   mock = mockFetch(async () =>
-    sseResponse([{ type: "response.failed", response: { error: { code: "server_error", message: "boom" } } }]));
-  await assert.rejects(codexResponse(config, [{ role: "user", content: "hi" }], undefined), /stream error \(server_error\): boom/);
+    sseResponse([{ type: "response.failed", response: { error: { code: "invalid_prompt", message: "boom" } } }]));
+  await assert.rejects(codexResponse(config, [{ role: "user", content: "hi" }], undefined), /Codex invalid_prompt: boom/);
 });
 
 test("codex pins the implicit prefix cache to the conversation", async () => {
@@ -235,11 +235,25 @@ test("a rate limit is still retried by the transport: it clears on its own", asy
  */
 test("a stream error's code is read wherever the backend put it", async () => {
   writeAuth();
-  mock = mockFetch(async () => sseResponse([{ type: "error", error: { code: "boom_code", message: "the wire said no" } }]));
+  mock = mockFetch(async () => sseResponse([{ type: "error", error: { code: "usage_not_included", message: "the wire said no" } }]));
   await assert.rejects(
     () => codexResponse(config, [{ role: "user", content: "hi" }], undefined),
-    /stream error \(boom_code\): the wire said no/,
+    /Codex usage_not_included: the wire said no/,
   );
+});
+
+test("the nested type stands in for a missing code", async () => {
+  writeAuth();
+  let requests = 0;
+  mock = mockFetch(async () => {
+    requests += 1;
+    return sseResponse([{ type: "error", error: { type: "cyber_policy", message: "flagged for cyber risk" } }]);
+  });
+  await assert.rejects(
+    () => codexResponse(config, [{ role: "user", content: "hi" }], undefined),
+    /policy violation \(cyber_policy\): flagged for cyber risk/,
+  );
+  assert.equal(requests, 1, "a policy refusal is a verdict, not something to replay");
 });
 
 test("an unnamed stream error is replayed instead of ending the run", async () => {
@@ -329,4 +343,19 @@ test("a context overflow announced mid-stream stays an overflow", async () => {
     sseResponse([{ type: "error", error: { code: "context_length_exceeded", message: "Your input exceeds the context window of this model." } }]));
   const err = await codexResponse(config, [{ role: "user", content: "hi" }], undefined).catch((e: unknown) => e);
   assert.equal(isOverflowError(err), true);
+});
+
+test("a stream that keeps dying stops after its own budget", async () => {
+  writeAuth();
+  let requests = 0;
+  mock = mockFetch(async () => {
+    requests += 1;
+    // `retry_after` in seconds, tiny: the delay is the server's, so five attempts cost milliseconds
+    // and the count is what this pins.
+    return sseResponse([
+      { type: "error", error: { code: "rate_limit_exceeded", message: "slow down", retry_after: 0.001 } },
+    ]);
+  });
+  await assert.rejects(() => codexResponse(config, [{ role: "user", content: "go" }], undefined), /rate limit/);
+  assert.equal(requests, 5, "five attempts, then the caller's fallback owns the decision");
 });

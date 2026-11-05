@@ -16,6 +16,54 @@ import { ANTHROPIC_TIMEOUT_MS, llmFetchInit, requestTimeoutMs, timeoutSourceOf }
 
 const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 const MAX_ATTEMPTS = 3;
+/** A stream that died mid-answer gets more room: the request was fine, and the answer was under way. */
+const STREAM_ATTEMPTS = 5;
+
+/**
+ * A failure Anthropic announced from inside the message stream.
+ *
+ * Same rule as the Codex transport, and the same history: an `error` event was thrown as a plain
+ * `Error`, so a stream that died after the first word ended the run with no retry and no reroute --
+ * while the error type it carries (`overloaded_error`, `api_error`) is exactly the transient one a
+ * replay is for.
+ *
+ * The types this install knows are the ones the Messages API documents; anything unrecognised is
+ * treated as transient, because an unknown code has never meant "your request was wrong".
+ */
+export class AnthropicStreamError extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+  readonly status?: number;
+
+  constructor(event: Record<string, unknown>) {
+    const wrapped = (event["error"] ?? {}) as Record<string, unknown>;
+    const code = typeof wrapped["type"] === "string" ? wrapped["type"] : "";
+    const detail = (typeof wrapped["message"] === "string" && wrapped["message"]) || "the stream said nothing about why";
+    const kind = KIND_OF_TYPE.get(code.toLowerCase()) ?? "unknown";
+    super(
+      kind === "rate_limit"
+        ? `Anthropic rate limit (${code}): ${detail}`
+        : kind === "terminal"
+          ? `Anthropic ${code}: ${detail}`
+          : `Anthropic stream error (${code || "unknown"}): ${detail}`,
+    );
+    this.name = "AnthropicStreamError";
+    this.code = code;
+    this.retryable = kind === "rate_limit" || kind === "unknown";
+    // A rate limit is a 429 on the non-streaming path, and the wall oracle only answers for a 429:
+    // without the status a five-hour window would be replayed three times before anyone asked.
+    if (kind === "rate_limit") this.status = 429;
+  }
+}
+
+type AnthropicFailureKind = "rate_limit" | "terminal" | "unknown";
+
+const KIND_OF_TYPE = new Map<string, AnthropicFailureKind>([
+  ...["overloaded_error", "api_error", "server_error", "timeout_error"].map((type): [string, AnthropicFailureKind] => [type, "unknown"]),
+  ["rate_limit_error", "rate_limit"],
+  ...["invalid_request_error", "authentication_error", "permission_error", "not_found_error", "request_too_large", "billing_error"]
+    .map((type): [string, AnthropicFailureKind] => [type, "terminal"]),
+]);
 /**
  * Only reached when neither the provider nor models.dev declares an output limit. Taken from the
  * client's own fallback ceiling (`aph` in the 2.1.206 bundle, next to `sph = 32000`).
@@ -585,8 +633,14 @@ async function processStream(
         break;
       }
       case "error": {
-        const err = event["error"] as { type?: string; message?: string } | undefined;
-        throw new Error(`Anthropic stream error ${err?.type ?? "unknown"}: ${err?.message ?? "no message"}`);
+        const failure = new AnthropicStreamError(event);
+        void log("warn", "anthropic stream failure event", {
+          code: failure.code,
+          message: failure.message.slice(0, 500),
+          retryable: failure.retryable,
+          event: JSON.stringify(event).slice(0, 2000),
+        });
+        throw failure;
       }
     }
   }
@@ -793,11 +847,24 @@ async function runAnthropic(
 
   let lastErr: unknown;
   let tokensDelivered = false;
+  /** Whether the attempt in flight put anything on screen, text or thinking. */
+  let outputDelivered = false;
+  /** How a dead attempt's words are taken back before it is replayed; the channel provides it. */
+  const restart = reasoningSink?.onRestart;
+  const wrappedReasoning: ReasoningSink | undefined = reasoningSink?.onText
+    ? {
+        ...reasoningSink,
+        onText: async (delta: string) => {
+          outputDelivered = true;
+          await reasoningSink.onText?.(delta);
+        },
+      }
+    : reasoningSink;
   // The model's own declaration when it has one, else this transport's default -- extended
   // thinking on this backend runs far longer than a chat completion (docs/llm-timeout.md).
   const budget = requestTimeoutMs(config, ANTHROPIC_TIMEOUT_MS);
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= STREAM_ATTEMPTS; attempt++) {
     if (signal?.aborted) throw new AbortedError();
     // Inside the loop, not above it: a subscription token can be refreshed between two attempts.
     const auth = await anthropicAuthHeaders({ apiKey: config.apiKey, apiKeyEnv: config.apiKeyEnv }, config.provider);
@@ -884,17 +951,37 @@ async function runAnthropic(
       const wrappedOnToken = onToken
         ? async (t: string) => {
             tokensDelivered = true;
+            outputDelivered = true;
             await onToken(t);
           }
         : undefined;
       recordCircuitSuccess(base);
-      return await processStream(response.body, wrappedOnToken, reasoningSink, replayIdentity(config), keepAlive);
+      return await processStream(response.body, wrappedOnToken, wrappedReasoning, replayIdentity(config), keepAlive);
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();
       lastErr = err;
       // Our own wall: not retried, and not counted against the endpoint (docs/llm-timeout.md).
       if (timedOut) {
         throw new Error(`Anthropic request timed out after ${budget}ms (${timeoutSourceOf(config)})`);
+      }
+      if (err instanceof AnthropicStreamError) {
+        // The stream died mid-answer: replay it here, before the run's fallback gets a say. A wall
+        // is the one refusal a replay cannot fix, and the oracle is what tells the two apart.
+        const blocked = isQuotaSpent(err) || (await wallAhead(config, err));
+        if (err.retryable && !blocked && attempt < STREAM_ATTEMPTS && (!outputDelivered || restart !== undefined)) {
+          if (outputDelivered) await restart?.();
+          outputDelivered = false;
+          tokensDelivered = false;
+          const delay = retryDelayMs(attempt);
+          await log("warn", `Anthropic stream failed mid-answer, replaying in ${delay}ms (${attempt}/${STREAM_ATTEMPTS})`, {
+            code: err.code,
+          });
+          await sleep(delay, signal);
+          continue;
+        }
+        // Never counted against the endpoint: the breaker is keyed on a base URL a whole
+        // subscription shares, and one account's dead stream says nothing about the endpoint.
+        throw err;
       }
       if (attempt < MAX_ATTEMPTS && !tokensDelivered && err instanceof TypeError) {
         const delay = retryDelayMs(attempt);

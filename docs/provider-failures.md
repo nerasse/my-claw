@@ -274,7 +274,13 @@ The reference client (`openai/codex`) does three things this install now does as
 already acts on: a spent plan becomes a `429` quota error (one request, then the fallback), a rate
 limit is replayed with the server's own `retry_after`, a `context_length_exceeded` stays an overflow
 for the compactor to recover, a policy code keeps its words, and anything unrecognised is an
-outage-class transport fault: replayed up to three times, then reroutable.
+outage-class transport fault: replayed up to five times, then reroutable. The Claude transport
+carries the same class (`AnthropicStreamError`): `overloaded_error` and `api_error` are replayed,
+`rate_limit_error` keeps the `429` the wall oracle reads, and `invalid_request_error` stays a
+verdict -- which is also how an overflow is still recognised as one.
+
+Five is the stream budget and three the request budget: a request the far side refused costs a
+fresh call, while a stream that died mid-answer is the answer being re-sent.
 
 Replaying after the first visible word is only safe when the channel can take that word back, so the
 sink carries `onRestart` (`src/agent/backend.ts`). The app implements it by sending an empty `replay`

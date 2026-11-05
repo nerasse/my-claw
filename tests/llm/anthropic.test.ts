@@ -1,6 +1,8 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { __testing } from "../../src/llm/anthropic.ts";
+import { __testing, AnthropicStreamError } from "../../src/llm/anthropic.ts";
+import { isOutageClass, isQuotaSpent } from "../../src/llm/outage.ts";
+import { isOverflowError } from "../../src/llm/overflow.ts";
 import type { ChatMessage } from "../../src/llm/provider.ts";
 import type { EffortLevel } from "../../src/core/config.ts";
 
@@ -455,4 +457,51 @@ test("a tool's images ride inside its own tool_result", () => {
   const blocks = toolResult.content as Array<{ type: string; text?: string; source?: { media_type?: string } }>;
   assert.deepEqual(blocks.map((b) => b.type), ["text", "image"]);
   assert.equal(blocks[1]!.source?.media_type, "image/png");
+});
+
+/**
+ * A failure announced from inside the message stream.
+ *
+ * It used to be a plain `Error`, so a stream that died after the first word ended the run: no
+ * replay, no reroute, and a code (`overloaded_error`) that says transient in so many words.
+ */
+test("an overloaded stream is a replayable failure, not the end of the run", async () => {
+  const err = await processStream(
+    sse([{ type: "error", error: { type: "overloaded_error", message: "Overloaded" } }]),
+    undefined,
+  ).catch((e: unknown) => e);
+  assert.ok(err instanceof AnthropicStreamError);
+  assert.equal(err.retryable, true);
+  assert.equal(err.code, "overloaded_error");
+  assert.match(err.message, /stream error \(overloaded_error\): Overloaded/);
+  assert.equal(isOutageClass(err), true, "another account may answer where this one could not");
+});
+
+test("a rate limit keeps the 429 the wall oracle reads", async () => {
+  const err = await processStream(
+    sse([{ type: "error", error: { type: "rate_limit_error", message: "This request would exceed your account's rate limit." } }]),
+    undefined,
+  ).catch((e: unknown) => e);
+  assert.ok(err instanceof AnthropicStreamError);
+  assert.equal(err.status, 429);
+  assert.equal(isQuotaSpent(err), false, "a rate limit is not a spent plan");
+});
+
+test("a rejected request is a verdict, and keeps its own words", async () => {
+  const err = await processStream(
+    sse([{ type: "error", error: { type: "invalid_request_error", message: "prompt is too long: 210000 tokens" } }]),
+    undefined,
+  ).catch((e: unknown) => e);
+  assert.ok(err instanceof AnthropicStreamError);
+  assert.equal(err.retryable, false);
+  assert.equal(isOverflowError(err), true, "the compactor recovers an overflow, not a replay");
+});
+
+test("an unrecognised type is transient by default", async () => {
+  const err = await processStream(
+    sse([{ type: "error", error: { type: "some_new_error", message: "who knows" } }]),
+    undefined,
+  ).catch((e: unknown) => e);
+  assert.ok(err instanceof AnthropicStreamError);
+  assert.equal(err.retryable, true);
 });

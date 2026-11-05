@@ -11,6 +11,12 @@ import { isQuotaSpent } from "./outage.ts";
 import { CODEX_TIMEOUT_MS, llmFetchInit, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
 
 const MAX_ATTEMPTS = 3;
+/**
+ * A stream that dies mid-answer gets more room than a request the far side refused: the answer was
+ * already being written, and re-sending it costs no new tokens. Five is what the reference client
+ * gives its own stream retries.
+ */
+const STREAM_ATTEMPTS = 5;
 
 /**
  * A failure the subscription backend announced from inside the stream.
@@ -626,7 +632,7 @@ async function runCodex(
   // backend that thinks for minutes before answering (docs/llm-timeout.md).
   const budget = requestTimeoutMs(config, CODEX_TIMEOUT_MS);
 
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+  for (let attempt = 1; attempt <= STREAM_ATTEMPTS; attempt++) {
     if (signal?.aborted) throw new AbortedError();
     // Each ChatGPT provider is its own account: the run signs with the one it was routed to.
     if (!config.provider) throw new Error("A ChatGPT model reached the transport without its provider");
@@ -707,12 +713,12 @@ async function runCodex(
         // Replaying after the first visible word is only safe when the channel can take that word
         // back: the bubble is replaced, not appended to. Without that hook the old rule holds, since
         // a retry nobody can erase would print the answer twice.
-        if (err.retryable && attempt < MAX_ATTEMPTS && (!outputDelivered || restart !== undefined)) {
+        if (err.retryable && attempt < STREAM_ATTEMPTS && (!outputDelivered || restart !== undefined)) {
           if (outputDelivered) await restart?.();
           outputDelivered = false;
           tokensDelivered = false;
           const delay = retryDelayMs(attempt, err.retryAfterMs);
-          await log("warn", `Codex stream failed mid-answer, replaying in ${delay}ms (${attempt}/${MAX_ATTEMPTS})`, {
+          await log("warn", `Codex stream failed mid-answer, replaying in ${delay}ms (${attempt}/${STREAM_ATTEMPTS})`, {
             code: err.code,
           });
           await sleep(delay, signal);
