@@ -305,7 +305,8 @@ export class AgentBridge implements AgentBackend {
    * (2026-09-21).
    *
    * A failure *after* this call wrote something is not reroutable -- the text is on screen, and
-   * replaying it would say it twice.
+   * replaying it would say it twice -- unless the channel can take it back: `reasoningGuard`
+   * clears the bubble on a replay and reopens this gate with it.
    *
    * The schedule is spent once per run and each target is tried once: a chain that rearmed at
    * every attempt would be a loop. Everything here is the provider's fault; an overflow has its
@@ -1027,10 +1028,22 @@ export class AgentBridge implements AgentBackend {
           : undefined;
         const reasoningGuard = reasoningSink
           ? {
+              ...reasoningSink,
               onText: async (delta: string): Promise<void> => {
                 markEmitted();
                 await reasoningSink.onText?.(delta);
               },
+              // A replay took the dead attempt's words back, so nothing of this call is on screen
+              // any more: the gate below is about what the reader can see, and now there is
+              // nothing. Without this a stream that died after one token could never be rerouted.
+              ...(reasoningSink.onRestart
+                ? {
+                    onRestart: async (): Promise<void> => {
+                      callEmitted = false;
+                      await reasoningSink.onRestart?.();
+                    },
+                  }
+                : {}),
             }
           : undefined;
         try {

@@ -38,6 +38,20 @@ const OUTAGE_TEXT = /ECONNRESET|ECONNREFUSED|ENOTFOUND|ETIMEDOUT|UND_ERR_|fetch 
 const UPSTREAM_FAULT = /\[server_error\]|upstream response was not valid json|bad gateway|invalid upstream|upstream (?:error|failure|timeout)/i;
 
 /**
+ * A stream that died, in the provider's own words.
+ *
+ * Nothing about the request changed between the first byte and the last, so a failure announced
+ * from inside the stream is the wire or the far side by construction -- the transports retry it,
+ * and when the retry budget is spent another provider is worth as much as it is for a 503.
+ */
+const STREAM_FAULT = /stream (?:error|closed|disconnected|reset|failed)|response\.failed|sse (?:error|closed)|connection reset by peer|socket hang up/i;
+
+/** Whether the failure speaks the vocabulary of a stream that stopped mid-answer. */
+export function isStreamFault(err: unknown): boolean {
+  return STREAM_FAULT.test(String((err as Error | undefined)?.message ?? err ?? ""));
+}
+
+/**
  * The body saying the provider will not carry this content, whatever we do to the request.
  *
  * Only ever read on a 4xx: the same words in a tool result or in a page are just words.
@@ -56,6 +70,7 @@ export function isOutageClass(err: unknown): boolean {
     if (status === 404) return /model|endpoint|no endpoints|not found/i.test(message);
     return false;
   }
+  if (STREAM_FAULT.test(message)) return true;
   return /LLM circuit breaker open|circuit breaker is open|timeout|timed out|stalled|stream.*closed|empty (?:response|completion)|no (?:content|output)|auth|unauthori[sz]ed|credential|api[- ]?key|no endpoints|model.*not found/i.test(message) || OUTAGE_TEXT.test(message);
 }
 

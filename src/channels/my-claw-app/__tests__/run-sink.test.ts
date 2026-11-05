@@ -54,6 +54,20 @@ describe("a run's reasoning sink", () => {
     expect(types(frames)).toEqual([]);
   });
 
+  test("a replay reaches the streamer and takes the dead attempt's words back", async () => {
+    const frames: MyClawAppServerFrame[] = [];
+    const streamer = streamerFor(frames);
+    const sink = runReasoningSink(() => streamer);
+    await sink.onText!("half a thought");
+    await sink.onRestart!();
+    await sink.onText!("a whole thought");
+    expect(frames.filter((frame) => frame.type === "chat.reasoning.delta")).toMatchObject([
+      { text: "half a thought" },
+      { text: "", replay: true },
+      { text: "a whole thought" },
+    ]);
+  });
+
   test("follows the streamer that is open now: a folded message swaps it mid-run", async () => {
     const first: MyClawAppServerFrame[] = [];
     const second: MyClawAppServerFrame[] = [];

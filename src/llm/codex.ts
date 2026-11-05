@@ -12,6 +12,130 @@ import { CODEX_TIMEOUT_MS, llmFetchInit, requestTimeoutMs, timeoutSourceOf } fro
 
 const MAX_ATTEMPTS = 3;
 
+/**
+ * A failure the subscription backend announced from inside the stream.
+ *
+ * The reference client's rule, and the reason this exists: a code it does not recognise is a
+ * transport fault to replay, not a verdict on the request (`codex-api/src/sse/responses_error.rs`,
+ * an unknown `response.failed` code maps to `ApiError::Retryable`). my-claw turned every one of
+ * them into a fatal error, and read the code from the root of the event while the backend nests it
+ * under `error`: the message said "unknown", and the run died at minute 34 with 26 tool calls
+ * behind it, on an error nobody could name (2026-11-05).
+ *
+ * What this install does with the code is the part that matters: a spent plan goes straight to the
+ * caller's fallback, a rate limit and an unnamed failure are replayed, and the rest are verdicts
+ * that travel with their own words.
+ */
+export class CodexStreamError extends Error {
+  readonly code: string;
+  readonly retryable: boolean;
+  readonly status?: number;
+  readonly retryAfterMs?: number;
+  readonly resetInSeconds?: number;
+  readonly resetAtMs?: number;
+
+  constructor(event: Record<string, unknown>) {
+    const failure = failureOf(event);
+    const kind = KIND_OF_CODE.get(failure.code.toLowerCase()) ?? namedQuotaIn(failure.message);
+    const code = failure.code || "unknown";
+    const detail = failure.message || "the backend said nothing about why";
+    super(PHRASE[kind](code, detail));
+    this.name = "CodexStreamError";
+    this.code = failure.code;
+    this.retryable = kind === "rate_limit" || kind === "unknown";
+    // `usage_limit_reached` arrives as a 429, and the quota predicates read the status: without it
+    // a spent plan only trips the sentence-based half of the check. A policy refusal is only read
+    // as one on a 4xx, so it gets the status that makes that true.
+    if (kind === "quota") this.status = 429;
+    if (kind === "policy") this.status = 400;
+    if (failure.retryAfterMs !== undefined) this.retryAfterMs = failure.retryAfterMs;
+    if (failure.resetInSeconds !== undefined) this.resetInSeconds = failure.resetInSeconds;
+    if (failure.resetAtMs !== undefined) this.resetAtMs = failure.resetAtMs;
+  }
+}
+
+type FailureKind = "quota" | "rate_limit" | "context" | "policy" | "terminal" | "unknown";
+
+const KIND_OF_CODE = new Map<string, FailureKind>([
+  ...["insufficient_quota", "usage_limit_reached", "credit_balance_exhausted", "billing_hard_limit_reached",
+    "organization_spend_limit_exceeded", "project_spend_limit_exceeded", "session_budget_exceeded", "budget_reached",
+  ].map((code): [string, FailureKind] => [code, "quota"]),
+  ...["rate_limit_exceeded", "rate_limit_error", "slow_down", "too_many_requests"].map((code): [string, FailureKind] => [code, "rate_limit"]),
+  ...["context_length_exceeded", "context_window_exceeded"].map((code): [string, FailureKind] => [code, "context"]),
+  ...["cyber_policy", "bio_policy", "misalignment_policy_violation", "content_policy_violation", "content_filter"]
+    .map((code): [string, FailureKind] => [code, "policy"]),
+  ...["usage_not_included", "model_not_found", "invalid_prompt", "invalid_request_error"]
+    .map((code): [string, FailureKind] => [code, "terminal"]),
+]);
+
+/**
+ * Each kind's first words are the ones this install already reads elsewhere: "quota exhausted" for
+ * `isQuotaSpent`, "policy violation" for a refusal another provider may carry, "stream error" for
+ * `isStreamFault`, and the bare code for an overflow the compactor recognises.
+ */
+const PHRASE: Record<FailureKind, (code: string, detail: string) => string> = {
+  quota: (code, detail) => `Codex quota exhausted (${code}): ${detail}`,
+  rate_limit: (code, detail) => `Codex rate limit (${code}): ${detail}`,
+  context: (code, detail) => `Codex ${code}: ${detail}`,
+  terminal: (code, detail) => `Codex ${code}: ${detail}`,
+  policy: (code, detail) => `Codex policy violation (${code}): ${detail}`,
+  unknown: (code, detail) => `Codex stream error (${code}): ${detail}`,
+};
+
+interface StreamFailure {
+  code: string;
+  message: string;
+  retryAfterMs?: number;
+  resetInSeconds?: number;
+  resetAtMs?: number;
+}
+
+/**
+ * What the backend said, wherever it put it.
+ *
+ * The error is nested under `error` for a bare `error` event and under `response.error` for
+ * `response.failed`; the root carries it in neither. Reading all three is what makes the code
+ * survive to the classifier instead of arriving as an empty string.
+ */
+function failureOf(event: Record<string, unknown>): StreamFailure {
+  const response = event["response"];
+  const wrapped = response && typeof response === "object" ? (response as Record<string, unknown>)["error"] : undefined;
+  const nested = (event["error"] ?? wrapped ?? {}) as Record<string, unknown>;
+  const field = (key: string): unknown => {
+    for (const source of [nested, event]) {
+      const value = source[key];
+      if (value !== undefined && value !== null && value !== "") return value;
+    }
+    return undefined;
+  };
+  const count = (key: string): number | undefined => {
+    const value = field(key);
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  };
+  const retryAfter = count("retry_after");
+  const resetInSeconds = count("resets_in_seconds");
+  const resetsAt = count("resets_at");
+  // `type` is the event's own name on the root ("error"), so it is only a code from the nested one.
+  const code = field("code");
+  const message = field("message");
+  return {
+    code: typeof code === "string" ? code : typeof nested["type"] === "string" ? nested["type"] : "",
+    message: typeof message === "string" ? message : "",
+    ...(retryAfter !== undefined ? { retryAfterMs: Math.max(0, retryAfter) * 1000 } : {}),
+    ...(resetInSeconds !== undefined ? { resetInSeconds } : {}),
+    // Epoch seconds on the wire, epoch milliseconds when a gateway already converted it.
+    ...(resetsAt !== undefined ? { resetAtMs: resetsAt > 1e12 ? resetsAt : resetsAt * 1000 } : {}),
+  };
+}
+
+/**
+ * A code this build does not know, but a sentence that names a spent plan, is still a spent plan:
+ * the vocabulary grows on the provider's side faster than on ours.
+ */
+function namedQuotaIn(message: string): FailureKind {
+  return /quota|credit balance|usage limit/i.test(message) ? "quota" : "unknown";
+}
+
 // Cloudflare in front of the Codex backend challenges non first-party originators with a 403
 // cf-mitigated response; mirroring the real codex client's originator/User-Agent avoids it.
 const ORIGINATOR = "codex_cli_rs";
@@ -381,12 +505,25 @@ async function processStream(
         break;
       }
       case "error": {
-        throw new Error(`Codex stream error ${String(event["code"] ?? "")}: ${String(event["message"] ?? "unknown")}`.trim());
+        const failure = new CodexStreamError(event);
+        // The payload is the only evidence of why the backend gave up, and it is small on this
+        // event: without it a run dies on a sentence that names nothing (measured 2026-11-05).
+        void log("warn", "codex stream failure event", {
+          code: failure.code,
+          message: failure.message.slice(0, 500),
+          retryable: failure.retryable,
+          event: JSON.stringify(event).slice(0, 2000),
+        });
+        throw failure;
       }
       case "response.failed": {
-        const response = event["response"] as { error?: { code?: string; message?: string } } | undefined;
-        const err = response?.error;
-        throw new Error(`Codex response failed: ${err?.code ?? "unknown"}: ${err?.message ?? "no message"}`);
+        const failure = new CodexStreamError(event);
+        void log("warn", "codex response failed", {
+          code: failure.code,
+          message: failure.message.slice(0, 500),
+          retryable: failure.retryable,
+        });
+        throw failure;
       }
     }
   }
@@ -468,6 +605,23 @@ async function runCodex(
 
   let lastErr: unknown;
   let tokensDelivered = false;
+  /** Whether the attempt in flight put anything on screen, text or thinking. */
+  let outputDelivered = false;
+  /**
+   * How a dead attempt's words are taken back before it is replayed. Provided by the channel: the
+   * app replaces a bubble on a `replay` delta, so the retry writes into the same one.
+   */
+  const restart = reasoningSink?.onRestart;
+  /** The thinking had to be counted as output too, or a replay would keep the words of the dead try. */
+  const wrappedReasoning: ReasoningSink | undefined = reasoningSink?.onText
+    ? {
+        ...reasoningSink,
+        onText: async (delta: string) => {
+          outputDelivered = true;
+          await reasoningSink.onText?.(delta);
+        },
+      }
+    : reasoningSink;
   // The model's own declaration when it has one, else this transport's default -- a subscription
   // backend that thinks for minutes before answering (docs/llm-timeout.md).
   const budget = requestTimeoutMs(config, CODEX_TIMEOUT_MS);
@@ -531,17 +685,42 @@ async function runCodex(
       const wrappedOnToken = onToken
         ? async (t: string) => {
             tokensDelivered = true;
+            outputDelivered = true;
             await onToken(t);
           }
         : undefined;
       recordCircuitSuccess(base);
-      return await processStream(response.body, wrappedOnToken, reasoningSink, self, keepAlive);
+      return await processStream(response.body, wrappedOnToken, wrappedReasoning, self, keepAlive);
     } catch (err) {
       if (signal?.aborted) throw new AbortedError();
       lastErr = err;
       // Our own wall: not retried, and not counted against the endpoint (docs/llm-timeout.md).
       if (timedOut) {
         throw new Error(`Codex request timed out after ${budget}ms (${timeoutSourceOf(config)})`);
+      }
+      if (err instanceof CodexStreamError) {
+        // The stream died mid-answer: replay the request, before anything else in the chain gets a
+        // say. The reference client gives this five attempts; three is what every other retryable
+        // condition in this install gets, and the escalation here is a real one -- the run's
+        // fallback can use another account, which that client does not have.
+        //
+        // Replaying after the first visible word is only safe when the channel can take that word
+        // back: the bubble is replaced, not appended to. Without that hook the old rule holds, since
+        // a retry nobody can erase would print the answer twice.
+        if (err.retryable && attempt < MAX_ATTEMPTS && (!outputDelivered || restart !== undefined)) {
+          if (outputDelivered) await restart?.();
+          outputDelivered = false;
+          tokensDelivered = false;
+          const delay = retryDelayMs(attempt, err.retryAfterMs);
+          await log("warn", `Codex stream failed mid-answer, replaying in ${delay}ms (${attempt}/${MAX_ATTEMPTS})`, {
+            code: err.code,
+          });
+          await sleep(delay, signal);
+          continue;
+        }
+        // Never counted against the endpoint: the breaker is keyed on a base URL every subscription
+        // in this install shares, so one account's dead stream would darken the other two.
+        throw err;
       }
       if (attempt < MAX_ATTEMPTS && !tokensDelivered && err instanceof TypeError) {
         const delay = retryDelayMs(attempt);

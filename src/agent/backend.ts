@@ -51,6 +51,15 @@ export interface ReasoningSink {
    * reopened an hour later has to show the same figure as the one that was live.
    */
   onFirstOutput?: (ms: number) => Promise<void>;
+  /**
+   * The attempt that was writing into the open bubble died, and the same request is being replayed
+   * from the start. Whatever it had put on screen is void and must be taken back, or the replay
+   * says it twice -- docs/provider-failures.md, "A stream that dies mid-answer".
+   *
+   * A channel that cannot erase what it painted leaves this out on purpose: a transport reads the
+   * absence as "no retry after the first visible word", which is the only safe rule there.
+   */
+  onRestart?: () => Promise<void>;
 }
 
 /**

@@ -6,6 +6,8 @@ import { MY_CLAW_DIR, type ResolvedLlmConfig } from "../../src/core/config.ts";
 import { codexResponse, codexResponseStream } from "../../src/llm/codex.ts";
 import type { ChatMessage } from "../../src/llm/provider.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
+import { isOverflowError } from "../../src/llm/overflow.ts";
+import { isQuotaSpent } from "../../src/llm/outage.ts";
 
 function writeAuth(): void {
   mkdirSync(join(MY_CLAW_DIR, "accounts"), { recursive: true });
@@ -119,7 +121,7 @@ test("codex transport surfaces a response.failed event as an error", async () =>
   writeAuth();
   mock = mockFetch(async () =>
     sseResponse([{ type: "response.failed", response: { error: { code: "server_error", message: "boom" } } }]));
-  await assert.rejects(codexResponse(config, [{ role: "user", content: "hi" }], undefined), /server_error: boom/);
+  await assert.rejects(codexResponse(config, [{ role: "user", content: "hi" }], undefined), /stream error \(server_error\): boom/);
 });
 
 test("codex pins the implicit prefix cache to the conversation", async () => {
@@ -222,4 +224,109 @@ test("a rate limit is still retried by the transport: it clears on its own", asy
   });
   await assert.rejects(() => codexResponse(config, [{ role: "user", content: "go" }], undefined));
   assert.equal(requests, 3, "three attempts, as every other retryable status gets");
+});
+
+/**
+ * The one that killed 34-minute runs (2026-11-05).
+ *
+ * The backend announces a failure from inside the stream with its code nested under `error`; this
+ * transport read the root, so the message said "Codex stream error : unknown" and every one of them
+ * was fatal. The official client maps an unknown code to a retryable error, and so does this now.
+ */
+test("a stream error's code is read wherever the backend put it", async () => {
+  writeAuth();
+  mock = mockFetch(async () => sseResponse([{ type: "error", error: { code: "boom_code", message: "the wire said no" } }]));
+  await assert.rejects(
+    () => codexResponse(config, [{ role: "user", content: "hi" }], undefined),
+    /stream error \(boom_code\): the wire said no/,
+  );
+});
+
+test("an unnamed stream error is replayed instead of ending the run", async () => {
+  writeAuth();
+  let requests = 0;
+  mock = mockFetch(async () => {
+    requests += 1;
+    if (requests === 1) return sseResponse([{ type: "error" }]);
+    return sseResponse([
+      { type: "response.output_text.delta", output_index: 0, delta: "ok" },
+      { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+    ]);
+  });
+  const res = await codexResponse(config, [{ role: "user", content: "hi" }], undefined);
+  assert.equal(requests, 2);
+  assert.equal(res.content, "ok");
+});
+
+test("a replay takes back what the dead attempt painted", async () => {
+  writeAuth();
+  let requests = 0;
+  mock = mockFetch(async () => {
+    requests += 1;
+    if (requests === 1) {
+      return sseResponse([
+        { type: "response.output_text.delta", output_index: 0, delta: "half an ans" },
+        { type: "error" },
+      ]);
+    }
+    return sseResponse([
+      { type: "response.output_text.delta", output_index: 0, delta: "the answer" },
+      { type: "response.completed" },
+    ]);
+  });
+  const tokens: string[] = [];
+  let restarts = 0;
+  const res = await codexResponseStream(
+    config,
+    [{ role: "user", content: "hi" }],
+    (t) => { tokens.push(t); },
+    undefined,
+    undefined,
+    { onRestart: async () => { restarts += 1; } },
+  );
+  assert.equal(restarts, 1, "the channel was told to erase the failed attempt");
+  assert.deepEqual(tokens, ["half an ans", "the answer"]);
+  assert.equal(res.content, "the answer");
+});
+
+test("without a channel that can erase, a stream that already painted is not replayed", async () => {
+  writeAuth();
+  let requests = 0;
+  mock = mockFetch(async () => {
+    requests += 1;
+    return sseResponse([
+      { type: "response.output_text.delta", output_index: 0, delta: "half an ans" },
+      { type: "error" },
+    ]);
+  });
+  await assert.rejects(
+    () => codexResponseStream(config, [{ role: "user", content: "hi" }], () => {}),
+    /stream error/,
+  );
+  assert.equal(requests, 1, "a retry nobody can erase would say the answer twice");
+});
+
+test("a spent plan announced mid-stream is not replayed", async () => {
+  writeAuth();
+  let requests = 0;
+  mock = mockFetch(async () => {
+    requests += 1;
+    return sseResponse([
+      { type: "error", error: { code: "usage_limit_reached", message: "The usage limit has been reached", resets_in_seconds: 900 } },
+    ]);
+  });
+  const err = await codexResponse(config, [{ role: "user", content: "hi" }], undefined).catch((e: unknown) => e);
+  assert.equal(requests, 1, "no backoff refills a plan");
+  assert.match(String((err as Error).message), /quota exhausted \(usage_limit_reached\)/);
+  assert.equal((err as { status?: number }).status, 429);
+  assert.equal((err as { resetInSeconds?: number }).resetInSeconds, 900);
+  assert.equal(isQuotaSpent(err), true);
+});
+
+test("a context overflow announced mid-stream stays an overflow", async () => {
+  writeAuth();
+  mock = mockFetch(async () =>
+    sseResponse([{ type: "error", error: { code: "context_length_exceeded", message: "Your input exceeds the context window of this model." } }]));
+  const err = await codexResponse(config, [{ role: "user", content: "hi" }], undefined).catch((e: unknown) => e);
+  assert.equal(isOverflowError(err), true);
 });

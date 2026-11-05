@@ -241,3 +241,58 @@ describe("MyClawAppStreamer media refs", () => {
     expect(frames.filter((f) => f.type === "chat.stream.done")).toHaveLength(1);
   });
 });
+
+describe("MyClawAppStreamer restart", () => {
+  /** The bubble's text as the app reconstructs it: a replay delta replaces, the others append. */
+  function bubble(frames: MyClawAppServerFrame[]): string {
+    let text = "";
+    for (const frame of frames) {
+      if (frame.type !== "chat.stream.delta") continue;
+      text = frame.replay ? frame.text : text + frame.text;
+    }
+    return text;
+  }
+
+  test("a replayed call replaces the bubble instead of adding to it", async () => {
+    const { streamer, frames } = collect();
+    await streamer.push("half an ans");
+    await streamer.restart();
+    await streamer.push("the answer");
+    await streamer.finish();
+    expect(bubble(frames)).toBe("the answer");
+  });
+
+  test("the thinking of the dead attempt is taken back with its words", async () => {
+    const { streamer, frames } = collect();
+    await streamer.pushReasoning("thinking about it");
+    await streamer.restart();
+    await streamer.pushReasoning("thinking again");
+    await streamer.push("answer");
+    await streamer.finish();
+    let reasoning = "";
+    for (const frame of frames) {
+      if (frame.type !== "chat.reasoning.delta") continue;
+      reasoning = frame.replay ? frame.text : reasoning + frame.text;
+    }
+    expect(reasoning).toBe("thinking again");
+    expect(bubble(frames)).toBe("answer");
+  });
+
+  test("a restart after a tool card leaves the sealed bubble alone", async () => {
+    const { streamer, frames } = collect();
+    await streamer.push("first call");
+    await streamer.appendToolUse([{ id: "c1", name: "bash", arguments: {}, durationMs: 1, output: "ok", ok: true }], true);
+    await streamer.push("second call");
+    await streamer.restart();
+    await streamer.push("replayed");
+    await streamer.finish();
+    const byBubble = new Map<string, string>();
+    for (const frame of frames) {
+      if (frame.type !== "chat.stream.delta") continue;
+      const current = byBubble.get(frame.id) ?? "";
+      byBubble.set(frame.id, frame.replay ? frame.text : current + frame.text);
+    }
+    // Two bubbles: the sealed one keeps what it said, the open one is replaced.
+    expect([...byBubble.values()]).toEqual(["first call", "replayed"]);
+  });
+});

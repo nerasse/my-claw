@@ -251,6 +251,42 @@ done something. `blockedReportOf` (`src/subagents/blocked.ts`) answers in fields
   hide it behind a model that happens to tolerate the shape -- measured the same evening, when
   `glm-5.3` refused the parts array our system prompt was sent as.
 
+## A stream that dies mid-answer
+
+A provider can accept the request, start streaming, and then announce a failure from inside the
+stream. That is not a verdict on the request: nothing about it changed between the first byte and
+the last one. Before 2026-11-05 the Codex transport turned every such event into a fatal error, and
+read its code from the root of the event while the backend nests it under `error`:
+
+```text
+Codex stream error : unknown          # 34 minutes, 26 tool calls, run dead
+```
+
+The reference client (`openai/codex`) does three things this install now does as well:
+
+- **The code is read wherever it was put**: `error.code`, `error.error.code`, `response.error.code`.
+- **An unknown code is retryable**, not terminal (`codex-api/src/sse/responses_error.rs` maps it to
+  `ApiError::Retryable`); only the codes it recognises are verdicts.
+- **A stream that ends without `response.completed`** is retried too, re-sending the request from
+  the top.
+
+`CodexStreamError` (`src/llm/codex.ts`) classifies the payload into the vocabularies this install
+already acts on: a spent plan becomes a `429` quota error (one request, then the fallback), a rate
+limit is replayed with the server's own `retry_after`, a `context_length_exceeded` stays an overflow
+for the compactor to recover, a policy code keeps its words, and anything unrecognised is an
+outage-class transport fault: replayed up to three times, then reroutable.
+
+Replaying after the first visible word is only safe when the channel can take that word back, so the
+sink carries `onRestart` (`src/agent/backend.ts`). The app implements it by sending an empty `replay`
+delta, which replaces the bubble instead of appending to it, and the bridge re-opens its "this call
+already wrote something, do not reroute" gate from the same callback. A channel without the hook
+keeps the old rule: no replay once something is on screen, because a retry nobody can erase would
+print the answer twice.
+
+A stream failure does not count toward the circuit breaker (`isStreamFault`): the breaker is keyed on
+`baseUrl`, and every subscription in this install shares one, so five dead streams on one account
+would darken the other two.
+
 ## A spent quota never counts toward the circuit breaker
 
 `countsTowardBreaker` (`src/llm/provider.ts`) refuses a quota for the same reason it refuses a
@@ -290,6 +326,12 @@ error text — so an outage is countable and its cost is visible.
 
 ## Tests
 
+- `tests/llm/codex.test.ts` — an unnamed stream error is replayed instead of ending the run; a
+  replay after visible text calls `onRestart` first; without that hook it is not replayed at all; a
+  plan limit and a context overflow announced mid-stream keep their own meaning and cost one
+  request.
+- `tests/my-claw-app-stream.test.ts` — a replayed call replaces the bubble rather than adding to
+  it, its thinking is taken back with it, and a sealed bubble keeps the tool card that really ran.
 - `tests/agent/bridge-provider-fallback.test.ts` — the run waits then finishes on the configured
   default; a failure **between two calls** keeps the work it already did (the tool ran once, and the
   run continued from its result); a policy refusal reroutes; a `400` naming our own shape does not;

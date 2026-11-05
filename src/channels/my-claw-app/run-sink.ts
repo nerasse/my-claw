@@ -7,8 +7,9 @@ import type { MyClawAppStreamer } from "./stream.ts";
  * Read per call and never captured: a message folded into a run in flight swaps the streamer, and
  * the sink has to follow the bubble that is open now (`index.ts`, the `active` it replaces).
  *
- * One door for the three things the app shows of a model's inner life: its reasoning, what each
- * call spent on it, and the wait before a call's first token. The wait went through a global hook
+ * One door for what the app shows of a model's inner life -- its reasoning, what each call spent
+ * on it, the wait before a call's first token -- and for taking that back when a call is replayed.
+ * The wait went through a global hook
  * first, and a hook is heard by every listener on the session -- a folded message has one too, so
  * every call after it opened two bubbles (2026-10-01). Same contract as a sub-agent's stream
  * (`subagent-stream.ts`), which is what made this one worth a name.
@@ -19,5 +20,6 @@ export function runReasoningSink(current: () => MyClawAppStreamer): ReasoningSin
     onCount: (count) => current().pushReasoningCount(count),
     onCallStart: () => current().beginWait(),
     onFirstOutput: (ms) => current().pushWait(ms),
+    onRestart: () => current().restart(),
   };
 }

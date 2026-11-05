@@ -47,6 +47,8 @@ export class MyClawAppStreamer {
   private segmentIds: string[] = [];
   /** ISO instant the open thinking phase began, while one is open -- see `openSpan`. */
   private reasoningSince: string | undefined;
+  /** Whether reasoning text was sent for the open bubble, so a replay knows it has some to clear. */
+  private reasoningPainted = false;
   /** Bubble ids not yet taken by the recorder, oldest first. */
   private unclaimed: string[] = [];
   private errorBubbleId: string | undefined;
@@ -121,6 +123,42 @@ export class MyClawAppStreamer {
 
   async finish(finalText?: string): Promise<void> {
     return this.enqueue(() => this.finishInternal(finalText));
+  }
+
+  /**
+   * The call that was writing into the open bubble died, and the same request is being replayed.
+   *
+   * Its words and its thinking are taken back: the app replaces a bubble on a `replay` delta, so an
+   * empty one clears what the dead attempt painted and the retry writes into the same bubble
+   * instead of saying it twice. Only the open segment is touched -- a sealed bubble already carries
+   * a tool card that really ran, and that card is not the replay's to take back.
+   */
+  async restart(): Promise<void> {
+    return this.enqueue(() => this.restartInternal());
+  }
+
+  private async restartInternal(): Promise<void> {
+    if (this.finished || !this.started) return;
+    this.segmentText = "";
+    this.emittedText = "";
+    // The thought is over: the replay opens its own phase, dated from when it starts.
+    this.reasoningSince = undefined;
+    await this.opts.send({
+      type: "chat.stream.delta",
+      id: this.currentId(),
+      threadId: this.opts.threadId,
+      text: "",
+      replay: true,
+    });
+    if (!this.reasoningPainted) return;
+    this.reasoningPainted = false;
+    await this.opts.send({
+      type: "chat.reasoning.delta",
+      id: this.currentId(),
+      threadId: this.opts.threadId,
+      text: "",
+      replay: true,
+    });
   }
 
   async abort(errorText?: string): Promise<void> {
@@ -311,6 +349,7 @@ export class MyClawAppStreamer {
     // Never gated by minCharsBeforeDelta: withholding the thinking to reach a character
     // threshold would defeat the point of showing it.
     if (!this.started) await this.startSegment();
+    this.reasoningPainted = true;
     await this.opts.send({
       type: "chat.reasoning.delta",
       id: this.currentId(),
@@ -375,6 +414,7 @@ export class MyClawAppStreamer {
     // The thinking span belongs to the bubble that was sealed: the next thought is another phase,
     // and it opens its own.
     this.reasoningSince = undefined;
+    this.reasoningPainted = false;
   }
 
   /** Sends what is newly visible after stripping, holding back an incomplete MEDIA: ref. */

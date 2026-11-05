@@ -115,3 +115,14 @@ test("a rate limit is not a quota: waiting is exactly what it is for", () => {
     false,
   );
 });
+
+test("a stream that died is the wire's fault, not the request's", () => {
+  // The one that mattered (2026-11-05): a Codex stream error with no code at all, after 26 tool
+  // calls. Nothing about the request changed between the first byte and the last, so the run is
+  // allowed to finish it somewhere else instead of dying where it stands.
+  assert.equal(isOutageClass(new Error("Codex stream error : unknown")), true);
+  assert.equal(isOutageClass(new Error("Anthropic stream error overloaded_error: Overloaded")), true);
+  assert.equal(isOutageClass(new Error('{"type":"response.failed","response":{"error":{"code":"server_error"}}}')), true);
+  // An overflow is recovered by compacting, never by another provider.
+  assert.equal(isOutageClass(new Error("Codex context_length_exceeded: too long")), false);
+});

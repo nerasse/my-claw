@@ -2,7 +2,7 @@ import type { ReasoningField, ResolvedLlmConfig } from "../core/config.ts";
 import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError, sleep } from "../core/aborted.ts";
 import { isRetryableStatus, retryDelayMs, parseRetryAfterMs, wallAhead } from "./retry.ts";
-import { isQuotaSpent } from "./outage.ts";
+import { isQuotaSpent, isStreamFault } from "./outage.ts";
 import {
   repairFor,
   repairOptionsFor,
@@ -88,6 +88,11 @@ export function resetCircuitBreaker(): void {
 // `chatgpt-3` answered perfectly at 22:46:36. The plan is out of money; the endpoint is fine.
 export function countsTowardBreaker(err: unknown): boolean {
   if (isQuotaSpent(err)) return false;
+  // A stream that died is a connection, not an endpoint that is down. The breaker is keyed on the
+  // base URL, and every ChatGPT subscription in this install shares one: five stream failures on
+  // `chatgpt-2` would darken `chatgpt-3` and `chatgpt-4` for a minute. The transport already
+  // retries it, and the fallback chain is the escalation after that.
+  if (isStreamFault(err)) return false;
   const status = (err as { status?: number } | undefined)?.status;
   if (typeof status === "number" && status >= 400 && status < 500 && status !== 429) return false;
   return true;
