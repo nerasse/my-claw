@@ -131,6 +131,7 @@ import { subAgentStreamFor } from "./channels/my-claw-app/subagent-stream.ts";
 import { createCronTool } from "./tools/cron.ts";
 import { createNotifyTool } from "./tools/notify.ts";
 import { createQuestionTool } from "./tools/question.ts";
+import { createApprovalTool } from "./tools/approval.ts";
 import { questionManager } from "./questions/manager.ts";
 import { createWorkspacesTool } from "./tools/workspaces.ts";
 import { CronScheduler, DEFAULT_ALERT_AFTER_MS } from "./cron/scheduler.ts";
@@ -812,12 +813,12 @@ async function main() {
   // A tool waiting on the owner's answer: same reasoning as a question. The sheet is broadcast to
   // every open window, so a device already looking at that thread gets nothing twice; every other
   // one gets the push whose tap opens the conversation holding the prompt.
-  hooks.on("approval:requested", ({ threadId, sessionId, toolName }) => {
+  hooks.on("approval:requested", ({ threadId, sessionId, toolName, waitForever }) => {
     const target = threadId ? { kind: "thread" as const, threadId } : targetOfSession(sessionId);
     void threadTitle(sessionId, toolName).then((title) =>
       publishNotification(
         {
-          title: "Approval needed",
+          title: waitForever ? "Approval needed (no timeout)" : "Approval needed",
           body: `${cleanNotificationText(toolName)} is waiting for your go-ahead in "${title}".`,
           ...(target ? { target } : {}),
         },
@@ -921,6 +922,8 @@ async function main() {
     });
     // The remote-node surface reads the top-level `nodes` section live (mTLS header, claim TTL).
     myClawApp.setNodesConfig(() => config.nodes);
+    // Standing grants, read live: the app writes one and the next identical call must not ask.
+    myClawApp.setGrantsConfig(() => config.tools?.alwaysAllow ?? []);
     myClawApp.onLocationResolver(new GeoapifyReverseGeocoder(() => process.env.GEOAPIFY_API_KEY));
 
     myClawAppRef = myClawApp;
@@ -3282,7 +3285,7 @@ function registerCoreTools(registry: ToolRegistry, config: MyClawConfig): void {
   // provider key and the model writes the commands.
   setBashEnvPassthrough(config.tools?.bashEnvPassthrough);
   setBashLimits(config.tools?.bash);
-  for (const tool of [bashTool, readTool, writeTool, applyPatchTool, fetchTool, searchTool, lsTool, createMemoryTool(config), createConversationSearchTool(), createQuestionTool()]) {
+  for (const tool of [bashTool, readTool, writeTool, applyPatchTool, fetchTool, searchTool, lsTool, createMemoryTool(config), createConversationSearchTool(), createQuestionTool(), createApprovalTool()]) {
     registry.register(tool);
   }
 }

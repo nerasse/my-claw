@@ -32,6 +32,7 @@ export function nodeToolsFor(
       get requiresApproval(): boolean {
         return nodeRecord(nodeId)?.approval === true;
       },
+      approvalOrigin: { kind: "node", nodeId },
       execute: (args) => {
         const current = nodeRecord(nodeId);
         if (!current) return refused(`node "${name}" is not paired any more`);
@@ -59,6 +60,7 @@ export function nodeToolsFor(
     get requiresApproval(): boolean {
       return nodeRecord(nodeId)?.approval === true;
     },
+    approvalOrigin: { kind: "node", nodeId },
     execute: async (args) => {
       const path = typeof args["path"] === "string" ? args["path"].trim() : "";
       if (!path) return { success: false, output: "", error: "path is required" };

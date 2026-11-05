@@ -232,6 +232,10 @@ push goes out when the sheet has to reach a device that is not on that thread (d
 Turning the switch on also enables `channels["my-claw-app"].approvals`: a prompt nobody can answer
 is refused, not asked.
 
+Every node tool carries its `approvalOrigin`, so the sheet and the approvals page say which machine
+a prompt is about, and a standing grant ("always allow this exact call") is scoped to that machine:
+the same command approved here never auto-runs on archy.
+
 Every remote call is journaled (node, tool, arguments, outcome). Results are untrusted content.
 
 ## MCP servers on a node

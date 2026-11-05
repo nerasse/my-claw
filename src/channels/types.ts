@@ -64,7 +64,13 @@ export type ChatLocationInput = Omit<ChatLocation, "address"> & {
   addressOverride?: { formatted: string };
 };
 
-export type ApprovalDecision = "allow-once" | "allow-session" | "deny";
+export type ApprovalDecision = "allow-once" | "allow-session" | "allow-always" | "deny";
+
+/**
+ * Where the tool that asks would run. Absent means this server's own machine; a remote node's
+ * tools carry their node, so a grant given for one machine never auto-runs on another.
+ */
+export type ApprovalOrigin = { kind: "node"; nodeId: string };
 
 export interface ToolApprovalRequest {
   id: string;
@@ -78,6 +84,15 @@ export interface ToolApprovalRequest {
   args: Record<string, unknown>;
   replyToId?: string;
   threadId?: string;
+  origin?: ApprovalOrigin;
+  /**
+   * The agent asked by itself (`approval` tool) instead of a gate opening on a call: the prompt
+   * waits with no timer, because the run is deliberately waiting on the owner -- a timeout there
+   * would answer "no" on his behalf.
+   */
+  waitForever?: boolean;
+  /** The sentence the agent wrote about what it is about to do; the sheet shows it above the args. */
+  headline?: string;
 }
 
 export type ToolApprovalHandler = (request: ToolApprovalRequest) => Promise<ApprovalDecision>;

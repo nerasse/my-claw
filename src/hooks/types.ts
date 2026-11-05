@@ -199,6 +199,8 @@ export interface HookEventMap {
     threadId: string;
     sessionId: string;
     toolName: string;
+    /** The agent asked by itself: the run waits until the owner answers, so the push says so. */
+    waitForever: boolean;
   };
   "tool:bash:execute": {
     command: string;

@@ -1,4 +1,4 @@
-import type { Attachment } from "../channels/types.ts";
+import type { ApprovalOrigin, Attachment } from "../channels/types.ts";
 
 export interface ToolResult {
   success: boolean;
@@ -30,6 +30,8 @@ export interface Tool {
    * record says to ask before running anything there. The run's approval manager reads it.
    */
   requiresApproval?: boolean;
+  /** Which machine the tool would run on, absent meaning this one. A standing grant is scoped by it. */
+  approvalOrigin?: ApprovalOrigin;
   /** `onProgress` lets a long-running tool stream output as it is produced rather than only at
    *  EOF (bash today; the others ignore it). The callback fires with stdout/stderr chunks; the
    *  caller is responsible for throttling and appending to the final ToolResult.output. */

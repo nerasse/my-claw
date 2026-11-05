@@ -11,7 +11,7 @@ import { MY_CLAW_DIR } from "../core/config.ts";
  * `expired` is the timeout, `cancelled` the run going away under the prompt: neither is a
  * decision the owner made, and reading them as a refusal would blame him for a machine event.
  */
-export type ApprovalOutcome = "allow-once" | "allow-session" | "deny" | "expired" | "cancelled";
+export type ApprovalOutcome = "allow-once" | "allow-session" | "allow-always" | "deny" | "expired" | "cancelled";
 
 export interface ApprovalRecord {
   id: string;
@@ -78,7 +78,7 @@ function getDb(): Database {
       session_id   TEXT NOT NULL,
       tool_name    TEXT NOT NULL,
       args         TEXT NOT NULL,
-      outcome      TEXT NOT NULL CHECK (outcome IN ('allow-once', 'allow-session', 'deny', 'expired', 'cancelled')),
+      outcome      TEXT NOT NULL CHECK (outcome IN ('allow-once', 'allow-session', 'allow-always', 'deny', 'expired', 'cancelled')),
       requested_at TEXT NOT NULL,
       decided_at   TEXT NOT NULL,
       duration_ms  INTEGER NOT NULL,
@@ -90,7 +90,50 @@ function getDb(): Database {
     CREATE INDEX IF NOT EXISTS idx_approvals_thread_time
       ON approvals(owner, thread_id, decided_at DESC);
   `);
+  migrateAllowAlways(db);
   return db;
+}
+
+/**
+ * A database written before standing grants forbids `allow-always` at the schema level, and SQLite
+ * cannot alter a CHECK: the table is rebuilt and copied, id and every column preserved. Guarded by
+ * the stored SQL, so it runs once per install and never on a fresh one.
+ */
+function migrateAllowAlways(conn: Database): void {
+  const row = conn
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'approvals'")
+    .get() as { sql?: string } | null;
+  if (!row?.sql || row.sql.includes("allow-always")) return;
+  conn.exec("PRAGMA foreign_keys = OFF");
+  conn.exec("BEGIN");
+  try {
+    conn.exec(`
+      CREATE TABLE approvals_next (
+        id           TEXT PRIMARY KEY,
+        owner        TEXT NOT NULL,
+        thread_id    TEXT NOT NULL,
+        session_id   TEXT NOT NULL,
+        tool_name    TEXT NOT NULL,
+        args         TEXT NOT NULL,
+        outcome      TEXT NOT NULL CHECK (outcome IN ('allow-once', 'allow-session', 'allow-always', 'deny', 'expired', 'cancelled')),
+        requested_at TEXT NOT NULL,
+        decided_at   TEXT NOT NULL,
+        duration_ms  INTEGER NOT NULL,
+        auto         INTEGER NOT NULL DEFAULT 0
+      );
+      INSERT INTO approvals_next SELECT id, owner, thread_id, session_id, tool_name, args, outcome, requested_at, decided_at, duration_ms, auto FROM approvals;
+      DROP TABLE approvals;
+      ALTER TABLE approvals_next RENAME TO approvals;
+      CREATE INDEX IF NOT EXISTS idx_approvals_owner_time ON approvals(owner, decided_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_approvals_thread_time ON approvals(owner, thread_id, decided_at DESC);
+    `);
+    conn.exec("COMMIT");
+  } catch (err) {
+    conn.exec("ROLLBACK");
+    throw err;
+  } finally {
+    conn.exec("PRAGMA foreign_keys = ON");
+  }
 }
 
 /** Truncation is marked, so a reader never mistakes a cut argument list for the whole call. */

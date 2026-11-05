@@ -33,3 +33,50 @@ answers `deny` on sight, and the run reports "denied by approval policy" with no
 `adapter.ts` emits `approval:requested` once the sheet is on the owner's windows; the entry point
 publishes a push for it, skipping a device already foreground on that thread. The tap opens the
 conversation holding the sheet.
+
+## The page
+
+The app's drawer has one entry for every prompt of the install (`Approvals`), three tabs:
+
+- **Waiting**: every pending prompt, grouped by machine (`this machine`, then each node), with
+  machine and tool filters, how long it has been waiting, and the four decisions inline. The
+  sheet still exists for the prompt you are looking at; the page is for the ones you are not.
+- **History**: the journal, unchanged.
+- **Always allowed**: the standing grants, with a `withdraw` per row.
+
+The drawer badges the entry with the pending count, so a queue is visible without opening it.
+
+## Standing grants ("always allow this exact call")
+
+A fourth decision, offered on every prompt: `allow-always`. It writes one entry into
+`tools.alwaysAllow` (`src/core/config-edit.ts`, `setApprovalGrant`):
+
+```json
+"tools": { "alwaysAllow": [ { "tool": "bash", "origin": "local", "args": "{\"command\":\"df -h\"}" } ] }
+```
+
+- `args` is the **canonical** JSON of the call's own arguments (keys sorted at every depth), so a
+  model that writes the same object in another order still matches.
+- `origin` is `local` or a node id. A grant given on this machine never runs on a node, and two
+  nodes never share one: the owner approved a call on a machine, not a shape of call everywhere.
+- `ToolApprovalManager.decide` reads it live, after the session cache and before the prompt, and
+  journals the automatic pass as `allow-always` with `auto: true`.
+- Withdrawing one takes effect on the next call: the grant is only ever read, never cached.
+
+## The agent asking (`approval` tool)
+
+The orchestrator has one tool, `approval`, with two actions:
+
+- `request { what, tool?, command?, args? }`: asks the owner on purpose and **waits with no
+  timer**. That is the one place a prompt does not expire: the run chose to wait, so a timeout
+  would be the machine answering "no" for him. Stop cancels it, and a typed message cancels it
+  the way a question is. Returns `approved`, `approved-always`, `denied` or a cancel.
+- `list`: everything still waiting, across conversations and machines, for the orchestrator to
+  tell a blocked sub-agent from a hung one.
+
+Automatic gates keep their two-minute timeout: a run nobody answers must not hold a session
+forever. The tool is main-only (not a sub-agent, not cron) and never answers on the owner's
+behalf.
+
+The skill `approvals` teaches when to ask, what a grant covers, and that one yes per decision is
+enough.

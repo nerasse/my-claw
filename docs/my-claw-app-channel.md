@@ -744,10 +744,11 @@ runs fresh like any other message.
 { "type": "session.workspace.set.result", "threadId": "projet", "workspace": "sofa" }
 { "type": "commands.list.result", "commands": [{ "name": "status", "description": "..." }] }
 { "type": "files.list.result", "threadId": "projet", "files": [{ "id": "uuid", "filename": "note.pdf", "type": "file", "mimeType": "application/pdf", "sizeBytes": 5120, "ts": "iso" }], "totalBytes": 5120 }
-{ "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123, "allowSessionOffered": false }
+{ "type": "approval.request", "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123, "allowSessionOffered": false, "allowAlwaysOffered": true, "origin": { "kind": "node", "nodeId": "node-1", "name": "archy" }, "requestedAt": 1762300000000, "waitForever": false, "headline": "check the disks" }
 { "type": "approval.pending", "entries": [{ "id": "uuid", "threadId": "projet", "toolName": "bash", "args": {...}, "expiresAt": 123, "allowSessionOffered": false }] }
 { "type": "approval.resolved", "id": "uuid", "threadId": "projet", "reason": "expired|cancelled|answered-elsewhere" }
-{ "type": "approval.history.result", "threadId": "projet", "entries": [{ "id": "uuid", "toolName": "write", "args": "{...}", "outcome": "allow-session", "requestedAt": "iso", "decidedAt": "iso", "durationMs": 1200, "auto": false }], "stats": { "total": 1, "allowed": 1, "denied": 0, "expired": 0 } }
+{ "type": "approval.history.result", "threadId": "projet", "entries": [{ "id": "uuid", "toolName": "write", "args": "{...}", "outcome": "allow-session|allow-always", "requestedAt": "iso", "decidedAt": "iso", "durationMs": 1200, "auto": false }], "stats": { "total": 1, "allowed": 1, "denied": 0, "expired": 0 } }
+{ "type": "approval.grants.result", "grants": [{ "tool": "bash", "origin": "local", "args": "{\"command\":\"df -h\"}", "createdAt": "iso" }] }
 { "type": "question.ask", "id": "que_...", "threadId": "projet", "replyToId": "tc-...", "questions": [{ "header": "Langue", "question": "FR ou EN ?", "options": [{ "label": "fr" }, { "label": "en" }], "multiple": false, "custom": true }], "ts": "iso" }
 { "type": "question.resolved", "id": "que_...", "threadId": "projet", "reason": "answered|canceled" }
 { "type": "chat.transcript", "threadId": "projet", "replyToId": "uuid", "items": [{ "id": "uuid", "text": "ce que le serveur a entendu" }] }
@@ -1186,9 +1187,19 @@ denied outright, so the setting is what decides between "asks" and "never runs".
 
 The response carries the **grant**, not a boolean. `accepted: true` used to be read as
 `allow-session`, so approving a single call silently whitelisted the tool for the rest of the
-conversation; the device now names one of `allow-once`, `allow-session` or `deny`. Anything else
-on the wire, including an older client's `accepted`, is treated as a deny: a tool must never run
-because a frame was unreadable.
+conversation; the device now names one of `allow-once`, `allow-session`, `allow-always` or `deny`.
+`allow-always` writes one entry in `tools.alwaysAllow` (same tool, same canonical arguments, same
+machine) before the call is told it may run. Anything else on the wire, including an older
+client's `accepted`, is treated as a deny: a tool must never run because a frame was unreadable.
+
+`origin` says where the call would run: `{ kind: "local" }` for this server, or the node's id and
+display name. `allowAlwaysOffered` is what the sheet's fourth button reads. `requestedAt` lets the
+approvals page say how long a prompt has waited. `waitForever` (with `expiresAt: 0`) is the
+`approval` tool's own ask: no timer, and the sheet draws "waiting for you" instead of a countdown.
+`headline` is the sentence the agent wrote about what it is about to do.
+
+`approval.grants` answers `approval.grants.result` with the standing grants; `approval.grant.remove`
+takes one back, and both are followed by a fresh result frame to every window of the owner.
 
 `allowSessionOffered` says whether the session grant is on offer at all. It is false for the
 per-invocation tools (`bash`, `memory`), where every call is a distinct decision, and the server

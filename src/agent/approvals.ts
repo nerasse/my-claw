@@ -1,7 +1,9 @@
 import type { SessionData } from "../sessions/store.ts";
 import type { ApprovalDecision, ToolApprovalHandler, ToolApprovalRequest } from "../channels/types.ts";
+import type { ApprovalGrantConfig } from "../core/config.ts";
 import { ActionBlacklist } from "./blacklist.ts";
 import { recordApproval, serializeArgs } from "../approvals/store.ts";
+import { grantOf } from "../approvals/grants.ts";
 
 // Approval is strictly opt-in via config.blacklist — full autonomy by design (the app
 // runs in its own encapsulated VM). These two are only special IF the user blacklists
@@ -27,6 +29,8 @@ export class ToolApprovalManager {
   constructor(
     blacklistedActions: string[],
     private approvalHandler?: ToolApprovalHandler,
+    /** Read live on every call: a grant added from the app applies to the next tool call. */
+    private grants: () => readonly ApprovalGrantConfig[] = () => [],
   ) {
     this.blacklist = new ActionBlacklist(blacklistedActions);
   }
@@ -35,7 +39,7 @@ export class ToolApprovalManager {
     this.approvalHandler = handler;
   }
 
-  private journalAuto(request: ToolApprovalRequest): void {
+  private journalAuto(request: ToolApprovalRequest, outcome: "allow-session" | "allow-always" = "allow-session"): void {
     const at = new Date().toISOString();
     journal({
       id: `auto:${crypto.randomUUID()}`,
@@ -44,7 +48,7 @@ export class ToolApprovalManager {
       sessionId: request.sessionId,
       toolName: request.toolName,
       args: serializeArgs(request.args),
-      outcome: "allow-session",
+      outcome,
       requestedAt: at,
       decidedAt: at,
       durationMs: 0,
@@ -74,6 +78,15 @@ export class ToolApprovalManager {
 
     if (!this.approvalHandler) {
       return "deny";
+    }
+
+    // A standing grant: the owner already read this exact call on this exact machine. Checked
+    // before the prompt, after the session cache, so a grant never has to be re-confirmed and a
+    // withdrawn one takes the next call back to asking.
+    const grant = grantOf(this.grants(), params.request);
+    if (grant) {
+      this.journalAuto(params.request, "allow-always");
+      return "allow-once";
     }
 
     // Per-invocation tools (bash, memory) must be reviewed one by one — never coalesce.

@@ -21,7 +21,7 @@ export const READ_ONLY_TOOLS = ["read", "search", "ls", "fetch", "web_search", "
 // `notify` reaches the owner's phone, which is the orchestrator's and the cron agent's business: a
 // sub-agent is a delegated worker whose results are reported by whoever spawned it, and a worker
 // that can ring the phone is a worker that can ring it fifty times.
-const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "agents", "memory", "cron", "workspaces", "question", "notify"];
+const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "agents", "memory", "cron", "workspaces", "question", "notify", "approval"];
 
 /**
  * What the cron role is never given, however a job is configured. A job has no one to ask
@@ -29,7 +29,7 @@ const SUBAGENT_EXCLUDED_TOOLS = ["spawn", "send", "agents", "memory", "cron", "w
  * to see it, and one that could schedule jobs or edit skills would be a machine nobody can audit
  * (it gets `skills` read-only, like every agent but the orchestrator). docs/cron.md.
  */
-const CRON_ALWAYS_EXCLUDED = ["cron", "memory", "workspaces", "question"];
+const CRON_ALWAYS_EXCLUDED = ["cron", "memory", "workspaces", "question", "approval"];
 
 /**
  * The two families a cron job carries a switch for. Granted unless the job turned them off: the

@@ -213,7 +213,7 @@ export class AgentBridge implements AgentBackend {
     // before agents could come from a file, which keeps every existing caller honest.
     private agentRegistry?: AgentRegistry,
   ) {
-    this.approvalManager = new ToolApprovalManager(config.blacklist);
+    this.approvalManager = new ToolApprovalManager(config.blacklist, undefined, () => this.config.tools?.alwaysAllow ?? []);
     this.preprocessor = sharedPreprocessor ?? new MessagePreprocessor(this.voiceManager, this.sttPipeline);
   }
 
@@ -1868,6 +1868,7 @@ export class AgentBridge implements AgentBackend {
         args: params.args,
         replyToId: params.message.replyToId,
         threadId: params.message.threadId,
+        ...(tool.approvalOrigin ? { origin: tool.approvalOrigin } : {}),
       },
     });
     hooks.emit("tool:approval:check", { toolName: params.name, sessionId: params.session.id, decision: approvalDecision });

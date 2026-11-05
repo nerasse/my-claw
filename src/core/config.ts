@@ -865,11 +865,28 @@ export interface ToolsConfig {
   /** Where one bash call may live -- docs/bash-limits.md. */
   bash?: BashConfig;
   /**
+   * Exact calls the owner allowed once and for all: same tool, same arguments, same machine.
+   * Written by the app when he picks "Always allow this exact call" (docs/tool-approvals.md).
+   */
+  alwaysAllow?: ApprovalGrantConfig[];
+  /**
    * Load owner-authored tool modules from `$MY_CLAW_DIR/tools.d/` at runtime. Off by
    * default: loading arbitrary code is an in-process RCE surface. See
    * `docs/hot-reload-extensions.md`.
    */
   pluginsEnabled?: boolean;
+}
+
+/**
+ * One standing grant. `args` is the canonical JSON of the call's own arguments, and `origin` is
+ * `local` or a node id: a grant is a permission, so it never widens past the machine and the
+ * exact call the owner saw.
+ */
+export interface ApprovalGrantConfig {
+  tool: string;
+  origin: string;
+  args: string;
+  createdAt?: string;
 }
 
 /**

@@ -23,6 +23,11 @@ import type { StopOutcome } from "../../core/stop.ts";
 import { myClawAppLog } from "../../utils/logger.ts";
 import { ALWAYS_PER_INVOCATION } from "../../agent/approvals.ts";
 import { approvalStats, listApprovals, recordApproval, serializeArgs, type ApprovalOutcome } from "../../approvals/store.ts";
+import { canonicalArgs, originKey } from "../../approvals/grants.ts";
+import { setApprovalSurface, type ApprovalSurface, type PendingApprovalView } from "../../approvals/ask.ts";
+import { setApprovalGrant } from "../../core/config-edit.ts";
+import type { ApprovalGrantConfig } from "../../core/config.ts";
+import { nodeRecord } from "../../nodes/store.ts";
 import { PairingSockets, type PairSocketData } from "./pair-socket.ts";
 import { createNodeSurface, type NodeSurface } from "../../nodes/surface.ts";
 import { onNodePresence } from "../../nodes/hub.ts";
@@ -99,9 +104,13 @@ function statsFilterOf(raw: unknown): MyClawAppStatsFilter | null {
   return out;
 }
 import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";import type {
+  MyClawAppApprovalOrigin,
   MyClawAppApprovalRequest,
   MyClawAppApprovalResponse,
   MyClawAppApprovalHistory,
+  MyClawAppApprovalGrants,
+  MyClawAppApprovalGrant,
+  MyClawAppApprovalGrantRemove,
   MyClawAppQuestionReply,
   MyClawAppUndoChoose,
   MyClawAppUndoCancel,
@@ -342,7 +351,8 @@ function threadOf(sessionId: string): { owner: string; threadId: string } | unde
 }
 interface PendingApproval {
   resolve: (decision: ApprovalDecision) => void;
-  timer: ReturnType<typeof setTimeout>;
+  /** None when the agent asked by itself: that prompt waits until the owner answers. */
+  timer?: ReturnType<typeof setTimeout>;
   /**
    * The sheet as it was broadcast. Kept here rather than only in the live turn journal because
    * that journal is per thread and only exists while its run does, so a window opening on another
@@ -357,6 +367,7 @@ interface PendingApproval {
     toolName: string;
     args: string;
     requestedAt: number;
+    origin: string;
   };
 }
 
@@ -372,6 +383,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private nodeSurface?: NodeSurface;
   /** Live read of `config.nodes`: the surface is built once and the config hot-reloads. */
   private nodesConfig?: () => NodesConfig | undefined;
+  /** Live read of `config.tools.alwaysAllow`, so a grant written from the app applies at once. */
+  private grantsConfig?: () => readonly ApprovalGrantConfig[];
   /** The node presence subscription, dropped on stop. */
   private stopPresence?: () => void;
   /** Every open pairing socket, so the sweeper can reach the ones that never authenticate. */
@@ -468,6 +481,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
    */
   setNodesConfig(read: () => NodesConfig | undefined): void {
     this.nodesConfig = read;
+  }
+
+  /** Standing grants, read live for the same reason as the nodes: the file hot-reloads. */
+  setGrantsConfig(read: () => readonly ApprovalGrantConfig[]): void {
+    this.grantsConfig = read;
   }
 
   private files: SessionFileStore;
@@ -571,7 +589,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     this.mediaOrder = [];
     this.fsWatches.clear();
     for (const [id, pending] of this.pendingApprovals) {
-      clearTimeout(pending.timer);
+      if (pending.timer) clearTimeout(pending.timer);
       // A shutdown is not a refusal by the owner: journal it as such, or a restart during a
       // prompt reads afterwards as "he said no".
       this.journalApproval(id, pending, "cancelled");
@@ -736,6 +754,8 @@ export class MyClawAppAdapter implements ChannelAdapter {
 
     const id = crypto.randomUUID();
     const threadId = request.threadId ?? DEFAULT_THREAD;
+    const origin = originOf(request);
+    const expiresAt = request.waitForever ? 0 : Date.now() + CONFIRM_TIMEOUT_MS;
     const frame: MyClawAppApprovalRequest = {
       type: "approval.request",
       id,
@@ -743,8 +763,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
       toolName: request.toolName,
       args: request.args,
       replyToId: request.messageId,
-      expiresAt: Date.now() + CONFIRM_TIMEOUT_MS,
+      expiresAt,
+      origin,
+      requestedAt: Date.now(),
       allowSessionOffered: !ALWAYS_PER_INVOCATION.has(request.toolName),
+      // A standing grant matches this call exactly: offer it wherever a prompt is shown.
+      allowAlwaysOffered: true,
+      ...(request.waitForever ? { waitForever: true } : {}),
+      ...(request.headline ? { headline: request.headline } : {}),
     };
     const audit = {
       owner: request.chatId,
@@ -753,6 +779,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       toolName: request.toolName,
       args: serializeArgs(request.args),
       requestedAt: Date.now(),
+      origin: originKey(request.origin),
     };
     // Asked on every window of the owner; the first answer wins and clears the pending entry.
     // Journalled too: a sheet broadcast once is lost by a window that reloads, and the tool then
@@ -767,20 +794,71 @@ export class MyClawAppAdapter implements ChannelAdapter {
       threadId,
       sessionId: request.sessionId,
       toolName: request.toolName,
+      waitForever: request.waitForever === true,
     });
 
     return new Promise<ApprovalDecision>((resolve) => {
-      const timer = setTimeout(() => {
-        const pending = this.pendingApprovals.get(id);
-        this.pendingApprovals.delete(id);
-        this.live.resolveApproval(request.chatId, threadId, id);
-        if (pending) this.journalApproval(id, pending, "expired");
-        // The other windows are still showing a sheet nobody can answer any more.
-        this.broadcast(audit.owner, { type: "approval.resolved", id, threadId, reason: "expired" });
-        resolve("deny");
-      }, CONFIRM_TIMEOUT_MS);
-      this.pendingApprovals.set(id, { resolve, timer, audit, frame });
+      // No timer for an explicit ask: the run is deliberately waiting on a person, and a timeout
+      // there is the machine answering "no" for him. Stop and typing cancel it like a question.
+      const timer = request.waitForever
+        ? undefined
+        : setTimeout(() => {
+            const pending = this.pendingApprovals.get(id);
+            this.pendingApprovals.delete(id);
+            this.live.resolveApproval(request.chatId, threadId, id);
+            if (pending) this.journalApproval(id, pending, "expired");
+            // The other windows are still showing a sheet nobody can answer any more.
+            this.broadcast(audit.owner, { type: "approval.resolved", id, threadId, reason: "expired" });
+            resolve("deny");
+          }, CONFIRM_TIMEOUT_MS);
+      this.pendingApprovals.set(id, { resolve, ...(timer ? { timer } : {}), audit, frame });
     });
+  }
+
+  /**
+   * The run under a prompt is gone (stop, message typed, shutdown): everything it was waiting on
+   * is cancelled, never denied. A cancelled prompt is a machine event, and reading it as "he said
+   * no" afterwards would blame the owner for it.
+   */
+  private cancelApprovalsForSession(sessionId: string): void {
+    for (const [id, pending] of [...this.pendingApprovals]) {
+      if (pending.audit.sessionId !== sessionId) continue;
+      this.pendingApprovals.delete(id);
+      if (pending.timer) clearTimeout(pending.timer);
+      this.live.resolveApproval(pending.audit.owner, pending.audit.threadId, id);
+      this.journalApproval(id, pending, "cancelled");
+      this.broadcast(pending.audit.owner, {
+        type: "approval.resolved",
+        id,
+        threadId: pending.audit.threadId,
+        reason: "cancelled",
+      });
+      pending.resolve("deny");
+    }
+  }
+
+  /** How many prompts of one session are waiting; Stop closes them before killing the run. */
+  private pendingApprovalCount(sessionId: string): number {
+    let count = 0;
+    for (const pending of this.pendingApprovals.values()) {
+      if (pending.audit.sessionId === sessionId) count += 1;
+    }
+    return count;
+  }
+
+  /** What the approvals page shows as still waiting, scoped to one owner. */
+  private pendingApprovalViews(owner: string): PendingApprovalView[] {
+    return [...this.pendingApprovals.values()]
+      .filter((pending) => pending.audit.owner === owner)
+      .map(({ frame, audit }) => ({
+        id: frame.id,
+        toolName: frame.toolName,
+        args: frame.args,
+        origin: originLabel(frame.origin),
+        ...(frame.headline ? { headline: frame.headline } : {}),
+        since: new Date(audit.requestedAt).toISOString(),
+        waitForever: frame.waitForever === true,
+      }));
   }
 
   /**
@@ -1779,6 +1857,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
       case "approval.history":
         this.handleApprovalHistory(ws, frame);
         break;
+      case "approval.grants":
+        this.sendGrants(ws);
+        break;
+      case "approval.grant.remove":
+        this.detach(this.removeGrant(ws, frame), "removeGrant");
+        break;
       case "media.ticket.get":
         this.sendMediaTicket(ws);
         break;
@@ -2537,6 +2621,16 @@ export class MyClawAppAdapter implements ChannelAdapter {
           threadId: pendingQuestion.threadId,
           reason: "canceled",
         });
+      }
+    }
+
+    // A prompt waiting on the owner is cancelled the same way by typing: his words are the
+    // steering, and the message reaches the run as the next turn through the mailbox.
+    if (!text.startsWith("/")) {
+      try {
+        this.cancelApprovalsForSession(this.store.resolveSessionId(ws.data.owner, threadId));
+      } catch {
+        // An unresolvable thread holds no prompt of its own.
       }
     }
 
@@ -3525,6 +3619,14 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return;
     }
 
+    // A prompt waiting on the owner is not a run to kill: Stop closes it as cancelled, the tool
+    // reports that, and the run carries on to the next turn exactly like a question.
+    if (this.pendingApprovalCount(sessionId) > 0) {
+      this.cancelApprovalsForSession(sessionId);
+      this.sendFrame(ws, { type: "chat.command.result", threadId, text: "Approval canceled." });
+      return;
+    }
+
     if (!this.stopRun) {
       await this.refuse(ws, "chat", "stop unavailable");
       return;
@@ -3943,15 +4045,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private resolveApproval(frame: MyClawAppApprovalResponse): void {
     const pending = this.pendingApprovals.get(frame.id);
     if (!pending) return;
-    clearTimeout(pending.timer);
+    if (pending.timer) clearTimeout(pending.timer);
     this.pendingApprovals.delete(frame.id);
     this.live.resolveApproval(pending.audit.owner, pending.audit.threadId, frame.id);
 
-    // The wire is not a place to trust. Anything that is not one of the three grants is a deny:
+    // The wire is not a place to trust. Anything that is not one of the four grants is a deny:
     // an old client that still sends `accepted` lands here, and a tool must never run because a
     // frame was unreadable.
     const claimed: ApprovalDecision =
-      frame.decision === "allow-once" || frame.decision === "allow-session" || frame.decision === "deny"
+      frame.decision === "allow-once" || frame.decision === "allow-session" || frame.decision === "allow-always" || frame.decision === "deny"
         ? frame.decision
         : "deny";
 
@@ -3961,6 +4063,20 @@ export class MyClawAppAdapter implements ChannelAdapter {
       claimed === "allow-session" && ALWAYS_PER_INVOCATION.has(pending.audit.toolName)
         ? "allow-once"
         : claimed;
+
+    // The standing grant is written before the call is told it may run: a grant that lands
+    // afterwards leaves the next identical call asking again, which is the one thing the owner
+    // asked this button to stop.
+    if (decision === "allow-always") {
+      void setApprovalGrant({
+        tool: pending.audit.toolName,
+        origin: pending.audit.origin,
+        args: canonicalArgs(pending.frame.args),
+      }, true).then((written) => {
+        if (written.ok) this.pushGrants(pending.audit.owner);
+        else void myClawAppLog("error", "approval grant write failed", { error: written.error, tool: pending.audit.toolName });
+      });
+    }
 
     this.journalApproval(frame.id, pending, decision);
     // The owner's other windows are showing the same sheet: close it there too.
@@ -4046,6 +4162,27 @@ export class MyClawAppAdapter implements ChannelAdapter {
         stats: { total: 0, allowed: 0, denied: 0, expired: 0 },
       });
     }
+  }
+
+  /** The standing grants as they stand on disk; the page is the only editor. */
+  private grantRows(): MyClawAppApprovalGrant[] {
+    return (this.grantsConfig?.() ?? []).map((grant) => ({ ...grant }));
+  }
+
+  private sendGrants(ws: ServerWebSocket<MyClawAppSessionData> | undefined): void {
+    this.sendFrame(ws, { type: "approval.grants.result", grants: this.grantRows() });
+  }
+
+  private pushGrants(owner: string): void {
+    for (const ws of this.socketsFor(owner)) this.sendGrants(ws);
+  }
+
+  /** Removing a grant: the exact call asks again from its next invocation. */
+  private async removeGrant(ws: ServerWebSocket<MyClawAppSessionData>, frame: MyClawAppApprovalGrantRemove): Promise<void> {
+    const written = await setApprovalGrant({ tool: frame.tool, origin: frame.origin, args: frame.args }, false);
+    if (!written.ok) void myClawAppLog("error", "approval grant removal failed", { error: written.error });
+    this.sendGrants(ws);
+    this.pushGrants(ws.data.owner);
   }
 
   private sendFrame(ws: ServerWebSocket<MyClawAppSessionData> | undefined, frame: MyClawAppServerFrame): void {
@@ -4167,4 +4304,21 @@ export function refusalFrame(
     scope,
     ...(typeof data.error === "string" ? { detail: data.error.replace(/^Error:\s*/, "") } : {}),
   };
+}
+
+/** Where an approval's call would run, resolved for the sheet: this machine, or a paired node. */
+function originOf(request: ToolApprovalRequest): MyClawAppApprovalOrigin {
+  if (!request.origin) return { kind: "local" };
+  const record = nodeRecord(request.origin.nodeId);
+  return {
+    kind: "node",
+    nodeId: request.origin.nodeId,
+    ...(record?.name ? { name: record.name } : {}),
+  };
+}
+
+/** The label the approvals page groups by. */
+function originLabel(origin: MyClawAppApprovalOrigin | undefined): string {
+  if (!origin || origin.kind === "local") return "local";
+  return origin.name ?? origin.nodeId ?? "node";
 }

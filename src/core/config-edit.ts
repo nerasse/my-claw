@@ -595,6 +595,40 @@ export function setToolDisabled(name: string, disabled: boolean): Promise<Config
 }
 
 /**
+ * Adds a standing grant for one exact call on one machine, or removes it. Written from the app when
+ * the owner picks "Always allow this exact call" (docs/tool-approvals.md).
+ *
+ * The match key is the canonical JSON of the call's arguments: `{path, mode}` and `{mode, path}` are
+ * the same call, so key order must never decide whether a permission applies. Duplicates are one
+ * entry: granting the same call twice is the same decision.
+ */
+export function setApprovalGrant(
+  grant: { tool: string; origin: string; args: string },
+  allowed: boolean,
+): Promise<ConfigEditResult> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return read;
+    const tools = objectAt(read.data, "tools");
+    const list = Array.isArray(tools["alwaysAllow"]) ? (tools["alwaysAllow"] as unknown[]) : [];
+    const same = (entry: unknown): boolean => {
+      const row = entry as { tool?: unknown; origin?: unknown; args?: unknown };
+      return row.tool === grant.tool && row.origin === grant.origin && row.args === grant.args;
+    };
+    const next = list.filter((entry) => !same(entry));
+    if (allowed) next.push({ ...grant, createdAt: new Date().toISOString() });
+    if (next.length > 0) tools["alwaysAllow"] = next;
+    else delete tools["alwaysAllow"];
+    if (Object.keys(tools).length === 0) delete read.data["tools"];
+
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant grant ${grant.tool} (${grant.origin})` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { grant: { tool: grant.tool, origin: grant.origin, allowed } });
+    return { ok: true, previous: {} };
+  });
+}
+
+/**
  * Turns the app's approval round trips on. Asking before a tool runs is meaningless while the
  * channel refuses instead of asking, so every switch that means "ask first" goes through here
  * (a blacklisted tool, a node whose record says to ask). Never turns it back off: with an empty

@@ -307,7 +307,7 @@ export interface MyClawAppApprovalResponse {
    * so approving one call silently whitelisted the tool for the rest of the conversation.
    * The device now says which of the two it means.
    */
-  decision: "allow-once" | "allow-session" | "deny";
+  decision: "allow-once" | "allow-session" | "allow-always" | "deny";
 }
 
 export interface MyClawAppQuestionOption {
@@ -405,6 +405,10 @@ export interface MyClawAppApprovalHistory {
   limit?: number;
   /** ISO cursor for paging: only decisions older than this. */
   before?: string;
+}
+
+export interface MyClawAppApprovalGrants {
+  type: "approval.grants";
 }
 
 export interface MyClawAppCapabilitiesFrame {
@@ -1277,6 +1281,8 @@ export type MyClawAppClientFrame =
   | MyClawAppModelRefresh
   | MyClawAppApprovalResponse
   | MyClawAppApprovalHistory
+  | MyClawAppApprovalGrants
+  | MyClawAppApprovalGrantRemove
   | MyClawAppQuestionReply
   | MyClawAppUndoChoose
   | MyClawAppUndoCancel
@@ -1925,6 +1931,13 @@ export interface MyClawAppStreamAbort {
   error?: string;
 }
 
+export interface MyClawAppApprovalOrigin {
+  kind: "local" | "node";
+  /** The node's id and display name when it is one; absent for this machine. */
+  nodeId?: string;
+  name?: string;
+}
+
 export interface MyClawAppApprovalRequest {
   type: "approval.request";
   id: string;
@@ -1932,6 +1945,7 @@ export interface MyClawAppApprovalRequest {
   toolName: string;
   args: Record<string, unknown>;
   replyToId?: string;
+  /** 0 when the prompt has no timer: `waitForever` says so, the countdown is simply absent. */
   expiresAt: number;
   /**
    * Whether "always allow in this conversation" is on offer. False for the per-invocation
@@ -1939,6 +1953,16 @@ export interface MyClawAppApprovalRequest {
    * hand over the shell for good.
    */
   allowSessionOffered: boolean;
+  /** Whether "Always allow this exact call" is on offer: a standing grant matches tool+args+machine. */
+  allowAlwaysOffered?: boolean;
+  /** Where the call would run: this server's machine, or a remote node. */
+  origin?: MyClawAppApprovalOrigin;
+  /** When the prompt was raised, so the page can say how long it has been waiting. */
+  requestedAt?: number;
+  /** The agent asked by itself: no timer, the run waits until the owner answers. */
+  waitForever?: boolean;
+  /** The sentence the asking agent wrote about what it is about to do. */
+  headline?: string;
 }
 
 /** One pending approval, as `approval.pending` carries it: a request without the frame envelope. */
@@ -1975,11 +1999,32 @@ export interface MyClawAppApprovalHistoryEntry {
   threadId: string;
   toolName: string;
   args: string;
-  outcome: "allow-once" | "allow-session" | "deny" | "expired" | "cancelled";
+  outcome: "allow-once" | "allow-session" | "allow-always" | "deny" | "expired" | "cancelled";
   requestedAt: string;
   decidedAt: string;
   durationMs: number;
   auto: boolean;
+}
+
+/** One standing grant, as the approvals page lists it. */
+export interface MyClawAppApprovalGrant {
+  tool: string;
+  origin: string;
+  args: string;
+  createdAt?: string;
+}
+
+/** The exact calls the owner allowed for good, and their removal. */
+export interface MyClawAppApprovalGrantsResult {
+  type: "approval.grants.result";
+  grants: MyClawAppApprovalGrant[];
+}
+
+export interface MyClawAppApprovalGrantRemove {
+  type: "approval.grant.remove";
+  tool: string;
+  origin: string;
+  args: string;
 }
 
 export interface MyClawAppApprovalHistoryResult {
@@ -4626,6 +4671,7 @@ export type MyClawAppServerFrame =
   | MyClawAppApprovalPending
   | MyClawAppApprovalResolved
   | MyClawAppApprovalHistoryResult
+  | MyClawAppApprovalGrantsResult
   | MyClawAppQuestionAsk
   | MyClawAppQuestionPending
   | MyClawAppQuestionResolved
