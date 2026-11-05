@@ -42,7 +42,8 @@ The app's drawer has one entry for every prompt of the install (`Approvals`), th
   machine and tool filters, how long it has been waiting, and the four decisions inline. The
   sheet still exists for the prompt you are looking at; the page is for the ones you are not.
 - **History**: the journal, unchanged.
-- **Always allowed**: the standing grants, with a `withdraw` per row.
+- **Always allowed**: the standing grants, with a `withdraw` per row. A node's own page in Settings
+  ("Allowed for good") shows the same list narrowed to that machine.
 
 The drawer badges the entry with the pending count, so a queue is visible without opening it.
 
