@@ -38,6 +38,7 @@ import { QuotaWatch } from "./quota-watch.ts";
 import { decideQuotaWait } from "../../llm/quota/arm.ts";
 import { LruMap } from "../../utils/lru-map.ts";
 import { questionAskFrame, questionPendingFrame } from "./questions.ts";
+import { hooks } from "../../hooks/index.ts";
 import { newEntryId } from "../../sessions/log.ts";
 import { createTicket, deny, pairingEnabled } from "./pairing.ts";
 import { touchDevice } from "./devices.ts";
@@ -758,6 +759,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
     // waits out the timeout and is denied without the owner ever seeing the question.
     this.live.recordApproval(request.chatId, threadId, id, frame);
     this.broadcast(request.chatId, frame);
+    // A prompt on screen only reaches a device that is awake on this thread. The push is the only
+    // way the owner learns a blocked tool is waiting when the app is backgrounded or somewhere
+    // else; the tap lands on the thread that carries the sheet.
+    hooks.emit("approval:requested", {
+      owner: request.chatId,
+      threadId,
+      sessionId: request.sessionId,
+      toolName: request.toolName,
+    });
 
     return new Promise<ApprovalDecision>((resolve) => {
       const timer = setTimeout(() => {

@@ -238,6 +238,53 @@ function toolNamesOf(request: Record<string, unknown> | undefined): string[] {
   return (tools ?? []).map((tool) => tool.function.name).sort();
 }
 
+test("a node tool that must ask reaches the parent conversation, and runs once allowed", async () => {
+  const minted = await mintNode({ name: "web01", facts: FACTS });
+  if (!minted.ok) throw new Error("mint failed");
+  const nodeId = minted.minted.record.nodeId;
+  await setNodeAccess(nodeId, { approval: true });
+  const ws = nodeSocket(nodeId);
+  attachNodeSocket(ws);
+  handleNodeFrame(ws, JSON.stringify({ type: "node.hello", protocol: 1, facts: FACTS }));
+
+  const requests: Array<Record<string, unknown>> = [];
+  const mock = mockFetch(async (_input, init) => {
+    requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return requests.length === 1 ? chatCompletion({}, { tool: { id: "call-1", name: "read", args: JSON.stringify({ path: "/etc/hosts" }) } }) : chatCompletion({});
+  });
+  try {
+    const asked: Array<{ toolName: string; threadId?: string; sessionId: string }> = [];
+    const runner = runnerFor(nodeAgent(nodeId));
+    runner.setApprovalHandler(async (request) => {
+      asked.push({ toolName: request.toolName, ...(request.threadId ? { threadId: request.threadId } : {}), sessionId: request.sessionId });
+      return "allow-once";
+    });
+    const parent = parentMessage();
+    const spawned = await runner.spawn({
+      displayName: "web",
+      type: "node-web01",
+      mode: "run",
+      task: "cat /etc/hosts",
+      parentMessage: { ...parent, threadId: "projet" },
+      existingIds: new Set(),
+      generateId: () => "subagent/web-abcd",
+      parentSessionId: "chat-1",
+      visibility: "private",
+    });
+    expect(spawned.result).toBe("done");
+    // The prompt names the tool, and rides the parent's thread: a sub-agent has no screen of its own.
+    expect(asked).toHaveLength(1);
+    expect(asked[0]?.toolName).toBe("read");
+    expect(asked[0]?.threadId).toBe("projet");
+    expect(asked[0]?.sessionId).toBe(spawned.id);
+    // The tool actually ran on the machine, instead of being denied on sight.
+    const outputs = requests.map((request) => JSON.stringify(request));
+    expect(outputs.some((body) => body.includes("denied by approval policy"))).toBe(false);
+  } finally {
+    mock.restore();
+  }
+});
+
 test("a tool exposed while the run is going is in the next turn's payload", async () => {
   const minted = await mintNode({ name: "web01", facts: FACTS });
   if (!minted.ok) throw new Error("mint failed");

@@ -226,6 +226,11 @@ never works from a stale set. A machine that goes away keeps its last set, so it
 Approval rides the existing flow (`Tool.requiresApproval` on every tool of a node whose record
 asks for it): the sheet appears once per tool and a session grant covers the rest, except for
 the per-invocation tools (`bash`, `memory`) which are reviewed one call at a time. Default none.
+The node's agent is a sub-agent, so its sheet is drawn in the parent conversation -- the run carries
+the parent's thread and the runner injects the approval handler into every sub-agent bridge -- and a
+push goes out when the sheet has to reach a device that is not on that thread (docs/tool-approvals.md).
+Turning the switch on also enables `channels["my-claw-app"].approvals`: a prompt nobody can answer
+is refused, not asked.
 
 Every remote call is journaled (node, tool, arguments, outcome). Results are untrusted content.
 

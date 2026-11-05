@@ -105,7 +105,7 @@ import { FoldedRunError, RerouteSignal, runRegistry } from "./core/run-registry.
 import type { StopOutcome } from "./core/stop.ts";
 import { isAbort } from "./core/aborted.ts";
 import { runErrorBubble, setRunBubbles, withRunContext } from "./utils/run-context.ts";
-import type { UnifiedMessage } from "./channels/types.ts";
+import type { ApprovalDecision, ToolApprovalHandler, UnifiedMessage } from "./channels/types.ts";
 import { BackendDispatcher } from "./agent/dispatcher.ts";
 import { ToolRegistry, mcpServerOf, baselineToolNames } from "./tools/registry.ts";
 import { bashTool, setBashEnvPassthrough, setBashLimits } from "./tools/bash.ts";
@@ -802,6 +802,23 @@ async function main() {
         {
           title,
           body: cleanNotificationText(label).slice(0, 160),
+          ...(target ? { target } : {}),
+        },
+        { skipDevice: (deviceId) => (threadId ? isForegroundOn(deviceId, threadId) : Promise.resolve(false)) },
+      ),
+    );
+  });
+
+  // A tool waiting on the owner's answer: same reasoning as a question. The sheet is broadcast to
+  // every open window, so a device already looking at that thread gets nothing twice; every other
+  // one gets the push whose tap opens the conversation holding the prompt.
+  hooks.on("approval:requested", ({ threadId, sessionId, toolName }) => {
+    const target = threadId ? { kind: "thread" as const, threadId } : targetOfSession(sessionId);
+    void threadTitle(sessionId, toolName).then((title) =>
+      publishNotification(
+        {
+          title: "Approval needed",
+          body: `${cleanNotificationText(toolName)} is waiting for your go-ahead in "${title}".`,
           ...(target ? { target } : {}),
         },
         { skipDevice: (deviceId) => (threadId ? isForegroundOn(deviceId, threadId) : Promise.resolve(false)) },
@@ -2970,13 +2987,16 @@ async function main() {
     subAgentRunner.setMediaStore(async (sessionId, path) => await myClawApp.storeRunMedia(sessionId, path));
 
     // The only surface left that can answer an approval prompt. Without this the gate has no
-    // handler at all and every approval-required tool is denied on sight.
-    router.setApprovalHandler(async (request) => {
+    // handler at all and every approval-required tool is denied on sight -- and a sub-agent's run
+    // needs the same door: its tools are a node's, and nobody watches a sub-agent's own screen.
+    const approvalHandler = async (request: Parameters<ToolApprovalHandler>[0]): Promise<ApprovalDecision> => {
       if (request.platform === "my-claw-app") {
         return await myClawApp.confirmTool(request);
       }
       return "deny";
-    });
+    };
+    router.setApprovalHandler(approvalHandler);
+    subAgentRunner.setApprovalHandler(approvalHandler);
 
     try {
       await myClawApp.start();

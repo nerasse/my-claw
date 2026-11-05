@@ -188,6 +188,18 @@ export interface HookEventMap {
     sessionId: string;
     decision: string;
   };
+  /**
+   * A prompt is on the owner's screens and the tool waits on the answer. Emitted by the channel
+   * that raised it, after its own guards, so a listener notifies about a question that exists.
+   * The thread is the conversation the prompt is drawn in, which for a sub-agent's tool is its
+   * parent's -- nobody watches a sub-agent's own screen.
+   */
+  "approval:requested": {
+    owner: string;
+    threadId: string;
+    sessionId: string;
+    toolName: string;
+  };
   "tool:bash:execute": {
     command: string;
     exitCode: number;

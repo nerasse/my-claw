@@ -5,6 +5,8 @@
  */
 
 import type { McpServerConfig, NodesConfig } from "../core/config.ts";
+import { enableToolApprovals } from "../core/config-edit.ts";
+import { log } from "../utils/logger.ts";
 import { nodeAgentFile, removeNodeAgent, renameNodeAgent, setNodeAgentDescription } from "./agent.ts";
 import { openClaim } from "./claims.ts";
 import { closeNodeSocket, nodeFactsOf, nodeOnline, offerNodeUpdateNow, pushNodeMcp } from "./hub.ts";
@@ -144,7 +146,16 @@ export async function setNodeAccessForApp(
   nodeId: string,
   access: { tools?: string[] | null; approval?: boolean; disabled?: boolean },
 ): Promise<{ ok: boolean; error?: string }> {
-  return setNodeAccess(nodeId, access);
+  const written = await setNodeAccess(nodeId, access);
+  // "Ask before running" only means anything if the channel asks instead of refusing: with
+  // approvals off, a confirm-required tool is denied on sight (adapter.ts, confirmTool). A config
+  // this could not write is logged, not returned: the node's flag is stored either way, and a
+  // failure there must not read as "the access change was lost".
+  if (written.ok && access.approval === true) {
+    const enabled = await enableToolApprovals();
+    if (!enabled.ok) void log("warn", "node approval set but app approvals stay off", { nodeId, error: enabled.error });
+  }
+  return written;
 }
 
 /** The owner's MCP list for a node: stored, then handed to the machine if it is connected. */

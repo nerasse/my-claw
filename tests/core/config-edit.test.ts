@@ -13,6 +13,7 @@ import {
   setAgentMaxIterations,
   setToolDisabled,
   setToolConfirm,
+  enableToolApprovals,
   addMcpServer,
   removeMcpServer,
   setMcpEnabled,
@@ -364,6 +365,15 @@ describe("setToolDisabled", () => {
 });
 
 describe("setToolConfirm", () => {
+  test("enabling approvals writes the channel flag once, and never turns it back off", async () => {
+    await writeConfigFile();
+    expect((await enableToolApprovals()).ok).toBe(true);
+    expect((await readConfigFile()).channels["my-claw-app"].approvals).toBe(true);
+    // Already on: no second write, no error.
+    expect((await enableToolApprovals()).ok).toBe(true);
+    expect((await readConfigFile()).channels["my-claw-app"].approvals).toBe(true);
+  });
+
   test("asking before a tool lists it and turns the app's approvals on, or it would be refused", async () => {
     await writeConfigFile();
     expect((await setToolConfirm("bash", true)).ok).toBe(true);

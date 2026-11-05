@@ -12,7 +12,7 @@ import type { BrowserSession } from "../tools/browser/session.ts";
 import { AgentBridge } from "../agent/bridge.ts";
 import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback, MediaStoreHook } from "../agent/backend.ts";
 
-import type { UnifiedMessage, Attachment } from "../channels/types.ts";
+import type { ToolApprovalHandler, UnifiedMessage, Attachment } from "../channels/types.ts";
 import type { SessionAttachment, SessionData } from "../sessions/store.ts";
 import { loadSession, deleteStoredSession, archiveSession, recordSubAgentCaller, subagentSessionIdsSync } from "../sessions/store.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
@@ -233,6 +233,8 @@ export class SubAgentRunner {
 
   private mediaStore?: MediaStoreHook;
 
+  private approvalHandler?: ToolApprovalHandler;
+
   constructor(
     private config: MyClawConfig,
     private toolRegistry: ToolRegistry,
@@ -266,6 +268,18 @@ export class SubAgentRunner {
   /** Where a run's produced files are stored -- injected by the entry point, never owned here. */
   setMediaStore(store: MediaStoreHook | undefined): void {
     this.mediaStore = store;
+  }
+
+  /**
+   * How a sub-agent's tool asks the owner, injected by the entry point like the media store.
+   *
+   * Without it an approval-required tool -- every tool of a node whose record says "ask first" --
+   * was denied on sight: the manager answers deny when it has no handler, so the run reported
+   * "denied by approval policy" and the owner was never shown anything. A sub-agent's request rides
+   * the parent conversation's thread, which is the only screen that can answer it.
+   */
+  setApprovalHandler(handler: ToolApprovalHandler | undefined): void {
+    this.approvalHandler = handler;
   }
 
   setSessionManager(manager: SessionManager): void {
@@ -1218,12 +1232,18 @@ export class SubAgentRunner {
     // A sub-agent's pictures belong to the conversation that asked for it, and the hook is how it
     // stores them before its own end marker names them (2026-09-15).
     bridge.setMediaStore(this.mediaStore);
+    // Same door for a prompt: a tool of this run that must ask the owner raises its sheet in the
+    // parent conversation, where the human who spawned the agent is actually looking.
+    bridge.setApprovalHandler(this.approvalHandler);
 
     const subMessage: UnifiedMessage = {
       id: messageId ?? `subagent-${session.id}`,
       platform: parentMessage.platform,
       chatType: parentMessage.chatType,
       chatId: parentMessage.chatId,
+      // The parent's thread, not none: an approval raised by a tool of this run is drawn in the
+      // conversation that asked for the agent (a sub-agent has no screen of its own).
+      ...(parentMessage.threadId ? { threadId: parentMessage.threadId } : {}),
       userId: parentMessage.userId,
       text: userText ?? "",
       // Not decoration: this is what makes the run resolve as one that carries images (vision
