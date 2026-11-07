@@ -111,7 +111,7 @@ describe("AgentBridge error handling", () => {
       const result = await bridge.handleMessage(createMessage(), session, signal);
       expect(result).toBe("handled error");
       await log.flush();
-      const toolEntry = log.entries().find((e): e is ToolEntry => e.type === "tool");
+      const toolEntry = (await log.all()).find((e): e is ToolEntry => e.type === "tool");
       expect(toolEntry).toBeDefined();
       expect(toolEntry!.output).toContain("tool explosion");
     } finally {
@@ -137,7 +137,7 @@ describe("AgentBridge error handling", () => {
       const result = await bridge.handleMessage(createMessage(), session, signal);
       expect(result).toBe("ok");
       await log.flush();
-      const toolEntry = log.entries().find((e): e is ToolEntry => e.type === "tool");
+      const toolEntry = (await log.all()).find((e): e is ToolEntry => e.type === "tool");
       expect(toolEntry).toBeDefined();
       expect(toolEntry!.output).toContain("unknown tool");
     } finally {
@@ -171,7 +171,7 @@ describe("AgentBridge error handling", () => {
       const result = await bridge.handleMessage(createMessage(), session, signal);
       expect(result).toBe("denied path");
       await log.flush();
-      const toolEntry = log.entries().find((e): e is ToolEntry => e.type === "tool");
+      const toolEntry = (await log.all()).find((e): e is ToolEntry => e.type === "tool");
       expect(toolEntry).toBeDefined();
       expect(toolEntry!.output).toContain("denied");
     } finally {
@@ -380,7 +380,7 @@ describe("AgentBridge error handling", () => {
     try {
       await bridge.handleMessage(createMessage(), createSession(), signal);
       await log.flush();
-      const toolEntry = log.entries().find((e): e is ToolEntry => e.type === "tool");
+      const toolEntry = (await log.all()).find((e): e is ToolEntry => e.type === "tool");
       expect(toolEntry!.output).toBe("Error: Command failed with exit code 2.\n\nSTDERR: grep: missing.txt: No such file");
     } finally {
       mock.restore();
@@ -405,7 +405,7 @@ describe("AgentBridge error handling", () => {
       await expect(bridge.handleMessage(createMessage("test msg"), session, signal)).rejects.toThrow();
       // User message should still be recorded in the log
       await log.flush();
-      const userEntry = log.entries().find((e): e is UserEntry => e.type === "user");
+      const userEntry = (await log.all()).find((e): e is UserEntry => e.type === "user");
       expect(userEntry).toBeDefined();
       expect(userEntry!.text).toBe("test msg");
     } finally {
@@ -440,12 +440,12 @@ describe("AgentBridge error handling", () => {
     try {
       await expect(bridge.handleMessage(createMessage(), createSession(), signal)).rejects.toThrow();
       await log.flush();
-      expect(log.path().map((e) => e.type)).toEqual(["user", "run_start", "phase", "tool", "run_end"]);
-      const tool = log.path().find((e): e is ToolEntry => e.type === "tool");
+      expect((await log.path()).map((e) => e.type)).toEqual(["user", "run_start", "phase", "tool", "run_end"]);
+      const tool = (await log.path()).find((e): e is ToolEntry => e.type === "tool");
       expect(tool!.output).toContain("24 minutes of bash");
       // The channel files the error where the cursor stands, which is now past the run's own end.
       const failure = log.append<FailureEntry>({ type: "failure", prompt: false, error: "API Error: 400" });
-      expect(log.get(failure.parentId!)!.type).toBe("run_end");
+      expect((await log.entryById(failure.parentId!))!.type).toBe("run_end");
       await log.flush();
     } finally {
       mock.restore();
@@ -479,7 +479,7 @@ describe("AgentBridge error handling", () => {
     try {
       await expect(bridge.handleMessage(createMessage(), createSession(), signal)).rejects.toThrow();
       await log.flush();
-      const prompt = promptOf(log.entries(), log.leaf());
+      const prompt = promptOf((await log.all()), log.leaf());
       const asked = prompt.flatMap((m) => ("tool_calls" in m && m.tool_calls ? m.tool_calls.map((c) => c.id) : []));
       const answered = prompt.filter((m) => m.role === "tool").map((m) => (m as { tool_call_id: string }).tool_call_id);
       expect(asked).toEqual(["tc1"]);
@@ -520,7 +520,7 @@ describe("AgentBridge error handling", () => {
       const result = await bridge.handleMessage(createMessage(), session, signal);
       expect(result).toBe("saved");
       await log.flush();
-      const toolEntry = log.entries().find((e): e is ToolEntry => e.type === "tool");
+      const toolEntry = (await log.all()).find((e): e is ToolEntry => e.type === "tool");
       expect(toolEntry).toBeDefined();
       expect(toolEntry!.output).toContain("memory write ok");
     } finally {
@@ -558,7 +558,7 @@ describe("AgentBridge error handling", () => {
       const result = await bridge.handleMessage(createMessage(), session, signal);
       expect(result).toBe("denied");
       await log.flush();
-      const toolEntry = log.entries().find((e): e is ToolEntry => e.type === "tool");
+      const toolEntry = (await log.all()).find((e): e is ToolEntry => e.type === "tool");
       expect(toolEntry).toBeDefined();
       expect(toolEntry!.output).toContain("denied");
     } finally {

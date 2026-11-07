@@ -101,7 +101,7 @@ test("bridge: auto-compaction triggers above the threshold and shrinks the promp
   // Append prior history to log
   appendMessages(log, priorMessages);
   await log.flush();
-  const entriesBefore = log.entries().length;
+  const entriesBefore = (await log.all()).length;
 
   runRegistry.clear();
   const bridge = new AgentBridge(config, new ToolRegistry(), new SkillRegistry());
@@ -125,7 +125,7 @@ test("bridge: auto-compaction triggers above the threshold and shrinks the promp
   
   // Check log - should have a compaction entry
   await log.flush();
-  const entriesAfter = log.entries();
+  const entriesAfter = (await log.all());
   assert.ok(entriesAfter.length > entriesBefore, "new entries were added");
   
   // The context should be smaller due to compaction
@@ -142,13 +142,13 @@ test("bridge: no auto-compaction below the threshold", async () => {
   
   appendMessages(log, priorMessages);
   await log.flush();
-  const entriesBefore = log.entries().length;
+  const entriesBefore = (await log.all()).length;
   
   const bodies = await runAndCaptureRequest(config, []);  // Messages already in log
   assert.equal(bodies.length, 1, "single LLM call, no compaction");
   
   await log.flush();
-  const entriesAfter = log.entries().length;
+  const entriesAfter = (await log.all()).length;
   // +4: the new user entry, its run markers (one each side of the work) and the final phase
   assert.equal(entriesAfter, entriesBefore + 4);
 });
@@ -166,7 +166,7 @@ test("bridge: context.autoCompact.enabled=false never compacts", async () => {
   assert.equal(bodies.length, 1, "no compaction call");
   
   await log.flush();
-  const entries = log.entries();
+  const entries = (await log.all());
   const compactionEntry = entries.find((e) => e.type === "compaction");
   assert.equal(compactionEntry, undefined, "no compaction entry when disabled");
 });

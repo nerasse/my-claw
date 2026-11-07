@@ -122,18 +122,18 @@ test("SubAgentRunner spawns persistent session and sends message", async () => {
     assert.equal(session?.meta?.displayName, "persist");
     // The first run's reply must be persisted (a session sub-agent remembers its own answer).
     const log = await openSessionLog(id);
-    const phases = log.entries().filter((e): e is PhaseEntry => e.type === "phase");
+    const phases = (await log.all()).filter((e): e is PhaseEntry => e.type === "phase");
     const firstRunReply = phases.at(-1);
     assert.equal(firstRunReply?.text, "ack");
-    const lengthAfterSpawn = log.entries().length;
+    const lengthAfterSpawn = (await log.all()).length;
 
     const sendResult = await runner.send(id, "second message", undefined, createMessage(), reg, "matrix/room/!caller:test");
     assert.equal(sendResult, "ack");
 
     const log2 = await openSessionLog(id);
     // History grew (the send turn was appended on top of the persisted first run).
-    assert.ok(log2.entries().length > lengthAfterSpawn);
-    const lastPhase = log2.entries().filter((e): e is PhaseEntry => e.type === "phase").at(-1);
+    assert.ok((await log2.all()).length > lengthAfterSpawn);
+    const lastPhase = (await log2.all()).filter((e): e is PhaseEntry => e.type === "phase").at(-1);
     assert.equal(lastPhase?.text, "ack");
 
     await deleteSession(id);
@@ -199,7 +199,7 @@ test("SubAgentRunner queues concurrent sends in FIFO order", async () => {
 
     // Both user messages should be in the log
     const log = await openSessionLog(id);
-    const userContents = log.entries()
+    const userContents = (await log.all())
       .filter((e): e is UserEntry => e.type === "user")
       .map((e) => e.text);
     assert.ok(userContents.includes("msg1"));
@@ -279,7 +279,7 @@ test("SubAgentRunner kill and reset", async () => {
     const session = await loadSession(id2);
     assert.ok(session, "the sub-agent keeps its identity across a reset");
     // The conversation itself: the reset archives the whole directory, so the log restarts empty.
-    assert.equal((await openSessionLog(id2)).entries().length, 0);
+    assert.equal((await (await openSessionLog(id2)).all()).length, 0);
 
     await deleteSession(id2);
   } finally {
@@ -685,7 +685,7 @@ test("a human send keeps its own message id, a model-driven one does not", async
 
     // In the log system, each UserEntry has its own unique id. Four sends = four distinct entries.
     const log = await openSessionLog(id);
-    const userEntries = log.entries().filter((e): e is UserEntry => e.type === "user");
+    const userEntries = (await log.all()).filter((e): e is UserEntry => e.type === "user");
     // The init task + 4 sends = 5 user entries
     assert.equal(userEntries.length, 5);
     // Human-driven sends own the bubbles the app already drew. Model-driven sends stay generated

@@ -121,6 +121,23 @@ export function thumbPathFor(owner: string, id: string): string {
 export class SessionFileStore {
   constructor(private config?: MyClawAppChannelConfig) {}
 
+  /**
+   * A listing, kept for a few seconds.
+   *
+   * Drawing one page asks for it twice (`resolversFor`: what a media ref resolves to, then which
+   * of those are one content under two names), and each answer is a directory read plus a stat and
+   * a sniff per file: measured at 130 ms on a conversation with 303 attachments, on every page --
+   * including the one the app opens on. Writes and deletes drop it, so nothing new is ever missing
+   * from a listing the composer needs.
+   */
+  private listings = new Map<string, { at: number; files: SessionFile[]; duplicates?: Map<string, string> }>();
+
+  private static readonly LISTING_TTL_MS = 3000;
+
+  private forgetListing(dir: string): void {
+    this.listings.delete(dir);
+  }
+
   /** Attachments above this size are logged with a warning and stored anyway. */
   get warnSizeBytes(): number {
     return this.config?.files?.warnSizeBytes ?? DEFAULT_WARN_SIZE;
@@ -169,7 +186,11 @@ export class SessionFileStore {
 
   async list(owner: string, threadId: string): Promise<SessionFile[]> {
     const dir = filesDirFor(owner, threadId);
-    return this.listInThread(dir);
+    const cached = this.listings.get(dir);
+    if (cached && Date.now() - cached.at < SessionFileStore.LISTING_TTL_MS) return cached.files;
+    const files = await this.listInThread(dir);
+    this.listings.set(dir, { at: Date.now(), files });
+    return files;
   }
 
   /**
@@ -188,7 +209,9 @@ export class SessionFileStore {
    */
   async duplicatesAmong(owner: string, threadId: string): Promise<Map<string, string>> {
     const dir = filesDirFor(owner, threadId);
-    const files = await this.listInThread(dir);
+    const cached = this.listings.get(dir);
+    if (cached?.duplicates && Date.now() - cached.at < SessionFileStore.LISTING_TTL_MS) return cached.duplicates;
+    const files = await this.list(owner, threadId);
     const canonical = new Map<string, string>();
     const bySize = new Map<number, Array<{ id: string; storedName: string }>>();
     for (const file of files) {
@@ -206,6 +229,8 @@ export class SessionFileStore {
         else firstOf.set(digest, file.id);
       }
     }
+    const entry = this.listings.get(dir);
+    if (entry) entry.duplicates = canonical;
     return canonical;
   }
 
@@ -247,6 +272,7 @@ export class SessionFileStore {
     try {
       if (!body) throw new Error("empty upload body");
       await pipeline(Readable.fromWeb(body), createWriteStream(target));
+      this.forgetListing(dir);
       const info = await stat(target);
       const verdict = await verdictOf(safeName, target);
       return {
@@ -280,6 +306,7 @@ export class SessionFileStore {
     const storedName = `${id}__${safeName}`;
     const target = filePathFor(owner, threadId, storedName);
     await write(target);
+    this.forgetListing(dir);
     const verdict = await verdictOf(safeName, target);
     return {
       id,
@@ -304,12 +331,14 @@ export class SessionFileStore {
     if (!file) return false;
     await rm(filePathFor(owner, threadId, file.storedName), { force: true });
     await rm(thumbPathFor(owner, id), { force: true }).catch(() => {});
+    this.forgetListing(filesDirFor(owner, threadId));
     return true;
   }
 
   /** Archive/delete of a session must take its files with it. */
   async removeSessionFiles(owner: string, threadId: string): Promise<void> {
     await rm(filesDirFor(owner, threadId), { recursive: true, force: true });
+    this.forgetListing(filesDirFor(owner, threadId));
     // Previews are keyed by owner only; once the last thread of that owner is gone they are
     // unreachable, so the whole thumb set goes with the session.
     const remaining = await readdir(join(MY_CLAW_DIR, "files", "my-claw-app", owner)).catch(() => []);

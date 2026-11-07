@@ -82,12 +82,12 @@ describe("migrateRunMarkersForSession", () => {
     const lines = await writeSession([user("q1"), phase("a"), user("q2"), tool("c1"), phase("b")]);
     await migrateRunMarkersForSession(SESSION);
     const log = await openSessionLog(SESSION);
-    const path = pathOf(log.entries(), log.leaf());
+    const path = pathOf((await log.all()), log.leaf());
     expect(path.map((e) => e.type)).toEqual(["user", "run_start", "phase", "run_end", "user", "run_start", "tool", "phase", "run_end"]);
     // Every entry keeps the id it had before the pass (cursors into the file still resolve).
     for (const line of lines) {
       const parsed = JSON.parse(line) as { id: string };
-      expect(log.get(parsed.id)).toBeDefined();
+      expect(await log.entryById(parsed.id)).toBeDefined();
     }
   });
 

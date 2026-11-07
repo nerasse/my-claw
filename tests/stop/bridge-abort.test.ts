@@ -110,7 +110,7 @@ test("bridge: abort mid-tool leaves the question on the branch and the call it c
     // interruption. It used to be left out, and with it every sibling of its batch, so a Continue
     // (or the next turn) could not see what had been started -- docs/continue.md.
     await log.flush();
-    const entries = log.entries();
+    const entries = (await log.all());
     const context = contextEntries(entries, log.leaf());
 
     const userEntry = context.find((e): e is UserEntry => e.type === "user");

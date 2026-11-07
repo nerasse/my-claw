@@ -70,6 +70,14 @@ export interface SessionMeta {
   storageVersion: number;
   /** The branch cursor: which leaf this conversation is currently on. */
   leafId: string | null;
+  /**
+   * Whether `branches.ts` has looked at this log.
+   *
+   * A fork in the tree is not damage by itself -- `/undo` and `/retry` leave one on purpose -- so
+   * the shape alone cannot say whether a pass is owed. This is that answer, written once: an open
+   * reads it and skips the whole-file read a repair would cost.
+   */
+  branchesChecked?: boolean;
   title?: string;
   /**
    * What a conversation list needs, mirrored from the log so the list never has to open one.
@@ -173,6 +181,7 @@ const META_KEYS: Record<keyof SessionMeta, "session" | "carried"> = {
   lastPrompt: "session",
   lastFixedTokens: "session",
   branches: "carried",
+  branchesChecked: "carried",
   forkedFrom: "carried",
   undo: "carried",
   // Carried, because they come from the log rather than from the settings: a write with no log

@@ -97,7 +97,7 @@ describe("migrateSessions", () => {
     await writeLegacy(data("t1", [userMsg("bonjour", 1), assistantMsg("salut", 2)]));
     expect(await migrateSessions(readLegacy)).toEqual({ migrated: 1, skipped: 0, failed: 0 });
 
-    const entries = (await openSessionLog("t1")).entries();
+    const entries = (await (await openSessionLog("t1")).all());
     expect(entries.map((e) => e.type)).toEqual(["user", "phase"]);
     expect(await readMeta("t1")).toMatchObject({ id: "t1", storageVersion: STORAGE_VERSION, leafId: entries[1]!.id });
 
@@ -113,7 +113,7 @@ describe("migrateSessions", () => {
     }));
     await migrateSessions(readLegacy);
 
-    const entries = (await openSessionLog("t1")).entries();
+    const entries = (await (await openSessionLog("t1")).all());
     const user = entries.find((entry) => entry.type === "user");
     const command = entries.find((entry) => entry.type === "command");
     // UserEntry has no second sourceId field: the live chat.send id is its log identity.
@@ -139,7 +139,7 @@ describe("migrateSessions", () => {
     // to be offered and then skipped, which put a permanent count on an install that was fine.
     await writeLegacy(data("t1", [userMsg("q", 1)]));
     expect(await migrateSessions(readLegacy)).toEqual({ migrated: 0, skipped: 0, failed: 0 });
-    expect((await openSessionLog("t1")).entries()).toHaveLength(1);
+    expect((await (await openSessionLog("t1")).all())).toHaveLength(1);
   });
 
   test("nothing to do on a fresh install", async () => {
@@ -153,7 +153,7 @@ describe("migrateSessions", () => {
     await writeLegacy(data("t1", [userMsg("q", 1)]));
 
     expect(await migrateSessions(readLegacy)).toEqual({ migrated: 1, skipped: 0, failed: 1 });
-    expect((await openSessionLog("t1")).entries()).toHaveLength(1);
+    expect((await (await openSessionLog("t1")).all())).toHaveLength(1);
     expect(await readFile(join(SESSIONS_DIR, "broken.json"), "utf-8")).toBe("{ not json");
   });
 
@@ -186,7 +186,7 @@ describe("migrateSessions", () => {
       failures: [{ error: "boom", timestamp: at(3) }],
     }));
     await migrateSessions(readLegacy);
-    const entries = (await openSessionLog("t1")).entries();
+    const entries = (await (await openSessionLog("t1")).all());
     expect(entries.map((e) => e.type)).toEqual(["user", "command", "failure", "phase"]);
   });
 
@@ -196,7 +196,7 @@ describe("migrateSessions", () => {
     await migrateSessions(readLegacy);
 
     const log = await openSessionLog("t1");
-    const entries = log.entries();
+    const entries = (await log.all());
     const boundary = entries.find((e) => e.type === "compaction");
     expect(boundary).toBeDefined();
     // A dangling id would silently send the whole branch instead of the summarised prompt.
@@ -209,7 +209,7 @@ describe("migrateSessions", () => {
     await migrateSessions(readLegacy);
 
     const log = await openSessionLog("t1");
-    const entries = log.entries();
+    const entries = (await log.all());
     expect(entries[0]!.parentId).toBeNull();
     for (let i = 1; i < entries.length; i++) expect(entries[i]!.parentId).toBe(entries[i - 1]!.id);
     const meta = await readMeta("t1");
@@ -220,7 +220,7 @@ describe("migrateSessions", () => {
     // A thread created and never used still has a title and a workspace worth keeping.
     await writeLegacy(data("t1", [], { title: "vide" }));
     expect(await migrateSessions(readLegacy)).toEqual({ migrated: 1, skipped: 0, failed: 0 });
-    expect((await openSessionLog("t1")).entries()).toEqual([]);
+    expect((await (await openSessionLog("t1")).all())).toEqual([]);
     expect(await readMeta("t1")).toMatchObject({ title: "vide", leafId: null });
   });
 });

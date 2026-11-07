@@ -220,8 +220,8 @@ async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {
   let turns = 0;
   if (p.session) {
     const log = await sessionLogOf(p.session.id);
-    turns = log.entries().length;
-    prompt = promptOf(log.entries(), log.leaf());
+    turns = log.count();
+    prompt = promptOf(await log.context(), log.leaf());
   }
   const measured = p.session
     ? p.session.lastPrompt?.tokens ?? (prompt.length > 0 ? getLastContextTokens(p.sessionId)?.promptTokens : undefined)

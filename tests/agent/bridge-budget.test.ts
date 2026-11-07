@@ -138,7 +138,7 @@ test("AgentBridge requests summary when iteration budget is exhausted", async ()
 
     // Check log for the summary prompt injected by handleMaxIterations
     await log.flush();
-    const entries = log.entries();
+    const entries = (await log.all());
     const userEntries = entries.filter((e): e is UserEntry => e.type === "user");
     const summaryEntry = userEntries[userEntries.length - 1];
     expect(summaryEntry?.text).toContain("maximum number of tool-calling iterations");
@@ -285,7 +285,7 @@ test("AgentBridge returns plain response before budget is exhausted", async () =
     
     // Check log for the assistant response
     await log.flush();
-    const entries = log.entries();
+    const entries = (await log.all());
     const phaseEntries = entries.filter((e): e is PhaseEntry => e.type === "phase");
     expect(phaseEntries.length).toBe(1);
   } finally {

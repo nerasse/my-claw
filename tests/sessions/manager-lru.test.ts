@@ -84,7 +84,7 @@ test("SessionManager: open logs are bounded on their own, not only by the sessio
 
   // Closed, not lost: reopening reads the file, and the entry written before eviction is there.
   const reopened = await manager.logOf("test/logs/0");
-  assert.equal(reopened.entries().length, 1);
+  assert.equal((await reopened.all()).length, 1);
   assert.equal(reopened.promptCount(), 1);
   assert.equal(reopened.firstUserText(), "message 0");
 });

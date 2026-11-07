@@ -524,7 +524,7 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     ]));
     logSetup.log.append({ type: "user", prompt: true, text: "lance le volet" });
     logSetup.log.append({ type: "run_start", prompt: false, runId: "r-lost" });
-    appendSpawnState(logSetup.log, {
+    await appendSpawnState(logSetup.log, {
       subagentId: "subagent/lua", status: "running", toolCallId: "call-1",
       displayName: "lua", agentType: "general", mode: "run", action: "spawn",
     });
@@ -1513,8 +1513,8 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
     // The journal is an entry like any other, and the prompt projection leaves it out: a slash
     // command the owner ran is not something the agent said.
     const log = await sessionLogOf(sessionId);
-    assert.equal(log.entries().filter((e: Entry) => e.type === "command").length, 1);
-    assert.equal(promptOf(log.entries(), log.leaf()).length, 2, "the journal must never reach the prompt");
+    assert.equal((await log.all()).filter((e: Entry) => e.type === "command").length, 1);
+    assert.equal(promptOf((await log.all()), log.leaf()).length, 2, "the journal must never reach the prompt");
 
     const { entries } = await store.history(DEVICE, THREAD);
     assert.deepEqual(entries.map((e) => e.role), ["user", "assistant", "user", "assistant"]);
@@ -1622,7 +1622,7 @@ describe("MyClawAppSessionStoreImpl command journal", () => {
     // Re-read log to verify
     const { openSessionLog } = await import("../src/sessions/log.ts");
     const log = await openSessionLog(sessionId);
-    const cmdEntries = log.entries().filter((e) => e.type === "command");
+    const cmdEntries = (await log.all()).filter((e) => e.type === "command");
     assert.equal(cmdEntries.length, 205);
     assert.equal((cmdEntries[0] as CommandEntry).input, "/status 0");
   }, STARVED_RUNNER_TIMEOUT_MS);
@@ -1743,7 +1743,7 @@ describe("MyClawAppSessionStoreImpl failure journal", () => {
     // Re-read log to check failures
     const { openSessionLog } = await import("../src/sessions/log.ts");
     const log = await openSessionLog(sessionId);
-    const failures = log.entries().filter((e) => e.type === "failure");
+    const failures = (await log.all()).filter((e) => e.type === "failure");
     assert.equal(failures.length, 1);
     assert.equal((failures[0] as FailureEntry).error.length, FAILURE_TEXT_LIMIT);
   });
@@ -2099,7 +2099,7 @@ describe("MyClawAppSessionStoreImpl.sync", () => {
       },
       { role: "tool", toolCallId: "call-1", content: "started", timestamp: "2026-01-01T00:00:03.000Z" },
     ]));
-    const running = appendSpawnState(logSetup.log, {
+    const running = await appendSpawnState(logSetup.log, {
       subagentId: "subagent/auditor",
       status: "running",
       toolCallId: "call-1",
@@ -2112,7 +2112,7 @@ describe("MyClawAppSessionStoreImpl.sync", () => {
 
     const cursor = (await store.sync(DEVICE, THREAD)).head;
     assert.ok(cursor);
-    appendSpawnState(logSetup.log, { subagentId: "subagent/auditor", status: "complete", resultLength: 4096 });
+    await appendSpawnState(logSetup.log, { subagentId: "subagent/auditor", status: "complete", resultLength: 4096 });
 
     const delta = await store.sync(DEVICE, THREAD, cursor);
     assert.equal(delta.entries.length, 1);
@@ -2131,11 +2131,11 @@ describe("MyClawAppSessionStoreImpl.sync", () => {
     logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
       { role: "user", content: "lance un audit", timestamp: "2026-01-01T00:00:01.000Z" },
     ]));
-    appendSpawnState(logSetup.log, {
+    await appendSpawnState(logSetup.log, {
       subagentId: "subagent/auditor", status: "running", toolCallId: "call-1",
       displayName: "verif", agentType: "research", mode: "run", action: "spawn",
     });
-    appendSpawnState(logSetup.log, { subagentId: "subagent/auditor", status: "complete", resultLength: 12 });
+    await appendSpawnState(logSetup.log, { subagentId: "subagent/auditor", status: "complete", resultLength: 12 });
     logSetup.log.append<ToolEntry>({
       type: "tool", prompt: true, callId: "call-1", name: "spawn", args: {},
       output: "started", truncated: false, ok: true, runId: "r1",
@@ -2163,7 +2163,7 @@ describe("MyClawAppSessionStoreImpl.sync", () => {
       { role: "tool", toolCallId: "call-1", content: "started", timestamp: "2026-01-01T00:00:03.000Z" },
     ]));
     const cursor = (await store.sync(DEVICE, THREAD)).head;
-    appendSpawnState(logSetup.log, { subagentId: "subagent/auditor", status: "running", toolCallId: "call-1" });
+    await appendSpawnState(logSetup.log, { subagentId: "subagent/auditor", status: "running", toolCallId: "call-1" });
 
     const delta = await store.sync(DEVICE, THREAD, cursor!);
     // The card comes back once, because its state changed -- and it comes back as a card.

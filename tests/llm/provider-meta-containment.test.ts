@@ -38,7 +38,7 @@ describe("provider metadata containment", () => {
         { role: "assistant", content: "answer", timestamp: "t", reasoning: "thought", toolCalls: [{ id: "c1", name: "bash", arguments: "{}" }] },
         { role: "tool", toolCallId: "c1", content: "out", timestamp: "t" },
       ]);
-      const out = promptOf(setup.log.entries(), setup.log.leaf());
+      const out = promptOf(await setup.log.all(), setup.log.leaf());
       expect(JSON.stringify(out)).not.toContain("providerMeta");
       // The display-only reasoning text must not leak either; same fence, older rule.
       expect(JSON.stringify(out)).not.toContain("thought");

@@ -170,7 +170,7 @@ test("e2e: injected memory is ephemeral (not persisted to session history)", asy
   }
   // Check log entry: the user entry should not contain memory context
   await log.flush();
-  const userEntry = log.entries().find((e): e is UserEntry => e.type === "user");
+  const userEntry = (await log.all()).find((e): e is UserEntry => e.type === "user");
   expect(userEntry?.text).not.toContain("<memory-context>");
   expect(userEntry?.text).toContain("which language");
 });

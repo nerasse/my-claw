@@ -529,7 +529,7 @@ test("a /compact runs its pass on the declared window, not the session's capped 
   try {
     const outcome = await handleCompactCommand({ config, session, persist: async () => {} });
     assert.equal(outcome.ok, true);
-    const boundary = setup.log.entries().find((entry): entry is CompactionEntry => entry.type === "compaction");
+    const boundary = (await setup.log.all()).find((entry): entry is CompactionEntry => entry.type === "compaction");
     assert.equal(boundary?.retained?.length, 15, "every one of the owner's turns is kept whole");
     assert.doesNotMatch(boundary!.retained!.join(""), /characters cut/);
   } finally {

@@ -19,6 +19,7 @@ import { toolDisplayName } from "../../agent/tools/display.ts";
 import { toolCardId } from "./types.ts";
 import { parseStoredName, type SessionFile } from "./files.ts";
 import type { Entry } from "../../sessions/log.ts";
+import type { LogRecord } from "../../sessions/log-index.ts";
 import type { SpawnView } from "../../sessions/spawn-state.ts";
 import type { SessionAttachment } from "../../sessions/store.ts";
 import type {
@@ -97,6 +98,27 @@ function carriesDisplayId(entry: Entry, displayId: string): boolean {
 }
 
 /**
+ * `pageOf` over the index instead of over entries -- docs/session-log.md.
+ *
+ * Same arithmetic, same turn alignment, one difference that matters: nothing is parsed. A page is
+ * a range of record positions, and only those entries are read from the file afterwards.
+ */
+export function pageOfRecords(
+  path: readonly LogRecord[],
+  limit: number,
+  before: number,
+  lookback = MAX_TURN_LOOKBACK,
+): { from: number; to: number; hasMore: boolean; nextBefore: number } {
+  const total = path.length;
+  const end = Math.max(total - Math.max(before, 0), 0);
+  const rawStart = Math.max(end - Math.max(limit, 0), 0);
+  const floor = Math.max(rawStart - Math.max(lookback, 0), 0);
+  let start = rawStart;
+  while (start > floor && path[start]!.type !== "user") start -= 1;
+  return { from: start, to: end, hasMore: start > 0, nextBefore: total - start };
+}
+
+/**
  * The page just before the entry `beforeId` -- the id-based counterpart of `pageOf`.
  *
  * The window ends right before the referenced entry (exclusive), which is the client's own
@@ -132,6 +154,45 @@ export function pageBefore(
 }
 
 /**
+ * `pageBefore` over the index.
+ *
+ * The client's oldest held bubble is an id, and most of those are the entry's own. The three that
+ * are not -- a tool card's `t-<callId>`, a command's `<sourceId>` and its `cmd-<sourceId>`, and a
+ * folded row's `run-<id>` -- name a field the index does not carry, so the records of the type
+ * that could hold it are read backwards in small batches until one matches. The scan is bounded:
+ * a cursor older than `MAX_CURSOR_SCAN` records degrades to the count cursor the client sent with
+ * it, exactly like an id this branch no longer holds.
+ */
+export function pageBeforeRecords(
+  path: readonly LogRecord[],
+  beforeId: string,
+  limit: number,
+  fallbackBefore: number,
+  match: (position: number) => boolean,
+  lookback = MAX_TURN_LOOKBACK,
+): { from: number; to: number; hasMore: boolean; nextBefore: number } {
+  const total = path.length;
+  let end = -1;
+  for (let i = total - 1; i >= 0 && i >= total - MAX_CURSOR_SCAN; i -= 1) {
+    const record = path[i]!;
+    const plain = record.id === beforeId || (beforeId.startsWith("run-") && record.id === beforeId.slice(4));
+    if (plain || match(i)) {
+      end = i;
+      break;
+    }
+  }
+  if (end < 0) return pageOfRecords(path, limit, fallbackBefore, lookback);
+  const rawStart = Math.max(end - Math.max(limit, 0), 0);
+  const floor = Math.max(rawStart - Math.max(lookback, 0), 0);
+  let start = rawStart;
+  while (start > floor && path[start]!.type !== "user") start -= 1;
+  return { from: start, to: end, hasMore: start > 0, nextBefore: total - start };
+}
+
+/** How far back a cursor that names a call id or a send id is looked for. */
+export const MAX_CURSOR_SCAN = 4000;
+
+/**
  * Turns a sync delta's `spawn_state` entries into the cards they revise.
  *
  * A delta is what the client has not seen, and a state entry on its own is not something it can
@@ -152,18 +213,13 @@ export function pageBefore(
  * what made a reload lose a child that had already finished -- the live frames carry those, and a
  * fresh page has none (2026-09-21).
  */
-export function withSpawnCards(delta: readonly Entry[], all: readonly Entry[]): Entry[] {
+export function withSpawnCards(delta: readonly Entry[], cards: ReadonlyMap<string, Entry>): Entry[] {
   if (!delta.some((entry) => entry.type === "spawn_state")) return [...delta];
 
   // The cards the delta already carries. Their state travels with them, at their own position:
   // nothing has to stand in for them, and standing in is what doubled them.
   const present = new Set<string>();
   for (const entry of delta) if (entry.type === "tool") present.add(entry.callId);
-
-  // Indexed once. Scanning the log per state entry is linear in a conversation that only grows,
-  // and a delta is capped at 500: measured at 28 ms on a 4 667-entry session, against 0.1 ms here.
-  const cards = new Map<string, Entry>();
-  for (const entry of all) if (entry.type === "tool" && !cards.has(entry.callId)) cards.set(entry.callId, entry);
 
   const out: Entry[] = [];
   for (const entry of delta) {

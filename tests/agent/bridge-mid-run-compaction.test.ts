@@ -160,7 +160,7 @@ test("a run that fills the window mid-flight is compacted, not trimmed", async (
   assert.ok(fillersAfter <= fillersBefore - 2, `tool results summarized away: ${fillersBefore} -> ${fillersAfter}`);
 
   // The context window moved, so the next run starts from the summary too.
-  const entries = sessionLog.entries();
+  const entries = (await sessionLog.all());
   const context = contextEntries(entries, sessionLog.leaf());
   assert.ok(context.length < UNCOMPACTED_ENTRIES, `context compacted, got ${context.length} entries`);
   assert.ok(entries.length >= UNCOMPACTED_ENTRIES, `history kept, got ${entries.length} entries`);
@@ -226,7 +226,7 @@ test("an automatic compaction announces its boundary, keyed by the entry it wrot
     const { log: sessionLog } = await run({ summary: SUMMARY });
     assert.ok(seen.length >= 1, "the boundary was announced");
 
-    const written = sessionLog.entries().filter((e): e is CompactionEntry => e.type === "compaction");
+    const written = (await sessionLog.all()).filter((e): e is CompactionEntry => e.type === "compaction");
     assert.equal(seen.length, written.length, "one announcement per boundary, no more");
     for (const [i, announced] of seen.entries()) {
       const entry = written[i]!;
@@ -251,7 +251,7 @@ test("an automatic compaction stays silent: no notification, no ring", async () 
   hooks.on("session:compact:finished", onFinished);
   try {
     const { log: sessionLog } = await run({ summary: SUMMARY });
-    const compacted = sessionLog.entries().some((e) => e.type === "compaction");
+    const compacted = (await sessionLog.all()).some((e) => e.type === "compaction");
     assert.ok(compacted, "a compaction did happen");
     assert.deepEqual(notified, [], "nothing was published to the tray");
   } finally {
@@ -266,7 +266,7 @@ test("a summarization that produced nothing is not retried on the next iteration
 
   const rounds = sent.filter((s) => s.kind === "run").length;
   const attempts = sent.filter((s) => s.kind === "compaction").length;
-  const entries = sessionLog.entries();
+  const entries = (await sessionLog.all());
   // Every iteration is over the threshold from now on, and each one could have paid for a summary.
   assert.ok(attempts >= 1);
   assert.ok(attempts <= Math.ceil((entries.length + 1) / 10), `backed off, got ${attempts} attempts over ${rounds} rounds`);
@@ -328,7 +328,7 @@ test("a sub-agent run is compacted mid-flight", async () => {
   }
 
   assert.ok(compactions >= 1, "the sub-agent was compacted");
-  const context = contextEntries(subLog.entries(), subLog.leaf());
+  const context = contextEntries((await subLog.all()), subLog.leaf());
   const hasCompaction = context.some((e): e is CompactionEntry => e.type === "compaction");
   assert.ok(hasCompaction, "compaction entry present in sub-agent context");
 });

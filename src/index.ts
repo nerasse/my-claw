@@ -12,6 +12,7 @@ import { migrateMediaIds } from "./sessions/migrate-media-ids.ts";
 import type { CommandEntry } from "./sessions/log.ts";
 import { setSessionLogResolver } from "./sessions/log-access.ts";
 import { recordSpawnLifecycle } from "./sessions/spawn-state.ts";
+import { maintainSessions } from "./sessions/maintain.ts";
 import { join, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -758,6 +759,19 @@ async function main() {
   // Registered here, once, and not inside a run: a background sub-agent outlives the run that
   // spawned it, so a subscription torn down with that run would miss the very state this records.
   recordSpawnLifecycle((sessionId) => sessionManager.logOf(sessionId));
+  // Every conversation gets its index, and the ones carrying damage from an older build are
+  // healed: in the background, one at a time, never on a conversation a run is using -- see
+  // `sessions/maintain.ts`. It costs nothing after the first boot.
+  void maintainSessions({
+    isBusy: (sessionId) => sessionManager.peekLog(sessionId) !== undefined,
+  })
+    .then((report) => {
+      if (report.scanned === 0) return;
+      void log("info", "session maintenance pass", { ...report });
+    })
+    .catch((err) => {
+      void log("warn", "session maintenance pass failed", { error: String(err) });
+    });
   // The runner pre-dates the manager; adopt() lets live sub-agent runs surface in the app
   // channel (history/peek) instead of only the frozen pre-pushed task on disk.
   subAgentRunner.setSessionManager(sessionManager);
@@ -1160,7 +1174,7 @@ async function main() {
           ...(session
             ? await (async () => {
                 const log = await sessionLogOf(session.id);
-                const prompt = promptOf(log.entries(), log.leaf());
+                const prompt = promptOf(await log.context(), log.leaf());
                 return {
                   used: occupiedContextTokens(
                     prompt,
@@ -2428,7 +2442,7 @@ async function main() {
           const session = await sessionManager.peek(sessionId);
           // From the log, like the thread list does. The name stays `messageCount` because a
           // shipped client reads it under that name.
-          const runEntries = session ? (await sessionManager.logOf(sessionId)).entries().length : 0;
+          const runEntries = session ? (await sessionManager.logOf(sessionId)).count() : 0;
           runs.push({
             threadId,
             runAt: runTs,
@@ -2684,7 +2698,7 @@ async function main() {
             ? {
                 session: {
                   id: session.id,
-                  messages: (await sessionManager.logOf(session.id)).entries().length,
+                  messages: (await sessionManager.logOf(session.id)).count(),
                   lastActiveAt: session.lastActiveAt,
                   ...(session.modelOverride ? { model: session.modelOverride } : {}),
                 },

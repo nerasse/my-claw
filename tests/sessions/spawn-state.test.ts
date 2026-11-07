@@ -165,7 +165,7 @@ describe("appendSpawnState: what gets written, and what does not", () => {
     // The event that settles a child is nowhere near the call that asked for it, so it carries no
     // call id. The log answers instead.
     const log = await openSessionLog(freshId());
-    appendSpawnState(log, {
+    await appendSpawnState(log, {
       subagentId: "subagent/auditor",
       status: "running",
       toolCallId: "call-1",
@@ -174,40 +174,40 @@ describe("appendSpawnState: what gets written, and what does not", () => {
       mode: "run",
       action: "spawn",
     });
-    const written = appendSpawnState(log, { subagentId: "subagent/auditor", status: "complete", resultLength: 3 });
+    const written = await appendSpawnState(log, { subagentId: "subagent/auditor", status: "complete", resultLength: 3 });
     await log.flush();
 
     expect(written?.callId).toBe("call-1");
-    expect(cardOf(log.entries(), "subagent/auditor")).toBe("call-1");
-    expect(spawnStates(log.entries()).get("call-1")?.status).toBe("complete");
+    expect(cardOf((await log.all()), "subagent/auditor")).toBe("call-1");
+    expect(spawnStates((await log.all())).get("call-1")?.status).toBe("complete");
   });
 
   test("a lifecycle with no card behind it is not written", async () => {
     // A child started from the roster rather than by a tool call annotates nothing, and a line no
     // reader ever asks for is a line that should not be there.
     const log = await openSessionLog(freshId());
-    const written = appendSpawnState(log, { subagentId: "subagent/orphan", status: "complete", resultLength: 3 });
+    const written = await appendSpawnState(log, { subagentId: "subagent/orphan", status: "complete", resultLength: 3 });
     await log.flush();
 
     expect(written).toBeNull();
-    expect(log.entries()).toHaveLength(0);
+    expect((await log.all())).toHaveLength(0);
   });
 
   test("nothing is appended past a settled card", async () => {
     const log = await openSessionLog(freshId());
-    appendSpawnState(log, { subagentId: "subagent/auditor", status: "running", toolCallId: "call-1" });
-    appendSpawnState(log, { subagentId: "subagent/auditor", status: "complete", resultLength: 3 });
-    const late = appendSpawnState(log, { subagentId: "subagent/auditor", status: "aborted", error: "sub-agent killed" });
+    await appendSpawnState(log, { subagentId: "subagent/auditor", status: "running", toolCallId: "call-1" });
+    await appendSpawnState(log, { subagentId: "subagent/auditor", status: "complete", resultLength: 3 });
+    const late = await appendSpawnState(log, { subagentId: "subagent/auditor", status: "aborted", error: "sub-agent killed" });
     await log.flush();
 
     expect(late).toBeNull();
-    expect(log.entries()).toHaveLength(2);
+    expect((await log.all())).toHaveLength(2);
   });
 
   test("a state survives a reopen, on the card it named", async () => {
     const id = freshId();
     const log = await openSessionLog(id);
-    appendSpawnState(log, {
+    await appendSpawnState(log, {
       subagentId: "subagent/auditor",
       status: "running",
       toolCallId: "call-1",
@@ -220,12 +220,12 @@ describe("appendSpawnState: what gets written, and what does not", () => {
       type: "tool", prompt: true, callId: "call-1", name: "spawn", args: {},
       output: "started", truncated: false, ok: true, runId: "r1",
     });
-    appendSpawnState(log, { subagentId: "subagent/auditor", status: "complete", resultLength: 42 });
+    await appendSpawnState(log, { subagentId: "subagent/auditor", status: "complete", resultLength: 42 });
     await log.flush();
 
     // The point of the whole exercise: a restart replays the ending instead of a spinner.
     const reopened = await openSessionLog(id);
-    const state = spawnStates(reopened.entries()).get("call-1");
+    const state = spawnStates((await reopened.all())).get("call-1");
     expect(state?.status).toBe("complete");
     expect(state?.resultLength).toBe(42);
     expect(state?.displayName).toBe("auditor");
@@ -254,7 +254,7 @@ describe("recordSpawnLifecycle: the bus writes into the parent's log", () => {
       await recorder.settled();
       await log.flush();
 
-      const state = spawnStates(log.entries()).get("call-1");
+      const state = spawnStates((await log.all())).get("call-1");
       expect(state?.status).toBe("complete");
       expect(state?.resultLength).toBe(128);
       expect(state?.displayName).toBe("dup-audit");
@@ -281,7 +281,7 @@ describe("recordSpawnLifecycle: the bus writes into the parent's log", () => {
       await recorder.settled();
       await log.flush();
 
-      const state = spawnStates(log.entries()).get("call-1");
+      const state = spawnStates((await log.all())).get("call-1");
       expect(state?.status).toBe("aborted");
       expect(state?.error).toBe("sub-agent killed");
     } finally {
@@ -317,8 +317,8 @@ describe("recordSpawnLifecycle: the bus writes into the parent's log", () => {
       await recorder.settled();
       await log.flush();
 
-      expect((log.entries() as SpawnStateEntry[]).map((entry) => entry.status)).toEqual(["running", "complete"]);
-      expect(spawnStates(log.entries()).get("call-1")?.status).toBe("complete");
+      expect(((await log.all()) as SpawnStateEntry[]).map((entry) => entry.status)).toEqual(["running", "complete"]);
+      expect(spawnStates((await log.all())).get("call-1")?.status).toBe("complete");
     } finally {
       recorder.stop();
     }

@@ -14,7 +14,7 @@
  *   delta cursor keeps working across a branch switch.
  */
 
-import { appendFile, copyFile, mkdir, open, readFile, rename, truncate, writeFile } from "node:fs/promises";
+import { appendFile, copyFile, mkdir, open, readFile, rename, stat, truncate, writeFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { MY_CLAW_DIR } from "../core/config.ts";
@@ -22,6 +22,20 @@ import { log } from "../utils/logger.ts";
 import type { ChatLocation } from "../channels/types.ts";
 import type { SessionAttachment, SessionSubAgentAction, SessionSubAgentState, SessionSubAgentStatus } from "./store.ts";
 import { repairBranches } from "./branches.ts";
+import { ENTRIES_FILE, META_FILE, sessionDir } from "./paths.ts";
+import {
+  DANGLING_PARENT,
+  NO_PARENT,
+  RECORD_BYTES,
+  SPAWN_CARD_TOOLS,
+  SessionIndex,
+  appendIndex,
+  encodeRecord,
+  isCanonicalId,
+  openSessionIndex,
+  writeIndex,
+  type LogRecord,
+} from "./log-index.ts";
 
 export const SESSION_LOG_VERSION = 1;
 
@@ -358,18 +372,7 @@ export class UnknownCursorError extends Error {
   }
 }
 
-const SESSIONS_DIR = join(MY_CLAW_DIR, "sessions");
-
-function sanitizeSessionId(raw: string): string {
-  return raw.replace(/\.\./g, "_").replace(/\0/g, "");
-}
-
-export function sessionDir(sessionId: string): string {
-  return join(SESSIONS_DIR, sanitizeSessionId(sessionId));
-}
-
-export const ENTRIES_FILE = "entries.jsonl";
-export const META_FILE = "meta.json";
+export { ENTRIES_FILE, META_FILE, sessionDir } from "./paths.ts";
 
 /**
  * Whether a directory holding these names *is* a session, rather than a directory that merely
@@ -549,28 +552,54 @@ async function endsOnNewline(file: string): Promise<boolean> {
 }
 
 /**
- * One session's entries, in memory and on disk.
+ * One session's log: the index of every entry, and the file behind it.
  *
- * Opened through `openSessionLog`, which is the only path that reads the file. The instance owns
- * its own `seq` and leaf, so an append never has to re-read anything.
+ * Opening no longer reads the conversation. It reads `entries.idx` -- 56 bytes per entry, 2.6 MB
+ * for a 127 MB session -- and everything on the open path (the branch, a page, the run a page
+ * belongs to) is answered from it plus a handful of byte ranges. The whole log is still one call
+ * away (`all()`), and that is what every consumer that genuinely needs every entry asks for.
+ *
+ * The two must not be confused. `all()` reads and parses the entire file and holds it: on the
+ * measured session that is 1.1 s and 600 MB. `entries()` throws instead of doing it silently, so a
+ * path that was meant to be bounded cannot regress into one that is not -- the error names the call
+ * to use, and the fix is one word.
+ *
+ * The instance owns its `seq` and its leaf, so an append never re-reads anything, and an append
+ * writes the line and its record in the same queued step.
  */
 export class SessionLog {
   readonly sessionId: string;
   private readonly file: string;
-  private readonly list: Entry[];
-  private nextSeq: number;
+  /** Every entry's position, in file order. The only thing `openSessionLog` reads. */
+  private index: SessionIndex;
+  private nextSeq: number | null;
   private leafId: string | null;
+  /** Position of the leaf in `index`, -1 when the branch is empty. */
+  private leafPosition: number;
+  /** Bytes of the log once the queued writes land: where the next line starts. */
+  private bytes: number;
   /** Serializes appends: two awaited writes must not interleave inside one line. */
   private tail: Promise<void> = Promise.resolve();
-  /**
-   * What a conversation list needs and nothing else, kept incrementally so it can be mirrored
-   * into `meta.json`. A drawer that has to open every log to count messages and read a title
-   * parses every conversation the owner has ever had -- 214 MB of JSONL here, several times that
-   * once it is objects -- to draw one sidebar.
-   */
-  private prompts: number;
+  /** Prompt count and last owner turn, off the index, once. */
+  private facts: { prompts: number; lastUser: number | null } | null = null;
   private firstUser: string | null;
-  private lastUser: number | null;
+  /** The whole log, once something asked for it. Null is the normal state of an open session. */
+  private list: Entry[] | null = null;
+  private materializing: Promise<readonly Entry[]> | null = null;
+  /** Entries this process appended: kept by identity, so an id has one object until it is reread. */
+  private appended = new Map<string, Entry>();
+  /** id -> position, built the first time something asks the log about an id. */
+  private positions: Map<string, number> | null = null;
+  /**
+   * What `context()` handed out, and the entry count it covered: a run holds one array for its whole
+   * duration, so an append that extends the branch must land in it -- the turn the run just wrote is
+   * exactly what its next prompt has to carry.
+   */
+  private contextCache: Entry[] | null = null;
+  private contextCovers = -1;
+  /** Spawn states and spawn cards, cached -- see `spawnRecords`. */
+  private spawns: { states: LogRecord[]; cards: LogRecord[] } | null = null;
+  private spawnsCover = -1;
   /**
    * Told after every append, leaf moved. The manager hangs the session's dirty flag on it, so the
    * autosave carries the new leaf to `meta.json` within its tick. Without it the flag moved only
@@ -579,27 +608,462 @@ export class SessionLog {
    * on the leaf before them, and the entries past it were a dead branch.
    */
   onAppend: (() => void) | undefined;
-  /** What `openSessionLog` had to put back on the branch, if anything -- `branches.ts`. */
-  readonly repaired: { relinked: number; reparented: number; adoptedTail: boolean } | null;
+  /** What materializing had to put back on the branch, if anything -- `branches.ts`. */
+  repaired: { relinked: number; reparented: number; adoptedTail: boolean } | null = null;
+  /** Told once a repair ran, so the manager can remember that this log was checked. */
+  onRepaired: (() => void) | undefined;
+  /**
+   * Whether `branches.ts` has already looked at this log. Kept in `meta.json`, because a deliberate
+   * rewind leaves a fork forever and a fork alone does not say whether the shape is damage.
+   */
+  private branchesChecked: boolean;
 
-  constructor(sessionId: string, entries: Entry[], leafId: string | null, repaired: { relinked: number; reparented: number; adoptedTail: boolean } | null = null) {
+  constructor(
+    sessionId: string,
+    index: SessionIndex,
+    leafId: string | null,
+    bytes: number,
+    firstUser: string | null,
+    repaired: { relinked: number; reparented: number; adoptedTail: boolean } | null = null,
+    branchesChecked = false,
+  ) {
     this.sessionId = sessionId;
-    this.repaired = repaired;
     this.file = entriesPath(sessionId);
-    this.list = entries;
-    this.nextSeq = entries.reduce((max, entry) => Math.max(max, entry.seq), -1) + 1;
-    this.leafId = leafId ?? entries[entries.length - 1]?.id ?? null;
-    this.prompts = entries.reduce((count, entry) => (entry.prompt ? count + 1 : count), 0);
-    this.firstUser = entries.find((entry): entry is UserEntry => entry.type === "user")?.text ?? null;
-    this.lastUser = null;
-    for (const entry of entries) {
-      if (entry.type === "user" && entry.ts > (this.lastUser ?? -Infinity)) this.lastUser = entry.ts;
+    this.index = index;
+    this.bytes = bytes;
+    this.firstUser = firstUser;
+    this.repaired = repaired;
+    this.branchesChecked = branchesChecked;
+    this.positions = null;
+    const known = leafId !== null && index.count > 0 ? this.positionOf(leafId) : undefined;
+    if (known !== undefined) {
+      this.leafId = leafId;
+      this.leafPosition = known;
+    } else {
+      // A meta naming a leaf this log does not hold describes nothing here: the newest entry is
+      // what a reader is owed, and `branches.ts` is what will make the two agree again.
+      this.leafId = index.last?.id ?? null;
+      this.leafPosition = index.count - 1;
     }
+    this.nextSeq = null;
+  }
+
+  /** Entries the log holds, without reading any of them. */
+  count(): number {
+    return this.index.count;
+  }
+
+  recordAt(position: number): LogRecord {
+    return this.index.recordAt(position);
+  }
+
+  /** The record of an entry, by id. Builds the id map on first use: 46k ids in ~20 ms. */
+  recordOf(id: string): LogRecord | undefined {
+    const position = this.positionOf(id);
+    return position === undefined ? undefined : this.index.recordAt(position);
+  }
+
+  private positionOf(id: string): number | undefined {
+    this.positions ??= this.index.idPositions();
+    return this.positions.get(id);
+  }
+
+  /** The newest record written, whatever branch it is on: the cursor a client syncs against. */
+  headRecord(): LogRecord | undefined {
+    return this.index.last;
+  }
+
+  head(): string | null {
+    return this.index.last?.id ?? null;
+  }
+
+  leaf(): string | null {
+    return this.leafId;
+  }
+
+  /** The branch that ends at `leafId` (the log's own leaf by default), oldest first. */
+  pathRecords(leafId?: string | null): LogRecord[] {
+    const wanted = leafId === undefined ? this.leafPosition : leafId === null ? -1 : this.positionOf(leafId) ?? this.leafPosition;
+    const path: LogRecord[] = [];
+    let position = wanted;
+    // A parent is always written before its child, so this cannot cycle; the bound is here for a
+    // record file somebody edited by hand.
+    for (let guard = 0; position >= 0 && position < this.index.count && guard <= this.index.count; guard++) {
+      const record = this.index.recordAt(position);
+      path.push(record);
+      position = record.parent === NO_PARENT || record.parent === DANGLING_PARENT ? -1 : record.parent;
+    }
+    path.reverse();
+    return path;
+  }
+
+  /** Every record after `cursor`, in file order -- what a client that already holds it lacks. */
+  recordsSince(cursor: string | null): LogRecord[] {
+    if (cursor === null) return Array.from({ length: this.index.count }, (_unused, i) => this.index.recordAt(i));
+    const from = this.positionOf(cursor);
+    if (from === undefined) throw new UnknownCursorError(cursor);
+    const out: LogRecord[] = [];
+    for (let i = from + 1; i < this.index.count; i++) out.push(this.index.recordAt(i));
+    return out;
+  }
+
+  /** The entries of these records, read in one pass over the file. Unreadable lines are skipped. */
+  async entriesIn(records: readonly LogRecord[]): Promise<Entry[]> {
+    if (records.length === 0) return [];
+    // Queued appends may not have landed yet: a page asked for right after a write must see it.
+    await this.tail;
+    const out: Entry[] = [];
+    const handle = await open(this.file, "r");
+    try {
+      // A page is one contiguous stretch of the file, so the reads are batched: one syscall per
+      // run of adjacent lines, then a slice per entry. Measured on a 400-entry page, this is the
+      // difference between 400 positional reads (~90 ms) and one (~10 ms).
+      for (let i = 0; i < records.length; ) {
+        const first = records[i]!;
+        let end = i;
+        let span = first.length;
+        while (end + 1 < records.length && records[end + 1]!.offset === records[end]!.offset + records[end]!.length + 1) {
+          end += 1;
+          span = records[end]!.offset + records[end]!.length - first.offset;
+        }
+        const buf = Buffer.allocUnsafe(Math.max(span, 1));
+        const { bytesRead } = await handle.read(buf, 0, span, first.offset);
+        for (let k = i; k <= end; k++) {
+          const record = records[k]!;
+          const at = record.offset - first.offset;
+          if (at + record.length > bytesRead) continue;
+          const parsed = parseEntryLine(buf.subarray(at, at + record.length).toString("utf-8"), this.sessionId, record.index + 1);
+          if (parsed) out.push(this.appended.get(parsed.id) ?? parsed);
+        }
+        i = end + 1;
+      }
+    } finally {
+      await handle.close();
+    }
+    return out;
+  }
+
+  /** One entry, by record. */
+  async entryOf(record: LogRecord): Promise<Entry | undefined> {
+    const [entry] = await this.entriesIn([record]);
+    return entry;
+  }
+
+  /** One entry, by id. A single read: the index says where it sits. */
+  async entryById(id: string): Promise<Entry | undefined> {
+    const record = this.recordOf(id);
+    return record ? this.entryOf(record) : undefined;
+  }
+
+  /**
+   * The whole log, in file order.
+   *
+   * Reads the file, parses every line, repairs the branch shape if it needs it, and keeps the
+   * result. Everything a conversation weighs is paid here, once: the display path never calls it,
+   * and a run only does when its own floor is not enough (a branch with no compaction boundary).
+   */
+  async all(): Promise<readonly Entry[]> {
+    if (this.list) return this.list;
+    if (this.materializing) return this.materializing;
+    this.materializing = this.materialize();
+    try {
+      return await this.materializing;
+    } finally {
+      this.materializing = null;
+    }
+  }
+
+  private async materialize(): Promise<readonly Entry[]> {
+    await this.tail;
+    let raw = "";
+    try {
+      raw = await readFile(this.file, "utf-8");
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+        void log("warn", "session log: unreadable file, reading as empty", { sessionId: this.sessionId, error: String(err) });
+      }
+      this.list = [];
+      return this.list;
+    }
+
+    const entries: Entry[] = [];
+    const lines = raw.split("\n");
+    for (let i = 0; i < lines.length; i++) {
+      const entry = parseEntryLine(lines[i]!, this.sessionId, i + 1);
+      if (entry) entries.push(this.appended.get(entry.id) ?? entry);
+    }
+
+    // A file that does not end on a newline ends on a line nobody finished writing. Skipping it at
+    // read time is not enough: the next append would glue itself to that stump, and the entry that
+    // was supposed to repair the damage would be swallowed by it. Cut the stump off the file
+    // instead, so the only thing the interrupted write costs is the entry it never finished.
+    if (raw.length > 0 && !raw.endsWith("\n")) {
+      const keep = raw.lastIndexOf("\n") + 1;
+      await truncate(this.file, keep).catch((err) => {
+        void log("error", "session log: could not drop an unterminated line", { sessionId: this.sessionId, error: String(err) });
+      });
+      void log("warn", "session log: dropped an unterminated last line", { sessionId: this.sessionId, bytes: raw.length - keep });
+    }
+
+    this.list = entries;
+    this.positions = null;
+    this.nextSeq = this.list.reduce((max, entry) => Math.max(max, entry.seq), -1) + 1;
+    this.bytes = (await stat(this.file).catch(() => ({ size: this.bytes }))).size;
+    this.appended.clear();
+    return this.list;
+  }
+
+  /** Whether `branches.ts` has looked at this log, here or in an earlier process. */
+  checkedBranches(): boolean {
+    return this.branchesChecked;
+  }
+
+  /** Whether this log is shaped like something `branches.ts` has not looked at yet. */
+  needsRepair(): boolean {
+    return !this.branchesChecked && this.index.count > 0 && this.index.needsRepair();
+  }
+
+  /**
+   * The meta's leaf is behind the file, and the file past it is one straight line: adopt the tail.
+   *
+   * This is the shape a process killed mid-run leaves -- the leaf reached the meta at the autosave
+   * tick, the entries did not -- and repairing it needs no entry read: if every record past the leaf
+   * is the child of the one before it, there is no second branch to tell deliberate from damage.
+   * A rewind fails the test at its own command entry, which is a child of the leaf and not of its
+   * neighbour, so a branch the owner walked away from is left exactly where it is.
+   */
+  adoptStraightTail(): boolean {
+    const last = this.index.last;
+    if (!last || this.leafPosition < 0 || this.leafPosition >= this.index.count - 1) return false;
+    for (let i = this.leafPosition + 1; i < this.index.count; i++) {
+      if (this.index.recordAt(i).parent !== i - 1) return false;
+    }
+    this.leafId = last.id;
+    this.leafPosition = this.index.count - 1;
+    this.repaired = { relinked: 0, reparented: 0, adoptedTail: true };
+    return true;
+  }
+
+  /**
+   * Puts dead branches back on the branch -- `branches.ts`.
+   *
+   * Not on the display path and not on the run path: it needs every entry, and the shape it repairs
+   * is (a) legacy damage from before 0.6.1 and (b) a parent line lost to a full disk. `openSessionLog`
+   * runs it when the index says the shape is worth a look and the meta says it has not been looked
+   * at, and the boot maintenance pass runs it for every session it has never checked -- so an
+   * upgrade heals an install without a reader ever paying for it twice.
+   */
+  async repair(): Promise<void> {
+    if (this.branchesChecked) return;
+    const all = await this.all();
+    const repair = repairBranches(all, this.leafId);
+    this.repaired = repair.relinked.length > 0 || repair.reparented.length > 0 || repair.adoptedTail
+      ? { relinked: repair.relinked.length, reparented: repair.reparented.length, adoptedTail: repair.adoptedTail }
+      : null;
+    const moved = repair.relinked.length > 0 || repair.reparented.length > 0;
+    if (moved) {
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+      await copyFile(this.file, `${this.file}.bak-branches-${stamp}`);
+      await writeFile(`${this.file}.tmp`, repair.entries.map((entry) => `${JSON.stringify(entry)}\n`).join(""), "utf-8");
+      await rename(`${this.file}.tmp`, this.file);
+      this.list = repair.entries;
+      this.leafId = repair.leafId;
+      await this.reindex(repair.entries);
+    }
+    this.report(repair);
+    this.branchesChecked = true;
+    if (repair.adoptedTail || repair.relinked.length > 0 || repair.reparented.length > 0) this.onRepaired?.();
+    else this.onRepaired?.();
+  }
+
+  /** Rewrites the index from entries in hand, after a repair moved parent links. */
+  private async reindex(entries: readonly Entry[]): Promise<void> {
+    const index = SessionIndex.empty();
+    const positions = new Map<string, number>();
+    let offset = 0;
+    for (const entry of entries) {
+      const line = `${JSON.stringify(entry)}\n`;
+      const length = Buffer.byteLength(line) - 1;
+      const parent = entry.parentId === null ? NO_PARENT : positions.get(entry.parentId) ?? DANGLING_PARENT;
+      const record = index.push({
+        id: entry.id,
+        parent,
+        seq: entry.seq,
+        ts: entry.ts,
+        type: entry.type,
+        prompt: entry.prompt,
+        spawnCard: entry.type === "tool" && SPAWN_CARD_TOOLS.has(entry.name),
+        offset,
+        length,
+      });
+      positions.set(record.id, record.index);
+      offset += length + 1;
+    }
+    this.index = index;
+    this.bytes = offset;
+    this.positions = null;
+    this.facts = null;
+    this.contextCache = null;
+    this.contextCovers = -1;
+    // The leaf of a repaired log is not the last line: the repair moves it to the tip it adopted.
+    this.leafPosition = this.leafId === null ? -1 : positions.get(this.leafId) ?? index.count - 1;
+    await writeIndex(this.sessionId, index).catch((err) => {
+      void log("warn", "session index: could not be rewritten after a repair", { sessionId: this.sessionId, error: String(err) });
+    });
+  }
+
+  private report(repair: { reparented: string[]; relinked: string[]; adoptedTail: boolean; bugForks: number; deliberateForks: number; leafId: string | null }): void {
+    if (repair.reparented.length > 0) {
+      void log("warn", "session log: entries whose parent was never written, put behind the line before them", {
+        sessionId: this.sessionId,
+        reparented: repair.reparented.length,
+        ids: repair.reparented.slice(0, 5),
+      });
+    }
+    if (repair.relinked.length > 0 || repair.adoptedTail) {
+      void log("warn", "session log: dead branches put back on the branch", {
+        sessionId: this.sessionId,
+        forks: repair.bugForks,
+        deliberateForks: repair.deliberateForks,
+        relinked: repair.relinked.length,
+        adoptedTail: repair.adoptedTail,
+        leafId: repair.leafId,
+      });
+    }
+  }
+
+  /**
+   * The whole log, synchronously -- and a throw when it is not in memory.
+   *
+   * The throw is the feature. Everything this used to answer silently cost a full parse of a file
+   * that can be hundreds of megabytes, on paths (an opened conversation, a run's first call) that
+   * have no business reading it. A caller that needs every entry awaits `all()`.
+   */
+  entries(): readonly Entry[] {
+    if (this.list) return this.list;
+    throw new Error(
+      `session log ${this.sessionId} is not in memory: await log.all() for every entry, or read the index (pathRecords/entriesIn) for a window`,
+    );
+  }
+
+  /** Whether the whole log is in memory. For tests and for a caller that must not parse. */
+  isMaterialized(): boolean {
+    return this.list !== null;
+  }
+
+  /** The branch, oldest first, from the whole log. The bounded form is `pathRecords`. */
+  async path(): Promise<Entry[]> {
+    const all = await this.all();
+    return pathOf(all, this.leafId);
+  }
+
+  /**
+   * What a prompt would carry: the newest compaction boundary on the branch, and every entry the
+   * summary does not stand for.
+   *
+   * This is the run path's whole reason not to read the log. The boundary of the measured session
+   * sat 360 KB from the end of a 127 MB file: a run read 0.3 % of it and paid 1.1 s and 600 MB for
+   * the rest. A branch with no boundary has nothing to bound it, and falls back to the whole log --
+   * which is what compaction exists to prevent, and what it still cost before this.
+   */
+  async context(): Promise<Entry[]> {
+    // A second handle on the same session (the sub-agent runner holding one while a run opens its
+    // own) writes lines this index has not seen. The file is the authority: one stat says whether
+    // what is in hand still describes it.
+    await this.refreshFromDisk();
+    if (this.contextCache && this.contextCovers === this.index.count) return this.contextCache;
+    const path = this.pathRecords();
+    let boundary = -1;
+    for (let i = path.length - 1; i >= 0; i--) {
+      if (path[i]!.type === "compaction") {
+        boundary = i;
+        break;
+      }
+    }
+    if (boundary < 0) {
+      const whole = await this.all();
+      this.contextCache = whole === this.list ? (this.list as Entry[]) : [...whole];
+      this.contextCovers = this.index.count;
+      return this.contextCache;
+    }
+    const compaction = await this.entryOf(path[boundary]!);
+    let start = boundary;
+    if (compaction?.type === "compaction") {
+      // An imported boundary can sit *after* the turns it keeps; the union of both is the floor.
+      const keptAt = path.findIndex((record) => record.id === compaction.firstKeptEntryId);
+      if (keptAt >= 0) start = Math.min(start, keptAt);
+    }
+    const entries = await this.entriesIn(path.slice(start));
+    this.contextCache = entries;
+    this.contextCovers = this.index.count;
+    return entries;
+  }
+
+  /**
+   * Brings the index up to date with the file, when something else wrote to it.
+   *
+   * The process holds one log per session, so this is normally a stat that finds the size it
+   * expected. It exists because "normally" is not "always": a test drives a runner and a bridge on
+   * two handles, and a handle that kept serving a stale index would answer a prompt without the
+   * turn that was just written.
+   */
+  private async refreshFromDisk(): Promise<void> {
+    const size = await stat(this.file).then((info) => info.size, () => this.bytes);
+    // Only growth is somebody else's write: a file that shrank or vanished was deleted under us, and
+    // a handle that adopted the empty shape would answer with a conversation that no longer exists.
+    if (size <= this.bytes) return;
+    const { index } = await openSessionIndex(this.sessionId);
+    this.index = index;
+    this.bytes = size;
+    this.positions = null;
+    this.facts = null;
+    this.contextCache = null;
+    this.contextCovers = -1;
+    // The whole log in hand is just as stale as the index it was parsed against.
+    this.list = null;
+    this.appended.clear();
+    this.leafPosition = this.leafId === null ? -1 : this.positionOf(this.leafId) ?? index.count - 1;
+    this.leafId = this.leafPosition >= 0 ? this.index.recordAt(this.leafPosition).id : null;
+    this.adoptStraightTail();
+    void log("warn", "session log: a second handle wrote to this conversation", { sessionId: this.sessionId, seen: size });
+  }
+
+  /**
+   * The records a card needs: the spawn states, and the spawn cards they revise.
+   *
+   * Scanned once, from the cheap type and flag bytes, and extended as entries are appended: a page
+   * asked for twice in a row must not walk the index twice, and a conversation of a million
+   * entries holds a few dozen of these.
+   */
+  spawnRecords(): { states: LogRecord[]; cards: LogRecord[] } {
+    if (this.spawns && this.spawnsCover === this.index.count) return this.spawns;
+    const states: LogRecord[] = [];
+    const cards: LogRecord[] = [];
+    for (let i = 0; i < this.index.count; i++) {
+      const type = this.index.typeOf(i);
+      if (type === "spawn_state") states.push(this.index.recordAt(i));
+      else if (this.index.spawnCardOf(i)) cards.push(this.index.recordAt(i));
+    }
+    this.spawns = { states, cards };
+    this.spawnsCover = this.index.count;
+    return this.spawns;
+  }
+
+  private noteSpawnRecord(record: LogRecord): void {
+    if (!this.spawns) return;
+    if (record.type === "spawn_state") this.spawns.states.push(record);
+    else if (record.spawnCard) this.spawns.cards.push(record);
+    this.spawnsCover = this.index.count;
+  }
+
+  /** The context a run already holds, for a caller that must not await. Null when nothing is held. */
+  heldContext(): readonly Entry[] | null {
+    return this.contextCache && this.contextCovers === this.index.count ? this.contextCache : null;
   }
 
   /** Entries a prompt would carry: the message count a conversation list shows. */
   promptCount(): number {
-    return this.prompts;
+    return this.counts().prompts;
   }
 
   /** Raw text of the first thing the owner said, which is what an untitled conversation is named after. */
@@ -607,30 +1071,33 @@ export class SessionLog {
     return this.firstUser;
   }
 
+  /** `openSessionLog` fills this from the one line the index points at. */
+  rememberFirstUser(text: string | null): void {
+    this.firstUser = text;
+  }
+
   /** When the last message was sent into this conversation, whatever branch it is on: what a conversation list sorts on. */
   lastUserAt(): number | null {
-    return this.lastUser;
+    return this.counts().lastUser;
   }
 
-  entries(): readonly Entry[] {
-    return this.list;
+  private counts(): { prompts: number; lastUser: number | null } {
+    if (this.facts) return this.facts;
+    let prompts = 0;
+    let lastUser: number | null = null;
+    for (let i = 0; i < this.index.count; i++) {
+      if (this.index.promptOf(i)) prompts += 1;
+      if (this.index.typeOf(i) !== "user") continue;
+      const ts = this.index.tsOf(i);
+      if (ts > (lastUser ?? -Infinity)) lastUser = ts;
+    }
+    this.facts = { prompts, lastUser };
+    return this.facts;
   }
 
-  leaf(): string | null {
-    return this.leafId;
-  }
-
-  /** Id of the newest entry written, whatever branch it is on: the cursor a client syncs against. */
-  head(): string | null {
-    return this.list[this.list.length - 1]?.id ?? null;
-  }
-
-  get(entryId: string): Entry | undefined {
-    return this.list.find((entry) => entry.id === entryId);
-  }
-
-  path(): Entry[] {
-    return pathOf(this.list, this.leafId);
+  /** Whether the log already holds an entry under this id. */
+  has(entryId: string): boolean {
+    return this.positionOf(entryId) !== undefined;
   }
 
   /**
@@ -645,35 +1112,106 @@ export class SessionLog {
     // A caller-provided id is one already on screen: the channel minted it when it opened the
     // bubble this entry holds the text of, so the two are one identity -- docs/bubble-identity.md.
     // Reusing one would make the tree ambiguous and let a retried send attach to an older turn.
-    if (id !== undefined && this.get(id)) throw new Error(`Entry id already exists: ${id}`);
+    if (id !== undefined && this.has(id)) throw new Error(`Entry id already exists: ${id}`);
     const entry = {
       ...input,
       id: id ?? newEntryId(now),
-      seq: this.nextSeq++,
+      seq: this.seq(),
       parentId: this.leafId,
       ts: now,
       // The generic is the caller's promise about which member it is building; the omitted four
       // fields are put back right here, so the assertion restores exactly what Provisioned removed.
     } as unknown as T;
-    this.list.push(entry);
-    this.leafId = entry.id;
-    if (entry.prompt) this.prompts += 1;
-    if (entry.type === "user") {
-      if (this.firstUser === null) this.firstUser = entry.text;
-      this.lastUser = now;
-    }
-    this.write(`${JSON.stringify(entry)}\n`, 1);
-    this.onAppend?.();
+    this.record(entry);
+    this.materializedPush(entry);
     return entry;
   }
 
+  /** The next `seq`. Read off the index rather than a counter, so an open costs no entry read. */
+  private seq(): number {
+    if (this.nextSeq === null) {
+      let max = -1;
+      for (let i = 0; i < this.index.count; i++) {
+        const seq = this.index.recordAt(i).seq;
+        if (seq > max) max = seq;
+      }
+      this.nextSeq = max + 1;
+    }
+    return this.nextSeq++;
+  }
+
+  /** Writes the record and the line for an entry appended now, and moves the leaf to it. */
+  private record(entry: Entry): void {
+    const line = `${JSON.stringify(entry)}\n`;
+    const length = Buffer.byteLength(line) - 1;
+    const offset = this.bytes;
+    const record = this.index.push({
+      id: entry.id,
+      parent: this.leafPosition >= 0 ? this.leafPosition : NO_PARENT,
+      seq: entry.seq,
+      ts: entry.ts,
+      type: entry.type,
+      prompt: entry.prompt,
+      spawnCard: entry.type === "tool" && SPAWN_CARD_TOOLS.has(entry.name),
+      offset,
+      length,
+    });
+    this.positions?.set(entry.id, record.index);
+    this.appended.set(entry.id, entry);
+    this.leafId = entry.id;
+    this.leafPosition = record.index;
+    this.bytes += length + 1;
+    if (entry.prompt && this.facts) this.facts.prompts += 1;
+    if (entry.type === "user") {
+      if (this.firstUser === null) this.firstUser = entry.text;
+      if (this.facts) this.facts.lastUser = Math.max(this.facts.lastUser ?? -Infinity, entry.ts);
+    }
+    this.noteSpawnRecord(record);
+    this.extendContext(entry);
+    const bytes = this.index.toBuffer().subarray(record.index * RECORD_BYTES, (record.index + 1) * RECORD_BYTES);
+    this.write(line, Buffer.from(bytes), 1, isCanonicalId(entry.id) ? [] : [[record.index, entry.id]]);
+    this.onAppend?.();
+  }
+
+  private materializedPush(entry: Entry): void {
+    // A log with no compaction boundary hands out its own list as the context: one array, one push.
+    if (this.list && this.list !== this.contextCache) this.list.push(entry);
+  }
+
+  /** Keeps a context a run is already holding in step with what it just appended. */
+  private extendContext(entry: Entry): void {
+    if (!this.contextCache) return;
+    const last = this.contextCache[this.contextCache.length - 1];
+    if (last ? entry.parentId === last.id : entry.parentId === null) {
+      this.contextCache.push(entry);
+      this.contextCovers = this.index.count;
+      return;
+    }
+    // Appended somewhere this context does not cover: it is no longer the branch in memory.
+    this.contextCache = null;
+    this.contextCovers = -1;
+  }
+
   /** Queues one write behind the last. Never rejects: see the comment inside for why. */
-  private write(lines: string, count: number): void {
+  private write(line: string, record: Buffer, count = 1, sideIds: ReadonlyArray<readonly [number, string]> = []): void {
     this.tail = this.tail
       .catch(() => {})
       .then(async () => {
         const separator = (await endsOnNewline(this.file)) ? "" : "\n";
-        await appendFile(this.file, `${separator}${lines}`, "utf-8");
+        if (separator !== "") {
+          // The file lost its newline under us: every offset past this point in the index is wrong
+          // by one, so nothing here may be trusted. The write goes in, and the index is rebuilt
+          // from the file the next time it is opened.
+          void log("warn", "session log: appending behind an unterminated line", { sessionId: this.sessionId });
+        }
+        await appendFile(this.file, `${separator}${line}`, "utf-8");
+        await appendIndex(this.sessionId, record, sideIds).catch(async (err) => {
+          if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+            await writeIndex(this.sessionId, this.index).catch(() => {});
+            return;
+          }
+          void log("error", "session index: append failed", { sessionId: this.sessionId, count, error: String(err) });
+        });
       })
       .catch((err) => {
         // Deliberately not rethrown, and deliberately not recreating the directory: a write that
@@ -705,26 +1243,67 @@ export class SessionLog {
   ): Entry[] {
     const now = Date.now();
     const entries: Entry[] = [];
-    const ids = new Set(this.list.map((entry) => entry.id));
-    let parentId = this.leafId;
+    const parentId = this.leafId;
+    let parentPosition = this.leafPosition;
+    let seq = this.seq();
     for (const input of inputs) {
       const ts = input.ts ?? now;
       const id = input.id ?? newEntryId(ts);
-      if (ids.has(id)) throw new Error(`Entry id already exists: ${id}`);
-      ids.add(id);
-      const entry = { ...input, id, seq: this.nextSeq++, parentId, ts } as unknown as Entry;
+      if (this.has(id)) throw new Error(`Entry id already exists: ${id}`);
+      const entry = { ...input, id, seq: seq++, parentId: null as string | null, ts } as unknown as Entry;
+      entry.parentId = entries.length === 0 ? parentId : entries[entries.length - 1]!.id;
       entries.push(entry);
-      parentId = entry.id;
     }
     patch?.(entries);
-    for (const entry of entries) {
-      this.list.push(entry);
-      if (entry.type === "user" && entry.ts > (this.lastUser ?? -Infinity)) this.lastUser = entry.ts;
-    }
+    // The base of this batch is the anchor for the first record; the rest chain among themselves.
+    this.leafPosition = parentPosition;
     this.leafId = parentId;
-    const lines = entries.map((entry) => `${JSON.stringify(entry)}\n`).join("");
-    if (lines.length > 0) this.write(lines, entries.length);
-    if (entries.length > 0) this.onAppend?.();
+    let batch = "";
+    const sideIds: Array<readonly [number, string]> = [];
+    const records = Buffer.alloc(RECORD_BYTES * entries.length);
+    let at = 0;
+    let offset = this.bytes;
+    for (const entry of entries) {
+      const line = `${JSON.stringify(entry)}\n`;
+      const length = Buffer.byteLength(line) - 1;
+      const record = this.index.push({
+        id: entry.id,
+        parent: this.leafPosition >= 0 ? this.leafPosition : NO_PARENT,
+        seq: entry.seq,
+        ts: entry.ts,
+        type: entry.type,
+        prompt: entry.prompt,
+        spawnCard: entry.type === "tool" && SPAWN_CARD_TOOLS.has(entry.name),
+        offset,
+        length,
+      });
+      encodeRecord(record, records, at);
+      if (!isCanonicalId(entry.id)) sideIds.push([record.index, entry.id]);
+      at += RECORD_BYTES;
+      this.positions?.set(entry.id, record.index);
+      this.appended.set(entry.id, entry);
+      this.noteSpawnRecord(record);
+      this.leafId = entry.id;
+      this.leafPosition = record.index;
+      batch += line;
+      offset += length + 1;
+    }
+    this.bytes = offset;
+    // The batch took as many numbers as it has entries: the counter has to move past them all.
+    this.nextSeq = seq;
+    for (const entry of entries) {
+      if (entry.type === "user" && entry.ts > (this.facts?.lastUser ?? -Infinity)) {
+        if (this.facts) this.facts.lastUser = entry.ts;
+        if (this.firstUser === null) this.firstUser = entry.text;
+      }
+      if (entry.prompt && this.facts) this.facts.prompts += 1;
+    }
+    if (batch.length > 0) this.write(batch, records, entries.length, sideIds);
+    if (entries.length > 0) {
+      for (const entry of entries) this.extendContext(entry);
+      if (this.list && this.list !== this.contextCache) this.list.push(...entries);
+      this.onAppend?.();
+    }
     return entries;
   }
 
@@ -733,23 +1312,22 @@ export class SessionLog {
    * retry non-destructive and an undo reversible, where truncating an array is neither.
    */
   branch(leafId: string | null): void {
-    if (leafId !== null && !this.get(leafId)) throw new UnknownCursorError(leafId);
+    if (leafId !== null) {
+      const position = this.positionOf(leafId);
+      if (position === undefined) throw new UnknownCursorError(leafId);
+      this.leafPosition = position;
+    } else {
+      this.leafPosition = -1;
+    }
     this.leafId = leafId;
+    this.contextCache = null;
+    this.contextCovers = -1;
     this.onAppend?.();
   }
 
-  /**
-   * Everything written after `cursor`, in file order.
-   *
-   * File order, not branch order, and that is the point: a client applying these in order ends up
-   * with every entry it lacks whichever branch they were written on, and the leaf it is told about
-   * separately decides what it shows. That is why a branch switch does not invalidate a cursor.
-   */
-  since(cursor: string | null): Entry[] {
-    if (cursor === null) return [...this.list];
-    const index = this.list.findIndex((entry) => entry.id === cursor);
-    if (index < 0) throw new UnknownCursorError(cursor);
-    return this.list.slice(index + 1);
+  /** Everything written after `cursor`, in file order, read from the file. */
+  async since(cursor: string | null): Promise<Entry[]> {
+    return this.entriesIn(this.recordsSince(cursor));
   }
 
   /** Resolves once every queued append has reached the disk. Awaited by shutdown, and by tests. */
@@ -764,76 +1342,47 @@ export class SessionLog {
  * A missing file is a new conversation, not an error. An unreadable line is skipped and logged --
  * see `parseEntryLine` for why that is the whole reason this format was chosen.
  */
-export async function openSessionLog(sessionId: string, leafId?: string | null): Promise<SessionLog> {
+export async function openSessionLog(
+  sessionId: string,
+  leafId?: string | null,
+  branchesChecked = false,
+): Promise<SessionLog> {
   const path = entriesPath(sessionId);
-  let raw = "";
+  const { index, unterminated } = await openSessionIndex(sessionId);
+  if (unterminated > 0) void log("warn", "session index: the log ended mid-line", { sessionId, bytes: unterminated });
+
+  let bytes = 0;
   try {
-    raw = await readFile(path, "utf-8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      void log("warn", "session log: unreadable file, starting empty", { sessionId, error: String(err) });
-    }
+    bytes = (await stat(path)).size;
+  } catch {
     await mkdir(dirname(path), { recursive: true });
     // Created empty rather than on the first append, so "a session directory holds its log" is
     // true from the moment the directory exists. A conversation nobody ever wrote to used to be a
     // directory with settings and no log, a shape every walk had to special-case.
     await appendFile(path, "");
-    return new SessionLog(sessionId, [], leafId ?? null);
+    return new SessionLog(sessionId, index, leafId ?? null, 0, null, null, branchesChecked);
   }
 
-  const entries: Entry[] = [];
-  const lines = raw.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    const entry = parseEntryLine(lines[i]!, sessionId, i + 1);
-    if (entry) entries.push(entry);
+  const opened = new SessionLog(sessionId, index, leafId ?? null, bytes, null, null, branchesChecked);
+  // A meta that lags the file, and nothing but a straight line past it: the tail is the branch.
+  opened.adoptStraightTail();
+  // A log whose shape is worth a look and that nothing has looked at yet: this is the one place the
+  // whole file is read on the open path, and only for damage `branches.ts` can actually fix.
+  if (opened.needsRepair()) await opened.repair();
+  // The first thing the owner ever said names an untitled conversation, and it never changes: read
+  // it once here, from the one line the index points at, rather than parse the log for it later.
+  const firstUserRecord = findFirst(index, "user");
+  if (firstUserRecord) {
+    const entry = await opened.entryOf(firstUserRecord).catch(() => undefined);
+    opened.rememberFirstUser(entry?.type === "user" ? entry.text : null);
   }
+  return opened;
+}
 
-  // A file that does not end on a newline ends on a line nobody finished writing. Skipping it at
-  // read time is not enough: the next append would glue itself to that stump, and the entry that
-  // was supposed to repair the damage would be swallowed by it. Cut the stump off the file instead,
-  // so the only thing the interrupted write costs is the entry it never finished.
-  if (raw.length > 0 && !raw.endsWith("\n")) {
-    const keep = raw.lastIndexOf("\n") + 1;
-    await truncate(path, keep).catch((err) => {
-      void log("error", "session log: could not drop an unterminated line", { sessionId, error: String(err) });
-    });
-    void log("warn", "session log: dropped an unterminated last line", { sessionId, bytes: raw.length - keep });
+function findFirst(index: SessionIndex, type: EntryType): LogRecord | null {
+  for (let i = 0; i < index.count; i++) {
+    const record = index.recordAt(i);
+    if (record.type === type) return record;
   }
-
-  // Dead branches go back on the branch here, at the one door every read goes through, so an
-  // install that carries them from an older version is whole the next time a conversation opens
-  // (`branches.ts`). The file is rewritten only when a parent link moved, atomically, with a copy
-  // kept beside it: the repair moves links and never deletes, but the shape it undoes is gone.
-  const repair = repairBranches(entries, leafId ?? null);
-  const repaired = repair.relinked.length > 0 || repair.reparented.length > 0 || repair.adoptedTail
-    ? { relinked: repair.relinked.length, reparented: repair.reparented.length, adoptedTail: repair.adoptedTail }
-    : null;
-  // The rewrite also settles what the read recovered: the stump that swallowed an entry is not
-  // part of any entry, so it is gone from the file the moment the file is rewritten. The copy kept
-  // beside it is where those bytes stay, which is the same trade the branch repair already makes.
-  if (repair.relinked.length > 0 || repair.reparented.length > 0) {
-    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-    await copyFile(path, `${path}.bak-branches-${stamp}`);
-    await writeFile(`${path}.tmp`, repair.entries.map((entry) => `${JSON.stringify(entry)}\n`).join(""), "utf-8");
-    await rename(`${path}.tmp`, path);
-  }
-  if (repair.reparented.length > 0) {
-    void log("warn", "session log: entries whose parent was never written, put behind the line before them", {
-      sessionId,
-      reparented: repair.reparented.length,
-      ids: repair.reparented.slice(0, 5),
-    });
-  }
-  if (repair.relinked.length > 0 || repair.adoptedTail) {
-    void log("warn", "session log: dead branches put back on the branch", {
-      sessionId,
-      forks: repair.bugForks,
-      deliberateForks: repair.deliberateForks,
-      relinked: repair.relinked.length,
-      adoptedTail: repair.adoptedTail,
-      leafId: repair.leafId,
-    });
-  }
-
-  return new SessionLog(sessionId, repair.entries, repair.leafId, repaired);
+  return null;
 }

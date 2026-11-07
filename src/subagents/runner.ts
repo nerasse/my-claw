@@ -349,7 +349,7 @@ export class SubAgentRunner {
 
   /** Makes this conversation searchable from its log, which is where its turns actually are. */
   private async indexForSearch(id: string, session: SessionData): Promise<void> {
-    indexSessionEntries(session, (await sessionLogOf(id)).entries());
+    indexSessionEntries(session, await (await sessionLogOf(id)).all());
   }
 
   /**
@@ -622,7 +622,7 @@ export class SubAgentRunner {
       // A human app send owns the child-thread bubble, so its chat.send id must be reused by the
       // persisted entry. Test and non-app callers can reuse a message id, in which case the log
       // keeps its own identity rather than creating a duplicate id in the tree.
-      const sourceId = toolCallId === undefined && !entryLog.get(parentMessage.id) ? parentMessage.id : undefined;
+      const sourceId = toolCallId === undefined && !entryLog.has(parentMessage.id) ? parentMessage.id : undefined;
       entryLog.append<UserEntry>({
         type: "user",
         prompt: true,
@@ -735,7 +735,7 @@ export class SubAgentRunner {
     const session = await loadSession(id);
     if (!session?.meta) return { ok: false, reason: `Sub-agent ${id} not found.` };
     const entryLog = await sessionLogOf(id);
-    if (!continuable(entryLog.entries(), entryLog.leaf()).ok) return { ok: false, reason: "Nothing to continue: the last run finished." };
+    if (!continuable(await entryLog.context(), entryLog.leaf()).ok) return { ok: false, reason: "Nothing to continue: the last run finished." };
     const resumed = this.resume(
       id, session, entryLog, this.waitMessage(session), "", session.parentFolderId, new AbortController().signal,
       undefined, undefined, undefined, undefined,
@@ -889,7 +889,7 @@ export class SubAgentRunner {
     recordSubAgentCaller(session, callerSessionId);
     const meta = session.meta!;
     const tracked = toolCallId !== undefined;
-    const state = continuable(entryLog.entries(), entryLog.leaf());
+    const state = continuable(await entryLog.context(), entryLog.leaf());
     if (tracked) {
       hooks.emit("subagent:spawn", {
         id,
@@ -903,7 +903,7 @@ export class SubAgentRunner {
       });
     }
     if (!state.ok) {
-      const answer = lastAnswer(entryLog.entries(), entryLog.leaf());
+      const answer = lastAnswer(await entryLog.context(), entryLog.leaf());
       const result = answer ?? `Error: sub-agent ${id} has nothing to resume. ${state.reason}`;
       if (tracked) {
         if (answer) hooks.emit("subagent:complete", { id, resultLength: answer.length, parentSessionId: callerSessionId });
@@ -952,7 +952,7 @@ export class SubAgentRunner {
         // A running one is counted off its log, which moves before the meta is next written.
         const messageCount = !running && stored?.promptCount !== undefined
           ? stored.promptCount
-          : (await sessionLogOf(id)).entries().filter(e => e.prompt).length;
+          : (await sessionLogOf(id)).promptCount();
         const model = stored ? stored.modelOverride : session?.modelOverride;
         out.push({
           id,
@@ -990,7 +990,7 @@ export class SubAgentRunner {
     if (!meta || !isReachableFrom(meta, caller)) return undefined;
 
     const log = await sessionLogOf(canonical);
-    const entries = log.entries();
+    const entries = await log.all();
     const leaf = log.leaf();
     const path = pathOf(entries, leaf);
     const running = registry.isRunning(canonical) || this.isRunningSession(canonical);

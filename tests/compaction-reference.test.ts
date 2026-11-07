@@ -149,7 +149,7 @@ test("a later compaction carries the summary before it, so the first turns never
   }
 
   // What the model reads afterwards descends from the first summary instead of starting after it.
-  const boundary = contextEntries(log.entries(), log.leaf()).find((e): e is CompactionEntry => e.type === "compaction");
+  const boundary = contextEntries((await log.all()), log.leaf()).find((e): e is CompactionEntry => e.type === "compaction");
   assert.ok(boundary, "the branch has a boundary");
   assert.ok(boundary.summary.includes("Summary two:"));
 });
@@ -174,7 +174,7 @@ test("the verbatim tail is a token budget, and a boundary never lands inside a t
   conversation(3, 50);
   await log.flush();
 
-  const planned = planCompaction(log, 60);
+  const planned = await planCompaction(log, 60);
   assert.equal(planned.ok, true);
   if (!planned.ok) return;
 
@@ -233,7 +233,7 @@ test("a summary still cut after every continuation is refused, and nothing is st
   } finally {
     mock.restore();
   }
-  assert.equal(contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"), false);
+  assert.equal(contextEntries((await log.all()), log.leaf()).some((e) => e.type === "compaction"), false);
 });
 
 /**
@@ -281,7 +281,7 @@ test("a truncated Anthropic answer is refused on its own spelling of the ceiling
   } finally {
     mock.restore();
   }
-  assert.equal(contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"), false);
+  assert.equal(contextEntries((await log.all()), log.leaf()).some((e) => e.type === "compaction"), false);
 });
 
 test("an empty answer the model simply did not write keeps its own message", async () => {
@@ -324,7 +324,7 @@ test("an empty stream is reported as one, not as a ceiling, and is retried once"
   } finally {
     mock.restore();
   }
-  assert.equal(contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"), false);
+  assert.equal(contextEntries((await log.all()), log.leaf()).some((e) => e.type === "compaction"), false);
 });
 
 /** The retry exists because the empty stream is an aléa: the same call answered 6 689 tokens 30 s
@@ -347,7 +347,7 @@ test("the one retry can land it: the second call's summary becomes the boundary"
   } finally {
     mock.restore();
   }
-  assert.ok(contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"), "the retry's summary is stored");
+  assert.ok(contextEntries((await log.all()), log.leaf()).some((e) => e.type === "compaction"), "the retry's summary is stored");
 });
 
 /**
@@ -373,7 +373,7 @@ test("a stream cut mid-reasoning is a cut, not an empty model, and earns the ret
   } finally {
     mock.restore();
   }
-  assert.equal(contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"), false);
+  assert.equal(contextEntries((await log.all()), log.leaf()).some((e) => e.type === "compaction"), false);
 });
 
 test("the retry lands the summary the cut interrupted", async () => {
@@ -394,7 +394,7 @@ test("the retry lands the summary the cut interrupted", async () => {
   } finally {
     mock.restore();
   }
-  assert.ok(contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"));
+  assert.ok(contextEntries((await log.all()), log.leaf()).some((e) => e.type === "compaction"));
 });
 
 /**
@@ -418,7 +418,7 @@ test("a cut after some text is refused too: a summary without an end never becom
     mock.restore();
   }
   assert.equal(
-    contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"),
+    contextEntries((await log.all()), log.leaf()).some((e) => e.type === "compaction"),
     false,
     "the floor stayed where it was",
   );
@@ -561,7 +561,7 @@ test("the anchor rides on the stored summary, so the next run reads the paths wi
     const result = await compactSession(config(), sess);
     assert.equal(result.ok, true, result.reason ?? "");
     assert.ok(result.summary?.includes("/repo/src/index.ts"), "the path is in the stored summary");
-    const prompt = promptOf(log.entries(), log.leaf());
+    const prompt = promptOf((await log.all()), log.leaf());
     assert.ok(JSON.stringify(prompt).includes("modified-files"), "and therefore in what the next run reads");
   } finally {
     mock.restore();

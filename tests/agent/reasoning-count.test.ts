@@ -133,7 +133,7 @@ test("the log keeps the count on the phase, so a reopened thread still shows the
     end();
   }
 
-  const phases = log.entries().filter((entry) => entry.type === "phase");
+  const phases = (await log.all()).filter((entry) => entry.type === "phase");
   assert.deepEqual(
     phases.map((phase) => ({ text: phase.text, reasoning: phase.reasoning, reasoningTokens: phase.reasoningTokens })),
     [

@@ -490,7 +490,7 @@ export class CronScheduler {
   private async endedStopped(sessionId: string): Promise<boolean> {
     try {
       const entries = await sessionLogOf(sessionId);
-      const ended = continuable(entries.entries(), entries.leaf());
+      const ended = continuable(await entries.context(), entries.leaf());
       return ended.ok && ended.ended === "aborted";
     } catch {
       return false;

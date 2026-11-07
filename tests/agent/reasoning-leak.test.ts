@@ -167,7 +167,7 @@ describe("the source id of a turn is display-only too", () => {
       await log.flush();
       
       // Find the user entry for "hello" - sourceId is on the UnifiedMessage, not stored in log
-      const userEntries = log.entries().filter((e): e is UserEntry => e.type === "user");
+      const userEntries = (await log.all()).filter((e): e is UserEntry => e.type === "user");
       const helloEntry = userEntries.find((e) => e.text === "hello");
       expect(helloEntry).toBeDefined();
 
@@ -206,7 +206,7 @@ describe("the home loop persists what the model thought", () => {
       await bridge.handleMessage(createMessage(), session, signal);
       await log.flush();
       
-      const phases = log.entries().filter((e): e is PhaseEntry => e.type === "phase");
+      const phases = (await log.all()).filter((e): e is PhaseEntry => e.type === "phase");
       const lastPhase = phases[phases.length - 1];
       expect(lastPhase?.text).toBe("the answer");
       expect(lastPhase?.reasoning).toBe("the thinking");
@@ -232,7 +232,7 @@ describe("the home loop persists what the model thought", () => {
       await log.flush();
       
       // Get the new phases (not the prior ones)
-      const allPhases = log.entries().filter((e): e is PhaseEntry => e.type === "phase");
+      const allPhases = (await log.all()).filter((e): e is PhaseEntry => e.type === "phase");
       // The prior history has 1 phase, new run adds 2 phases for the two-phase response
       const newPhases = allPhases.slice(1);
       expect(newPhases.length).toBe(2);
@@ -266,7 +266,7 @@ describe("the home loop persists what the model thought", () => {
       await log.flush();
       
       // When rewritten, the multiple phases are collapsed into a single one
-      const allPhases = log.entries().filter((e): e is PhaseEntry => e.type === "phase");
+      const allPhases = (await log.all()).filter((e): e is PhaseEntry => e.type === "phase");
       const lastPhase = allPhases[allPhases.length - 1];
       expect(lastPhase?.text).toBe("rewritten");
       // The reasoning from multiple phases should not be on a rewritten single phase
@@ -298,7 +298,7 @@ describe("the home loop persists what the model thought", () => {
       await bridge.handleMessage(createMessage(), session, signal);
       await log.flush();
       
-      const phases = log.entries().filter((e): e is PhaseEntry => e.type === "phase");
+      const phases = (await log.all()).filter((e): e is PhaseEntry => e.type === "phase");
       const lastPhase = phases[phases.length - 1];
       expect(lastPhase?.text).toBe("plain");
       expect("reasoning" in lastPhase!).toBe(false);

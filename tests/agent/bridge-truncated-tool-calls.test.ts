@@ -93,7 +93,7 @@ test("bridge: tool calls from a turn cut off by the output limit are refused, no
     await bridge.handleMessage(createMessage(), session, signal);
     assert.equal(executions, 0, "the truncated call never reached the tool");
     await log.flush();
-    const toolEntry = log.entries().find((e): e is ToolEntry => e.type === "tool" && e.callId === "tc1");
+    const toolEntry = (await log.all()).find((e): e is ToolEntry => e.type === "tool" && e.callId === "tc1");
     assert.ok(toolEntry, "the model still gets a result for the call it made");
     assert.match(toolEntry.output, /cut off by the output limit/i);
   } finally {

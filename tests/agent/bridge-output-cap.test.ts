@@ -79,7 +79,7 @@ test("bridge: an oversized tool output is archived whole, and both views are cut
     await bridge.handleMessage(createMessage(), session, signal);
     
     await log.flush();
-    const entries = log.entries();
+    const entries = (await log.all());
     const toolEntry = entries.find((e): e is ToolEntry => e.type === "tool" && e.callId === "tc1");
     assert.ok(toolEntry, "tool result recorded");
     assert.ok(toolEntry.truncated, "marked as truncated");

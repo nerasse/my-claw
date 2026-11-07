@@ -320,10 +320,10 @@ describe("branch-commands: /fork", () => {
     // Verify the new session was created with the correct entries
     const newSessionId = ctx.resolveNewSessionId(result.newThreadId!);
     const newLog = await openSessionLog(newSessionId);
-    expect(newLog.entries()).toHaveLength(4);
+    expect((await newLog.all())).toHaveLength(4);
 
     // Verify entries are properly chained (parentIds form a linked list)
-    const newEntries = newLog.entries();
+    const newEntries = (await newLog.all());
     expect(newEntries[0]!.parentId).toBeNull();
     expect(newEntries[1]!.parentId).toBe(newEntries[0]!.id);
     expect(newEntries[2]!.parentId).toBe(newEntries[1]!.id);
@@ -355,16 +355,16 @@ describe("branch-commands: /fork", () => {
     const ctx = await createContext(id, log, { sessionManager: manager });
     const result = await handleForkCommand(ctx, "");
     const newLog = await openSessionLog(ctx.resolveNewSessionId(result.newThreadId!));
-    const boundary = newLog.entries().find((entry): entry is CompactionEntry => entry.type === "compaction");
-    const copiedKept = newLog.entries().find((entry): entry is UserEntry => entry.type === "user" && entry.text === "kept");
-    const copiedTail = newLog.entries().find((entry): entry is PhaseEntry => entry.type === "phase" && entry.text === "tail");
+    const boundary = (await newLog.all()).find((entry): entry is CompactionEntry => entry.type === "compaction");
+    const copiedKept = (await newLog.all()).find((entry): entry is UserEntry => entry.type === "user" && entry.text === "kept");
+    const copiedTail = (await newLog.all()).find((entry): entry is PhaseEntry => entry.type === "phase" && entry.text === "tail");
 
     expect(boundary).toBeDefined();
     expect(copiedKept).toBeDefined();
     expect(copiedTail).toBeDefined();
     expect(boundary!.firstKeptEntryId).toBe(copiedKept!.id);
     expect(boundary!.firstKeptEntryId).not.toBe(kept.id);
-    expect(contextEntries(newLog.entries(), newLog.leaf()).map((entry) => entry.id)).toEqual([
+    expect(contextEntries((await newLog.all()), newLog.leaf()).map((entry) => entry.id)).toEqual([
       boundary!.id,
       copiedKept!.id,
       copiedTail!.id,
@@ -379,7 +379,7 @@ describe("branch-commands: /fork", () => {
     await log.flush();
 
     // Capture source state before fork
-    const sourceEntriesBefore = log.entries().map(e => e.id);
+    const sourceEntriesBefore = (await log.all()).map(e => e.id);
     const sourceLeafBefore = log.leaf();
 
     const manager = new SessionManager();
@@ -387,10 +387,10 @@ describe("branch-commands: /fork", () => {
     await handleForkCommand(ctx, "");
 
     // Verify source is unchanged
-    expect(log.entries().map(e => e.id)).toEqual(sourceEntriesBefore);
+    expect((await log.all()).map(e => e.id)).toEqual(sourceEntriesBefore);
     expect(log.leaf()).toBe(sourceLeafBefore);
-    expect(log.entries()[0]!.id).toBe(user1.id);
-    expect(log.entries()[1]!.id).toBe(phase1.id);
+    expect((await log.all())[0]!.id).toBe(user1.id);
+    expect((await log.all())[1]!.id).toBe(phase1.id);
   });
 
   test("fork from a specific entry copies only the path to that entry", async () => {
@@ -412,7 +412,7 @@ describe("branch-commands: /fork", () => {
 
     const newSessionId = ctx.resolveNewSessionId(result.newThreadId!);
     const newLog = await openSessionLog(newSessionId);
-    expect(newLog.entries()).toHaveLength(2);
+    expect((await newLog.all())).toHaveLength(2);
   });
 
   test("fork with unknown entryId returns error", async () => {
@@ -468,8 +468,8 @@ describe("branch-commands: /fork", () => {
     const newLog = await openSessionLog(newSessionId);
 
     // Should only have the path to phase1 (user1 + phase1)
-    expect(newLog.entries()).toHaveLength(2);
-    expect(pathOf(newLog.entries(), newLog.leaf()!).map(e => (e as UserEntry | PhaseEntry).text || (e as PhaseEntry).text))
+    expect((await newLog.all())).toHaveLength(2);
+    expect(pathOf((await newLog.all()), newLog.leaf()!).map(e => (e as UserEntry | PhaseEntry).text || (e as PhaseEntry).text))
       .toEqual(["Question", "Réponse 1"]);
   });
 
@@ -501,7 +501,7 @@ describe("branch-commands: /fork", () => {
     // Verify attachment was copied
     const newSessionId = ctx.resolveNewSessionId(result.newThreadId!);
     const newLog = await openSessionLog(newSessionId);
-    const newUserEntry = newLog.entries()[0] as UserEntry;
+    const newUserEntry = (await newLog.all())[0] as UserEntry;
     expect(newUserEntry.attachments).toHaveLength(1);
     const newPath = newUserEntry.attachments![0]!.path;
     expect(newPath).not.toBe(sourcePath);
@@ -593,7 +593,7 @@ describe("branch-commands: /fork", () => {
     // The entry should still have the attachment with the old (dead) path
     const newSessionId = ctx.resolveNewSessionId(result.newThreadId!);
     const newLog = await openSessionLog(newSessionId);
-    const newUserEntry = newLog.entries()[0] as UserEntry;
+    const newUserEntry = (await newLog.all())[0] as UserEntry;
     expect(newUserEntry.attachments).toHaveLength(1);
     expect(newUserEntry.attachments![0]!.path).toBe(missingPath);
   });
@@ -1140,7 +1140,7 @@ describe("branch-commands: /redo", () => {
     const result = await handleRedoCommand(ctx, "");
     expect(result.reset).toBe("branch-switch");
     expect(log.leaf()).toBe(journal.id);
-    expect(log.path().map((e) => e.id)).toContain(boundary.id);
+    expect((await log.path()).map((e) => e.id)).toContain(boundary.id);
   });
 
   test("a compaction written since the undo is a turn: redo refuses", async () => {

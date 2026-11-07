@@ -79,8 +79,8 @@ function summarizer(reply: (body: string) => string): { bodies: string[]; restor
 }
 
 const blocks = (summary: string, archive = "(none)") => `<summary>\n${summary}\n</summary>\n<archive>\n${archive}\n</archive>`;
-const boundaryOf = (): CompactionEntry | undefined =>
-  [...log.entries()].reverse().find((entry): entry is CompactionEntry => entry.type === "compaction");
+const boundaryOf = async (): Promise<CompactionEntry | undefined> =>
+  [...(await log.all())].reverse().find((entry): entry is CompactionEntry => entry.type === "compaction");
 
 test("the answer splits into a summary and an archive, and forgives a model that forgot the tags", () => {
   assert.deepEqual(splitSummaryOutput(blocks("## Goal\nopen", "### Release\n- done")), { summary: "## Goal\nopen", archive: "### Release\n- done" });
@@ -109,10 +109,10 @@ test("at rest nothing is kept but the owner's words: the prompt is his messages,
   } finally {
     mock.restore();
   }
-  const boundary = boundaryOf()!;
+  const boundary = (await boundaryOf())!;
   assert.equal(boundary.firstKeptEntryId, boundary.id, "nothing before it is kept: the prompt resumes after it");
-  assert.deepEqual(contextEntries(log.entries(), log.leaf()).map((e) => e.type), ["compaction"]);
-  const prompt = promptOf(log.entries(), log.leaf());
+  assert.deepEqual(contextEntries((await log.all()), log.leaf()).map((e) => e.type), ["compaction"]);
+  const prompt = promptOf((await log.all()), log.leaf());
   assert.ok(prompt.every((m) => m.role === "user"));
   assert.equal(prompt[prompt.length - 1]!.content.toString().includes("Keep the deployment pipeline green"), true, "the summary is last");
   assert.equal(prompt[prompt.length - 2]!.content, "Question 8", "right after the newest of his words");
@@ -120,7 +120,7 @@ test("at rest nothing is kept but the owner's words: the prompt is his messages,
 
   // What comes next follows the boundary, untouched.
   log.append<UserEntry>({ type: "user", prompt: true, text: "Next question" });
-  assert.equal(promptOf(log.entries(), log.leaf()).at(-1)!.content, "Next question");
+  assert.equal(promptOf((await log.all()), log.leaf()).at(-1)!.content, "Next question");
   await log.flush();
 });
 
@@ -128,7 +128,7 @@ test("a branch ending on the owner's message keeps that message after the summar
   conversation(8);
   log.append<UserEntry>({ type: "user", prompt: true, text: "The question being answered" });
   await log.flush();
-  const planned = planCompaction(log, 60);
+  const planned = await planCompaction(log, 60);
   assert.ok(planned.ok);
   const kept = planned.plan.entries.find((e) => e.id === planned.plan.firstKeptEntryId);
   assert.equal(kept?.type === "user" && kept.text, "The question being answered");
@@ -141,7 +141,7 @@ test("between two iterations the turn whose results the run is about to read sta
   log.append<PhaseEntry>({ type: "phase", prompt: true, runId: "live", text: "Reading" });
   log.append<ToolEntry>({ type: "tool", prompt: true, runId: "live", callId: "c1", name: "read", args: {}, output: "small", truncated: false, ok: true });
   await log.flush();
-  const planned = planCompaction(log, 60);
+  const planned = await planCompaction(log, 60);
   assert.ok(planned.ok);
   const kept = planned.plan.entries.slice(planned.plan.entries.findIndex((e) => e.id === planned.plan.firstKeptEntryId));
   assert.deepEqual(kept.map((e) => e.type), ["phase", "tool"]);
@@ -150,7 +150,7 @@ test("between two iterations the turn whose results the run is about to read sta
   log.append<PhaseEntry>({ type: "phase", prompt: true, runId: "live2", text: "Reading more" });
   log.append<ToolEntry>({ type: "tool", prompt: true, runId: "live2", callId: "c2", name: "read", args: {}, output: "x".repeat(4_000), truncated: false, ok: true });
   await log.flush();
-  const big = planCompaction(log, 60);
+  const big = await planCompaction(log, 60);
   assert.ok(big.ok);
   assert.equal(big.plan.firstKeptEntryId, undefined);
 });
@@ -166,8 +166,8 @@ test("what finished is archived on the boundary, indexed, and found by conversat
   } finally {
     mock.restore();
   }
-  assert.equal(boundaryOf()!.archive, "### Runner rebuild\n- Released as quokka-17, commit abc123");
-  assert.ok(!promptOf(log.entries(), log.leaf()).some((m) => String(m.content).includes("quokka-17")), "the archive is never replayed");
+  assert.equal((await boundaryOf())!.archive, "### Runner rebuild\n- Released as quokka-17, commit abc123");
+  assert.ok(!promptOf((await log.all()), log.leaf()).some((m) => String(m.content).includes("quokka-17")), "the archive is never replayed");
 
   const tool = createConversationSearchTool();
   const found = await tool.execute({ action: "search", source: "archive", query: "quokka" });
@@ -185,11 +185,11 @@ test("a summary from before the archive is archived as it is, once, and the mode
   conversation(8);
   // A boundary as every one was before: no archive field, the whole history in its summary.
   log.append<CompactionEntry>({ type: "compaction", prompt: true, summary: "Old summary: the zebra chantier, released long ago", firstKeptEntryId: "", tokensBefore: 1, count: 16 });
-  const legacyId = boundaryOf()!.id;
+  const legacyId = (await boundaryOf())!.id;
   // Point the legacy floor at the turns after it, as a real one would.
   conversation(8, 100);
-  const firstAfter = log.entries().find((e) => e.type === "user" && e.text === "Question 100")!;
-  (log.entries().find((e) => e.id === legacyId) as CompactionEntry).firstKeptEntryId = firstAfter.id;
+  const firstAfter = (await log.all()).find((e) => e.type === "user" && e.text === "Question 100")!;
+  ((await log.all()).find((e) => e.id === legacyId) as CompactionEntry).firstKeptEntryId = firstAfter.id;
   await log.flush();
 
   const first = summarizer(() => blocks("## Goal\nOnly what is open now, the zebra chantier being finished", "### Question 100\n- answered"));
@@ -199,7 +199,7 @@ test("a summary from before the archive is archived as it is, once, and the mode
   } finally {
     first.restore();
   }
-  const archived = boundaryOf()!.archive!;
+  const archived = (await boundaryOf())!.archive!;
   assert.match(archived, /## Summary before the archive\n\nOld summary: the zebra chantier, released long ago/);
   assert.match(archived, /## Finished since\n\n### Question 100/);
 
@@ -214,7 +214,7 @@ test("a summary from before the archive is archived as it is, once, and the mode
   } finally {
     second.restore();
   }
-  assert.equal(boundaryOf()!.archive, "");
+  assert.equal((await boundaryOf())!.archive, "");
 });
 
 test("the next pass carries the owner's kept words: they lead the transcript and stay candidates", async () => {
@@ -226,7 +226,7 @@ test("the next pass carries the owner's kept words: they lead the transcript and
   } finally {
     first.restore();
   }
-  assert.ok(boundaryOf()!.retained!.includes("Question 8"));
+  assert.ok((await boundaryOf())!.retained!.includes("Question 8"));
 
   conversation(6, 300);
   await log.flush();
@@ -237,24 +237,24 @@ test("the next pass carries the owner's kept words: they lead the transcript and
   } finally {
     second.restore();
   }
-  assert.equal(boundaryOf()!.retained!.at(-1), "Question 305");
+  assert.equal((await boundaryOf())!.retained!.at(-1), "Question 305");
   // His older words are still there while the budget holds them: they leave only for newer ones.
-  assert.ok(boundaryOf()!.retained!.includes("Question 8"), "the previous boundary's kept words stay candidates");
+  assert.ok((await boundaryOf())!.retained!.includes("Question 8"), "the previous boundary's kept words stay candidates");
 });
 
 test("a summary committed later keeps the turns that landed after it was planned", async () => {
   conversation(8);
   await log.flush();
-  const planned = planCompaction(log, 60);
+  const planned = await planCompaction(log, 60);
   assert.ok(planned.ok);
   assert.equal(planned.plan.firstKeptEntryId, undefined);
   // A background summary is claimed minutes later; the owner wrote in the meantime.
   log.append<UserEntry>({ type: "user", prompt: true, text: "Written while it was summarizing" });
   log.append<PhaseEntry>({ type: "phase", prompt: true, runId: "late", text: "Answered meanwhile" });
   const boundary = await commitCompaction(log, planned.plan, "## Goal\nthe summary", "");
-  const late = log.entries().find((e) => e.type === "user" && e.text === "Written while it was summarizing")!;
+  const late = (await log.all()).find((e) => e.type === "user" && e.text === "Written while it was summarizing")!;
   assert.equal(boundary.firstKeptEntryId, late.id);
-  assert.deepEqual(contextEntries(log.entries(), log.leaf()).map((e) => e.type), ["compaction", "user", "phase"]);
+  assert.deepEqual(contextEntries((await log.all()), log.leaf()).map((e) => e.type), ["compaction", "user", "phase"]);
   await log.flush();
 });
 
@@ -275,6 +275,6 @@ test("a background summary that keeps nothing is still claimable, and keeps what
   const claimed = await claimSpeculation(config(), sess);
   assert.equal(claimed?.ok, true, "a plan naming no kept entry must not read as a rewound one");
   assert.equal(claimed?.archive, "### Done early\n- archived in the background");
-  assert.equal(promptOf(log.entries(), log.leaf()).at(-1)!.content, "Written after the snapshot");
+  assert.equal(promptOf((await log.all()), log.leaf()).at(-1)!.content, "Written after the snapshot");
   await log.flush();
 });

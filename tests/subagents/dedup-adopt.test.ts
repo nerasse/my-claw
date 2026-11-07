@@ -81,7 +81,7 @@ test("no duplicate user bubble after a sub-agent run (pre-push + bridge push mer
     });
     // User entries are now in the log, not session.messages
     const log = await openSessionLog(id);
-    const userEntries = log.entries().filter((e) => e.type === "user");
+    const userEntries = (await log.all()).filter((e) => e.type === "user");
     assert.equal(userEntries.length, 1, "exactly one user bubble, got " + userEntries.length);
     await deleteSession(id);
   } finally {
@@ -124,7 +124,7 @@ test("live sub-agent session is adopted into the SessionManager cache during the
     assert.ok(inFlight, "session should be visible while the run is in flight");
     // User entries are now in the log, not session.messages
     const log = await openSessionLog(subId);
-    assert.ok(log.entries().some((e) => e.type === "user"), "the pre-pushed task should be there");
+    assert.ok((await log.all()).some((e) => e.type === "user"), "the pre-pushed task should be there");
     release?.();
     await running;
     if (subId) await deleteSession(subId);

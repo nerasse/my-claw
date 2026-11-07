@@ -131,7 +131,7 @@ test("an image sent to a sub-agent reaches the model as an image, not as a path"
 
     // The turn owns the picture: this field is what every later request reads back.
     await setup.log.flush();
-    const user = setup.log.entries().filter((e): e is UserEntry => e.type === "user").pop();
+    const user = (await setup.log.all()).filter((e): e is UserEntry => e.type === "user").pop();
     assert.deepEqual(user?.attachments, [{ type: "image", path, mimeType: "image/png" }]);
     // The path stays named in the text too, which is how the reader and the tools see it.
     assert.match(user?.text ?? "", /\[Attachments\]\n- image: /);
@@ -177,7 +177,7 @@ test("a send with no image sends no image block", async () => {
   try {
     await runner.send(id, "plain question", undefined, parentMessage(), reg, "my-claw-app/thread/owner/main");
     await setup.log.flush();
-    const user = setup.log.entries().filter((e): e is UserEntry => e.type === "user").pop();
+    const user = (await setup.log.all()).filter((e): e is UserEntry => e.type === "user").pop();
     assert.equal(user?.attachments, undefined);
     assert.equal(imageParts(sent.bodies[0] ?? []).length, 0);
   } finally {
@@ -200,7 +200,7 @@ test("a file that is not an image is listed, not carried", async () => {
   try {
     await runner.send(id, "read this", [{ type: "file", path }], parentMessage(), reg, "my-claw-app/thread/owner/main");
     await setup.log.flush();
-    const user = setup.log.entries().filter((e): e is UserEntry => e.type === "user").pop();
+    const user = (await setup.log.all()).filter((e): e is UserEntry => e.type === "user").pop();
     assert.equal(user?.attachments, undefined);
     assert.match(user?.text ?? "", /- file: /);
     assert.equal(imageParts(sent.bodies[0] ?? []).length, 0);

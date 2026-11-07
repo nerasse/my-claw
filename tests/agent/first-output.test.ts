@@ -143,7 +143,7 @@ test("the log keeps the wait on the phase, so a reopened thread shows it", async
     end();
   }
 
-  const [phase] = log.entries().filter((entry) => entry.type === "phase");
+  const [phase] = (await log.all()).filter((entry) => entry.type === "phase");
   assert.ok(phase && phase.type === "phase");
   assert.ok(phase.waitMs !== undefined, "the phase should carry the wait");
   assert.ok(phase.waitMs! >= 0);

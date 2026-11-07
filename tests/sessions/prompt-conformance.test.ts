@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { importSession } from "../../src/sessions/import.ts";
 import { promptOf } from "../../src/sessions/projection.ts";
 import { SessionLog, sessionDir } from "../../src/sessions/log.ts";
+import { SessionIndex } from "../../src/sessions/log-index.ts";
 import type { Entry } from "../../src/sessions/log.ts";
 import type { LegacySessionData, SessionMessage } from "../../src/sessions/store.ts";
 import type { ChatMessage } from "../../src/llm/provider.ts";
@@ -33,14 +34,14 @@ function session(messages: SessionMessage[], extra: Partial<LegacySessionData> =
 /** The new path, end to end: stored session, imported, appended to a real log, projected. */
 async function projected(data: LegacySessionData): Promise<ChatMessage[]> {
   const { entries: imported, boundaryIndex } = importSession(data);
-  const log = new SessionLog(SESSION_ID, [], null);
+  const log = new SessionLog(SESSION_ID, SessionIndex.empty(), null, 0, null);
   log.appendAll(imported, (entries: Entry[]) => {
     if (boundaryIndex < 0 || !entries[boundaryIndex]) return;
     const boundary = [...entries].reverse().find((entry) => entry.type === "compaction");
     if (boundary) (boundary as { firstKeptEntryId: string }).firstKeptEntryId = entries[boundaryIndex]!.id;
   });
   await log.flush();
-  return promptOf(log.entries(), log.leaf());
+  return promptOf((await log.all()), log.leaf());
 }
 
 const userMsg = (content: string, n: number, extra: Record<string, unknown> = {}): SessionMessage =>

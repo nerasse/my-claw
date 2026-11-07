@@ -163,7 +163,7 @@ describe("images in the prompt", () => {
       expect(parts.some((p) => p.type === "text" && (p.text ?? "").includes("[Attachments]"))).toBe(true);
 
       await setup.log.flush();
-      const injected = setup.log.entries().find((e): e is UserEntry => e.type === "user" && e.id === "m2");
+      const injected = (await setup.log.all()).find((e): e is UserEntry => e.type === "user" && e.id === "m2");
       expect(injected?.attachments).toEqual([{ type: "image", path, mimeType: "image/png" }]);
     } finally {
       mock.restore();

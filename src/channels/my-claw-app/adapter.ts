@@ -317,6 +317,7 @@ import {
   type MyClawAppFilesDeps,
 } from "./files-http.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
+import type { LogRecord } from "../../sessions/log-index.ts";
 import { continuable } from "../../sessions/resume.ts";
 import { rootSessionOf } from "../../sessions/siphon.ts";
 import { loadSession } from "../../sessions/store.ts";
@@ -2514,8 +2515,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
     if (this.live.isQueued(owner, threadId, id)) return true;
     try {
       const log = await sessionLogOf(this.store.resolveSessionId(owner, threadId));
-      if (log.get(id)) return true;
-      return log.entries().some((entry) => entry.type === "command" && entry.sourceId === id);
+      if (log.has(id)) return true;
+      // A command's answer bubble carries the send id as `sourceId` under an id of its own, and the
+      // index does not hold that field: the handful of command entries are read, nothing else is.
+      const commands: LogRecord[] = [];
+      for (let i = 0; i < log.count(); i++) {
+        const record = log.recordAt(i);
+        if (record.type === "command") commands.push(record);
+      }
+      return (await log.entriesIn(commands)).some((entry) => entry.type === "command" && entry.sourceId === id);
     } catch (err) {
       await myClawAppLog("debug", "duplicate check skipped", { threadId, error: String(err) });
       return false;
@@ -3242,7 +3250,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       return { ok: false, reason: "A run is already going here." };
     }
     const entries = await sessionLogOf(sessionId);
-    const state = continuable(entries.entries(), entries.leaf());
+    const state = continuable(await entries.context(), entries.leaf());
     if (!state.ok) return { ok: false, reason: state.reason };
     if (!this.messageHandler) return { ok: false, reason: "Continue is not available." };
     const id = `continue-${crypto.randomUUID()}`;

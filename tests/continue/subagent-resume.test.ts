@@ -68,7 +68,7 @@ test("resumed with no message: no new turn, the run picks up after its last resu
     expect(out).toBe("14 offres, 5 retenues.");
     expect(bodies[0]!.messages.at(-1)!.role).toBe("tool");
     await log.flush();
-    const users = log.entries().filter((e) => e.type === "user");
+    const users = (await log.all()).filter((e) => e.type === "user");
     expect(users).toHaveLength(1);
   } finally {
     mock.restore();

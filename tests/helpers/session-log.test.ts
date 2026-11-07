@@ -11,8 +11,8 @@ test("appends still in flight at cleanup never reach the next setup of the same 
     first.cleanup();
     const second = await setupSessionLog("test-helper-reuse");
     try {
-      expect(second.log.entries()).toEqual([]);
-      expect((await openSessionLog("test-helper-reuse")).entries()).toEqual([]);
+      expect(await second.log.all()).toEqual([]);
+      expect((await (await openSessionLog("test-helper-reuse")).all())).toEqual([]);
     } finally {
       second.cleanup();
     }

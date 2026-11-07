@@ -67,18 +67,18 @@ const toolEntry = (turnId: string, callId: string, name: string, output: string,
   log.append<ToolEntry>({ type: "tool", prompt: true, callId, name, args: {}, output, truncated: false, ok: true, runId: turnId, ...extra });
 
 describe("reading what a conversation stopped on", () => {
-  test("a stopped, a failed and a lost run can be continued; a finished one cannot", () => {
+  test("a stopped, a failed and a lost run can be continued; a finished one cannot", async () => {
     stoppedRun((t) => log.append({ type: "phase", prompt: true, text: "", runId: t }), "aborted");
-    expect(continuable(log.entries(), log.leaf())).toMatchObject({ ok: true, lastUserText: "compte les fichiers", ended: "aborted" });
+    expect(continuable((await log.all()), log.leaf())).toMatchObject({ ok: true, lastUserText: "compte les fichiers", ended: "aborted" });
     log.append({ type: "run_start", prompt: false });
-    expect(continuable(log.entries(), log.leaf())).toMatchObject({ ok: true, ended: "lost" });
+    expect(continuable((await log.all()), log.leaf())).toMatchObject({ ok: true, ended: "lost" });
     log.append({ type: "phase", prompt: true, text: "57 fichiers.", runId: "turn-2" });
     log.append({ type: "run_end", prompt: false, reason: "done" });
-    expect(continuable(log.entries(), log.leaf()).ok).toBe(false);
-    expect(lastAnswer(log.entries(), log.leaf())).toBe("57 fichiers.");
+    expect(continuable((await log.all()), log.leaf()).ok).toBe(false);
+    expect(lastAnswer((await log.all()), log.leaf())).toBe("57 fichiers.");
   });
 
-  test("a message stopped before its run wrote anything is continuable, whatever the run before it did", () => {
+  test("a message stopped before its run wrote anything is continuable, whatever the run before it did", async () => {
     // 2026-10-02: a run that finished, then the owner's next message stopped at once. Read from the
     // last run, it was "the last run finished" -- about a message nothing had answered.
     log.append({ type: "user", prompt: true, text: "bonjour" });
@@ -88,56 +88,56 @@ describe("reading what a conversation stopped on", () => {
     log.append({ type: "user", prompt: true, text: "compte les fichiers" });
     // Stopped before the run wrote its own marker: an end with no start.
     log.append({ type: "run_end", prompt: false, reason: "aborted" });
-    expect(continuable(log.entries(), log.leaf())).toMatchObject({ ok: true, lastUserText: "compte les fichiers", ended: "aborted" });
+    expect(continuable((await log.all()), log.leaf())).toMatchObject({ ok: true, lastUserText: "compte les fichiers", ended: "aborted" });
   });
 
-  test("a message no run ever took up is continuable; one whose run finished is not", () => {
+  test("a message no run ever took up is continuable; one whose run finished is not", async () => {
     log.append({ type: "user", prompt: true, text: "bonjour" });
     log.append({ type: "run_start", prompt: false });
     log.append({ type: "run_end", prompt: false, reason: "done" });
     log.append({ type: "user", prompt: true, text: "et ensuite ?" });
-    expect(continuable(log.entries(), log.leaf())).toMatchObject({ ok: true, lastUserText: "et ensuite ?", ended: "lost" });
+    expect(continuable((await log.all()), log.leaf())).toMatchObject({ ok: true, lastUserText: "et ensuite ?", ended: "lost" });
     // A message folded into a run that then finished was answered by that run.
     log.append({ type: "run_start", prompt: false });
     log.append({ type: "user", prompt: true, text: "steer" });
     log.append({ type: "run_end", prompt: false, reason: "done" });
-    expect(continuable(log.entries(), log.leaf()).ok).toBe(false);
+    expect(continuable((await log.all()), log.leaf()).ok).toBe(false);
   });
 
-  test("a sub-agent call the server lost is found from its card, in the turn that made it", () => {
+  test("a sub-agent call the server lost is found from its card, in the turn that made it", async () => {
     stoppedRun((t) => {
       log.append({ type: "phase", prompt: true, text: "", runId: t });
       toolEntry(t, "c-bash", "bash", "ok");
       log.append({ type: "spawn_state", prompt: false, callId: "c-spawn", subagentId: "subagent/wttj-4f2a", status: "running", action: "spawn", displayName: "wttj", agentType: "research", mode: "run", task: "offres WTTJ" });
     }, null);
-    expect(orphanCalls(log.entries(), log.leaf())).toEqual([{
+    expect(orphanCalls((await log.all()), log.leaf())).toEqual([{
       turnId: "turn-1", callId: "c-spawn", subagentId: "subagent/wttj-4f2a", name: "spawn",
       args: { name: "wttj", type: "research", mode: "run", task: "offres WTTJ" },
     }]);
   });
 
-  test("once the model has moved on, a lost call is left where it is", () => {
+  test("once the model has moved on, a lost call is left where it is", async () => {
     stoppedRun((t) => {
       log.append({ type: "phase", prompt: true, text: "", runId: t });
       log.append({ type: "spawn_state", prompt: false, callId: "c-spawn", subagentId: "subagent/x", status: "running", action: "spawn" });
       log.append({ type: "phase", prompt: true, text: "later", runId: "turn-2" });
     }, null);
-    expect(orphanCalls(log.entries(), log.leaf())).toEqual([]);
+    expect(orphanCalls((await log.all()), log.leaf())).toEqual([]);
   });
 
-  test("where the prompt ends decides whether it needs to be told it was cut off", () => {
+  test("where the prompt ends decides whether it needs to be told it was cut off", async () => {
     stoppedRun((t) => log.append({ type: "phase", prompt: true, text: "Voici 5 conseils : 1.", runId: t }));
-    expect(endsOnOwnText(log.entries(), log.leaf())).toBe(true);
+    expect(endsOnOwnText((await log.all()), log.leaf())).toBe(true);
   });
 
-  test("a cron report filed after the cut is looked through, by both readers of where the run stood", () => {
+  test("a cron report filed after the cut is looked through, by both readers of where the run stood", async () => {
     stoppedRun((t) => {
       log.append({ type: "phase", prompt: true, text: "Voici 5 conseils : 1.", runId: t });
       log.append({ type: "spawn_state", prompt: false, callId: "c-spawn", subagentId: "subagent/y", status: "running", action: "spawn" });
       log.append({ type: "command", prompt: true, input: "cron delivery", output: "[Cron: veille]", quiet: true });
     }, null);
-    expect(endsOnOwnText(log.entries(), log.leaf())).toBe(true);
-    expect(orphanCalls(log.entries(), log.leaf()).map((o) => o.callId)).toEqual(["c-spawn"]);
+    expect(endsOnOwnText((await log.all()), log.leaf())).toBe(true);
+    expect(orphanCalls((await log.all()), log.leaf()).map((o) => o.callId)).toEqual(["c-spawn"]);
   });
 });
 
@@ -172,7 +172,7 @@ describe("a Stop keeps the whole batch", () => {
       controller.abort();
       await expect(run).rejects.toThrow();
       await log.flush();
-      const tools = log.entries().filter((e): e is ToolEntry => e.type === "tool");
+      const tools = (await log.all()).filter((e): e is ToolEntry => e.type === "tool");
       // Both used to be thrown away with the batch.
       expect(tools.map((t) => [t.callId, t.ok, t.interrupted ?? false])).toEqual([["c-bash", true, false], ["c-spawn", false, true]]);
       expect(tools[1]!.output).toContain("subagent/wttj-4f2a");
@@ -199,7 +199,7 @@ describe("Continue", () => {
       log.append({ type: "phase", prompt: true, text: "", runId: t });
       toolEntry(t, "c1", "bash", "57");
     }, "error");
-    const users = log.entries().filter((e) => e.type === "user").length;
+    const users = (await log.all()).filter((e) => e.type === "user").length;
     const { bodies, restore } = capture([answer("Il y a 57 fichiers.")]);
     try {
       const text = await new AgentBridge(config, new ToolRegistry(), new SkillRegistry()).handleMessage(message(true), session());
@@ -207,8 +207,8 @@ describe("Continue", () => {
       const last = bodies[0]!.messages.at(-1)!;
       expect(last.role).toBe("tool");
       await log.flush();
-      expect(log.entries().filter((e) => e.type === "user").length).toBe(users);
-      const ends = log.entries().filter((e): e is Entry & { reason: string } => e.type === "run_end").map((e) => e.reason);
+      expect((await log.all()).filter((e) => e.type === "user").length).toBe(users);
+      const ends = (await log.all()).filter((e): e is Entry & { reason: string } => e.type === "run_end").map((e) => e.reason);
       expect(ends).toEqual(["error", "done"]);
     } finally {
       restore();
@@ -227,7 +227,7 @@ describe("Continue", () => {
       expect(users.filter((c) => typeof c === "string" && c.includes("compte les fichiers"))).toHaveLength(1);
       expect(bodies[0]!.messages.at(-1)!.role).toBe("user");
       await log.flush();
-      expect(log.entries().filter((e) => e.type === "user")).toHaveLength(1);
+      expect((await log.all()).filter((e) => e.type === "user")).toHaveLength(1);
     } finally {
       restore();
     }
@@ -240,7 +240,7 @@ describe("Continue", () => {
       await new AgentBridge(config, new ToolRegistry(), new SkillRegistry()).handleMessage(message(true), session());
       expect(bodies[0]!.messages.at(-1)).toEqual({ role: "user", content: CUT_OFF_NUDGE });
       await log.flush();
-      expect(JSON.stringify(log.entries())).not.toContain("[Continue]");
+      expect(JSON.stringify((await log.all()))).not.toContain("[Continue]");
     } finally {
       restore();
     }
@@ -287,7 +287,7 @@ describe("Continue", () => {
     try {
       await new AgentBridge(config, registry, new SkillRegistry()).handleMessage(message(true), session());
       expect(sent).toEqual(["subagent/lost-1"]);
-      expect(interruptedSubagents(log.entries(), log.leaf())).toEqual([]);
+      expect(interruptedSubagents((await log.all()), log.leaf())).toEqual([]);
       const prompt = bodies[0]!.messages;
       const spawnCall = prompt.find((m) => m.role === "assistant" && JSON.stringify(m).includes("c-lost"));
       expect(spawnCall).toBeDefined();

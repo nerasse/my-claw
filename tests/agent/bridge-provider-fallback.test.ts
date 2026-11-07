@@ -193,7 +193,7 @@ test("a failure between two calls costs the wait, not the work: the run continue
     // alpha-1: the tool turn, then two failures (the second after the wait); beta-1: the answer.
     assert.deepEqual(models, ["alpha-1", "alpha-1", "alpha-1", "beta-1"]);
     const log = await openSessionLog(SESSION_ID);
-    const bashCalls = log.entries().filter((entry) => entry.type === "tool" && entry.name === "bash");
+    const bashCalls = (await log.all()).filter((entry) => entry.type === "tool" && entry.name === "bash");
     assert.equal(bashCalls.length, 1, "the tool ran once: a fallback continues the run, it does not replay it");
   } finally {
     end();
@@ -346,7 +346,7 @@ test("the owner's turn is written once, whatever the run went through", async ()
   try {
     await run(bridge, createSession("alpha-1"), signal);
     const log = await openSessionLog(SESSION_ID);
-    const users = log.entries().filter((entry) => entry.type === "user");
+    const users = (await log.all()).filter((entry) => entry.type === "user");
     assert.equal(users.length, 1, "a fallback continues the run, it does not start a second one");
   } finally {
     end();

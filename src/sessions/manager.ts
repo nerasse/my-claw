@@ -285,11 +285,24 @@ export class SessionManager {
         void log("error", "session log: meta refused, opening without a cursor", { sessionId, error: String(err) });
         return null;
       });
-      const opened = await openSessionLog(sessionId, meta?.leafId ?? null);
-      // The open adopted a dead tail: the meta says so at once, or the next open does it again.
-      if (opened.repaired?.adoptedTail && meta) {
-        await writeMeta(sessionId, { ...meta, leafId: opened.leaf() }).catch((err) => {
+      const opened = await openSessionLog(sessionId, meta?.leafId ?? null, meta?.branchesChecked === true);
+      // The open adopted a dead tail, or healed a branch: the meta says so at once, or the next
+      // open does the same work again -- and re-reading the whole file to answer "nothing to do"
+      // is exactly what the flag exists to avoid.
+      if ((opened.repaired?.adoptedTail || opened.repaired?.relinked || opened.repaired?.reparented) && meta) {
+        await writeMeta(sessionId, { ...meta, leafId: opened.leaf(), branchesChecked: true }).catch((err) => {
           void log("error", "session log: could not persist the adopted leaf", { sessionId, error: String(err) });
+        });
+      }
+      opened.onRepaired = () => {
+        const current = this.sessions.get(sessionId);
+        if (current) markSessionDirty(current);
+      };
+      // The pass ran (or the meta already said so is not the case): record it, or the next process
+      // start reads the whole file again to answer "nothing to do".
+      if (opened.checkedBranches() && meta && !meta.branchesChecked) {
+        await writeMeta(sessionId, { ...meta, leafId: opened.leaf(), branchesChecked: true }).catch((err) => {
+          void log("error", "session log: could not record that the branch was checked", { sessionId, error: String(err) });
         });
       }
       // Every move of the leaf dirties the session, so the autosave carries it to the meta within
@@ -369,7 +382,7 @@ export class SessionManager {
   async sweepToolOutput(sessionId: string): Promise<number> {
     const openLog = this.logs.get(sessionId);
     if (!openLog) return 0;
-    return sweepOrphanToolOutput(sessionId, openLog.entries());
+    return sweepOrphanToolOutput(sessionId, await openLog.all());
   }
 
 

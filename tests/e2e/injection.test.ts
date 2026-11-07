@@ -191,7 +191,7 @@ describe("E2E mid-run injection", () => {
 
     try {
       await router.route(message("m1", "start"), { onToken: async () => {} });
-      const entries = (await manager.logOf(SESSION_ID)).entries();
+      const entries = (await (await manager.logOf(SESSION_ID)).all());
       const userAt = entries.findIndex((entry) => entry.id === "m-late");
       const reactionAt = entries.findIndex((entry) => entry.type === "phase" && entry.text === "reacting");
       const doneAt = entries.findIndex((entry) => entry.type === "phase" && entry.text === "done");
@@ -229,7 +229,7 @@ describe("E2E mid-run injection", () => {
 
     try {
       await router.route(message("m1", "start"), { onToken: async () => {} });
-      const entries = (await manager.logOf(SESSION_ID)).entries();
+      const entries = (await (await manager.logOf(SESSION_ID)).all());
       const phaseAt = entries.findIndex((entry) => entry.type === "phase" && entry.text === "Compris");
       const toolAt = entries.findIndex((entry) => entry.type === "tool");
       const userAt = entries.findIndex((entry) => entry.id === "m-mid");
@@ -269,7 +269,7 @@ describe("E2E mid-run injection", () => {
 
     try {
       await router.route(message("m1", "start"), { onToken: async () => {} });
-      const voice = (await manager.logOf(SESSION_ID)).entries().find((entry): entry is UserEntry => entry.id === "m-voice");
+      const voice = (await (await manager.logOf(SESSION_ID)).all()).find((entry): entry is UserEntry => entry.id === "m-voice");
       expect(voice?.transcripts).toEqual({ "/files/voice.m4a": "vérifie les headers" });
     } finally {
       mock.restore(); runRegistry.clear(); resetSessionLogResolver();
@@ -292,7 +292,7 @@ describe("E2E mid-run injection", () => {
     const mock = mockFetch(async () => sse([{ choices: [{ delta: { content: "ok" } }] }]));
     try {
       await router.route(message("m-once", "already here"), { onToken: async () => {} });
-      const bubbles = log.entries().filter((entry): entry is UserEntry => entry.type === "user" && entry.id === "m-once");
+      const bubbles = (await log.all()).filter((entry): entry is UserEntry => entry.type === "user" && entry.id === "m-once");
       expect(bubbles.length).toBe(1);
       expect(bubbles[0]!.text).toBe("already here");
     } finally {

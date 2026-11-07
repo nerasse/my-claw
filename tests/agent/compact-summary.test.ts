@@ -82,7 +82,7 @@ test("the summary is returned and left in the history as the message the next ru
     assert.equal(result.beforeCount, before);
     assert.ok(result.afterCount < before);
     // The summary is in the log as a CompactionEntry
-    const entries = logSetup!.log.entries();
+    const entries = (await logSetup!.log.all());
     const compactionEntry = entries.find((e) => e.type === "compaction");
     assert.ok(compactionEntry, "a compaction entry must exist in the log");
     assert.ok((compactionEntry as { summary: string }).summary.includes(SUMMARY.trim()));
@@ -113,12 +113,12 @@ test("an empty or too-short summary is refused rather than written over the hist
     const mock = mockFetch(async () => reply(content));
     try {
       const s = await sessionWithLog();
-      const beforeCount = logSetup!.log.entries().length;
+      const beforeCount = (await logSetup!.log.all()).length;
       const result = await compactSession(config(), s);
       assert.equal(result.ok, false);
       assert.equal(result.afterCount, beforeCount);
       // No compaction entry should be added
-      const compactionEntries = logSetup!.log.entries().filter((e) => e.type === "compaction");
+      const compactionEntries = (await logSetup!.log.all()).filter((e) => e.type === "compaction");
       assert.equal(compactionEntries.length, 0, "a refused compaction must leave the history untouched");
     } finally {
       mock.restore();

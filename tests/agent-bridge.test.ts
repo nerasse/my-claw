@@ -78,7 +78,7 @@ test("AgentBridge returns plain LLM response", async () => {
     assert.equal(response, "hi back");
     // Verify the log has the entries (1 user + 1 phase = 2 prompt entries)
     await sharedLog.flush();
-    const entries = sharedLog.entries();
+    const entries = (await sharedLog.all());
     assert.equal(entries.filter(e => e.prompt).length, 2);
     assert.equal(entries[0]!.type, "user");
     // The run markers sit between the trigger turn and the work (docs/run-grouping.md).
@@ -101,7 +101,7 @@ test("the run_start marker carries the run context's id, the one chat.run.start 
     const session = createSession();
     await withRunContext({ runId: "abcdef12", platform: "test" }, () => bridge.handleMessage(createMessage(), session));
     await sharedLog.flush();
-    const marker = sharedLog.entries().find((e) => e.type === "run_start");
+    const marker = (await sharedLog.all()).find((e) => e.type === "run_start");
     assert.equal(marker?.type === "run_start" ? marker.runId : undefined, "abcdef12");
   } finally {
     fetchMock.restore();
@@ -164,7 +164,7 @@ test("AgentBridge executes tool calls and supports model override", async () => 
     assert.deepEqual(seenModels, ["override-model", "override-model"]);
     // Verify tool entry exists in the log
     await sharedLog.flush();
-    const entries = sharedLog.entries();
+    const entries = (await sharedLog.all());
     assert.equal(entries.some(e => e.type === "tool"), true);
   } finally {
     fetchMock.restore();

@@ -73,7 +73,7 @@ test("bridge: an empty tool output is encapsulated with a placeholder (never emp
     const session = createSession();
     await bridge.handleMessage(createMessage(), session, signal);
     await log.flush();
-    const toolEntry = log.entries().find((e): e is ToolEntry => e.type === "tool" && e.callId === "tc1");
+    const toolEntry = (await log.all()).find((e): e is ToolEntry => e.type === "tool" && e.callId === "tc1");
     assert.ok(toolEntry, "tool result recorded");
     assert.ok(toolEntry.output.trim().length > 0, "tool result content is not empty");
     assert.match(toolEntry.output, /empty response/i);

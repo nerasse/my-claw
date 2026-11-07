@@ -148,7 +148,7 @@ export function startSpeculation(config: MyClawConfig, session: SessionData): vo
   const done = (async () => {
     try {
       const sessionLog = await sessionLogOf(sessionId);
-      const planned = planCompaction(sessionLog, retainedBudgetFor(config, session));
+      const planned = await planCompaction(sessionLog, retainedBudgetFor(config, session));
       if (!planned.ok) {
         void logLine("debug", "speculative compaction not planned", { sessionId, reason: planned.reason });
         return;
@@ -197,8 +197,11 @@ export async function claimSpeculation(config: MyClawConfig, session: SessionDat
   armed.delete(session.id);
 
   const sessionLog = await sessionLogOf(session.id);
-  const before = pathOf(sessionLog.entries(), sessionLog.leaf()).filter((e) => e.prompt).length;
-  if (!stillValid(entry.plan, sessionLog.entries(), sessionLog.leaf(), retainedBudgetFor(config, session))) {
+  // The whole log, on purpose: this count is reported to the owner and is about the branch, not
+  // about what a prompt would carry -- and a compaction is the one operation that reads it all.
+  const all = await sessionLog.all();
+  const before = pathOf(all, sessionLog.leaf()).filter((e) => e.prompt).length;
+  if (!stillValid(entry.plan, all, sessionLog.leaf(), retainedBudgetFor(config, session))) {
     void logLine("info", "speculative compaction discarded, the branch moved", { sessionId: session.id });
     return undefined;
   }
@@ -206,7 +209,7 @@ export async function claimSpeculation(config: MyClawConfig, session: SessionDat
   const boundary = await commitCompaction(sessionLog, entry.plan, entry.summary, entry.archive, entry.elapsedMs);
   indexCompactionArchive(session, boundary);
   session.lastActiveAt = new Date().toISOString();
-  const afterCount = contextEntries(sessionLog.entries(), sessionLog.leaf()).length;
+  const afterCount = contextEntries(await sessionLog.context(), sessionLog.leaf()).length;
   void logLine("info", "speculative compaction claimed", { sessionId: session.id, beforeCount: before, afterCount });
   return {
     ok: true,

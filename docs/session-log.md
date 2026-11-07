@@ -29,6 +29,7 @@ sont implémentés ; ce document conserve la conception et les décisions qui le
 - [Annexe C — Journal de livraison](#annexe-c--journal-de-livraison)
 - [Annexe D — Où en est le lot 3b](#annexe-d--où-en-est-le-lot-3b)
 - [Annexe E — Le disque plein du 2026-09-12](#annexe-e--le-disque-plein-du-2026-09-12)
+- [Annexe F — L'index du log](#annexe-f--lindex-du-log)
 
 ---
 
@@ -1866,3 +1867,19 @@ Four boundaries now agree, and each one covers what the others cannot:
 
 The log stays history: nothing is edited in place, and the original name is still readable in the
 output of the entry that got rewritten. What changes is what can be replayed.
+
+---
+
+# Annexe F — L'index du log
+
+Ouverture d'une conversation, démarrage d'un run, page d'historique : plus rien de tout ça ne lit
+le log. `entries.idx` (56 octets par entrée, dérivé et reconstructible) situe chaque entrée, et
+`SessionLog` ne lit que les octets de la fenêtre demandée.
+
+Mesuré sur la conversation de 46 355 entrées de cette install : **1 380 ms → 67 ms** à l'ouverture,
+**~1 600 ms → 54-77 ms** pour un `sync`, **1 100 ms → 45-80 ms** pour le démarrage d'un run, et
+**~780 Mo → 135 Mo** de RSS après ouverture.
+
+`entries()` sans `await` lève volontairement : un chemin qui doit lire le log entier dit `all()`.
+Le détail du format, du contrat et de la passe de maintenance de boot est dans
+[session-index.md](session-index.md).

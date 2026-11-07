@@ -37,10 +37,10 @@ describe("session log: append and read back", () => {
     // The id the caller got back is the id on disk: that is what lets a live bubble and a
     // replayed one be the same bubble, with no sourceId to reconcile.
     const reopened = await openSessionLog(id);
-    expect(reopened.entries().map((e) => e.id)).toEqual([user.id, phase.id]);
+    expect((await reopened.all()).map((e) => e.id)).toEqual([user.id, phase.id]);
     expect(reopened.head()).toBe(phase.id);
     expect(reopened.leaf()).toBe(phase.id);
-    const stored = reopened.get(phase.id) as PhaseEntry;
+    const stored = (await reopened.entryById(phase.id)) as PhaseEntry;
     expect(stored.reasoning).toBe("je reflechis");
     expect(stored.parentId).toBe(user.id);
     expect(stored.seq).toBe(1);
@@ -72,8 +72,8 @@ describe("session log: append and read back", () => {
     await log.flush();
 
     const reopened = await openSessionLog(id);
-    expect(reopened.entries().map((e) => e.type)).toEqual(["tool", "command", "failure", "compaction", "model_change", "note"]);
-    const tool = reopened.entries()[0] as ToolEntry;
+    expect((await reopened.all()).map((e) => e.type)).toEqual(["tool", "command", "failure", "compaction", "model_change", "note"]);
+    const tool = (await reopened.all())[0] as ToolEntry;
     expect(tool.args).toEqual({ command: "ls" });
     expect(tool.callId).toBe("call-1");
   });
@@ -98,14 +98,14 @@ describe("session log: damage is bounded to a line", () => {
     // What a process killed mid-append leaves: the last line stops in the middle of the object.
     await truncate(file, raw.length - 20);
     const reopened = await openSessionLog(id);
-    expect(reopened.entries()).toHaveLength(2);
-    expect((reopened.entries()[1] as UserEntry).text).toBe("deux");
+    expect((await reopened.all())).toHaveLength(2);
+    expect(((await reopened.all())[1] as UserEntry).text).toBe("deux");
 
     // And the log keeps working: the next append lands after the survivors.
     const next = reopened.append<UserEntry>({ type: "user", prompt: true, text: "quatre" });
     await reopened.flush();
-    expect(next.parentId).toBe(reopened.entries()[1]!.id);
-    expect((await openSessionLog(id)).entries()).toHaveLength(3);
+    expect(next.parentId).toBe((await reopened.all())[1]!.id);
+    expect((await (await openSessionLog(id)).all())).toHaveLength(3);
   });
 
   test("a broken line in the middle does not hide the ones after it", async () => {
@@ -119,14 +119,14 @@ describe("session log: damage is bounded to a line", () => {
     await log.flush();
 
     const reopened = await openSessionLog(id);
-    expect(reopened.entries().map((e) => (e as UserEntry).text)).toEqual(["un", "trois"]);
+    expect((await reopened.all()).map((e) => (e as UserEntry).text)).toEqual(["un", "trois"]);
   });
 
   test("a line that is valid JSON but not an entry is skipped", async () => {
     const id = freshId();
     await seed(id, ["un"]);
     await appendFile(entriesPath(id), `${JSON.stringify({ hello: "world" })}\n`, "utf-8");
-    expect((await openSessionLog(id)).entries()).toHaveLength(1);
+    expect((await (await openSessionLog(id)).all())).toHaveLength(1);
   });
 
   test("an entry of an unknown type is kept, not dropped", async () => {
@@ -140,16 +140,16 @@ describe("session log: damage is bounded to a line", () => {
       "utf-8",
     );
     const reopened = await openSessionLog(id);
-    expect(reopened.entries()).toHaveLength(2);
-    expect(reopened.entries()[1]!.type as string).toBe("hologram");
+    expect((await reopened.all())).toHaveLength(2);
+    expect((await reopened.all())[1]!.type as string).toBe("hologram");
   });
 
   test("a missing file is a new conversation, not an error", async () => {
     const log = await openSessionLog(freshId());
-    expect(log.entries()).toHaveLength(0);
+    expect((await log.all())).toHaveLength(0);
     expect(log.head()).toBeNull();
     expect(log.leaf()).toBeNull();
-    expect(log.path()).toEqual([]);
+    expect((await log.path())).toEqual([]);
   });
 });
 
@@ -173,7 +173,7 @@ describe("session log: the branch a leaf ends", () => {
 
   test("a path walks up parentId and comes back oldest first", async () => {
     const { log, a, k, c } = await forked();
-    expect(log.path().map((e) => e.id)).toEqual([a.id, k.id, c.id]);
+    expect((await log.path()).map((e) => e.id)).toEqual([a.id, k.id, c.id]);
     await log.flush();
   });
 
@@ -182,15 +182,15 @@ describe("session log: the branch a leaf ends", () => {
     await log.flush();
     // This is what makes a retry non-destructive: the turn that was replaced is not gone, it is
     // beside the new one.
-    expect(log.entries()).toHaveLength(4);
-    expect(log.path().map((e) => e.id)).toEqual([a.id, k.id, c.id]);
+    expect((await log.all())).toHaveLength(4);
+    expect((await log.path()).map((e) => e.id)).toEqual([a.id, k.id, c.id]);
     log.branch(b.id);
-    expect(log.path().map((e) => e.id)).toEqual([a.id, b.id]);
+    expect((await log.path()).map((e) => e.id)).toEqual([a.id, b.id]);
   });
 
   test("both tips are listed as leaves, the trunk is not", async () => {
     const { log, a, b, c } = await forked();
-    const leaves = leavesOf(log.entries()).map((e) => e.id).sort();
+    const leaves = leavesOf((await log.all())).map((e) => e.id).sort();
     expect(leaves).toEqual([b.id, c.id].sort());
     expect(leaves).not.toContain(a.id);
     await log.flush();
@@ -199,8 +199,8 @@ describe("session log: the branch a leaf ends", () => {
   test("branching to nothing empties the path without touching the entries", async () => {
     const { log } = await forked();
     log.branch(null);
-    expect(log.path()).toEqual([]);
-    expect(log.entries()).toHaveLength(4);
+    expect((await log.path())).toEqual([]);
+    expect((await log.all())).toHaveLength(4);
     // And the next append starts a root, exactly like a fresh conversation.
     const root = log.append<UserEntry>({ type: "user", prompt: true, text: "on repart" });
     expect(root.parentId).toBeNull();
@@ -220,7 +220,7 @@ describe("session log: the branch a leaf ends", () => {
     await log.flush();
     const reopened = await openSessionLog(log.sessionId, k2.id);
     expect(reopened.repaired).toBeNull();
-    expect(reopened.path().map((e) => e.id)).toEqual([a.id, b.id, k2.id]);
+    expect((await reopened.path()).map((e) => e.id)).toEqual([a.id, b.id, k2.id]);
   });
 
   test("a fork nothing marked as deliberate is healed at open: the abandoned entries return in file order", async () => {
@@ -234,14 +234,14 @@ describe("session log: the branch a leaf ends", () => {
     await log.flush();
     const reopened = await openSessionLog(log.sessionId, c.id);
     expect(reopened.repaired?.relinked).toBe(1);
-    expect(reopened.path().map((e) => e.id)).toEqual([a.id, b.id, c.id]);
+    expect((await reopened.path()).map((e) => e.id)).toEqual([a.id, b.id, c.id]);
   });
 
   test("an unknown leaf falls back to the last entry rather than an empty thread", async () => {
     const { log, c } = await forked();
     await log.flush();
     const reopened = await openSessionLog(log.sessionId, "gone");
-    expect(reopened.path().map((e) => e.id)).toContain(c.id);
+    expect((await reopened.path()).map((e) => e.id)).toContain(c.id);
   });
 
   test("pathOf survives a parent chain that loops", async () => {
@@ -259,7 +259,7 @@ describe("session log: the sync cursor", () => {
     const id = freshId();
     await seed(id, ["un", "deux"]);
     const log = await openSessionLog(id);
-    expect(log.since(log.head())).toEqual([]);
+    expect(await log.since(log.head())).toEqual([]);
     await log.flush();
   });
 
@@ -267,7 +267,7 @@ describe("session log: the sync cursor", () => {
     const id = freshId();
     await seed(id, ["un", "deux"]);
     const log = await openSessionLog(id);
-    expect(log.since(null)).toHaveLength(2);
+    expect(await log.since(null)).toHaveLength(2);
     await log.flush();
   });
 
@@ -277,7 +277,7 @@ describe("session log: the sync cursor", () => {
     const log = await openSessionLog(id);
     // Silence here is what lets two windows drift apart with nobody noticing; the client has to
     // be told its delta was refused so it can ask for a full page.
-    expect(() => log.since("compacted-away")).toThrow(UnknownCursorError);
+    await expect(log.since("compacted-away")).rejects.toThrow(UnknownCursorError);
     await log.flush();
   });
 
@@ -292,7 +292,7 @@ describe("session log: the sync cursor", () => {
 
     // The entry written on the other branch still reaches it as an ordinary delta: what changed
     // is the leaf, which travels beside the entries rather than inside them.
-    expect(log.since(b.id).map((e) => e.id)).toEqual([c.id]);
+    expect((await log.since(b.id)).map((e) => e.id)).toEqual([c.id]);
     expect(log.leaf()).toBe(c.id);
   });
 });
@@ -342,7 +342,7 @@ describe("session log: what it costs", () => {
     const after = await readFile(entriesPath(id), "utf-8");
     expect(after.startsWith(before)).toBe(true);
     expect(after.slice(before.length)).toBe(`${JSON.stringify(entry)}\n`);
-    expect(log.entries()).toHaveLength(4001);
+    expect((await log.all())).toHaveLength(4001);
   });
 
   test("appends queued together all land, in order", async () => {
@@ -350,7 +350,7 @@ describe("session log: what it costs", () => {
     const log = await openSessionLog(id);
     const ids = Array.from({ length: 50 }, (_, i) => log.append<UserEntry>({ type: "user", prompt: true, text: `m${i}` }).id);
     await log.flush();
-    expect((await openSessionLog(id)).entries().map((e) => e.id)).toEqual(ids);
+    expect((await (await openSessionLog(id)).all()).map((e) => e.id)).toEqual(ids);
   });
 });
 
@@ -395,7 +395,7 @@ describe("session log: appendAll", () => {
       (entries[0] as { text: string }).text = "apres";
     });
     await log.flush();
-    expect((await openSessionLog(id)).entries().map((e) => (e as { text: string }).text)).toEqual(["apres"]);
+    expect((await (await openSessionLog(id)).all()).map((e) => (e as { text: string }).text)).toEqual(["apres"]);
   });
 
   test("the batch chains onto what is already there and moves the leaf", async () => {
@@ -406,7 +406,7 @@ describe("session log: appendAll", () => {
     expect(batch[0]!.parentId).toBe(first.id);
     expect(batch[1]!.parentId).toBe(batch[0]!.id);
     expect(log.leaf()).toBe(batch[1]!.id);
-    expect(log.path()).toHaveLength(3);
+    expect((await log.path())).toHaveLength(3);
   });
 
   test("an input keeps its own timestamp, and its id encodes it", async () => {
@@ -427,7 +427,7 @@ describe("session log: appendAll", () => {
     expect(log.appendAll([])).toEqual([]);
     await log.flush();
     expect(log.leaf()).toBe(first.id);
-    expect((await openSessionLog(id)).entries()).toHaveLength(1);
+    expect((await (await openSessionLog(id)).all())).toHaveLength(1);
   });
 
   test("seq stays dense across a batch, so a cursor keeps working", async () => {
@@ -436,6 +436,6 @@ describe("session log: appendAll", () => {
     log.appendAll([{ type: "user", prompt: true, text: "b" }, { type: "user", prompt: true, text: "c" }]);
     log.append<UserEntry>({ type: "user", prompt: true, text: "d" });
     await log.flush();
-    expect(log.entries().map((e) => e.seq)).toEqual([0, 1, 2, 3]);
+    expect((await log.all()).map((e) => e.seq)).toEqual([0, 1, 2, 3]);
   });
 });

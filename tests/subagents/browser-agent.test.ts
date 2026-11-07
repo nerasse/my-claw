@@ -233,7 +233,7 @@ describe("delegate_browser_task runs the browser agent as a sub-agent", () => {
       expect(session?.meta?.visibility).toBe("private");
       expect(session?.meta?.type).toBe("browser");
       const log = await openSessionLog(spawned[0]!.id);
-      const first = log.path()[0];
+      const first = (await log.path())[0];
       expect(first?.type).toBe("user");
       const task = first && "text" in first ? String(first.text) : "";
       expect(task).toContain("Task: Read the price");

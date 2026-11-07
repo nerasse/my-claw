@@ -68,7 +68,7 @@ describe("a write that stopped short", () => {
 
     // The stump costs itself and nothing else: the three entries come back, chained.
     const reopened = await openSessionLog(id, third.id);
-    expect(reopened.path().map((entry) => entry.id)).toEqual([first.id, second.id, third.id]);
+    expect((await reopened.path()).map((entry) => entry.id)).toEqual([first.id, second.id, third.id]);
   });
 });
 
@@ -135,8 +135,8 @@ describe("a log a short write tore, reopened", () => {
     const file = await plant(id, "stump-without-identity.jsonl");
 
     const log = await openSessionLog(id);
-    const entries = log.entries();
-    const path = log.path();
+    const entries = (await log.all());
+    const path = (await log.path());
 
     // Eighteen lines in the file, one of them holding a stump and an entry: the stump is not an
     // entry, the one behind it is.
@@ -173,7 +173,7 @@ describe("a log a short write tore, reopened", () => {
     const before = await readFile(file, "utf-8");
     const again = await openSessionLog(id);
     expect(again.repaired).toBeNull();
-    expect(again.path().map((entry) => entry.id)).toEqual(path.map((entry) => entry.id));
+    expect((await again.path()).map((entry) => entry.id)).toEqual(path.map((entry) => entry.id));
     expect(await readFile(file, "utf-8")).toBe(before);
     expect(await backupsOf(file)).toHaveLength(1);
   });
@@ -183,8 +183,8 @@ describe("a log a short write tore, reopened", () => {
     const file = await plant(id, "stump-with-identity.jsonl");
 
     const log = await openSessionLog(id);
-    const entries = log.entries();
-    const path = log.path();
+    const entries = (await log.all());
+    const path = (await log.path());
 
     expect(entries).toHaveLength(14);
     expect(log.repaired).toEqual({ relinked: 0, reparented: 1, adoptedTail: false });
@@ -227,7 +227,7 @@ describe("a log a short write tore, reopened", () => {
 
     const log = await openSessionLog(id, tool.id);
     expect(log.repaired).toBeNull();
-    expect(log.path().map((entry) => entry.id)).toEqual([user.id, log.entries()[1]!.id, tool.id]);
+    expect((await log.path()).map((entry) => entry.id)).toEqual([user.id, (await log.all())[1]!.id, tool.id]);
     expect(await readFile(file, "utf-8")).toBe(before);
     expect(await backupsOf(file)).toHaveLength(0);
     expect((await readdir(dirname(file))).filter((name) => name.endsWith(".tmp"))).toHaveLength(0);

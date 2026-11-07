@@ -115,7 +115,7 @@ describe("AgentBridge voice integration", () => {
     }
 
     await log.flush();
-    const userEntry = log.entries().find((e): e is UserEntry => e.type === "user");
+    const userEntry = (await log.all()).find((e): e is UserEntry => e.type === "user");
     expect(userEntry).toBeDefined();
     expect(userEntry!.text).toContain("[Audio]:");
   }, STARVED_RUNNER_TIMEOUT_MS);
@@ -224,7 +224,7 @@ describe("AgentBridge voice integration", () => {
 
     // The transcript is what the agent reads; the path is what lets it act on the recording.
     await log.flush();
-    const userEntry = log.entries().find((e): e is UserEntry => e.type === "user");
+    const userEntry = (await log.all()).find((e): e is UserEntry => e.type === "user");
     expect(userEntry).toBeDefined();
     const attachmentsMatch = userEntry!.text.match(/\[Attachments\][\s\S]*/);
     expect(attachmentsMatch).not.toBeNull();
@@ -265,7 +265,7 @@ describe("AgentBridge voice integration", () => {
     }
 
     await log.flush();
-    const userEntry = log.entries().find((e): e is UserEntry => e.type === "user");
+    const userEntry = (await log.all()).find((e): e is UserEntry => e.type === "user");
     expect(userEntry).toBeDefined();
     expect(userEntry!.text).toContain("[Audio]: [Transcription failed");
     // The words are lost, so the file is the only thing left to work with.

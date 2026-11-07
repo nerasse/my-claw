@@ -129,9 +129,9 @@ test("a context overflow the gate never saw is compacted and retried, not droppe
     assert.deepEqual(calls, ["run", "summarizer", "run"], "one refusal, one summary, one retry");
     // The recovery is a compaction, so the beginning of the conversation was summarised rather
     // than dropped: the boundary is on the branch and the history is still whole.
-    const context = contextEntries(log.entries(), log.leaf());
+    const context = contextEntries((await log.all()), log.leaf());
     assert.ok(context.some((e) => e.type === "compaction"), "a boundary was appended");
-    assert.ok(log.entries().length > context.length, "and nothing was deleted to get there");
+    assert.ok((await log.all()).length > context.length, "and nothing was deleted to get there");
   } finally {
     mock.restore();
     end();
@@ -237,7 +237,7 @@ test("a run ending inside the band arms a summary, and the next crossing spends 
     mock.restore();
   }
   assert.equal(armedSummary, 1, "the summary was computed in the background");
-  assert.equal(contextEntries(log.entries(), log.leaf()).some((e) => e.type === "compaction"), false, "nothing was committed yet");
+  assert.equal(contextEntries((await log.all()), log.leaf()).some((e) => e.type === "compaction"), false, "nothing was committed yet");
 
   const second = mockFetch(async (_url, init) => {
     const body = String(init?.body ?? "{}");
@@ -260,7 +260,7 @@ test("a run ending inside the band arms a summary, and the next crossing spends 
   }
 
   assert.deepEqual(calls, ["run", "summarizer", "run"], "the crossing claimed the armed summary instead of computing one");
-  const context = contextEntries(log.entries(), log.leaf());
+  const context = contextEntries((await log.all()), log.leaf());
   assert.ok(context.some((e) => e.type === "compaction"), "the armed summary was committed at the crossing");
-  assert.ok(log.entries().length > context.length, "and the history it stands for is still there");
+  assert.ok((await log.all()).length > context.length, "and the history it stands for is still there");
 });

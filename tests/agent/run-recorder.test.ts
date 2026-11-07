@@ -34,7 +34,7 @@ describe("RunRecorder: what a run produced", () => {
     recorder.runEnd("done", ["/tmp/shots/screenshot.png"]);
     await entries.flush();
 
-    const written = (await openSessionLog(SESSION)).entries().at(-1);
+    const written = (await (await openSessionLog(SESSION)).all()).at(-1);
     expect(written).toMatchObject({ type: "run_end", reason: "done", media: ["/tmp/shots/screenshot.png"] });
   });
 
@@ -45,7 +45,7 @@ describe("RunRecorder: what a run produced", () => {
     recorder.runEnd("done", ["/tmp/shots/screenshot.png"], ["f9929fee-16d2"]);
     await entries.flush();
 
-    const written = (await openSessionLog(SESSION)).entries().at(-1);
+    const written = (await (await openSessionLog(SESSION)).all()).at(-1);
     expect(written).toMatchObject({
       type: "run_end",
       media: ["/tmp/shots/screenshot.png"],
@@ -59,7 +59,7 @@ describe("RunRecorder: what a run produced", () => {
     recorder.runEnd("done");
     await entries.flush();
 
-    expect((await openSessionLog(SESSION)).entries().at(-1)).not.toHaveProperty("media");
+    expect((await (await openSessionLog(SESSION)).all()).at(-1)).not.toHaveProperty("media");
   });
 
   test("an error marker carries why, so a roster never has to guess the reason", async () => {
@@ -67,7 +67,7 @@ describe("RunRecorder: what a run produced", () => {
     recorder.runEnd("error", undefined, undefined, "quota_exhausted");
     await entries.flush();
 
-    expect((await openSessionLog(SESSION)).entries().at(-1)).toMatchObject({
+    expect((await (await openSessionLog(SESSION)).all()).at(-1)).toMatchObject({
       type: "run_end",
       reason: "error",
       failure: "quota_exhausted",
@@ -80,7 +80,7 @@ describe("RunRecorder: what a run produced", () => {
     recorder.runEnd("done", undefined, undefined, "quota_exhausted");
     await entries.flush();
 
-    expect((await openSessionLog(SESSION)).entries().at(-1)).not.toHaveProperty("failure");
+    expect((await (await openSessionLog(SESSION)).all()).at(-1)).not.toHaveProperty("failure");
   });
 });
 
@@ -97,7 +97,7 @@ describe("RunRecorder: one model turn", () => {
     await entries.flush();
 
     expect(user.id).toBe("bubble-user");
-    expect((await openSessionLog(SESSION)).entries()[0]!.id).toBe("bubble-user");
+    expect((await (await openSessionLog(SESSION)).all())[0]!.id).toBe("bubble-user");
   });
 
   test("a turn with no phases is its own only phase", async () => {
@@ -139,7 +139,7 @@ describe("RunRecorder: one model turn", () => {
     await entries.flush();
     expect(phases[0]).toMatchObject({ type: "phase", reasoningMs: 4200 });
     const reopened = await openSessionLog(SESSION);
-    const stored = reopened.entries().find((entry) => entry.type === "phase");
+    const stored = (await reopened.all()).find((entry) => entry.type === "phase");
     expect(stored).toMatchObject({ reasoning: "je reflechis", reasoningMs: 4200 });
   });
 
@@ -179,7 +179,7 @@ describe("RunRecorder: provider state", () => {
     const recorder = new RunRecorder(entries);
     recorder.turn({ content: "x", providerMeta: meta });
     await entries.flush();
-    const reread = (await openSessionLog(SESSION)).entries()[0] as PhaseEntry;
+    const reread = (await (await openSessionLog(SESSION)).all())[0] as PhaseEntry;
     expect(reread.providerMeta).toEqual(meta);
   });
 
@@ -271,7 +271,7 @@ describe("RunRecorder: the prompt it produces", () => {
     recorder.turn({ content: "voila" });
     await entries.flush();
 
-    expect(promptOf(entries.entries(), entries.leaf())).toEqual([
+    expect(promptOf((await entries.all()), entries.leaf())).toEqual([
       { role: "user", content: "liste" },
       { role: "assistant", content: "je regarde", tool_calls: [{ id: "c1", type: "function", function: { name: "bash", arguments: '{"command":"ls"}' } }] },
       { role: "tool", tool_call_id: "c1", content: "ok" },
@@ -287,7 +287,7 @@ describe("RunRecorder: the prompt it produces", () => {
     recorder.turn({ content: "je lance" });
     await entries.flush();
 
-    const out = promptOf(entries.entries(), entries.leaf());
+    const out = promptOf((await entries.all()), entries.leaf());
     expect(out).toEqual([
       { role: "user", content: "build" },
       { role: "assistant", content: "je lance" },
@@ -302,12 +302,12 @@ describe("RunRecorder: the prompt it produces", () => {
     recorder.turn({ content: "a" });
     await entries.flush();
 
-    expect(promptOf(entries.entries(), entries.leaf())).toEqual([
+    expect(promptOf((await entries.all()), entries.leaf())).toEqual([
       { role: "user", content: "q" },
       { role: "assistant", content: "a" },
     ]);
     // On disk all the same, which is what a reopened thread shows.
-    expect(entries.entries().map((e) => e.type)).toEqual(["user", "command", "failure", "phase"]);
+    expect((await entries.all()).map((e) => e.type)).toEqual(["user", "command", "failure", "phase"]);
   });
 });
 
@@ -327,9 +327,9 @@ describe("RunRecorder: it writes where the log stands", () => {
     retry.turn({ content: "bonne reponse" });
     await entries.flush();
 
-    expect(promptOf(entries.entries(), entries.leaf()).map((m) => m.content)).toEqual(["question", "bonne reponse"]);
+    expect(promptOf((await entries.all()), entries.leaf()).map((m) => m.content)).toEqual(["question", "bonne reponse"]);
 
-    const revisited = promptOf(entries.entries(), abandoned);
+    const revisited = promptOf((await entries.all()), abandoned);
     expect(revisited.map((m) => m.role)).toEqual(["user", "assistant", "tool"]);
     expect(revisited[1]!.content).toBe("mauvaise reponse");
     // Every call it asked for is answered: a branch nobody is on is still a legal exchange, which
@@ -350,15 +350,15 @@ describe("RunRecorder: durability", () => {
     await entries.flush();
 
     const reread = await openSessionLog(SESSION, entries.leaf());
-    expect(reread.entries().map((e) => e.type)).toEqual(["user", "phase", "tool"]);
-    expect(promptOf(reread.entries(), reread.leaf())).toEqual(promptOf(entries.entries(), entries.leaf()));
+    expect((await reread.all()).map((e) => e.type)).toEqual(["user", "phase", "tool"]);
+    expect(promptOf((await reread.all()), reread.leaf())).toEqual(promptOf((await entries.all()), entries.leaf()));
   });
 
   test("a tool entry reread names the same file", async () => {
     const recorder = new RunRecorder(entries);
     await recorder.tool(call("c1", { output: "z".repeat(60_000) }));
     await entries.flush();
-    const reread = (await openSessionLog(SESSION)).entries()[0] as ToolEntry;
+    const reread = (await (await openSessionLog(SESSION)).all())[0] as ToolEntry;
     expect(await readToolOutput(SESSION, reread.callId)).toHaveLength(60_000);
   });
 });
@@ -419,7 +419,7 @@ describe("a phase keeps the id of the bubble it was streamed into", () => {
     const phases = await withRunContext({ platform: "cron" }, async () => recorder.turn({ content: "sans fenetre" }));
     await log.flush();
     expect(phases[0]!.id).toBeTruthy();
-    expect(promptOf(log.path(), phases[0]!.id).map((m) => m.content)).toContain("sans fenetre");
+    expect(promptOf((await log.path()), phases[0]!.id).map((m) => m.content)).toContain("sans fenetre");
   });
 });
 
@@ -439,7 +439,7 @@ describe("RunRecorder: a tool call whose name is not an identifier", () => {
     await recorder.tool(call("c1", { name: bad, output: `Error: unknown tool "${bad}"`, ok: false }));
     await entries.flush();
 
-    const written = entries.entries().filter((e): e is ToolEntry => e.type === "tool");
+    const written = (await entries.all()).filter((e): e is ToolEntry => e.type === "tool");
     expect(written.map((e) => e.name)).toEqual(["unknown_tool"]);
     // Nothing about what happened is lost: the malformed name is still readable, just not replayable.
     expect(written[0]!.output).toContain("malformed");
@@ -450,7 +450,7 @@ describe("RunRecorder: a tool call whose name is not an identifier", () => {
     const recorder = new RunRecorder(entries);
     await recorder.tool(call("c1", { name: "mcp__brave__search" }));
     await entries.flush();
-    const written = entries.entries().filter((e): e is ToolEntry => e.type === "tool");
+    const written = (await entries.all()).filter((e): e is ToolEntry => e.type === "tool");
     expect(written.map((e) => e.name)).toEqual(["mcp__brave__search"]);
   });
 
@@ -460,7 +460,7 @@ describe("RunRecorder: a tool call whose name is not an identifier", () => {
     await recorder.tool(call("c1", { name: bad, output: `Error: unknown tool`, ok: false }));
     await entries.flush();
 
-    const messages = promptOf(entries.entries(), entries.leaf());
+    const messages = promptOf((await entries.all()), entries.leaf());
     const calls = messages.flatMap((m) => ("tool_calls" in m ? m.tool_calls ?? [] : []));
     for (const c of calls) {
       expect(c.function.name).toMatch(/^[a-zA-Z0-9_-]+$/);

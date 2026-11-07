@@ -377,7 +377,7 @@ describe("SessionManager: the log half", () => {
     const entries = await manager.logOf(id);
     entries.append<UserEntry>({ type: "user", prompt: true, text: "en vol" });
     await manager.flushAll();
-    expect((await openSessionLog(id)).entries()).toHaveLength(1);
+    expect(await (await openSessionLog(id)).all()).toHaveLength(1);
   });
 
   test("deleting a session takes its entries and its spilled outputs with it", async () => {
@@ -391,7 +391,7 @@ describe("SessionManager: the log half", () => {
 
     await manager.deleteSession(id);
     expect(await readToolOutput(id, "c1")).toBeNull();
-    expect((await openSessionLog(id)).entries()).toEqual([]);
+    expect(await (await openSessionLog(id)).all()).toEqual([]);
   });
 
   test("dropping a session releases its log without touching the file", async () => {
@@ -403,7 +403,7 @@ describe("SessionManager: the log half", () => {
     await entries.flush();
     manager.drop(id);
     expect(manager.peekLog(id)).toBeUndefined();
-    expect((await openSessionLog(id)).entries()).toHaveLength(1);
+    expect(await (await openSessionLog(id)).all()).toHaveLength(1);
   });
 
   test("the sweep keeps what an entry names", async () => {

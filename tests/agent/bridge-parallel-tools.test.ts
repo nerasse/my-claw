@@ -207,7 +207,7 @@ test("parallel tool calls: results are in correct order", async () => {
 
     // Check log entries: tool results should be in tc1, tc2 order
     await log.flush();
-    const toolEntries = log.entries().filter((e): e is ToolEntry => e.type === "tool");
+    const toolEntries = (await log.all()).filter((e): e is ToolEntry => e.type === "tool");
     assert.equal(toolEntries.length, 2);
     assert.equal(toolEntries[0]!.callId, "tc1");
     assert.equal(toolEntries[1]!.callId, "tc2");
@@ -292,7 +292,7 @@ test("parallel tool calls: a fast tool settles while a slow one is still running
     // The order the log reads in is still the order the model asked in: the prompt depends on it,
     // and a replay should read like the request.
     await log.flush();
-    const toolEntries = log.entries().filter((e): e is ToolEntry => e.type === "tool");
+    const toolEntries = (await log.all()).filter((e): e is ToolEntry => e.type === "tool");
     assert.deepEqual(toolEntries.map((e) => e.callId), ["tc1", "tc2"]);
     assert.deepEqual(toolEntries.map((e) => e.output), ["slow result", "fast result"]);
   } finally {
@@ -344,7 +344,7 @@ test("parallel tool calls: single tool call still works (no Promise.all)", async
     assert.equal(response, "done");
     assert.equal(callCount, 2);
     await log.flush();
-    const toolEntries = log.entries().filter((e): e is ToolEntry => e.type === "tool");
+    const toolEntries = (await log.all()).filter((e): e is ToolEntry => e.type === "tool");
     assert.equal(toolEntries.length, 1);
   } finally {
     fetchMock.restore();
@@ -409,7 +409,7 @@ test("parallel tool calls: one failure does not block others", async () => {
     assert.equal(response, "handled");
 
     await log.flush();
-    const toolEntries = log.entries().filter((e): e is ToolEntry => e.type === "tool");
+    const toolEntries = (await log.all()).filter((e): e is ToolEntry => e.type === "tool");
     assert.equal(toolEntries.length, 2);
     assert.equal(toolEntries[0]!.output, "good result");
     assert.ok(toolEntries[1]!.output.includes("tool failed"));

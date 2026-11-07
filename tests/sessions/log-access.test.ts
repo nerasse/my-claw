@@ -10,7 +10,7 @@ describe("sessionLogOf", () => {
     const entries = await sessionLogOf("log-access/unmanaged");
     entries.append<UserEntry>({ type: "user", prompt: true, text: "seul" });
     await entries.flush();
-    expect((await openSessionLog("log-access/unmanaged")).entries()).toHaveLength(1);
+    expect((await (await openSessionLog("log-access/unmanaged")).all())).toHaveLength(1);
   });
 
   test("boot's resolver is what a run gets", async () => {

@@ -127,7 +127,7 @@ test("compactSession writes a compaction entry and shrinks the context", async (
 
     // Check the log has a compaction entry
     await log.flush();
-    const entries = log.entries();
+    const entries = (await log.all());
     const compactionEntry = entries.find((e): e is CompactionEntry => e.type === "compaction");
     assert.ok(compactionEntry, "compaction entry should exist");
     assert.ok(compactionEntry.summary.includes("Summary of earlier context"));
@@ -231,7 +231,7 @@ test("a second compaction summarizes only what is past the previous boundary", a
 test("a prefixed compaction sends the conversation's system, history and tools", async () => {
   appendMessages(log, makeMessages(12));
   await log.flush();
-  const planned = planCompaction(log, 40);
+  const planned = await planCompaction(log, 40);
   assert.equal(planned.ok, true);
   if (!planned.ok) return;
 
@@ -323,7 +323,7 @@ test("compactSession handles tool entries without splitting them", async () => {
     assert.equal(result.ok, true);
 
     // The context should be valid (no orphaned tool entries at the start)
-    const context = contextEntries(log.entries(), log.leaf());
+    const context = contextEntries((await log.all()), log.leaf());
     if (context[0]?.type === "tool") {
       throw new Error("Context starts with orphaned tool entry");
     }
@@ -544,7 +544,7 @@ test("the boundary keeps how long the summary took, and replays it", async () =>
     assert.equal(result.boundary?.compactionMs, 4_250);
 
     await log.flush();
-    const entry = log.entries().find((candidate): candidate is CompactionEntry => candidate.type === "compaction");
+    const entry = (await log.all()).find((candidate): candidate is CompactionEntry => candidate.type === "compaction");
     assert.equal(entry?.compactionMs, 4_250);
   } finally {
     // A fetch mock left standing is shared by every other test file in the run: it answered the
@@ -566,7 +566,7 @@ test("a zero span is written as a zero, not dropped", async () => {
     // thinking path drops a zero, because there a zero means nothing was ever streamed.
     await compactSession(makeConfig(), session, undefined, undefined, () => 7);
     await log.flush();
-    const entry = log.entries().find((candidate): candidate is CompactionEntry => candidate.type === "compaction");
+    const entry = (await log.all()).find((candidate): candidate is CompactionEntry => candidate.type === "compaction");
     assert.equal(entry?.compactionMs, 0);
   } finally {
     fetchMock.restore();
@@ -647,7 +647,7 @@ test("a stopped compaction leaves its trace, and no boundary", async () => {
   await log.flush();
 
   // The plan the pass will be holding when it is aborted: same log, so same middle.
-  const planned = planCompaction(log, retainedBudgetFor(makeConfig(), session));
+  const planned = await planCompaction(log, retainedBudgetFor(makeConfig(), session));
   assert.equal(planned.ok, true);
   const expectedKept = planned.ok ? planned.plan.middle.length : -1;
 
@@ -666,7 +666,7 @@ test("a stopped compaction leaves its trace, and no boundary", async () => {
     await assert.rejects(() => compactSession(makeConfig(), session, undefined, controller.signal, now));
     await log.flush();
 
-    const entries = log.entries();
+    const entries = (await log.all());
     const trace = entries.find((candidate): candidate is CompactionStoppedEntry => candidate.type === "compaction_stopped");
     assert.ok(trace, "the stopped pass must leave a trace");
     assert.equal(trace.kept, expectedKept);
@@ -692,7 +692,7 @@ test("a failing compaction writes no trace: it is still running, and it failed",
     const result = await compactSession(makeConfig(), session);
     assert.equal(result.ok, false);
     await log.flush();
-    assert.equal(log.entries().some((candidate) => candidate.type === "compaction_stopped"), false);
+    assert.equal((await log.all()).some((candidate) => candidate.type === "compaction_stopped"), false);
   } finally {
     fetchMock.restore();
   }
@@ -716,9 +716,9 @@ test("a stopped pass never moves the boundary: the prompt is exactly what it was
   appendMessages(log, makeMessages(20).map((message) => ({ ...message, content: `${message.content} again` })));
   await log.flush();
 
-  const planned = planCompaction(log, retainedBudgetFor(makeConfig(), session));
+  const planned = await planCompaction(log, retainedBudgetFor(makeConfig(), session));
   assert.equal(planned.ok, true, "the second pass has something to fold");
-  const promptBefore = promptOf(log.entries(), log.leaf());
+  const promptBefore = promptOf((await log.all()), log.leaf());
 
   const controller = new AbortController();
   const abortMock = mockFetch(async () => {
@@ -732,7 +732,7 @@ test("a stopped pass never moves the boundary: the prompt is exactly what it was
     abortMock.restore();
   }
 
-  const entries = log.entries();
+  const entries = (await log.all());
   assert.ok(entries.some((candidate) => candidate.type === "compaction_stopped"), "the trace is there");
 
   // The trace is not a ceiling: the floor is still the boundary, entry for entry.

@@ -224,7 +224,7 @@ test("the app's sink carries the child's own thinking, into the child's log", as
     assert.equal(thoughts.join(""), "weighing the options");
 
     await setup.log.flush();
-    const phases = setup.log.entries().filter((e): e is PhaseEntry => e.type === "phase");
+    const phases = (await setup.log.all()).filter((e): e is PhaseEntry => e.type === "phase");
     assert.ok(
       phases.some((phase) => phase.reasoning?.includes("weighing the options")),
       `no phase kept the thinking: ${JSON.stringify(phases.map((p) => p.reasoning))}`,
@@ -252,7 +252,7 @@ test("a parent-driven send stays non-streaming", async () => {
     assert.equal(out, "done");
     
     await setup.log.flush();
-    const phases = setup.log.entries().filter((e): e is PhaseEntry => e.type === "phase");
+    const phases = (await setup.log.all()).filter((e): e is PhaseEntry => e.type === "phase");
     const lastPhase = phases[phases.length - 1];
     assert.equal(lastPhase?.text, "done");
   } finally {
@@ -440,7 +440,7 @@ test("a message sent while the sub-agent runs is injected, streamed, and switche
 
     // Both turns are on disk: reopening the sub-agent shows the whole exchange.
     await setup.log.flush();
-    const userEntries = setup.log.entries().filter((e): e is UserEntry => e.type === "user");
+    const userEntries = (await setup.log.all()).filter((e): e is UserEntry => e.type === "user");
     assert.ok(userEntries.some((e) => e.text.includes("original")));
     assert.ok(userEntries.some((e) => e.text.includes("steer now")));
   } finally {
@@ -512,7 +512,7 @@ test("a message sent while the parent drives the sub-agent is absorbed by that r
 
     assert.equal(result, "after the nudge");
     await setup.log.flush();
-    const userEntries = setup.log.entries().filter((e): e is UserEntry => e.type === "user");
+    const userEntries = (await setup.log.all()).filter((e): e is UserEntry => e.type === "user");
     assert.ok(userEntries.some((e) => e.text.includes("steer now")));
     // The mailbox is gone with the run: a late arrival falls back to a queued send.
     assert.equal(runRegistry.canInject(id), false);
@@ -560,7 +560,7 @@ test("a one-shot survives its run, scoped to the conversation that asked for it"
     
     // Check log for assistant entry
     const log = await openSessionLog(id);
-    const phases = log.entries().filter((e): e is PhaseEntry => e.type === "phase");
+    const phases = (await log.all()).filter((e): e is PhaseEntry => e.type === "phase");
     assert.ok(phases.some((p) => p.text === "one-shot done"));
 
     // Listed for its parent, never for another conversation: it stays private.
@@ -604,7 +604,7 @@ test("a stored one-shot can be driven again from its conversation", async () => 
     assert.equal(out, "answer");
     
     const log = await openSessionLog(id);
-    const userEntries = log.entries().filter((e): e is UserEntry => e.type === "user");
+    const userEntries = (await log.all()).filter((e): e is UserEntry => e.type === "user");
     assert.ok(userEntries.some((e) => e.text.includes("again, please")));
   } finally {
     fetchMock.restore();

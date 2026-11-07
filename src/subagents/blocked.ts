@@ -186,7 +186,7 @@ export async function handoffCallsIn(id: string): Promise<HandoffCall[]> {
   // (the run died before its first persist) is exactly the case a handoff matters most in.
   try {
     const log = await sessionLogOf(id);
-    const path = pathOf(log.entries(), log.leaf());
+    const path = pathOf(await log.all(), log.leaf());
     let lastUser = -1;
     for (let i = path.length - 1; i >= 0; i--) {
       if (path[i]!.type === "user") {

@@ -644,8 +644,15 @@ export class AgentBridge implements AgentBackend {
     });
 
     const entries = await sessionLogOf(session.id);
+    // The branch from its newest compaction boundary down -- what a prompt carries, and all a run
+    // needs to read. The array stays live: an append that extends the branch lands in it, so the
+    // turn this run writes is in the next prompt without re-reading the log.
+    const context = await entries.context();
+    // What the gates read: the same live array, so a compaction decided mid-run sees the work the
+    // run itself has written.
+    const view = { entries: () => context as readonly Entry[], leaf: () => entries.leaf() };
     const recorder = new RunRecorder(entries);
-    const contextCount = contextEntries(entries.entries(), entries.leaf()).length;
+    const contextCount = contextEntries(context, entries.leaf()).length;
 
     // The workspace state before this run starts writing. Keeping the snapshot is what makes
     // `/undo hard` able to restore files; the recording is best-effort and must never take the
@@ -718,7 +725,7 @@ export class AgentBridge implements AgentBackend {
       // goes in so the summary reads the cache the conversation already warmed instead of writing
       // its own prompt from scratch.
       if (autoCompactEnabled(this.config)) {
-        await this.maybeAutoCompact(session, llmConfig, agentToolType, entries, signal, { systemPrompt, tools: openaiTools });
+        await this.maybeAutoCompact(session, llmConfig, agentToolType, view, signal, { systemPrompt, tools: openaiTools });
       }
 
       const userContent = this.preprocessor.buildUserContent(message);
@@ -734,7 +741,7 @@ export class AgentBridge implements AgentBackend {
       if (resuming) {
         // Read again under the session's lock: the run that was going when Continue was pressed
         // may have finished since, and a finished run has nothing to pick up.
-        const state = continuable(entries.entries(), entries.leaf());
+        const state = continuable(context, entries.leaf());
         if (!state.ok) return state.reason;
       }
       const turnContext = turnContextBlock({
@@ -744,7 +751,7 @@ export class AgentBridge implements AgentBackend {
       // A Continue adds no turn: the prompt it resumes is the one already on the log, block and all.
       const memoryBlock = resuming ? undefined : await this.memoryContext(message, session);
       const promptText = [turnContext, memoryBlock, transformedContent].filter(Boolean).join("\n\n");
-      if (!userEntryWritten && !resuming && !entries.get(message.id)) {
+      if (!userEntryWritten && !resuming && !entries.has(message.id)) {
         recorder.user({
           // The app has already drawn this bubble from chat.send. Reuse that id so a later sync
           // replaces it instead of appending a second copy.
@@ -760,7 +767,7 @@ export class AgentBridge implements AgentBackend {
       // and before this run opens: that is where they belong, and without them the prompt does not
       // show them at all. Only on a Continue, the one run that means to pick that work back up.
       if (resuming) {
-        for (const orphan of orphanCalls(entries.entries(), entries.leaf())) {
+        for (const orphan of orphanCalls(context, entries.leaf())) {
           entries.append<ToolEntry>({
             type: "tool",
             prompt: true,
@@ -777,7 +784,7 @@ export class AgentBridge implements AgentBackend {
       }
       // Read before this run's own marker: past it, the last run is this one, which has nothing.
       const resumable = resuming && tools.some((t) => t.name === "send")
-        ? interruptedSubagents(entries.entries(), entries.leaf())
+        ? interruptedSubagents(context, entries.leaf())
         : [];
 
       // The trigger turn is on the log: whatever this run writes from here on is its work, and
@@ -829,7 +836,7 @@ export class AgentBridge implements AgentBackend {
       // Thinking blocks are only needed to span the tool iterations of the turn that produced
       // them; older ones are a conversation's worth of signatures on every request, and the API
       // lets a client drop them from the start of the history -- docs/reasoning-replay.md.
-      const history = promptOf(entries.entries(), entries.leaf());
+      const history = promptOf(context, entries.leaf());
       const chatMessages: ChatMessage[] = [
         { role: "system", content: systemPrompt },
         ...(llmConfig.backend === "anthropic" ? keepCurrentTurnReasoning(history) : history),
@@ -838,7 +845,7 @@ export class AgentBridge implements AgentBackend {
       // Vision is resolved per model (resolver merges the model entry over the global flag):
       // the global default may be a text-only model while another configured model has vision.
       if (llmConfig.vision) {
-        const attached = await this.attachImages(chatMessages, contextEntries(entries.entries(), entries.leaf()));
+        const attached = await this.attachImages(chatMessages, contextEntries(context, entries.leaf()));
         if (attached > 0) void log("debug", "images attached to the prompt", { sessionId: session.id, model: llmConfig.model, images: attached });
       } else if (imageAttachmentsOf(message).length > 0) {
         void log("warn", "image dropped: the resolved model has no vision", { sessionId: session.id, model: llmConfig.model });
@@ -855,7 +862,7 @@ export class AgentBridge implements AgentBackend {
       // Cut off mid-answer, the model restarts its answer from the top two times in three when
       // handed it alone; told where it stopped, it carries on mid-sentence (four in four, measured).
       // In the prompt only: the log keeps what was said, and nobody typed this.
-      if (resuming && resumable.length === 0 && endsOnOwnText(entries.entries(), entries.leaf())) {
+      if (resuming && resumable.length === 0 && endsOnOwnText(context, entries.leaf())) {
         chatMessages.push({ role: "user", content: CUT_OFF_NUDGE });
       }
 
@@ -886,7 +893,7 @@ export class AgentBridge implements AgentBackend {
         }
 
         chatMessages.length = 0;
-        chatMessages.push({ role: "system", content: systemPrompt }, ...promptOf(entries.entries(), entries.leaf()));
+        chatMessages.push({ role: "system", content: systemPrompt }, ...promptOf(context, entries.leaf()));
         if (carried.size > 0) {
           for (const msg of chatMessages) {
             if (msg.role !== "assistant" || msg.providerMeta) continue;
@@ -900,7 +907,7 @@ export class AgentBridge implements AgentBackend {
           chatMessages.length = 0;
           chatMessages.push(...bounded);
         }
-        if (llmConfig.vision) await this.attachImages(chatMessages, contextEntries(entries.entries(), entries.leaf()));
+        if (llmConfig.vision) await this.attachImages(chatMessages, contextEntries(context, entries.leaf()));
       };
 
       let iteration = 0;
@@ -949,9 +956,9 @@ export class AgentBridge implements AgentBackend {
         }
         // Between two iterations, before the prompt is assembled: the loop is the only writer here
         // and the alternative is trimToContextWindow dropping the oldest turns for good.
-        const currentEntryCount = contextEntries(entries.entries(), entries.leaf()).length;
+        const currentEntryCount = contextEntries(context, entries.leaf()).length;
         if (autoCompactEnabled(this.config) && currentEntryCount >= midRunCompactRetryAt) {
-          const outcome = await this.compactMidRun(session, llmConfig, agentToolType, iteration, entries, signal, { systemPrompt, tools: openaiTools });
+          const outcome = await this.compactMidRun(session, llmConfig, agentToolType, iteration, view, signal, { systemPrompt, tools: openaiTools });
           if (outcome === "compacted") {
             await rebuildPrompt();
           } else if (outcome === "skipped") {
@@ -1138,7 +1145,7 @@ export class AgentBridge implements AgentBackend {
           // Prompt-side length, the same units `occupiedContextTokens` pairs it with: measuring the
           // whole history against a billed number that only covered the window after the boundary
           // would read as a measurement of turns the model never saw.
-          accumulateUsage(session, response.usage, promptOf(entries.entries(), entries.leaf()).length);
+          accumulateUsage(session, response.usage, promptOf(context, entries.leaf()).length);
           // The measurement for this turn has landed. On this transport it is the earliest it can
           // be: an OpenAI-compatible stream reports usage in its last chunk, never before.
           if (response.usage) hooks.emit("session:context:measured", { sessionId: session.id });
@@ -1270,7 +1277,7 @@ export class AgentBridge implements AgentBackend {
             toolExecutions,
             maxIterations: budget.total,
             responseChars: transformedResponse.length,
-            sessionEntryCount: contextEntries(entries.entries(), entries.leaf()).length,
+            sessionEntryCount: contextEntries(context, entries.leaf()).length,
             durationMs,
             usage: response.usage,
             sessionTokenUsage: session.tokenUsage,
@@ -1489,7 +1496,7 @@ export class AgentBridge implements AgentBackend {
         const settled = outcomes.map((outcome, index) => {
           if (outcome.status === "fulfilled") return { ...outcome.value, interrupted: false };
           const tc = calls[index]!;
-          const content = interruptedOutput(tc.name, subagentOfCall(entries.entries(), tc.id));
+          const content = interruptedOutput(tc.name, subagentOfCall(context, tc.id));
           const result: { content: string; success: boolean; attachments?: Attachment[] } = { content, success: false };
           return { tc, result, durationMs: undefined, transformedResult: content, interrupted: true };
         });
@@ -1594,7 +1601,7 @@ export class AgentBridge implements AgentBackend {
       // summarizer time costs nothing. Only inside the band, and never while a run holds the
       // session -- `runNode.exit()` above is what makes this the outside.
       if (autoCompactSpeculative(this.config) && !signal?.aborted) {
-        const gate = this.contextGate(session, llmConfig, agentToolType, entries);
+        const gate = this.contextGate(session, llmConfig, agentToolType, view);
         if (!gate.over && inSpeculationBand(gate.occupied, gate.thresholdTokens)) {
           void log("info", "arming a speculative compaction", gate.data);
           startSpeculation(this.config, session);
@@ -1655,7 +1662,7 @@ export class AgentBridge implements AgentBackend {
     // the run that reroutes its message, and `Log.append` refuses a second id.
     const transformedContent = await this.injectedContent(injected, session);
     const images = imageAttachmentsOf(injected);
-    if (!entries.get(injected.id)) {
+    if (!entries.has(injected.id)) {
       // What the trigger turn carries, the injected one carries too: the images are what every
       // later request and every reopened thread reads the picture back from, and the transcripts
       // are the text under a voice note -- without them a reopened thread drew the waveform bare.

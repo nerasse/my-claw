@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { entriesOf, importSession } from "../../src/sessions/import.ts";
 import { promptOf } from "../../src/sessions/projection.ts";
 import { SessionLog, sessionDir } from "../../src/sessions/log.ts";
+import { SessionIndex } from "../../src/sessions/log-index.ts";
 import type { Entry } from "../../src/sessions/log.ts";
 import type { LegacySessionData, SessionMessage } from "../../src/sessions/store.ts";
 
@@ -22,7 +23,7 @@ function session(messages: SessionMessage[], extra: Partial<LegacySessionData> =
 /** Appends the import into a real log, which is what gives the entries their ids and chain. */
 async function intoLog(data: LegacySessionData): Promise<{ log: SessionLog; entries: readonly Entry[] }> {
   const { entries: imported, boundaryIndex } = importSession(data);
-  const log = new SessionLog("import-test", [], null);
+  const log = new SessionLog("import-test", SessionIndex.empty(), null, 0, null);
   const written: Entry[] = [];
   for (const payload of imported) {
     const { ts: _ts, ...rest } = payload;
@@ -222,7 +223,7 @@ describe("the import produces a usable log", () => {
     expect(entries[0]!.parentId).toBeNull();
     for (let i = 1; i < entries.length; i++) expect(entries[i]!.parentId).toBe(entries[i - 1]!.id);
     expect(log.leaf()).toBe(entries[entries.length - 1]!.id);
-    expect(log.path().map((e) => e.id)).toEqual(entries.map((e) => e.id));
+    expect((await log.path()).map((e) => e.id)).toEqual(entries.map((e) => e.id));
   });
 
   test("every entry has its own id", async () => {

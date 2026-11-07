@@ -255,7 +255,7 @@ describe("withSpawnCards: what a delta can draw", () => {
     const state = chain([
       { type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "error" },
     ]);
-    const delta = withSpawnCards(state, state);
+    const delta = withSpawnCards(state, cardsOf(state));
     expect(delta).toHaveLength(1);
     expect(delta[0]).toMatchObject({ type: "spawn_state", callId: "c1" });
   });
@@ -265,7 +265,7 @@ describe("withSpawnCards: what a delta can draw", () => {
     // so resending it whole updates that card instead of drawing a second one.
     const all = chain([tool("c1", { name: "spawn" }), user("et apres")]);
     const state = chain([{ type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "complete" }]);
-    const delta = withSpawnCards(state, [...all, ...state]);
+    const delta = withSpawnCards(state, cardsOf([...all, ...state]));
     expect(delta).toEqual([all[0]!]);
   });
 
@@ -279,14 +279,14 @@ describe("withSpawnCards: what a delta can draw", () => {
       { type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "complete" },
       tool("c1", { name: "spawn" }),
     ]);
-    expect(withSpawnCards(before, before)).toEqual([before[2]!]);
+    expect(withSpawnCards(before, cardsOf(before))).toEqual([before[2]!]);
 
     // And the other way round, for a state that lands after the call settled.
     const after = chain([
       tool("c2", { name: "spawn" }),
       { type: "spawn_state", prompt: false, callId: "c2", subagentId: "s", status: "complete" },
     ]);
-    expect(withSpawnCards(after, after)).toEqual([after[0]!]);
+    expect(withSpawnCards(after, cardsOf(after))).toEqual([after[0]!]);
   });
 
   test("the card keeps its own position, it is not hoisted onto its state", () => {
@@ -297,7 +297,7 @@ describe("withSpawnCards: what a delta can draw", () => {
       phase("j'y vais"),
       tool("c1", { name: "spawn" }),
     ]);
-    expect(withSpawnCards(all, all)).toEqual([all[0]!, all[2]!, all[3]!]);
+    expect(withSpawnCards(all, cardsOf(all))).toEqual([all[0]!, all[2]!, all[3]!]);
   });
 
   test("two states on one absent card send it once", () => {
@@ -306,7 +306,7 @@ describe("withSpawnCards: what a delta can draw", () => {
       { type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "running" },
       { type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "complete" },
     ]);
-    expect(withSpawnCards(all.slice(1), all)).toEqual([all[0]!]);
+    expect(withSpawnCards(all.slice(1), cardsOf(all))).toEqual([all[0]!]);
   });
 
   test("a state whose call never settled is handed over, not turned into a card", () => {
@@ -315,12 +315,12 @@ describe("withSpawnCards: what a delta can draw", () => {
     // `displayOf` draws the card from it, once, at the state's own position, and the entry replaces
     // it by id when it arrives.
     const state = chain([{ type: "spawn_state", prompt: false, callId: "c1", subagentId: "s", status: "running" }]);
-    expect(withSpawnCards(state, state)).toEqual(state);
+    expect(withSpawnCards(state, cardsOf(state))).toEqual(state);
   });
 
   test("a delta with no state entry is handed back untouched", () => {
     const entries = chain([user("q"), phase("a")]);
-    expect(withSpawnCards(entries, entries)).toEqual(entries);
+    expect(withSpawnCards(entries, cardsOf(entries))).toEqual(entries);
   });
 });
 
@@ -1154,3 +1154,10 @@ describe("displayOf: a card the log does not hold yet", () => {
     expect(cards[0]).toMatchObject({ output: "l'answer", ok: true });
   });
 });
+
+/** The tool entries of a list, keyed by call id: what `withSpawnCards` looks a state's card up in. */
+function cardsOf(entries: readonly Entry[]): Map<string, Entry> {
+  const cards = new Map<string, Entry>();
+  for (const entry of entries) if (entry.type === "tool" && !cards.has(entry.callId)) cards.set(entry.callId, entry);
+  return cards;
+}

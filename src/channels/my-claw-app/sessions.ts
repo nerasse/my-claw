@@ -8,9 +8,11 @@ import type { ArmedQuotaWait } from "../../llm/quota/arm.ts";
 import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
 import { listingFactsOf, readMeta, type ListingFacts } from "../../sessions/meta.ts";
-import { pathOf, UnknownCursorError, type Provisioned, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry } from "../../sessions/log.ts";
-import { pageOf, pageBefore, displayOf, lastRunOf, mediaRefsOf, runFold, runFoldPlan, withSpawnCards, windowNeedsFiles, type DisplayResolvers, type MediaRef } from "./display.ts";
-import { spawnStates, spawnView } from "../../sessions/spawn-state.ts";
+import { pathOf, UnknownCursorError, type Provisioned, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry, type SessionLog } from "../../sessions/log.ts";
+import { displayOf, lastRunOf, mediaRefsOf, MAX_CURSOR_SCAN, pageBeforeRecords, pageOfRecords, runFold, runFoldPlan, withSpawnCards, windowNeedsFiles, type DisplayResolvers, type MediaRef } from "./display.ts";
+import { spawnStates, type SpawnCardState, type SpawnView } from "../../sessions/spawn-state.ts";
+import type { SessionSubAgentState } from "../../sessions/store.ts";
+import { DANGLING_PARENT, NO_PARENT, type LogRecord } from "../../sessions/log-index.ts";
 import { splitAttachmentBlock, stripLocationBlock } from "../../agent/preprocess.ts";
 import { toolDisplayName } from "../../agent/tools/display.ts";
 import { extractMediaRefs, stripMediaRefs, mediaTypeForPath, refBasename, refsWithoutCopy, trimRefPath } from "../../utils/media.ts";
@@ -176,6 +178,45 @@ const SYNC_LIMIT = 500;
  * serve tens of megabytes off a single frame.
  */
 const RUN_ITEMS_LIMIT = 1000;
+
+/** How far back a card's output is looked for, in records, when the spill file is not there. */
+const MAX_TOOL_SCAN = 20_000;
+
+/**
+ * How far the run fold may walk off a page before it gives up and folds the whole log instead.
+ *
+ * A run is a turn, and a turn of ten thousand entries is not a run, it is a session nobody
+ * compacted -- which pays the old price, loudly, instead of drawing itself wrong.
+ */
+const MAX_RUN_SCAN = 20_000;
+
+/** Where a fold that must cover `position` starts: the `run_start` that opened its run. */
+function runSliceStart(path: readonly LogRecord[], position: number): number {
+  for (let i = Math.max(position, 0); i >= 0 && i >= position - MAX_RUN_SCAN; i--) {
+    if (path[i]!.type === "run_start") return Math.max(i - 1, 0);
+  }
+  return Math.max(0, position - MAX_RUN_SCAN);
+}
+
+/** The branch's last run, read off the records: what a delta that carries none of its entries cannot say. */
+function lastRunOfRuns(path: readonly LogRecord[], runs: ReadonlyMap<string, MyClawAppRunMeta>, from: number): MyClawAppRunMeta | undefined {
+  for (let i = Math.min(from, path.length - 1); i >= 0; i--) {
+    const record = path[i]!;
+    if (record.type !== "run_start") continue;
+    const meta = runs.get(record.id);
+    if (meta) return meta;
+  }
+  return undefined;
+}
+
+/** Where it ends: past `position`, at the end of the run that holds it. */
+function runSliceEnd(path: readonly LogRecord[], position: number): number {
+  for (let i = position + 1; i < path.length && i <= position + MAX_RUN_SCAN; i++) {
+    const type = path[i]!.type;
+    if (type === "run_end" || type === "run_start") return i + 1;
+  }
+  return path.length;
+}
 
 /**
  * The bare entry id behind a row id. `run-<id>` is what the client holds on a folded row, and
@@ -557,6 +598,125 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
    * content under two names. Healed refs land first so the comparison sees them (the answer's
    * `MEDIA:` copy is usually written while the run's own is older).
    */
+  /**
+   * Where the run fold for a page of the branch has to start and end.
+   *
+   * The fold is a left-to-right machine over a branch, so a page needs the run it opens inside:
+   * the marker that started it (and the turn that triggered it, for a run that died having written
+   * nothing) on the left, and the end of the run it ends inside on the right. Both walks are over
+   * the index and both are bounded -- a run longer than the bound is not a run, it is a session
+   * without compaction.
+   */
+  private async runFoldNear(log: SessionLog, path: readonly LogRecord[], from: number, to: number): Promise<Map<string, MyClawAppRunMeta>> {
+    const start = runSliceStart(path, from);
+    const end = runSliceEnd(path, Math.max(to - 1, 0));
+    if (start === 0 && end >= path.length) {
+      // No marker bounds the page: there is nothing to fold against but the branch itself.
+      return runFold(await log.all() as Entry[], this.runActive(log.sessionId));
+    }
+    return runFold(await log.entriesIn(path.slice(start, end)), this.runActive(log.sessionId));
+  }
+
+  /** The fold for a delta, anchored on the runs its own entries belong to. */
+  private async runFoldAround(log: SessionLog, path: readonly LogRecord[], delta: readonly Entry[], lastPosition: number): Promise<Map<string, MyClawAppRunMeta>> {
+    const ids = new Set(delta.map((entry) => entry.id));
+    let from = Math.min(lastPosition, path.length - 1);
+    for (let i = from; i >= 0 && i >= from - MAX_RUN_SCAN; i--) {
+      if (ids.has(path[i]!.id)) from = i;
+    }
+    return this.runFoldNear(log, path, from, Math.max(lastPosition + 1, from + 1));
+  }
+
+  /**
+   * The cards the spawn states revise, and their states -- read without the rest of the log.
+   *
+   * Two small sets, and both are found from the index alone: the states are `spawn_state` records,
+   * and the cards are the `spawn` / `send` / `delegate_browser_task` tool entries, which the index
+   * flags by name as they are written. Everything else in a conversation of 46 000 entries is
+   * irrelevant to drawing a child's card, and none of it is read.
+   */
+  private async spawnViewFor(log: SessionLog, window: readonly Entry[]): Promise<SpawnView> {
+    const facts = await this.spawnFacts(log);
+    // A pre-log `spawn` rode its tool entry, and the window is where those still are: they act as
+    // the floor, exactly as `spawnStates` reads them.
+    const inline = window.filter((entry) => entry.type === "tool" && entry.spawn !== undefined);
+    const folded = inline.length === 0 ? facts.states : spawnStates([...inline]);
+    if (inline.length > 0) for (const [callId, state] of spawnStates(inline)) if (!folded.has(callId)) folded.set(callId, state);
+    const carded = new Set<string>(facts.carded);
+    for (const entry of window) if (entry.type === "tool") carded.add(entry.callId);
+    const live = this.runActive;
+    const out = new Map<string, SpawnCardState>();
+    for (const [callId, state] of folded) {
+      out.set(callId, state.status === "running" && !live(state.subagentId) ? { ...state, status: "interrupted" } : state);
+    }
+    return { states: out, carded };
+  }
+
+  /** The spawn cards of the whole log, keyed by call id: what a delta's states stand in for. */
+  private async spawnCardsOf(log: SessionLog): Promise<Map<string, Entry>> {
+    return (await this.spawnFacts(log)).cards;
+  }
+
+  /**
+   * The spawn states and cards of a conversation, read once per log length.
+   *
+   * A page asks for both, twice over (the view, then the card a delta's state stands in for), and
+   * they only change when an entry is appended -- which the count says. A conversation with a
+   * hundred children otherwise pays two reads of a hundred entries on every page.
+   */
+  private async spawnFacts(log: SessionLog): Promise<{ states: Map<string, SessionSubAgentState>; cards: Map<string, Entry>; carded: Set<string> }> {
+    const key = log.sessionId;
+    const cached = this.spawnCache.get(key);
+    if (cached && cached.count === log.count()) return cached.facts;
+    const { states: stateRecords, cards: cardRecords } = log.spawnRecords();
+    const [stateEntries, cardEntries] = await Promise.all([log.entriesIn(stateRecords), log.entriesIn(cardRecords)]);
+    const cards = new Map<string, Entry>();
+    const carded = new Set<string>();
+    for (const entry of cardEntries) {
+      if (entry.type !== "tool") continue;
+      carded.add(entry.callId);
+      if (!cards.has(entry.callId)) cards.set(entry.callId, entry);
+    }
+    const facts = { states: spawnStates(stateEntries), cards, carded };
+    this.spawnCache.set(key, { count: log.count(), facts });
+    return facts;
+  }
+
+  /**
+   * Spawn facts by session, keyed on the log length they were read at.
+   *
+   * Bounded on purpose: a cache miss costs two reads of a handful of entries, so keeping more than
+   * the handful of conversations a device actually moves between buys nothing.
+   */
+  private spawnCache = new Map<string, { count: number; facts: { states: Map<string, SessionSubAgentState>; cards: Map<string, Entry>; carded: Set<string> } }>();
+
+  /**
+   * How a cursor the index cannot place by id is resolved: a tool card's `t-<callId>` and a
+   * command's send id name fields the byte map does not carry, so the records of that one type are
+   * read backwards, in a bounded window, until one matches.
+   */
+  private async cursorMatcher(log: SessionLog, path: readonly LogRecord[], beforeId: string): Promise<(position: number) => boolean> {
+    const isToolCard = beforeId.startsWith("t-");
+    const byId = /^[0-9a-f-]{36}$/.test(beforeId) || beforeId.startsWith("run-");
+    if (byId) return () => false;
+    const callId = isToolCard ? beforeId.slice(2) : undefined;
+    const sourceId = isToolCard ? undefined : beforeId.startsWith("cmd-") ? beforeId.slice(4) : beforeId;
+    const candidates: number[] = [];
+    for (let i = path.length - 1; i >= 0 && i >= path.length - MAX_CURSOR_SCAN && candidates.length < 400; i--) {
+      const type = path[i]!.type;
+      if (isToolCard ? type === "tool" : type === "command") candidates.push(i);
+    }
+    const positionOf = new Map(candidates.map((position) => [path[position]!.id, position]));
+    const hits = new Set<number>();
+    for (const entry of await log.entriesIn(candidates.map((position) => path[position]!))) {
+      const position = positionOf.get(entry.id);
+      if (position === undefined) continue;
+      if (entry.type === "tool" && callId !== undefined && entry.callId === callId) hits.add(position);
+      if (entry.type === "command" && sourceId !== undefined && (entry.sourceId || entry.id) === sourceId) hits.add(position);
+    }
+    return (position: number) => hits.has(position);
+  }
+
   private async resolversFor(
     owner: string,
     threadId: string,
@@ -629,10 +789,12 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       };
     }
 
-    // Get the log and compute the full path (display shows everything, including pre-compaction entries)
+    // The branch as positions, straight off the index: the page is a range of them, and only the
+    // entries inside that range are ever read -- docs/session-log.md. The display shows everything,
+    // including what a compaction stands for.
     const log = await sessionLogOf(sessionId);
-    const path = pathOf(log.entries(), log.leaf());
-    // A thread whose first message is still being written has no log yet: nothing to page over,
+    const path = log.pathRecords();
+    // A thread whose first message is still being written has no entry yet: nothing to page over,
     // but the composer is still there.
     if (path.length === 0) {
       return {
@@ -644,30 +806,28 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       };
     }
 
-    // Pagination: pageOf aligns on turn boundaries. `beforeId` is the client's oldest held
-    // entry (or a tool call id, which the client owns on tool cards): the page ends right before
-    // it, so the cursor survives session growth and client-side trimming -- the count-based
-    // `before` drifts when new entries land between two requests.
-    const { window, hasMore, nextBefore } = beforeId
-      ? pageBefore(path, beforeId, limit, before)
-      : pageOf(path, limit, before);
+    // Pagination: a page aligns on turn boundaries. `beforeId` is the client's oldest held entry
+    // (or a tool call id, or a send id: three shapes the index does not carry, and the reason the
+    // matcher below reads the records of the one type that could hold it).
+    const page = beforeId
+      ? pageBeforeRecords(path, beforeId, limit, before, await this.cursorMatcher(log, path, beforeId))
+      : pageOfRecords(path, limit, before);
+    const window = await log.entriesIn(path.slice(page.from, page.to));
 
     // List thread files for attachment resolution: what a media ref resolves to, asked of the
     // refs themselves -- a tool's pictures ride the run's end marker, with no `MEDIA:` anywhere
     // (2026-09-15).
     const { resolvers, files } = await this.resolversFor(owner, threadId, window);
 
-    // Folded over the whole log, not over the page: a child spawned on page 3 settles on page 1,
-    // and a card whose state entry fell outside the window would replay as a spinner for good.
-    // The run fold comes from the same whole-branch walk, so a page that starts mid-run still
-    // tags its entries with the run they belong to (docs/run-grouping.md).
-    const runs = runFold(path, this.runActive(sessionId));
+    // Folded over the runs this page touches, not over the whole branch: a card whose child
+    // settled pages ago still reads as settled, and a page that starts mid-run still tags its
+    // entries with the run they belong to (docs/run-grouping.md).
+    const runs = await this.runFoldNear(log, path, page.from, page.to);
     // A finished run travels as its header when the client asked for that -- docs/run-hydration.md.
-    // The plan reads the page alone: what folds is the work between two messages, and a message
-    // is a message wherever the page boundary fell.
     const plan = fold ? runFoldPlan(window, runs) : undefined;
-    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnView(log.entries(), this.runActive), files, runs, plan, lazyReasoning);
-    return { entries, hasMore, nextBefore, ...(draft ? { draft } : {}), ...(staged.length ? { files: staged } : {}) };
+    const spawn = await this.spawnViewFor(log, window);
+    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawn, files, runs, plan, lazyReasoning);
+    return { entries, hasMore: page.hasMore, nextBefore: page.nextBefore, ...(draft ? { draft } : {}), ...(staged.length ? { files: staged } : {}) };
   }
 
   /**
@@ -703,9 +863,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     }
 
     const log = await sessionLogOf(sessionId);
-    const allEntries = log.entries();
     const serverLeaf = log.leaf();
-    const head = allEntries.length > 0 ? allEntries[allEntries.length - 1]!.id : null;
+    const head = log.head();
+    const path = log.pathRecords();
 
     // Effective limit, capped at SYNC_LIMIT
     const effectiveLimit = Math.min(Math.max(limit ?? SYNC_LIMIT, 1), SYNC_LIMIT);
@@ -713,9 +873,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // Detect branch switch: the client's leaf is not on the path to the server's leaf
     let reset: "unknown-cursor" | "branch-switch" | undefined;
     if (clientLeaf && serverLeaf && clientLeaf !== serverLeaf) {
-      const path = pathOf(allEntries, serverLeaf);
-      const clientOnPath = path.some((e) => e.id === clientLeaf);
-      if (!clientOnPath) reset = "branch-switch";
+      if (!path.some((record) => record.id === clientLeaf)) reset = "branch-switch";
     }
 
     let delta: Entry[];
@@ -723,23 +881,36 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // the newest page, so it also carries the paging cursor the client needs to walk back -
     // the delta path leaves the client's own cursor standing, so only the replaced window gets one.
     let freshWindow = false;
+    let windowFrom = 0;
+    let windowTo = path.length;
+    let lastPosition = path.length - 1;
     if (reset === "branch-switch" || since === undefined || since === null) {
       // Fresh page: the newest window of the branch, aligned on a turn like a history page is.
       // A flat slice cuts wherever the count falls, and one agentic turn is easily 300 entries:
       // an opened thread then starts on a tool card whose question sits above the window, which
       // reads as a run that came from nowhere.
-      delta = pageOf(pathOf(allEntries, serverLeaf), effectiveLimit, 0).window;
+      const page = pageOfRecords(path, effectiveLimit, 0);
+      windowFrom = page.from;
+      windowTo = page.to;
+      delta = await log.entriesIn(path.slice(windowFrom, windowTo));
       if (since === undefined || since === null) reset = undefined; // Not a reset, just a fresh open
       freshWindow = true;
     } else {
       // Try to get delta since the cursor
       try {
-        delta = log.since(since);
-        // If client's leaf is still valid and server moved, no reset needed
+        const records = log.recordsSince(since);
+        // Only a delta can be truncated, and the cut is on positions: the client's own cursor
+        // stands, so the answer only carries the newest end of a burst it fell behind on.
+        const kept = records.length > effectiveLimit ? records.slice(-effectiveLimit) : records;
+        delta = await log.entriesIn(kept);
+        lastPosition = kept.length > 0 ? kept[kept.length - 1]!.index : path.length - 1;
       } catch (err) {
         if (err instanceof UnknownCursorError) {
           reset = "unknown-cursor";
-          delta = pageOf(pathOf(allEntries, serverLeaf), effectiveLimit, 0).window;
+          const page = pageOfRecords(path, effectiveLimit, 0);
+          windowFrom = page.from;
+          windowTo = page.to;
+          delta = await log.entriesIn(path.slice(windowFrom, windowTo));
           freshWindow = true;
         } else {
           throw err;
@@ -752,7 +923,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // client asking for a forward delta it already holds, instead of paging backwards.
     const truncated = !freshWindow && delta.length > effectiveLimit;
     if (truncated) delta = delta.slice(-effectiveLimit);
-    const windowLength = delta.length;
+    const windowLength = freshWindow ? windowTo - windowFrom : delta.length;
 
     // A state entry the client cannot draw becomes the card it revised, before anything else looks
     // at the delta -- including the attachment scan, which now sees a tool entry rather than an
@@ -761,22 +932,23 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // card comes from another position on the branch, and folding it into a group here would put
     // it outside the range the summary claims -- hydration would then never hand it back.
     const foldWindow = delta;
-    delta = withSpawnCards(delta, allEntries);
+    const withCards = withSpawnCards(delta, await this.spawnCardsOf(log));
 
     // Resolve attachments for display
-    const { resolvers, files } = await this.resolversFor(owner, threadId, delta);
-    // The run fold covers the whole current branch, so entries of a delta that starts mid-run
+    const { resolvers, files } = await this.resolversFor(owner, threadId, withCards);
+    // The run fold covers the runs this answer touches, so entries of a delta that starts mid-run
     // still carry their run: the client folds them under the right header even when the
     // `run_start` marker itself predates the cursor.
-    const path = pathOf(allEntries, serverLeaf);
-    const runs = runFold(path, this.runActive(sessionId));
+    const runs = freshWindow
+      ? await this.runFoldNear(log, path, windowFrom, windowTo)
+      : await this.runFoldAround(log, path, foldWindow, lastPosition);
     // Only the window that replaces the client's thread folds. A delta is work the client is
     // watching arrive, item by item, and its runs are usually the ones still running -- which
     // never fold anyway. Folding a delta would also have to reason about what the client already
     // holds, since the run it continues is half on screen.
     const plan = fold && freshWindow ? runFoldPlan(foldWindow, runs) : undefined;
-    const entries = displayOf(delta, resolvers, TOOL_OUTPUT_LIMIT, spawnView(allEntries, this.runActive), files, runs, plan, lazyReasoning);
-    const lastRun = lastRunOf(path, runs);
+    const entries = displayOf(withCards, resolvers, TOOL_OUTPUT_LIMIT, await this.spawnViewFor(log, withCards), files, runs, plan, lazyReasoning);
+    const lastRun = lastRunOfRuns(path, runs, Math.max(lastPosition, 0));
 
     const branchLength = path.length;
     // The files of the composer come back with the same answer as its text, and only with that
@@ -824,7 +996,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     if (!session) return { entries: [], found: false };
 
     const log = await sessionLogOf(sessionId);
-    const path = pathOf(log.entries(), log.leaf());
+    const path = log.pathRecords();
     // The row id or the bare entry id, like `toolOutput` takes `t-<callId>` or the call id: the
     // client holds `run-<id>` on the row and a bare id in `lastId`, and should not have to know
     // which of the two the wire wants.
@@ -837,12 +1009,12 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // session in one frame, and answering it would serve tens of megabytes off one request.
     if (end - start + 1 > RUN_ITEMS_LIMIT) return { entries: [], found: false };
 
-    const window = path.slice(start, end + 1);
+    const window = await log.entriesIn(path.slice(start, end + 1));
     const { resolvers, files } = await this.resolversFor(owner, threadId, window);
-    // Folded over the whole branch for the same reasons a page is: a child spawned inside this run
-    // may have settled long after it, and the run meta must be the one the header already shows.
-    const runs = runFold(path, this.runActive(sessionId));
-    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, spawnView(log.entries(), this.runActive), files, runs, undefined, lazyReasoning);
+    // Folded over the runs this row touches, for the same reasons a page is: a child spawned inside
+    // this run may have settled long after it, and the run meta must be the one the header shows.
+    const runs = await this.runFoldNear(log, path, start, end + 1);
+    const entries = displayOf(window, resolvers, TOOL_OUTPUT_LIMIT, await this.spawnViewFor(log, window), files, runs, undefined, lazyReasoning);
     return { entries, found: true };
   }
 
@@ -864,20 +1036,28 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // cardId = "t-" + callId per toolCardId()
     const callId = cardId.startsWith("t-") ? cardId.slice(2) : cardId;
     const log = await sessionLogOf(sessionId);
-    for (const entry of log.entries()) {
-      if (entry.type !== "tool") continue;
-      if (entry.callId !== callId) continue;
-      // Spillèd output takes precedence; else the inline extract.
-      if (entry.outputPath) {
-        const full = await readToolOutput(sessionId, callId);
-        if (full !== null) return full;
+    // The spill is named after the call id, so the file answers before any entry is looked at.
+    const spilled = await readToolOutput(sessionId, callId);
+    if (spilled !== null) return spilled;
+    // A card is named by its call id, which the index does not carry: the tool entries are read
+    // backwards from the newest, in batches, and the walk stops at the first match. Opening a card
+    // is a reader's action on work that is almost always recent.
+    const positions: number[] = [];
+    for (let i = log.count() - 1; i >= 0 && i >= log.count() - MAX_TOOL_SCAN; i--) {
+      if (log.recordAt(i).type === "tool") positions.push(i);
+    }
+    for (let at = 0; at < positions.length; at += 128) {
+      const records: LogRecord[] = [];
+      for (const position of positions.slice(at, at + 128)) records.push(log.recordAt(position));
+      for (const entry of await log.entriesIn(records)) {
+        if (entry.type !== "tool" || entry.callId !== callId) continue;
+        // No spill, or a file that is gone: the inline extract is what the card already showed.
+        if (entry.output) return entry.output;
+        // Settled as an error or abort before any output was produced. For a `spawn` card that is
+        // the child's own ending, which lands well after this entry was written.
+        const spawn = entry.spawn ?? (await this.spawnViewFor(log, [entry])).states.get(callId);
+        return spawn?.status === "error" || spawn?.status === "aborted" ? (spawn.error ?? "") : "";
       }
-      // No spill or file missing: return inline output.
-      if (entry.output) return entry.output;
-      // Settled as an error or abort before any output was produced. For a `spawn` card that is the
-      // child's own ending, which lands well after this entry was written.
-      const spawn = spawnStates(log.entries()).get(callId) ?? entry.spawn;
-      return spawn?.status === "error" || spawn?.status === "aborted" ? (spawn.error ?? "") : "";
     }
     return null;
   }
@@ -888,7 +1068,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const session = await this.sessionManager.read(sessionId);
     if (!session) return null;
     const log = await sessionLogOf(sessionId);
-    const entry = log.entries().find((e) => e.id === bubbleId);
+    const entry = await log.entryById(bubbleId);
     return entry?.type === "phase" && entry.reasoning ? entry.reasoning : null;
   }
 

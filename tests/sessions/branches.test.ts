@@ -195,7 +195,7 @@ describe("openSessionLog repairs at open", () => {
     ]);
     const file = await write(id, entries);
     const log = await openSessionLog(id, "u3");
-    expect(log.path().map((e) => e.id)).toEqual(["u1", "p1", "u2", "p2", "c3", "u3"]);
+    expect((await log.path()).map((e) => e.id)).toEqual(["u1", "p1", "u2", "p2", "c3", "u3"]);
     expect(log.leaf()).toBe("u3");
     expect(log.repaired?.relinked).toBe(1);
 
@@ -229,7 +229,7 @@ describe("openSessionLog repairs at open", () => {
     await write(id, entries);
     const log = await openSessionLog(id, "u2");
     expect(log.repaired).toBeNull();
-    expect(log.path().map((e) => e.id)).toEqual(["u1", "k", "u2"]);
+    expect((await log.path()).map((e) => e.id)).toEqual(["u1", "k", "u2"]);
   });
 
   test("the manager carries an adopted tail to the meta, so the next open starts there", async () => {

@@ -16,6 +16,7 @@ import { hooks } from "../hooks/index.ts";
 import type { HookEventMap } from "../hooks/index.ts";
 import { log } from "../utils/logger.ts";
 import type { Entry, SessionLog, SpawnStateEntry } from "./log.ts";
+import type { LogRecord } from "./log-index.ts";
 import type { SessionSubAgentAction, SessionSubAgentState, SessionSubAgentStatus } from "./store.ts";
 
 /** What a lifecycle event knows. Only the opening one carries an identity. */
@@ -144,8 +145,15 @@ export function spawnView(entries: readonly Entry[], live: (sessionId: string) =
  * would be a line no reader ever asks for. A card that has already settled is final, and appending
  * past it would only grow the file with entries `spawnStates` is bound to ignore.
  */
-export function appendSpawnState(entryLog: SessionLog, update: SpawnStateUpdate): SpawnStateEntry | null {
-  const entries = entryLog.entries();
+export async function appendSpawnState(entryLog: SessionLog, update: SpawnStateUpdate): Promise<SpawnStateEntry | null> {
+  // The states and the cards they revise, and nothing else: a lifecycle event is written while a
+  // run is working, and reading 46 000 entries to decide one line would put the log on that path.
+  const records = [];
+  for (let i = 0; i < entryLog.count(); i++) {
+    const record = entryLog.recordAt(i);
+    if (record.type === "spawn_state" || record.spawnCard) records.push(record);
+  }
+  const entries = await entryLog.entriesIn(records);
   const callId = update.toolCallId ?? cardOf(entries, update.subagentId);
   if (!callId) return null;
   const current = spawnStates(entries).get(callId);
@@ -201,7 +209,7 @@ export function recordSpawnLifecycle(logOf: (sessionId: string) => Promise<Sessi
     const next = previous
       .catch(() => {})
       .then(async () => {
-        appendSpawnState(await logOf(sessionId), update);
+        await appendSpawnState(await logOf(sessionId), update);
       })
       .catch((error: unknown) => {
         void log("warn", "session log: sub-agent state not recorded", {

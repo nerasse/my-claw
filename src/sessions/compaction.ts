@@ -310,8 +310,10 @@ function keptTailStart(entries: Entry[], budget: number): number {
   return entries.length;
 }
 
-export function planCompaction(log: SessionLog, retainedBudget: number = RETAINED_BUDGET_TOKENS): CompactionPlanResult {
-  const entries = contextEntries(log.entries(), log.leaf());
+export async function planCompaction(log: SessionLog, retainedBudget: number = RETAINED_BUDGET_TOKENS): Promise<CompactionPlanResult> {
+  // From the last boundary down: what a prompt would carry, which is all this plan can change.
+  const context = await log.context();
+  const entries = contextEntries(context, log.leaf());
   if (entries.length < MIN_MESSAGES_TO_COMPACT) {
     return {
       ok: false,
@@ -344,7 +346,7 @@ export function planCompaction(log: SessionLog, retainedBudget: number = RETAINE
       ...(tailStart < entries.length ? { firstKeptEntryId: entries[tailStart]!.id } : {}),
       retained: retainedMessages(candidates, retainedBudget),
       ...(previous ? { previousSummary: previous.summary, ...(previous.archive === undefined ? { previousIsLegacy: true } : {}) } : {}),
-      tokensBefore: estimateMessagesTokens(promptOf(log.entries(), log.leaf())),
+      tokensBefore: estimateMessagesTokens(promptOf(context, log.leaf())),
       leafId: log.leaf(),
     },
   };
@@ -757,10 +759,11 @@ export function archiveOf(plan: CompactionPlan, archived: string): string {
  * is committed minutes later, and the turns added meanwhile are not in it. They become the kept
  * tail. With none, the boundary resumes after itself.
  */
-function firstKeptAtCommit(log: SessionLog, plan: CompactionPlan, ownId: string): string {
+async function firstKeptAtCommit(log: SessionLog, plan: CompactionPlan, ownId: string): Promise<string> {
   if (plan.firstKeptEntryId) return plan.firstKeptEntryId;
   const plannedLast = plan.entries[plan.entries.length - 1]?.id;
-  const path = contextEntries(log.entries(), log.leaf());
+  const context = await log.context();
+  const path = contextEntries(context, log.leaf());
   const at = path.findIndex((entry) => entry.id === plannedLast);
   return (at >= 0 ? path[at + 1]?.id : undefined) ?? ownId;
 }
@@ -778,7 +781,7 @@ export async function commitCompaction(
     type: "compaction",
     prompt: true,
     summary,
-    firstKeptEntryId: firstKeptAtCommit(log, plan, id),
+    firstKeptEntryId: await firstKeptAtCommit(log, plan, id),
     tokensBefore: plan.tokensBefore,
     count: plan.middle.length,
     ...(plan.retained.length > 0 ? { retained: plan.retained } : {}),
@@ -871,7 +874,7 @@ async function runCompactionPass(
   prefix?: CompactionPrefix,
 ): Promise<CompactionResult> {
   const log = await sessionLogOf(session.id);
-  const planned = planCompaction(log, tailBudget);
+  const planned = await planCompaction(log, tailBudget);
   hooks.emit("session:compact:start", {
     sessionId: session.id,
     messageCount: planned.ok ? planned.plan.entries.length : planned.count,
@@ -901,7 +904,7 @@ async function runCompactionPass(
       const boundary = await commitCompaction(log, plan, summarized.summary, summarized.archive, summarized.elapsedMs);
       indexCompactionArchive(session, boundary);
       session.lastActiveAt = new Date().toISOString();
-      const afterCount = contextEntries(log.entries(), log.leaf()).length;
+      const afterCount = contextEntries(await log.context(), log.leaf()).length;
       hooks.emit("session:compact:end", {
         sessionId: session.id,
         beforeCount,

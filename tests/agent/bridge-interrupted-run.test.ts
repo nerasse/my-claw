@@ -62,7 +62,7 @@ test("bridge: a run killed mid-tool leaves no dangling tool_calls in the log", a
   log.append({ type: "phase", prompt: true, text: "", runId: "dead-run" } as any);
   await log.flush();
 
-  const entries = log.entries();
+  const entries = (await log.all());
   const prompt = promptOf(entries, log.leaf());
 
   // Nothing dangling, and nothing empty either: the turn carried no prose and its call never
@@ -86,7 +86,7 @@ test("bridge: a run killed mid-tool leaves no dangling tool_calls in the log", a
     
     // Verify the new run completed successfully
     await log.flush();
-    const newEntries = log.entries();
+    const newEntries = (await log.all());
     const phases = newEntries.filter((e): e is PhaseEntry => e.type === "phase");
     // Should have the old phase + the new phase
     assert.ok(phases.length >= 2, "new phase was added");
@@ -100,7 +100,7 @@ test("bridge: a run killed mid-tool leaves no dangling tool_calls in the log", a
  * but no tool results. With the new log system, this shape cannot occur because
  * tool_calls are derived from tool entries, not stored directly.
  */
-test("the old dangling-tool-call shape cannot occur with the log system", () => {
+test("the old dangling-tool-call shape cannot occur with the log system", async () => {
   // With the log system, tool_calls in the prompt are derived from ToolEntry records.
   // A ToolEntry is only written when the tool completes with a result.
   // Therefore, every tool_call in the prompt has a corresponding tool result.
@@ -111,7 +111,7 @@ test("the old dangling-tool-call shape cannot occur with the log system", () => 
   // No tool entry - this is what happens when a run is killed mid-tool
   log.append({ type: "user", prompt: true, text: "encore" } as any);
 
-  const prompt = promptOf(log.entries(), log.leaf());
+  const prompt = promptOf(await log.all(), log.leaf());
   
   // Count tool_calls and tool results
   const toolCallCount = prompt.reduce((count, m) => 

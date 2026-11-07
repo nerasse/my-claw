@@ -11,6 +11,7 @@ import { basename, dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { SessionLog, UserEntry, Entry, Provisioned, CompactionEntry, RunStartEntry } from "../sessions/log.ts";
 import { leavesOf, pathOf, openSessionLog } from "../sessions/log.ts";
+import { DANGLING_PARENT, NO_PARENT } from "../sessions/log-index.ts";
 import { readMeta, writeMeta, metaOf, type BranchLabel, type ForkOrigin, type UndoState } from "../sessions/meta.ts";
 import type { SessionData, SessionAttachment } from "../sessions/store.ts";
 import type { SessionManager } from "../sessions/manager.ts";
@@ -189,11 +190,11 @@ function lastTurnOf(path: readonly Entry[]): UserEntry | CompactionEntry | undef
  * looked through; anything else on the way, or a leaf on another branch, is a turn written since.
  */
 function nothingWrittenSince(log: SessionLog, expectedLeafId: string): boolean {
-  for (let id = log.leaf(); id !== null; ) {
-    if (id === expectedLeafId) return true;
-    const entry = log.get(id);
-    if (!entry || entry.prompt) return false;
-    id = entry.parentId;
+  let record = log.leaf() === null ? undefined : log.recordOf(log.leaf()!);
+  for (let guard = 0; record && guard <= log.count(); guard++) {
+    if (record.id === expectedLeafId) return true;
+    if (record.prompt) return false;
+    record = record.parent === NO_PARENT || record.parent === DANGLING_PARENT ? undefined : log.recordAt(record.parent);
   }
   return expectedLeafId === "";
 }
@@ -226,7 +227,7 @@ export async function handleRetryCommand(
     return { text: "Usage: /retry [n] — recule avant le dernier tour user, ou n tours." };
   }
 
-  const path = ctx.log.path();
+  const path = await ctx.log.path();
   const userTurn = findNthUserFromEnd(path, n);
   if (!userTurn) {
     return { text: n === 1 ? "Aucun tour utilisateur à retenter." : `Pas assez de tours (${n} demandé).` };
@@ -283,7 +284,7 @@ export async function handleUndoCommand(
     return { text: "Usage: /undo [soft|hard] — sans argument, choix dans l'app." };
   }
 
-  const path = ctx.log.path();
+  const path = await ctx.log.path();
   const turn = lastTurnOf(path);
   if (!turn) {
     return { text: "Rien à annuler : aucun tour utilisateur." };
@@ -424,7 +425,7 @@ export async function handleRedoCommand(
   if (!nothingWrittenSince(ctx.log, meta.undo.expectedLeafId)) {
     // A turn was written since the undo — redo is no longer the immediate inverse.
     // Point the user to /branches with the branch number.
-    const entries = ctx.log.entries();
+    const entries = await ctx.log.all();
     const leaves = leavesOf(entries);
     const branchNum = leaves.findIndex((l) => l.id === meta.undo!.redoLeafId) + 1;
     const branchHint = branchNum > 0 ? ` (branche ${branchNum} dans /branches)` : "";
@@ -461,7 +462,7 @@ export async function handleBranchesCommand(
   ctx: BranchCommandContext,
   args: string,
 ): Promise<BranchCommandResult> {
-  const entries = ctx.log.entries();
+  const entries = await ctx.log.all();
   const leaves = leavesOf(entries);
   const currentLeaf = ctx.log.leaf();
 
@@ -596,7 +597,7 @@ export async function handleForkCommand(
   ctx: BranchCommandContext,
   args: string,
 ): Promise<ForkCommandResult> {
-  const path = ctx.log.path();
+  const path = await ctx.log.path();
   if (path.length === 0) {
     return { text: "Impossible de forker une conversation vide." };
   }
@@ -606,18 +607,18 @@ export async function handleForkCommand(
   const argTrimmed = args.trim();
   if (argTrimmed) {
     // Fork from a specific entry
-    const targetEntry = ctx.log.get(argTrimmed);
-    if (!targetEntry) {
+    const target = ctx.log.recordOf(argTrimmed);
+    if (!target) {
       return { text: `Entrée inconnue: ${argTrimmed}` };
     }
-    forkPointId = targetEntry.id;
+    forkPointId = target.id;
   } else {
     // Fork from current leaf
     forkPointId = ctx.log.leaf()!;
   }
 
   // Get the path to the fork point
-  const forkPath = pathOf(ctx.log.entries(), forkPointId);
+  const forkPath = pathOf(await ctx.log.all(), forkPointId);
   if (forkPath.length === 0) {
     return { text: "Le point de fork n'est pas dans le chemin courant." };
   }
