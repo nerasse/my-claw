@@ -58,8 +58,14 @@ Deliberately excluded, with the reason:
 
 ## Store
 
+The store lives **outside** `$MY_CLAW_DIR`, at `$MY_CLAW_BACKUP_DIR`, which defaults to
+`${XDG_STATE_HOME:-~/.local/state}/my-claw/backups` (the compose `home` volume carries it). It
+used to be `$MY_CLAW_DIR/backups/`, and on 2026-11-07 a `bun test` run outside the repository root
+(no preload) deleted `config.json` and `backups/` in the same pass: the fallback went with the file
+it protects. Tests point `MY_CLAW_BACKUP_DIR` back inside their temp root (`tests/setup.ts`).
+
 ```
-$MY_CLAW_DIR/backups/                  0700
+$MY_CLAW_BACKUP_DIR/                   0700
   journal.jsonl                        0600
   <artifactId>/
     20260727-183300123-a1b2c3d4e5f6    mode inherited from the source
@@ -325,8 +331,10 @@ Purging by position alone could leave only pre-write entries and quietly disarm 
 
 ## Accepted limitations
 
-- `backups/` lives under `$MY_CLAW_DIR`, so the agent's own `bash` can delete it. Putting it out of
-  reach would require a root-owned directory and a privileged helper; not worth it single-tenant.
+- The store is out of `$MY_CLAW_DIR`, so nothing that sweeps that tree takes the backups with it,
+  but it belongs to the same user and the agent's own `bash` can still delete it. Putting it truly
+  out of reach would require a root-owned directory and a privileged helper; not worth it
+  single-tenant.
   `bash` is deliberately not jailed against config paths either -- that would break legitimate
   self-administration, and snapshots make an accident recoverable.
 - `.env` snapshots hold secrets in cleartext (0600, in a 0700 dir). The secret now exists in up to

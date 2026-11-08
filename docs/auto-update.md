@@ -30,7 +30,11 @@ The swap window stops the services, so an update must never interrupt a live age
 
 1. If the registry check finds nothing new, stop.
 2. If `my-claw.service` is down, proceed: an update can only help (it restarts the service).
-3. Otherwise ask the running server over its app channel HTTP endpoint `GET /health`
+3. If the service is up but `~/.my-claw/config.json` is missing, skip: the server is living on
+   its in-memory copy, and the restart an update forces would never come back. It used to be a
+   free pass, which is how a config deleted by a stray test turned the 0.7.158 update into a
+   crash loop that the rollback could not fix either (2026-11-08).
+4. Otherwise ask the running server over its app channel HTTP endpoint `GET /health`
    (device-authenticated, same credentials the phone uses): `{"activeRun": bool}`. The server
    answers from the run registry — the source of truth for in-flight runs.
    - `activeRun: true` → skip, retry in 15 minutes.

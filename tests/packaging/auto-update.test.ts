@@ -114,12 +114,12 @@ describe("a tick with a release key", () => {
   afterAll(() => hub.stop(true));
 
   /** Async: the fake hub answers from this process, which spawnSync would block. */
-  async function tickAsync(app: string, script: string): Promise<string> {
+  async function tickAsync(app: string, script: string, path = process.env["PATH"]): Promise<string> {
     const run = Bun.spawn(
       AS_NOBODY
         ? ["setpriv", `--reuid=${UNPRIVILEGED.uid}`, `--regid=${UNPRIVILEGED.gid}`, "--clear-groups", "bash", script]
         : ["bash", script],
-      { env: { ...process.env, MY_CLAW_APP_DIR: app, XDG_RUNTIME_DIR: "/nonexistent" }, stdout: "pipe", stderr: "pipe" },
+      { env: { ...process.env, PATH: path, MY_CLAW_APP_DIR: app, XDG_RUNTIME_DIR: "/nonexistent" }, stdout: "pipe", stderr: "pipe" },
     );
     const [out, err] = await Promise.all([new Response(run.stdout).text(), new Response(run.stderr).text(), run.exited]);
     return out + err;
@@ -152,6 +152,18 @@ describe("a tick with a release key", () => {
     seen.length = 0;
     expect(await tickAsync(app, script)).toContain("run: myclaw release-key <key>");
     expect(seen).toEqual([]);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("a running server whose config.json is gone is never updated: the restart would not come back", async () => {
+    const { app, script, home, marker } = await install();
+    await writeFile(join(home, ".my-claw", ".env"), `MY_CLAW_RELEASE_URL=http://127.0.0.1:${hub.port}/my-claw\nMY_CLAW_RELEASE_KEY=${KEY}\n`);
+    const bin = join(app, "..", "bin");
+    await mkdir(bin, { recursive: true, mode: 0o755 });
+    await writeFile(join(bin, "systemctl"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    latest = "0.7.2";
+    const out = await tickAsync(app, script, `${bin}:${process.env["PATH"]}`);
+    expect(out).toContain("config.json is missing while my-claw is running");
     expect(existsSync(marker)).toBe(false);
   });
 

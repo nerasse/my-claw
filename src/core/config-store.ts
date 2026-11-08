@@ -7,6 +7,7 @@ import { writeFileAtomically } from "../utils/atomic-write.ts";
 import { log } from "../utils/logger.ts";
 import {
   MY_CLAW_DIR,
+  BACKUP_DIR,
   CONFIG_PATH,
   parseConfig,
   finalizeConfig,
@@ -21,7 +22,7 @@ const JOURNAL_MAX_BYTES = 5 * 1024 * 1024;
 
 /** Where the content lives. Mode 0700: `.env` snapshots are secrets. */
 export function storeDir(): string {
-  return join(MY_CLAW_DIR, "backups");
+  return BACKUP_DIR;
 }
 
 /**

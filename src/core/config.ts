@@ -1,6 +1,6 @@
 import { readFile, mkdir, copyFile, access } from "node:fs/promises";
 import { readFileSync, statSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { PROMPT_FILES, type PromptFile } from "../agent/prompt/files.ts";
@@ -1268,7 +1268,37 @@ export function findUnknownScopeEntries(
 
 // MY_CLAW_DIR env override exists so tests (and alternate deployments) never touch
 // the real ~/.my-claw. The test preload (bunfig.toml) points it at a temp dir.
-export const MY_CLAW_DIR = process.env["MY_CLAW_DIR"] ?? join(homedir(), ".my-claw");
+export const MY_CLAW_DIR = resolveMyClawDir();
+
+/**
+ * Config snapshots live outside MY_CLAW_DIR, so whatever deletes the config cannot take its
+ * fallback in the same sweep -- docs/config-backup.md.
+ */
+export const BACKUP_DIR =
+  process.env["MY_CLAW_BACKUP_DIR"] ??
+  join(process.env["XDG_STATE_HOME"] || join(homedir(), ".local", "state"), "my-claw", "backups");
+
+/**
+ * Under `bun test` (NODE_ENV=test) the real directories are refused outright. The preload only runs
+ * when bun finds bunfig.toml in its cwd: a `bun test tests/e2e/` from anywhere else imported this
+ * module with no override, and agent-model-command.test.ts overwrote then deleted the production
+ * config.json while config-hot-reload.test.ts wiped its backups (2026-11-07). Throwing here fails
+ * every test file that reaches the config before a single fixture runs.
+ */
+function resolveMyClawDir(): string {
+  const real = join(homedir(), ".my-claw");
+  const override = process.env["MY_CLAW_DIR"];
+  if (
+    process.env["NODE_ENV"] === "test" &&
+    (!override || resolve(override) === resolve(real) || !process.env["MY_CLAW_BACKUP_DIR"])
+  ) {
+    throw new Error(
+      `Refusing to run tests against the real ${real} or its backups: MY_CLAW_DIR and MY_CLAW_BACKUP_DIR must both point at a temp dir. ` +
+        "Run `bun test` from the repository root so tests/setup.ts (bunfig.toml preload) redirects them.",
+    );
+  }
+  return override ?? real;
+}
 
 /**
  * Load ~/.my-claw/.env into process.env.

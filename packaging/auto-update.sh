@@ -86,7 +86,12 @@ run_gate() {
     return 0
   fi
   config_file="${TARGET_HOME}/.my-claw/config.json"
-  [ -f "$config_file" ] || return 0
+  # A running server whose config is gone lives on its in-memory copy: the restart an update forces
+  # would never come back (2026-11-08). Holding back keeps it up until someone restores the file.
+  if [ ! -f "$config_file" ]; then
+    echo "Warning: ${config_file} is missing while my-claw is running, skipping this round (a restart would not come back)"
+    return 1
+  fi
   port="$(jq -r '.channels["my-claw-app"].port // 8080' "$config_file" 2>/dev/null || echo 8080)"
   device="$(jq -r '.channels["my-claw-app"].devices | to_entries[] | select(.value.enabled != false and ((.value.token | length) > 0)) | "\(.key)\t\(.value.token)"' "$config_file" 2>/dev/null | head -1 || true)"
   if [ -z "$device" ]; then

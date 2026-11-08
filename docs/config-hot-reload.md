@@ -93,7 +93,7 @@ debounced (300ms) so editors that emit multiple writes trigger a single reload.
 
 Three things extend this (see `docs/config-backup.md`):
 
-- The refused content is archived under `backups/<artifact>/rejected/`. The owner repairs the file
+- The refused content is archived under `$MY_CLAW_BACKUP_DIR/<artifact>/rejected/` (docs/config-backup.md). The owner repairs the file
   within seconds, so without the archive nothing would still explain why the edit never applied.
 - `parseConfig` now also rejects a section of the wrong *type* (`"llm": "oops"`), which used to be
   stored as-is and break the object identity this whole design depends on. A section that is simply

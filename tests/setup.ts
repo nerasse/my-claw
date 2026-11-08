@@ -16,6 +16,8 @@ const systemTmp = tmpdir();
 // fallback, and the workspace default already derives from MY_CLAW_DIR.
 const root = mkdtempSync(join(systemTmp, "my-claw-test-"));
 process.env["MY_CLAW_DIR"] = root;
+// Production keeps config snapshots outside MY_CLAW_DIR; tests keep them inside the run root.
+process.env["MY_CLAW_BACKUP_DIR"] = join(root, "backups");
 
 // Move os.tmpdir() itself inside the run root, so scratch directories land somewhere that is
 // already deleted with the run. Sweeping /tmp by prefix does not scale: the suite calls mkdtemp

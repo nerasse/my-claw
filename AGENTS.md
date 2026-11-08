@@ -42,6 +42,9 @@ ships the fix itself.
 - `bun test` must never touch the real `~/.my-claw`. `bunfig.toml` preloads
   `tests/setup.ts`, which points `MY_CLAW_DIR` at a throwaway temp dir before any
   module loads. Read filesystem roots from `MY_CLAW_DIR` (never hardcode `homedir()`).
+  The preload only runs when `bun test` starts in the repository root; elsewhere, `config.ts`
+  refuses to load under `NODE_ENV=test` unless `MY_CLAW_DIR` and `MY_CLAW_BACKUP_DIR` both point
+  away from the real ones (a run from the wrong cwd deleted the production config on 2026-11-07).
 - The same preload moves `TMPDIR` inside that root, so `os.tmpdir()` scratch is deleted with
   the run and no test has to remember a cleanup. Keep using `mkdtemp(join(tmpdir(), ...))`;
   never rebuild an absolute `/tmp` path by hand, that is the one way back out of the sandbox.
