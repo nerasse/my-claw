@@ -18,7 +18,7 @@ import { splitAttachmentBlock, stripLocationBlock, type AttachmentBlockEntry } f
 import { toolDisplayName } from "../../agent/tools/display.ts";
 import { toolCardId } from "./types.ts";
 import { parseStoredName, type SessionFile } from "./files.ts";
-import type { Entry } from "../../sessions/log.ts";
+import type { CommandEntry, Entry } from "../../sessions/log.ts";
 import type { LogRecord } from "../../sessions/log-index.ts";
 import type { SpawnView } from "../../sessions/spawn-state.ts";
 import type { SessionAttachment } from "../../sessions/store.ts";
@@ -162,13 +162,18 @@ export function pageBefore(
  * that could hold it are read backwards in small batches until one matches. The scan is bounded:
  * a cursor older than `MAX_CURSOR_SCAN` records degrades to the count cursor the client sent with
  * it, exactly like an id this branch no longer holds.
+ *
+ * `match` answers the position the page must end *before*: a command journalled late answers the
+ * position of the entry it was anchored to, because that is what it follows on screen. Ending at
+ * the command's own record would hand back everything between the anchor and the end of the file
+ * as "older", which the reader already had.
  */
 export function pageBeforeRecords(
   path: readonly LogRecord[],
   beforeId: string,
   limit: number,
   fallbackBefore: number,
-  match: (position: number) => boolean,
+  match: (position: number) => number | undefined,
   lookback = MAX_TURN_LOOKBACK,
 ): { from: number; to: number; hasMore: boolean; nextBefore: number } {
   const total = path.length;
@@ -176,8 +181,9 @@ export function pageBeforeRecords(
   for (let i = total - 1; i >= 0 && i >= total - MAX_CURSOR_SCAN; i -= 1) {
     const record = path[i]!;
     const plain = record.id === beforeId || (beforeId.startsWith("run-") && record.id === beforeId.slice(4));
-    if (plain || match(i)) {
-      end = i;
+    const hit = plain ? i : match(i);
+    if (hit !== undefined) {
+      end = hit;
       break;
     }
   }
@@ -627,6 +633,38 @@ export function windowNeedsFiles(entries: readonly Entry[]): boolean {
 }
 
 /**
+ * A window's entries with each command back where the owner typed it.
+ *
+ * A command is journalled when it answers, so its record sits at the end of the file -- after the
+ * run it waited for, after the boundary it wrote, after the messages queued behind it. On screen it
+ * belongs where the send was, which the entry carries as `afterId` (the leaf at admission). This
+ * moves it there and leaves every other entry where the log put it.
+ *
+ * Two commands anchored on the same leaf keep the order they were typed in, and one whose anchor
+ * sits above the window opens it: the window starts mid-branch, and the place that command
+ * follows is the entry just before it.
+ */
+export function placeAnchoredCommands(entries: readonly Entry[]): Entry[] {
+  const anchored = entries.filter(
+    (entry): entry is CommandEntry => entry.type === "command" && entry.afterId !== undefined,
+  );
+  if (anchored.length === 0) return [...entries];
+
+  let out = entries.filter((entry) => entry.type !== "command" || entry.afterId === undefined);
+  /** Where the last command on each anchor landed, so a second one goes after it. */
+  const placed = new Map<string, number>();
+  for (const entry of anchored) {
+    const afterId = entry.afterId!;
+    const anchor = out.findIndex((other) => other.id === afterId);
+    const previous = placed.get(afterId);
+    const at = previous !== undefined ? previous + 1 : anchor >= 0 ? anchor + 1 : 0;
+    out = [...out.slice(0, at), entry, ...out.slice(at)];
+    placed.set(afterId, at);
+  }
+  return out;
+}
+
+/**
  * Entries in, bubbles out.
  *
  * `outputLimit` clips a tool card: a thread would otherwise carry every byte every tool ever
@@ -673,7 +711,9 @@ export function displayOf(
   for (const entry of entries) {
     const prior = previous;
     previous = entry;
-    const ts = tsOf(entry);
+    // A command carries the instant the owner sent it, not the one the journal wrote it: minutes
+    // apart on a `/compact`, and the bubbles belong at the send (see `CommandEntry.afterId`).
+    const ts = entry.type === "command" && entry.anchorTs !== undefined ? new Date(entry.anchorTs).toISOString() : tsOf(entry);
 
     // A folded run stands at its own marker: the header goes out here, and the work it hides is
     // skipped below. The marker was already the entry that rendered to nothing, so the summary

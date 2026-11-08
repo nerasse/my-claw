@@ -167,6 +167,23 @@ export interface CommandEntry extends EntryBase {
    * the result bubble only, live and on every refresh. `display.ts` renders this, nothing else.
    */
   quiet?: boolean;
+  /**
+   * The entry the command followed when the owner sent it: where its bubbles belong on screen.
+   *
+   * A command is journalled when it *answers* -- `/compact` waits for the run in flight and only
+   * replies afterwards -- so its own place in the file is the end of everything it caused: after
+   * the run, after the boundary it wrote, after the messages queued behind it. Read as-is, the
+   * command landed *under* its own effect, and under messages typed after it. `afterId` is the
+   * leaf the branch had at the instant the send was admitted, and `display.ts` puts the bubbles
+   * back there. Absent for entries written before this existed, and for a report filed by the
+   * system rather than typed.
+   */
+  afterId?: string;
+  /**
+   * When the owner sent it, ms. The bubbles read this rather than the journal's write time, so a
+   * command that took minutes carries the instant of the send, not of its answer.
+   */
+  anchorTs?: number;
 }
 
 export interface FailureEntry extends EntryBase {

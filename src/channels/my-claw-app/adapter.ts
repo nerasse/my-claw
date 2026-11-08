@@ -178,7 +178,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
 } from "./types.ts";
 import { DEFAULT_THREAD } from "./types.ts";
 import { MyClawAppStreamer } from "./stream.ts";
-import type { MyClawAppSessionStore } from "./sessions.ts";
+import type { CommandPlacement, MyClawAppSessionStore } from "./sessions.ts";
 import { sanitizeThreadId } from "./sessions.ts";
 import { applyAddressOverride, normalizeLocationInput, type MyClawAppLocationResolver } from "./location.ts";
 import type {
@@ -2485,6 +2485,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     details: string | undefined,
     sourceId: string,
     quiet = false,
+    place?: CommandPlacement,
   ): Promise<void> {
     if (renderedAsPage) return;
     const redacted = redactCommandArgs(command, args);
@@ -2492,7 +2493,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     try {
       // The entry has its own log identity. The source id is the chat.send id the app already
       // used for the command and its answer, so replay can replace both live bubbles.
-      await this.store.recordCommand(owner, threadId, input, output, details, sourceId, quiet);
+      await this.store.recordCommand(owner, threadId, input, output, details, sourceId, quiet, place);
     } catch (err) {
       void myClawAppLog("error", "command journal failed", { owner, threadId, command, error: String(err) });
     }
@@ -2686,6 +2687,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
               text: waiting ? "Waiting for the current run to finish, then compacting…" : `Running /${command}...`,
             });
           }, COMMAND_PENDING_NOTICE_MS);
+      // Where the command belongs on screen, read before it runs: a `/compact` waits for the run
+      // in flight and answers minutes later, and journaling it then would file it after everything
+      // it caused.
+      const anchor = await this.store.commandAnchor(owner, threadId).catch(() => undefined);
+      const place: CommandPlacement = { ...(anchor ? { afterId: anchor } : {}), at: Date.now() };
       try {
         // The order of arrival is settled; what follows can take minutes.
         pass();
@@ -2710,7 +2716,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
             ...(newThreadId ? { newThreadId } : {}),
             ...(quiet ? { dropInput: true } : {}),
           });
-          await this.journalCommand(owner, threadId, command, args, text, status !== undefined, details, frame.id, quiet);
+          await this.journalCommand(owner, threadId, command, args, text, status !== undefined, details, frame.id, quiet, place);
           if (newThreadId) {
             try {
               this.broadcast(owner, await this.sessionListFrame(owner));
@@ -2731,7 +2737,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
           text: failure,
           ...(quiet ? { dropInput: true } : {}),
         });
-        await this.journalCommand(owner, threadId, command, args, failure, false, undefined, frame.id, quiet);
+        await this.journalCommand(owner, threadId, command, args, failure, false, undefined, frame.id, quiet, place);
         return;
       } finally {
         if (commandKey) this.commandSends.delete(commandKey);

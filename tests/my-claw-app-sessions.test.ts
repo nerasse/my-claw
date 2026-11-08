@@ -318,6 +318,87 @@ describe("MyClawAppSessionStoreImpl.history", () => {
     assert.ok(unknown.entries.length > 0, "an unresolvable id must not kill paging");
   });
 
+  /**
+   * A `/compact` sent mid-run answers minutes later, and its record therefore sits at the end of
+   * the file: after the run, after the boundary it wrote, after the messages queued behind it.
+   * Read in file order the thread showed the command *under* its own effect. `afterId` is the leaf
+   * the branch had when the send was admitted, and the page has to put the bubbles back there --
+   * live, mid-run, and on every reload.
+   */
+  test("a command journalled after its own effect comes back where it was typed", async () => {
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "fais le menage", timestamp: "2026-01-01T00:00:01.000Z" },
+    ]));
+    const opening = logSetup.log.append({ type: "phase", prompt: true, text: "je regarde", runId: "r1" });
+    const before = logSetup.log.append({ type: "phase", prompt: true, text: "deux fichiers", runId: "r1" });
+    const after = logSetup.log.append({ type: "phase", prompt: true, text: "c'est fait", runId: "r1" });
+    logSetup.log.append({ type: "run_end", prompt: false, reason: "done" });
+    // Journalled last, anchored on the phase the owner was reading when he typed it.
+    const sentAt = new Date().getTime();
+    logSetup.log.append({
+      type: "command",
+      prompt: false,
+      input: "/compact",
+      output: "Context compacted, 3 turns",
+      sourceId: "send-1",
+      afterId: before.id,
+      anchorTs: sentAt,
+    });
+    await logSetup.log.flush();
+
+    const { entries } = await store.history(DEVICE, THREAD);
+    // Typed while "deux fichiers" was the last thing on screen: the two bubbles follow it, and the
+    // rest of the run continues above them.
+    assert.deepEqual(entries.map(textOf), [
+      "fais le menage",
+      "je regarde",
+      "deux fichiers",
+      "/compact",
+      "Context compacted, 3 turns",
+      "c'est fait",
+    ]);
+    // Both bubbles carry the instant of the send, not the instant the journal wrote it.
+    const [input, output] = entries.slice(3, 5);
+    assert.equal(proseOf(input!).ts, new Date(sentAt).toISOString());
+    assert.equal(proseOf(output!).ts, new Date(sentAt).toISOString());
+
+    // And the delta tells the same story: a reload mid-run must not park it at the bottom either.
+    const sync = await store.sync(DEVICE, THREAD);
+    assert.deepEqual(
+      sync.entries.map(textOf).filter((text) => text === "/compact" || text.startsWith("Context compacted")),
+      ["/compact", "Context compacted, 3 turns"],
+    );
+    const delta = sync.entries.map(textOf);
+    assert.ok(delta.indexOf("deux fichiers") < delta.indexOf("/compact"));
+    assert.equal(opening.type, "phase");
+    assert.equal(after.type, "phase");
+  });
+
+  test("paging back from a command bubble asks what is older than the entry it follows", async () => {
+    logSetup = await saveSessionWithLog(sessionId, session(sessionId, [
+      { role: "user", content: "q0", timestamp: "2026-01-01T00:00:00.000Z" },
+      { role: "user", content: "q1", timestamp: "2026-01-01T00:00:01.000Z" },
+      { role: "user", content: "q2", timestamp: "2026-01-01T00:00:02.000Z" },
+    ]));
+    const anchor = logSetup.log.append({ type: "phase", prompt: true, text: "reponse a q2", runId: "r1" });
+    logSetup.log.append({ type: "run_end", prompt: false, reason: "done" });
+    logSetup.log.append({
+      type: "command",
+      prompt: false,
+      input: "/compact",
+      output: "Context compacted, 3 turns",
+      sourceId: "send-1",
+      afterId: anchor.id,
+      anchorTs: new Date().getTime(),
+    });
+    await logSetup.log.flush();
+
+    // The app's oldest held bubble is the command's answer; everything above it on screen is what
+    // precedes the entry the command follows -- never the tail of the file, which the reader holds.
+    const older = await store.history(DEVICE, THREAD, 5, 0, "cmd-send-1");
+    assert.deepEqual(older.entries.map(textOf), ["q0", "q1", "q2"]);
+  });
+
   test("a fresh sync serves the newest page with its paging cursor; a delta never does", async () => {
     const messages: LegacySessionData["messages"] = [];
     for (let i = 0; i < 12; i++) {

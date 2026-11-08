@@ -9,7 +9,7 @@ import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
 import { listingFactsOf, readMeta, type ListingFacts } from "../../sessions/meta.ts";
 import { pathOf, UnknownCursorError, type Provisioned, type Entry, type UserEntry, type PhaseEntry, type ToolEntry, type CompactionEntry, type CommandEntry, type FailureEntry, type SessionLog } from "../../sessions/log.ts";
-import { displayOf, lastRunOf, mediaRefsOf, MAX_CURSOR_SCAN, pageBeforeRecords, pageOfRecords, runFold, runFoldPlan, withSpawnCards, windowNeedsFiles, type DisplayResolvers, type MediaRef } from "./display.ts";
+import { displayOf, lastRunOf, mediaRefsOf, MAX_CURSOR_SCAN, pageBeforeRecords, pageOfRecords, placeAnchoredCommands, runFold, runFoldPlan, withSpawnCards, windowNeedsFiles, type DisplayResolvers, type MediaRef } from "./display.ts";
 import { spawnStates, type SpawnCardState, type SpawnView } from "../../sessions/spawn-state.ts";
 import type { SessionSubAgentState } from "../../sessions/store.ts";
 import { DANGLING_PARENT, NO_PARENT, type LogRecord } from "../../sessions/log-index.ts";
@@ -25,6 +25,17 @@ import type { MyClawAppHistoryAttachment, MyClawAppHistoryEntry, MyClawAppHistor
 import type { SessionData, SessionQuotaRetry } from "../../sessions/store.ts";
 
 const THREAD_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
+
+/**
+ * Where a command's bubbles belong on screen: after the entry that was the leaf when the owner
+ * sent it, and stamped with the instant he sent it.
+ */
+export interface CommandPlacement {
+  /** The branch's leaf at admission; undefined on a thread that had no entry yet. */
+  afterId?: string;
+  /** When the send was admitted, ms. */
+  at?: number;
+}
 
 /** The return value of `sync`, carrying the delta plus metadata. */
 export interface MyClawAppSyncPage {
@@ -92,8 +103,16 @@ export interface MyClawAppSessionStore {
   /**
    * Journals a slash command and the bubble it produced, so a reopened thread still shows it.
    * No-op on a thread that has no session yet: there is no history to put it in.
+   *
+   * `place` is where the bubbles belong on screen (see `commandAnchor`): the leaf the branch had
+   * when the send was admitted, and the instant it was sent.
    */
-  recordCommand(owner: string, threadId: string, input: string, output: string, details?: string, sourceId?: string, quiet?: boolean): Promise<void>;
+  recordCommand(owner: string, threadId: string, input: string, output: string, details?: string, sourceId?: string, quiet?: boolean, place?: CommandPlacement): Promise<void>;
+  /**
+   * The entry a command sent right now belongs after: the branch's leaf, read before it runs.
+   * Undefined on a thread with no session, which has no position to speak of.
+   */
+  commandAnchor(owner: string, threadId: string): Promise<string | undefined>;
   /**
    * Journals a run that died and the error the owner was shown, so a reopened thread still says
    * why the question got no answer. No-op on a thread that has no session yet.
@@ -694,11 +713,15 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
    * How a cursor the index cannot place by id is resolved: a tool card's `t-<callId>` and a
    * command's send id name fields the byte map does not carry, so the records of that one type are
    * read backwards, in a bounded window, until one matches.
+   *
+   * What it answers is where the page has to end: the matched record, or -- for a command, which
+   * sits on screen right after the entry it was typed under -- that entry's position. Paging back
+   * from a command bubble asks for what is older than the thing it follows.
    */
-  private async cursorMatcher(log: SessionLog, path: readonly LogRecord[], beforeId: string): Promise<(position: number) => boolean> {
+  private async cursorMatcher(log: SessionLog, path: readonly LogRecord[], beforeId: string): Promise<(position: number) => number | undefined> {
     const isToolCard = beforeId.startsWith("t-");
     const byId = /^[0-9a-f-]{36}$/.test(beforeId) || beforeId.startsWith("run-");
-    if (byId) return () => false;
+    if (byId) return () => undefined;
     const callId = isToolCard ? beforeId.slice(2) : undefined;
     const sourceId = isToolCard ? undefined : beforeId.startsWith("cmd-") ? beforeId.slice(4) : beforeId;
     const candidates: number[] = [];
@@ -707,14 +730,18 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       if (isToolCard ? type === "tool" : type === "command") candidates.push(i);
     }
     const positionOf = new Map(candidates.map((position) => [path[position]!.id, position]));
-    const hits = new Set<number>();
+    const positionOfEntry = new Map(path.map((record, position) => [record.id, position]));
+    const hits = new Map<number, number>();
     for (const entry of await log.entriesIn(candidates.map((position) => path[position]!))) {
       const position = positionOf.get(entry.id);
       if (position === undefined) continue;
-      if (entry.type === "tool" && callId !== undefined && entry.callId === callId) hits.add(position);
-      if (entry.type === "command" && sourceId !== undefined && (entry.sourceId || entry.id) === sourceId) hits.add(position);
+      if (entry.type === "tool" && callId !== undefined && entry.callId === callId) hits.set(position, position);
+      if (entry.type === "command" && sourceId !== undefined && (entry.sourceId || entry.id) === sourceId) {
+        const anchor = entry.afterId !== undefined ? positionOfEntry.get(entry.afterId) : undefined;
+        hits.set(position, anchor ?? position);
+      }
     }
-    return (position: number) => hits.has(position);
+    return (position: number) => hits.get(position);
   }
 
   private async resolversFor(
@@ -812,7 +839,10 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     const page = beforeId
       ? pageBeforeRecords(path, beforeId, limit, before, await this.cursorMatcher(log, path, beforeId))
       : pageOfRecords(path, limit, before);
-    const window = await log.entriesIn(path.slice(page.from, page.to));
+    // Commands go back to the place they were typed in before anything reads the window: the page
+    // is what the owner sees, and a command journalled after its own effect would otherwise close
+    // it -- `placeAnchoredCommands`.
+    const window = placeAnchoredCommands(await log.entriesIn(path.slice(page.from, page.to)));
 
     // List thread files for attachment resolution: what a media ref resolves to, asked of the
     // refs themselves -- a tool's pictures ride the run's end marker, with no `MEDIA:` anywhere
@@ -932,7 +962,10 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     // card comes from another position on the branch, and folding it into a group here would put
     // it outside the range the summary claims -- hydration would then never hand it back.
     const foldWindow = delta;
-    const withCards = withSpawnCards(delta, await this.spawnCardsOf(log));
+    // A command goes back where the owner typed it before anything draws the delta: an entry
+    // journalled minutes after its own effect would otherwise land under it, on the very frame that
+    // delivers it -- `placeAnchoredCommands`.
+    const withCards = placeAnchoredCommands(withSpawnCards(delta, await this.spawnCardsOf(log)));
 
     // Resolve attachments for display
     const { resolvers, files } = await this.resolversFor(owner, threadId, withCards);
@@ -1205,7 +1238,7 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     return waits;
   }
 
-  async recordCommand(owner: string, threadId: string, input: string, output: string, details?: string, sourceId?: string, quiet = false): Promise<void> {
+  async recordCommand(owner: string, threadId: string, input: string, output: string, details?: string, sourceId?: string, quiet = false, place?: CommandPlacement): Promise<void> {
     const sessionId = this.resolveSessionId(owner, threadId);
     const session = await this.sessionManager.peek(sessionId);
     if (!session) return;
@@ -1218,8 +1251,26 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
       ...(details ? { details } : {}),
       ...(sourceId ? { sourceId } : {}),
       ...(quiet ? { quiet } : {}),
+      ...(place?.afterId ? { afterId: place.afterId } : {}),
+      ...(place?.at !== undefined ? { anchorTs: place.at } : {}),
     });
     await this.sessionManager.persist(sessionId);
+  }
+
+  /**
+   * Where a command the owner just sent belongs on screen: the leaf the branch holds right now.
+   *
+   * Read at admission, before the command runs. A `/compact` waits for the run in flight and only
+   * answers minutes later, and a command journalled then takes the end of the file -- after the
+   * run, after the boundary it wrote, after the messages queued behind it. The bubble belongs
+   * where it was typed, so the anchor is captured now and handed to `recordCommand`.
+   */
+  async commandAnchor(owner: string, threadId: string): Promise<string | undefined> {
+    const sessionId = this.resolveSessionId(owner, threadId);
+    const session = await this.sessionManager.peek(sessionId);
+    if (!session) return undefined;
+    const log = await sessionLogOf(sessionId);
+    return log.leaf() ?? undefined;
   }
 
   /**

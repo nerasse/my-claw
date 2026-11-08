@@ -285,10 +285,23 @@ class FakeSessionStore {
 
   lastRun?: { id: string; status: "running" | "done" | "aborted" | "error" | "interrupted"; startTs: string; endTs?: string };
 
-  journal: Array<{ threadId: string; input: string; output: string; details?: string; sourceId?: string }> = [];
+  journal: Array<{ threadId: string; input: string; output: string; details?: string; sourceId?: string; afterId?: string; anchorTs?: number }> = [];
 
-  async recordCommand(deviceId: string, threadId: string, input: string, output: string, details?: string, sourceId?: string): Promise<void> {
-    this.journal.push({ threadId, input, output, ...(details ? { details } : {}), ...(sourceId ? { sourceId } : {}) });
+  async recordCommand(deviceId: string, threadId: string, input: string, output: string, details?: string, sourceId?: string, _quiet?: boolean, place?: { afterId?: string; at?: number }): Promise<void> {
+    this.journal.push({
+      threadId,
+      input,
+      output,
+      ...(details ? { details } : {}),
+      ...(sourceId ? { sourceId } : {}),
+      ...(place?.afterId ? { afterId: place.afterId } : {}),
+      ...(place?.at !== undefined ? { anchorTs: place.at } : {}),
+    });
+  }
+
+  /** The leaf a command sent now would be anchored to; the fake thread holds none. */
+  async commandAnchor(): Promise<string | undefined> {
+    return undefined;
   }
 
   failures: Array<{ threadId: string; error: string }> = [];
@@ -4642,7 +4655,13 @@ describe("command frames", () => {
   test("a command and its answer are journaled, so a reopened thread still shows them", async () => {
     client.ws.send(JSON.stringify({ type: "chat.send", id: "j1", text: "/compact", threadId: "t1" }));
     await nextFrame(client);
-    assert.deepEqual(store.journal, [{ threadId: "t1", input: "/compact", output: "compact done", sourceId: "j1" }]);
+    const [journaled] = store.journal;
+    assert.deepEqual(
+      { threadId: journaled!.threadId, input: journaled!.input, output: journaled!.output, sourceId: journaled!.sourceId },
+      { threadId: "t1", input: "/compact", output: "compact done", sourceId: "j1" },
+    );
+    // Stamped at admission, so a command that answered minutes later still sits where it was typed.
+    assert.ok(journaled!.anchorTs !== undefined && Date.now() - journaled!.anchorTs < 60_000);
   });
 
   test("the journal never keeps a credential", async () => {
