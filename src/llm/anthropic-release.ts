@@ -18,10 +18,10 @@
  * `ANTHROPIC_USER_AGENT` in `~/.my-claw/.env` apply on the next call of a run in flight -- the
  * Anthropic account gates a new model on the claimed client version (measured 2026-09-22:
  * `claude_code_version_too_old` on `claude-opus-5-5` below 2.1.280, the same gate that rejected
- * cc_version 2.1.217 below 2.1.251), and waiting for a release to say 2.1.280 is not a reason to
- * wait for a release. The override moves `version` and the derived user-agent only; the stainless
- * pair is untouched, which the 2.1.280 capture confirms is harmless: 2.1.261 and 2.1.280 ship the
- * same `0.112.1` and `v26.3.0`.
+ * cc_version 2.1.217 below 2.1.251), and waiting for a release to say the current version is not a
+ * reason to wait for a release. The override moves `version` and the derived user-agent only; the
+ * stainless pair is untouched, which the captures confirm is harmless: 2.1.261 and 2.1.280 both
+ * shipped `0.112.1`/`v26.3.0`, and 2.1.319 moved to `0.128.0`/`v26.12.1`.
  *
  * The node version is the runtime the CLI bundles, not the one we run: my-claw is on Bun.
  *
@@ -32,9 +32,9 @@
 import { refreshEnvFile } from "../core/config.ts";
 
 export const CLI_RELEASE = {
-  version: "2.1.280",
-  stainlessPackage: "0.112.1",
-  nodeVersion: "v26.3.0",
+  version: "2.1.319",
+  stainlessPackage: "0.128.0",
+  nodeVersion: "v26.12.1",
 } as const;
 
 /** The claimed client release, with the `.env` levers applied as of now. */

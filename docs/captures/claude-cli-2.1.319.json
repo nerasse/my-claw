@@ -1,0 +1,149 @@
+{
+ "note": "Ground truth capture of the claude CLI 2.1.319 (the binary the Claude Agent SDK spawns), taken 2026-11-09 through a local logging proxy. Secrets and account identifiers are redacted; prompt bodies and tool schemas are reduced to their shape. Refreshed from 2.1.280: the account gates newer models on the claimed client release, and this capture is what the pin, the beta list and the billing signature are checked against.",
+ "method": "ANTHROPIC_BASE_URL=http://127.0.0.1:8899 claude -p --model haiku ...",
+ "request": {
+  "path": "/v1/messages?beta=true",
+  "headers": {
+   "accept": "application/json",
+   "accept-encoding": "gzip, deflate, br, zstd",
+   "anthropic-beta": "oauth-2025-04-20,interleaved-thinking-2025-05-14,context-management-2025-06-27,claude-code-20250219,per-turn-control-2026-07-01,mid-conversation-tool-changes-2026-07-01,inline-tools-2026-09-15,advisor-tool-2026-03-01,thinking-token-count-2026-05-13,advanced-tool-use-2025-11-20,effort-2025-11-24,extended-cache-ttl-2025-04-11",
+   "anthropic-dangerous-direct-browser-access": "true",
+   "anthropic-version": "2023-06-01",
+   "authorization": "Bearer <redacted len=108>",
+   "connection": "keep-alive",
+   "content-length": "64153",
+   "content-type": "application/json",
+   "host": "127.0.0.1:8899",
+   "user-agent": "claude-cli/2.1.319 (external, sdk-cli)",
+   "x-app": "cli",
+   "x-claude-code-session-id": "<uuid, stable per process>",
+   "x-stainless-arch": "x64",
+   "x-stainless-lang": "js",
+   "x-stainless-os": "Linux",
+   "x-stainless-package-version": "0.128.0",
+   "x-stainless-retry-count": "0",
+   "x-stainless-runtime": "node",
+   "x-stainless-runtime-version": "v26.12.1",
+   "x-stainless-timeout": "600"
+  },
+  "body": {
+   "model": "claude-haiku-5-5",
+   "messages": [
+    {
+     "role": "user",
+     "content_shape": [
+      "text",
+      "text",
+      "text"
+     ]
+    },
+    {
+     "role": "system",
+     "content_shape": [
+      "text"
+     ]
+    }
+   ],
+   "system": [
+    {
+     "type": "text",
+     "cache_control": null,
+     "bytes": 74,
+     "first_line": "x-anthropic-billing-header: cc_version=2.1.319.1dc; cc_entrypoint=sdk-cli;"
+    },
+    {
+     "type": "text",
+     "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+     },
+     "bytes": 62,
+     "first_line": "You are a Claude agent, built on Anthropic's Claude Agent SDK."
+    },
+    {
+     "type": "text",
+     "cache_control": {
+      "type": "ephemeral",
+      "ttl": "1h"
+     },
+     "bytes": 9095,
+     "first_line": ""
+    }
+   ],
+   "tools": [
+    {
+     "name": "Agent",
+     "has_cache_control": false
+    },
+    {
+     "name": "Bash",
+     "has_cache_control": false
+    },
+    {
+     "name": "Edit",
+     "has_cache_control": false
+    },
+    {
+     "name": "ListAgents",
+     "has_cache_control": false
+    },
+    {
+     "name": "Read",
+     "has_cache_control": false
+    },
+    {
+     "name": "ReportFindings",
+     "has_cache_control": false
+    },
+    {
+     "name": "ScheduleWakeup",
+     "has_cache_control": false
+    },
+    {
+     "name": "ShareOnboardingGuide",
+     "has_cache_control": false
+    },
+    {
+     "name": "Skill",
+     "has_cache_control": false
+    },
+    {
+     "name": "ToolSearch",
+     "has_cache_control": false
+    },
+    {
+     "name": "Workflow",
+     "has_cache_control": false
+    },
+    {
+     "name": "DeferredToolPlaceholder",
+     "has_cache_control": false
+    },
+    {
+     "name": "Write",
+     "has_cache_control": false
+    }
+   ],
+   "metadata": {
+    "user_id": "{\"device_id\":\"<sha256, redacted>\",\"account_uuid\":\"<uuid, redacted>\",\"session_id\":\"<uuid>\"}"
+   },
+   "max_tokens": 128000,
+   "thinking": {
+    "type": "adaptive",
+    "display": "omitted"
+   },
+   "context_management": {
+    "edits": [
+     {
+      "type": "clear_thinking_20251015",
+      "keep": "all"
+     }
+    ]
+   },
+   "output_config": {
+    "effort": "medium"
+   },
+   "stream": true
+  }
+ }
+}

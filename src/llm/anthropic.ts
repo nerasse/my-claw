@@ -70,16 +70,21 @@ const KIND_OF_TYPE = new Map<string, AnthropicFailureKind>([
  */
 const FALLBACK_OUTPUT_LIMIT = 128_000;
 
-// Order matters: reproduced verbatim from docs/captures/claude-cli-2.1.280.json (identical to the
-// 2.1.261 list, measured).
+// Order matters: reproduced verbatim from docs/captures/claude-cli-2.1.319.json. The list grew
+// from eight to twelve betas with 2.1.319 (per-turn control, mid-conversation tool changes,
+// inline tools, advanced tool use, effort) and dropped `prompt-caching-scope-2026-01-05`.
 const BETAS = [
   "oauth-2025-04-20",
   "interleaved-thinking-2025-05-14",
-  "thinking-token-count-2026-05-13",
   "context-management-2025-06-27",
-  "prompt-caching-scope-2026-01-05",
   "claude-code-20250219",
+  "per-turn-control-2026-07-01",
+  "mid-conversation-tool-changes-2026-07-01",
+  "inline-tools-2026-09-15",
   "advisor-tool-2026-03-01",
+  "thinking-token-count-2026-05-13",
+  "advanced-tool-use-2025-11-20",
+  "effort-2025-11-24",
   "extended-cache-ttl-2025-04-11",
 ].join(",");
 

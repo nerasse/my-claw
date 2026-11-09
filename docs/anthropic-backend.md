@@ -64,7 +64,7 @@ already the first line of every system prompt it sends, so presenting as
 `sdk-cli` is a description rather than a disguise.
 
 Nothing here is guessed from a community project. P0 captured the real client on
-this box (`claude` 2.1.261, the binary the SDK spawns) through a local logging
+this box (`claude` 2.1.319, the binary the SDK spawns) through a local logging
 proxy, and this is what it sends. Where a community implementation disagrees with
 the capture, the capture wins.
 
@@ -75,8 +75,15 @@ Refreshing means `claude update`, re-capturing, and replacing the three values i
 `src/llm/anthropic-release.ts` **together** -- `tests/llm/anthropic-capture-parity.ts`
 compares them to the capture, so a half-refresh fails there rather than in
 production. Between 2.1.206 and 2.1.261 only two headers moved: the user-agent
-version and `x-stainless-package-version` (0.94.0 -> 0.112.1). The eight betas,
+version and `x-stainless-package-version` (0.94.0 -> 0.112.1); the eight betas,
 their order, the three system blocks and the two 1h breakpoints were unchanged.
+Between 2.1.280 and 2.1.319 the betas did move: twelve of them now, five added
+(`per-turn-control`, `mid-conversation-tool-changes`, `inline-tools`,
+`advanced-tool-use`, `effort`) and `prompt-caching-scope-2026-01-05` dropped, in
+the new order below; `x-stainless-package-version` went to 0.128.0 and
+`x-stainless-runtime-version` to v26.12.1. The three system blocks, the two 1h
+breakpoints and the billing salt and sampled positions are unchanged -- the
+header still signs `cc_version=2.1.319.<3 hex>` the same way.
 
 `POST /v1/messages?beta=true` -- the query parameter is part of the shape.
 
@@ -85,23 +92,27 @@ authorization:                             Bearer <sk-ant-oat...>
 anthropic-version:                         2023-06-01
 anthropic-beta:                            oauth-2025-04-20,
                                            interleaved-thinking-2025-05-14,
-                                           thinking-token-count-2026-05-13,
                                            context-management-2025-06-27,
-                                           prompt-caching-scope-2026-01-05,
                                            claude-code-20250219,
+                                           per-turn-control-2026-07-01,
+                                           mid-conversation-tool-changes-2026-07-01,
+                                           inline-tools-2026-09-15,
                                            advisor-tool-2026-03-01,
+                                           thinking-token-count-2026-05-13,
+                                           advanced-tool-use-2025-11-20,
+                                           effort-2025-11-24,
                                            extended-cache-ttl-2025-04-11
 anthropic-dangerous-direct-browser-access: true
-user-agent:                                claude-cli/2.1.261 (external, sdk-cli)
+user-agent:                                claude-cli/2.1.319 (external, sdk-cli)
 x-app:                                     cli
 x-claude-code-session-id:                  <uuid, stable per process>
 x-stainless-arch:                          x64
 x-stainless-lang:                          js
 x-stainless-os:                            Linux
-x-stainless-package-version:               0.112.1
+x-stainless-package-version:               0.128.0
 x-stainless-retry-count:                   0
 x-stainless-runtime:                       node
-x-stainless-runtime-version:               v26.3.0
+x-stainless-runtime-version:               v26.12.1
 x-stainless-timeout:                       600
 accept:                                    application/json
 accept-encoding:                           gzip, deflate, br, zstd
@@ -109,12 +120,12 @@ content-type:                              application/json
 x-api-key:                                 absent, never sent beside a bearer token
 ```
 
-Eight betas, in that order, not two. `x-app`, `x-claude-code-session-id`, the
+Twelve betas, in that order, not two. `x-app`, `x-claude-code-session-id`, the
 eight `x-stainless-*` and `anthropic-dangerous-direct-browser-access` are all
 part of the real request: an earlier draft of this document proposed omitting
 them because the reference plugin omits them, which the capture disproves.
 
-`x-stainless-runtime-version` reports the Node the CLI bundles (v26.3.0). my-claw
+`x-stainless-runtime-version` reports the Node the CLI bundles (v26.12.1). my-claw
 runs Bun, so this value is pinned rather than read from `process.version`.
 
 Body fields beyond the obvious, all present in the capture:
@@ -122,8 +133,9 @@ Body fields beyond the obvious, all present in the capture:
 ```json
 {
   "metadata": { "user_id": "{\"device_id\":\"<sha256>\",\"account_uuid\":\"<uuid>\",\"session_id\":\"<uuid>\"}" },
-  "thinking": { "type": "enabled", "budget_tokens": 31999, "display": "omitted" },
+  "thinking": { "type": "adaptive", "display": "omitted" },
   "context_management": { "edits": [{ "type": "clear_thinking_20251015", "keep": "all" }] },
+  "output_config": { "effort": "medium" },
   "stream": true
 }
 ```
@@ -454,6 +466,8 @@ local history, which is authoritative anyway.
 
 ## Artifacts
 
+* `docs/captures/claude-cli-2.1.319.json` -- the current capture, redacted: pin,
+  beta list and billing signature are checked against it.
 * `docs/captures/claude-cli-2.1.206.json` -- the P0 capture, redacted. Bearer
   token, `device_id` and `account_uuid` removed; prompt bodies and tool schemas
   reduced to their shape.

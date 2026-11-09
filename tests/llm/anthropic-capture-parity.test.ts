@@ -25,6 +25,7 @@ interface Capture {
       tools?: Array<{ name: string; has_cache_control: boolean }>;
       thinking?: Record<string, unknown>;
       context_management?: unknown;
+      output_config?: { effort?: string };
       max_tokens?: number;
       stream?: boolean;
       metadata?: unknown;
@@ -33,7 +34,7 @@ interface Capture {
 }
 
 const capture = JSON.parse(
-  readFileSync(join(import.meta.dir, "../../docs/captures/claude-cli-2.1.280.json"), "utf8"),
+  readFileSync(join(import.meta.dir, "../../docs/captures/claude-cli-2.1.319.json"), "utf8"),
 ) as Capture;
 
 const messages: ChatMessage[] = [
@@ -50,14 +51,14 @@ const tools = [
   { type: "function", function: { name: "bash", description: "d", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "read", description: "d", parameters: { type: "object", properties: {} } } },
 ];
-// The capture ran on Haiku 4.5, an extended-thinking-only model, so it shows the explicit-budget
-// branch. Declaring `enabled` reaches that same branch here; the adaptive branch, which the modern
-// models take and which carries no budget, is covered in anthropic.test.ts.
+// The capture ran on Haiku 5.5, an adaptive-thinking model, so it shows the budget-less branch.
+// Declaring `adaptive` reaches that same branch here; the explicit-budget branch, which the
+// extended-thinking-only models take, is covered in anthropic.test.ts.
 const body = buildBody(
   {
     model: "claude-opus-5",
-    limit: { context: 200_000, output: 32_000 },
-    thinkingTypes: { adaptive: false, enabled: true },
+    limit: { context: 200_000, output: 128_000 },
+    thinkingTypes: { adaptive: true, enabled: false },
   },
   messages,
   tools,
@@ -104,17 +105,19 @@ test("at most four cache breakpoints ride in one request", () => {
   assert.equal(used, 2);
 });
 
-test("the thinking block has the captured shape and stays under the reply budget", () => {
-  const theirs = capture.request.body.thinking as { type: string; budget_tokens: number; display: string };
-  const ours = body["thinking"] as { type: string; budget_tokens: number; display: string };
+test("the thinking block has the captured shape and carries no budget on an adaptive model", () => {
+  const theirs = capture.request.body.thinking as { type: string; budget_tokens?: number; display: string };
+  const ours = body["thinking"] as { type: string; budget_tokens?: number; display: string };
   assert.equal(ours.type, theirs.type);
+  // Adaptive is the whole point: the server decides the depth and the budget is absent, so a
+  // `budget_tokens` appearing on either side means the branch drifted.
+  assert.equal(theirs.type, "adaptive");
+  assert.equal(theirs.budget_tokens, undefined);
+  assert.equal(ours.budget_tokens, undefined);
   // The one field we deliberately differ on: the client asks for `omitted`, we ask for the text so
   // the reasoning reaches the chat like every other model's does. Documented in anthropic.ts.
   assert.equal(theirs.display, "omitted");
   assert.equal(ours.display, "summarized");
-  // Both are the model's output ceiling minus one, which is the client's own formula.
-  assert.equal(theirs.budget_tokens, capture.request.body.max_tokens! - 1);
-  assert.equal(ours.budget_tokens, (body["max_tokens"] as number) - 1);
 });
 
 test("context_management and stream match the capture exactly", () => {
@@ -123,6 +126,22 @@ test("context_management and stream match the capture exactly", () => {
   // max_tokens is resolved from the model rather than pinned, so the capture's 32000 is reproduced
   // by declaring that limit, not by hardcoding it.
   assert.equal(body["max_tokens"], capture.request.body.max_tokens);
+});
+
+test("effort rides in the captured output_config shape", () => {
+  const theirs = capture.request.body.output_config;
+  assert.deepEqual(theirs, { effort: "medium" }, "capture should carry output_config.effort");
+  const withEffort = buildBody(
+    {
+      model: "claude-opus-5",
+      effort: "medium",
+      limit: { context: 200_000, output: 128_000 },
+      thinkingTypes: { adaptive: true, enabled: false },
+    },
+    messages,
+    tools,
+  );
+  assert.deepEqual(withEffort["output_config"], theirs);
 });
 
 test("metadata is the one body field we deliberately drop", () => {
@@ -187,18 +206,22 @@ test("the pinned client identity is the captured client identity", () => {
 test("the beta list is the captured list, in the captured order", () => {
   assert.equal(SENT_HEADERS.has("anthropic-beta"), true);
   const theirs = capture.request.headers["anthropic-beta"]!;
-  assert.equal(theirs.split(",").length, 8);
+  assert.equal(theirs.split(",").length, 12);
   // The transport joins the same array; compare the literal so a reorder fails.
   assert.equal(
     theirs,
     [
       "oauth-2025-04-20",
       "interleaved-thinking-2025-05-14",
-      "thinking-token-count-2026-05-13",
       "context-management-2025-06-27",
-      "prompt-caching-scope-2026-01-05",
       "claude-code-20250219",
+      "per-turn-control-2026-07-01",
+      "mid-conversation-tool-changes-2026-07-01",
+      "inline-tools-2026-09-15",
       "advisor-tool-2026-03-01",
+      "thinking-token-count-2026-05-13",
+      "advanced-tool-use-2025-11-20",
+      "effort-2025-11-24",
       "extended-cache-ttl-2025-04-11",
     ].join(","),
   );
