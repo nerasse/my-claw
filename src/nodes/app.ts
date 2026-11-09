@@ -5,7 +5,7 @@
  */
 
 import type { McpServerConfig, NodesConfig } from "../core/config.ts";
-import { enableToolApprovals } from "../core/config-edit.ts";
+import { clearApprovalGrantsForOrigin, enableToolApprovals } from "../core/config-edit.ts";
 import { log } from "../utils/logger.ts";
 import { nodeAgentFile, removeNodeAgent, renameNodeAgent, setNodeAgentDescription } from "./agent.ts";
 import { openClaim } from "./claims.ts";
@@ -176,12 +176,19 @@ export async function updateNodeForApp(nodeId: string): Promise<{ ok: boolean; e
 
 /**
  * Revocation, in the order the surface uses: the socket closes first, so a node that keeps
- * answering is not left holding a record that is already gone.
+ * answering is not left holding a record that is already gone. Its standing grants go with it --
+ * a permission names a machine, and this one no longer exists.
  */
 export async function revokeNodeForApp(nodeId: string): Promise<{ ok: boolean; error?: string }> {
   if (!nodeRecord(nodeId)) return { ok: false, error: "unknown node" };
   closeNodeSocket(nodeId, "revoked");
   await revokeNode(nodeId);
   await removeNodeAgent(nodeId);
+  // After the record is gone, so a config write that fails leaves the node revoked and its grants
+  // readable rather than the reverse. A failure here is logged, not returned: the revocation
+  // happened, and a stale grant on an unknown origin is inert.
+  const cleared = await clearApprovalGrantsForOrigin(nodeId);
+  if (!cleared.ok) void log("warn", "node revoked but its grants stayed", { nodeId, error: cleared.error });
+  else if (cleared.removed > 0) void log("info", "node grants cleared", { nodeId, removed: cleared.removed });
   return { ok: true };
 }

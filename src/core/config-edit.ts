@@ -629,6 +629,41 @@ export function setApprovalGrant(
 }
 
 /**
+ * Drops every standing grant scoped to one machine. Called when a node is revoked.
+ *
+ * A grant names an origin, and `local` is the only origin that cannot disappear. A revoked node's
+ * grants were inert -- nothing matches them any more -- but they stayed in the config for good,
+ * and `approval(action="grants")` had to label them so an agent would not plan around them. A
+ * permission for a machine that no longer exists is not a permission; removing it makes the file
+ * say what is true, and the audit journal keeps the record of what was once allowed.
+ *
+ * Returns how many entries went, so the caller can log a revocation that also cleaned up.
+ */
+export function clearApprovalGrantsForOrigin(origin: string): Promise<{ ok: boolean; removed: number; error?: string }> {
+  return oneEditAtATime(async () => {
+    const read = await readConfigFile();
+    if (!read.ok) return { ok: false, removed: 0, error: read.error };
+    const tools = objectAt(read.data, "tools");
+    const list = Array.isArray(tools["alwaysAllow"]) ? (tools["alwaysAllow"] as unknown[]) : [];
+    const next = list.filter((entry) => {
+      const row = entry as { origin?: unknown };
+      return row.origin !== origin;
+    });
+    const removed = list.length - next.length;
+    if (removed === 0) return { ok: true, removed: 0 };
+
+    if (next.length > 0) tools["alwaysAllow"] = next;
+    else delete tools["alwaysAllow"];
+    if (Object.keys(tools).length === 0) delete read.data["tools"];
+
+    await snapshot(CONFIG_PATH, { origin: "pre-write", note: `avant purge des grants de ${origin}` });
+    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
+    await journal("edit", artifactId(CONFIG_PATH), { grantsCleared: { origin, removed } });
+    return { ok: true, removed };
+  });
+}
+
+/**
  * Turns the app's approval round trips on. Asking before a tool runs is meaningless while the
  * channel refuses instead of asking, so every switch that means "ask first" goes through here
  * (a blacklisted tool, a node whose record says to ask). Never turns it back off: with an empty

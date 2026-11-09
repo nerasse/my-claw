@@ -60,6 +60,8 @@ A fourth decision, offered on every prompt: `allow-always`. It writes one entry 
   model that writes the same object in another order still matches.
 - `origin` is `local` or a node id. A grant given on this machine never runs on a node, and two
   nodes never share one: the owner approved a call on a machine, not a shape of call everywhere.
+  Revoking a node drops its grants (`clearApprovalGrantsForOrigin`), because a permission that
+  names a machine which no longer exists is not a permission; the journal keeps the record.
 - `ToolApprovalManager.decide` reads it live, after the session cache and before the prompt, and
   journals the automatic pass as `allow-always` with `auto: true`.
 - Withdrawing one takes effect on the next call: the grant is only ever read, never cached.
@@ -81,9 +83,9 @@ The orchestrator has one tool, `approval`, with three actions:
 
 A machine's line carries both halves of that answer, because either one asks: what the global
 `blacklist` names (it catches a node's tool of the same name), and a node's own "ask before
-running" flag, which asks for every call. A node that is no longer paired keeps its grants in
-`tools.alwaysAllow` (nothing prunes them when it is revoked), so they are listed as `inert` rather
-than counted as available.
+running" flag, which asks for every call. A node that is no longer paired has no grants left --
+revocation drops them -- so the `inert` case only shows for a grant written by hand into a config
+whose node was already gone.
 
 The output repeats the one rule a reader must not have to rediscover: a grant matches the call's
 canonical arguments key for key, so the same command with one extra argument asks again. Arguments

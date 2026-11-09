@@ -28,7 +28,8 @@ node is reached through a sub-agent of its own; the orchestrator never receives 
 - Pairing: a single-use 8-character code with a short TTL, traded by the node for its token
   (stored 0600 on the node, hashed on the server). The code is minted where the operator is
   (`myclaw node add`, later the app), claimed where the node is.
-- Revoking a node closes its socket at once and invalidates its token.
+- Revoking a node closes its socket at once and invalidates its token. It also drops the standing
+  grants scoped to that machine: a grant names a machine, and it is gone.
 - The node reconnects with backoff. While it is offline its agent is listed as offline and a spawn
   answers so, immediately.
 
@@ -134,7 +135,7 @@ refuse a `/node` upgrade that did not come through the certificate check.
 | `GET /node` (upgrade) | node token, plus the client-cert header when configured | the node's one WebSocket |
 | `POST /node/pair` | the claim code alone, rate-limited | trades a code for the node token |
 | `POST /node/ticket` | a paired device (like `/my-claw-app/ticket`) | mints a claim code for `myclaw node add` |
-| `POST /node/revoke` | a paired device | revokes a node, closes its socket, removes its agent |
+| `POST /node/revoke` | a paired device | revokes a node, closes its socket, removes its agent, drops its standing grants |
 
 The client-certificate check applies to `/node` only; `/node/pair` must stay reachable without a
 certificate, since the first contact is what obtains one.

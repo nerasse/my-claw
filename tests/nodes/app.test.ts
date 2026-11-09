@@ -200,6 +200,27 @@ describe("node revocation", () => {
     expect(await nodeAgentName(nodeId)).toBeUndefined();
     expect(socket.closes).toHaveLength(1);
   });
+
+  test("its standing grants go with it, and the machine on this side keeps theirs", async () => {
+    const { nodeId } = await pairNode();
+    const write = async (): Promise<void> => {
+      const path = join(MY_CLAW_DIR, "config.json");
+      const current = JSON.parse(await Bun.file(path).text().catch(() => "{}")) as Record<string, unknown>;
+      current["tools"] = { alwaysAllow: [
+        { tool: "bash", origin: "local", args: '{"command":"df -h"}' },
+        { tool: "bash", origin: nodeId, args: '{"command":"uptime"}' },
+      ] };
+      await Bun.write(path, JSON.stringify(current, null, 2));
+    };
+    await write();
+
+    expect(await revokeNodeForApp(nodeId)).toEqual({ ok: true });
+
+    const after = JSON.parse(await Bun.file(join(MY_CLAW_DIR, "config.json")).text()) as {
+      tools?: { alwaysAllow?: Array<{ origin: string }> };
+    };
+    expect(after.tools?.alwaysAllow?.map((grant) => grant.origin)).toEqual(["local"]);
+  });
 });
 
 describe("node rename", () => {
