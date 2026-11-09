@@ -66,7 +66,7 @@ A fourth decision, offered on every prompt: `allow-always`. It writes one entry 
 
 ## The agent asking (`approval` tool)
 
-The orchestrator has one tool, `approval`, with two actions:
+The orchestrator has one tool, `approval`, with three actions:
 
 - `request { what, tool?, command?, args? }`: asks the owner on purpose and **waits with no
   timer**. That is the one place a prompt does not expire: the run chose to wait, so a timeout
@@ -74,6 +74,24 @@ The orchestrator has one tool, `approval`, with two actions:
   the way a question is. Returns `approved`, `approved-always`, `denied` or a cancel.
 - `list`: everything still waiting, across conversations and machines, for the orchestrator to
   tell a blocked sub-agent from a hung one.
+- `grants { origin? }`: what already runs without asking, per machine. It answers the question a
+  planner actually has before it starts: on this node, does every call open a prompt, and which
+  exact calls go straight through. Read-only by design -- a model that could write a grant would
+  make the gate decorative.
+
+A machine's line carries both halves of that answer, because either one asks: what the global
+`blacklist` names (it catches a node's tool of the same name), and a node's own "ask before
+running" flag, which asks for every call. A node that is no longer paired keeps its grants in
+`tools.alwaysAllow` (nothing prunes them when it is revoked), so they are listed as `inert` rather
+than counted as available.
+
+The output repeats the one rule a reader must not have to rediscover: a grant matches the call's
+canonical arguments key for key, so the same command with one extra argument asks again. Arguments
+longer than 300 characters are cut on the line and say where the full call lives.
+
+`origin` takes `local`, a node's id or its display name, case-insensitively: the name is what the
+owner says and what the sheet shows. An unknown one is an error listing the known machines, never
+an empty answer that reads like "nothing allowed here".
 
 Automatic gates keep their two-minute timeout: a run nobody answers must not hold a session
 forever. The tool is main-only (not a sub-agent, not cron) and never answers on the owner's

@@ -234,7 +234,9 @@ is refused, not asked.
 
 Every node tool carries its `approvalOrigin`, so the sheet and the approvals page say which machine
 a prompt is about, and a standing grant ("always allow this exact call") is scoped to that machine:
-the same command approved here never auto-runs on archy.
+the same command approved here never auto-runs on archy. The agent reads that side of the same
+state with `approval(action="grants", origin="archy")` before it plans work there: which calls go
+straight through, and whether every call on that machine still asks. docs/tool-approvals.md.
 
 Every remote call is journaled (node, tool, arguments, outcome). Results are untrusted content.
 

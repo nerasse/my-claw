@@ -34,6 +34,26 @@ Every prompt still waiting, across conversations and machines: `bash on archy`, 
 or without a timeout. Use it when a sub-agent looks hung: it may simply be waiting on a yes. Never
 answer a prompt for him, and never spawn a second agent to do the same thing "in the meantime".
 
+## What already runs without asking
+
+```
+approval(action="grants")
+approval(action="grants", origin="archy")
+```
+
+Do this **before** planning work on a remote node, not after the first prompt surprises you. Each
+machine gets one line: whether anything asks before a call there (`nothing asks`, `asks before:
+bash, memory`, `asks before every call`), and under it every exact call the owner already allowed,
+with its arguments.
+
+- `origin` takes `local`, a node's name or its id. Omit it for every machine.
+- A grant covers **one exact call**: the arguments as written, key for key. Reusing the arguments
+  listed is the whole point; adding one argument (`timeoutMs`, a flag) asks again.
+- `(inert)` means the machine is not paired any more: it is a leftover in the config, not a
+  permission. Do not plan around it.
+- You cannot grant yourself anything, and you should not ask for a grant to avoid a prompt you have
+  not hit yet. Read this list, use what is there, and ask when the work genuinely needs a new call.
+
 ## When to ask
 
 Ask when the action is destructive or irreversible and a mistake is not undone by the next step:

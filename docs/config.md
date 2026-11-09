@@ -647,7 +647,8 @@ sqlite3 ~/.my-claw/analytics.db "SELECT caller, avg(duration_ms), count(*) FROM 
 Exact calls the owner allowed for good, written from the app's approval sheet or page (never by
 hand, though a hand edit is honoured): same tool, same canonical arguments, same machine
 (`local` or a node id). Read live by `ToolApprovalManager` before the prompt is raised; a
-withdrawn entry asks again on the next call. `docs/tool-approvals.md`.
+withdrawn entry asks again on the next call. The agent reads the same entries, with the gate of
+each machine, through `approval(action="grants")` -- read-only. `docs/tool-approvals.md`.
 
 ## Channels
 

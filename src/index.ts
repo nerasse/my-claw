@@ -3299,7 +3299,7 @@ function registerCoreTools(registry: ToolRegistry, config: MyClawConfig): void {
   // provider key and the model writes the commands.
   setBashEnvPassthrough(config.tools?.bashEnvPassthrough);
   setBashLimits(config.tools?.bash);
-  for (const tool of [bashTool, readTool, writeTool, applyPatchTool, fetchTool, searchTool, lsTool, createMemoryTool(config), createConversationSearchTool(), createQuestionTool(), createApprovalTool()]) {
+  for (const tool of [bashTool, readTool, writeTool, applyPatchTool, fetchTool, searchTool, lsTool, createMemoryTool(config), createConversationSearchTool(), createQuestionTool(), createApprovalTool(config)]) {
     registry.register(tool);
   }
 }
