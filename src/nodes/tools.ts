@@ -1,6 +1,22 @@
 import type { Tool, ToolResult } from "../tools/types.ts";
+import type { ToolRegistry } from "../tools/registry.ts";
 import { callNodeTool, nodeFactsOf, nodeNameOf, putFileToNode } from "./hub.ts";
 import { nodeRecord } from "./store.ts";
+
+/**
+ * The tools a node agent holds that run on this server rather than on the machine: `skills`, and
+ * only in its read-only shape.
+ *
+ * A skill is knowledge, not a command: nothing it carries executes through the socket, so handing
+ * it to a node agent leaks nothing to the remote machine. It is not optional either -- the prompt's
+ * layer 5 lists the catalog for whatever scope the agent has, so a node agent without the tool is
+ * told to call something it does not hold. One exception, like `send_file_to_node`, for the same
+ * reason: the prompt and the set must agree. Writing stays the orchestrator's.
+ */
+export function nodeServerToolsFor(registry: ToolRegistry): Tool[] {
+  const skills = registry.get("skills")?.readOnly;
+  return skills ? [skills] : [];
+}
 
 /**
  * The tools of a connected node, as the agent of that node sees them.
@@ -15,7 +31,7 @@ import { nodeRecord } from "./store.ts";
  */
 export function nodeToolsFor(
   nodeId: string,
-  options: { allow?: readonly string[]; disabled?: readonly string[] } = {},
+  options: { allow?: readonly string[]; disabled?: readonly string[]; serverTools?: readonly Tool[] } = {},
 ): Tool[] | null {
   const facts = nodeFactsOf(nodeId);
   if (!facts) return null;
@@ -70,6 +86,11 @@ export function nodeToolsFor(
       return { success: true, output: `Sent to the node at ${sent.path ?? "its working directory"}.` };
     },
   });
+
+  // Tools that run on this server, not on the machine: `send_file_to_node` above, and whatever the
+  // caller hands over. They go through the same two filters as everything else, so a file's
+  // `tools:` that does not name one does not grant it.
+  if (options.serverTools) tools.push(...options.serverTools);
 
   // The file's `tools:` narrows the manifest exactly like it narrows a local baseline, and the
   // config denylist applies on top: a name outside the set is dropped, never added.

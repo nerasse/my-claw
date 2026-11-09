@@ -150,6 +150,11 @@ When `skills("my-skill")` is called, the returned content has `${SKILL_DIR}` rep
 
 Skills are **global** and shared between the main agent and all sub-agents. A sub-agent spawned with `workspaceDir=/tmp/project` still has access to all skills. Only filesystem tools (`read`, `write`, `apply_patch`, `bash`, `ls`, `search`) are scoped to `workspaceDir`.
 
+One base is special: a `node` agent's tool set is the remote machine's manifest, so the
+orchestrator's registry does not supply its tools at all. `skills` is added there explicitly, in
+its read-only form, because the prompt's layer 5 lists the catalog for every agent and tells it to
+call the tool (docs/remote-nodes.md). A node agent reads skills; it never writes them.
+
 ## Future Extensibility
 
 ### Gating
@@ -178,3 +183,9 @@ is answered by the refusal of a read, which names what the caller may read.
 - The system is compatible with the [Agent Skills](https://agentskills.io) standard, meaning skills from Claude Code (`~/.claude/skills/`) and Codex (`~/.codex/skills/`) should work without modification.
 - Built-in skills shipped with my-claw:
   - `skill-builder` — Meta-skill teaching the agent how to create high-quality skills with progressive disclosure and multi-file references.
+  - `approvals` — When to ask the owner, what a grant covers, and how to read what already runs without asking (`approval(action="grants")`).
+  - `remote-nodes` — The two sides of a paired machine: reaching one from the orchestrator, and the limits of the agent that runs on it.
+  - `subagent-workflow` — When and how to spawn, drive and resume sub-agents.
+  - `web-browsing` — Handing a task to the browser agent, writing instructions it can act on.
+  - `workspaces` — Multi-workspace layout and switching.
+  - `voice` — Cloud and local STT/TTS.

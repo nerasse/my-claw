@@ -278,13 +278,21 @@ picture the model has to see, and an asset the owner sends has to reach the mach
 ## The agent
 
 - One generated agent per node, `node-<name>`, with a new base `node`. Its tools are the node's
-  tools, executed remotely; no local tool leaks in. The one exception is `send_file_to_node`,
-  which moves a file of this server's to the machine -- the node agent has no read access here.
+  tools, executed remotely; no local tool leaks in. Two exceptions, both running here and neither
+  touching the machine: `send_file_to_node`, which moves a file of this server's over (the node
+  agent has no read access here), and `skills` in its read-only form. The second is not optional --
+  layer 5 of the prompt lists the skill catalog for whatever scope the agent has and tells it to
+  call `skills(name)`, so withholding the tool left every node agent told to call something it did
+  not hold. A skill is knowledge: nothing in it executes through the socket. Both go through the
+  file's `tools:` and the config denylist, so neither can be handed to an agent that did not name
+  it.
 - The spawn catalog shows name, description, online state and `[disabled]`, so the orchestrator
   does not pick an agent that cannot run.
 - The generated description carries the facts from the handshake and says what is missing; the
   Nodes screen writes the `description:` line (one line, the spawn catalog's words), and the
   prompt below it stays editable like any file agent.
+- The `remote-nodes` skill carries both halves: how the orchestrator reaches a machine, and what
+  the machine's own agent may and may not do (`roots`, `readOnly`, the call limits).
 
 ## The client
 

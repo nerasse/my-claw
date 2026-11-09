@@ -70,7 +70,7 @@ import { currentRunId, newRunId } from "../utils/run-context.ts";
 import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback, MediaStoreHook } from "./backend.ts";
 import { storeRunMedia, type StoredRunMedia } from "./media-store.ts";
 import { producesRemoteContent, cronCapabilityDeny } from "../tools/registry.ts";
-import { nodeToolsFor } from "../nodes/tools.ts";
+import { nodeServerToolsFor, nodeToolsFor } from "../nodes/tools.ts";
 import { nodeRecord } from "../nodes/store.ts";
 import { normalizeUntrusted } from "./prompt/normalize-untrusted.ts";
 
@@ -569,7 +569,18 @@ export class AgentBridge implements AgentBackend {
     let nodeRemoteNames: ReadonlySet<string> | undefined;
     if (agent.base === "node") {
       const nodeId = agent.node;
-      const remote = nodeId ? nodeToolsFor(nodeId, { ...(agent.allow ? { allow: agent.allow } : {}), disabled }) : null;
+      // `skills` runs here, never on the machine: the knowledge is this server's, and a skill that
+      // does not execute cannot leak anything through the socket. The prompt lists the catalog
+      // either way (layer 5), so withholding the tool left the node agent told to call something
+      // it did not have. Read-only: the writes stay the orchestrator's. docs/remote-nodes.md.
+      const serverTools = nodeServerToolsFor(this.toolRegistry);
+      const remote = nodeId
+        ? nodeToolsFor(nodeId, {
+          ...(agent.allow ? { allow: agent.allow } : {}),
+          disabled,
+          serverTools,
+        })
+        : null;
       if (remote === null) {
         const name = nodeId ? nodeRecord(nodeId)?.name ?? nodeId : "unknown";
         return `Error: node "${name}" is offline. It reconnects on its own; try again once it is back.`;
@@ -943,7 +954,11 @@ export class AgentBridge implements AgentBackend {
         // went away keeps the previous set, so its calls answer "not connected" instead of the
         // prompt emptying under the model.
         if (agent.base === "node" && agent.node) {
-          const remote = nodeToolsFor(agent.node, { ...(agent.allow ? { allow: agent.allow } : {}), disabled });
+          const remote = nodeToolsFor(agent.node, {
+            ...(agent.allow ? { allow: agent.allow } : {}),
+            disabled,
+            serverTools: nodeServerToolsFor(this.toolRegistry),
+          });
           if (remote) {
             tools = remote;
             openaiTools = toOpenAiToolDefinitions(remote);
