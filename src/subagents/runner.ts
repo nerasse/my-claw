@@ -954,6 +954,10 @@ export class SubAgentRunner {
           ? stored.promptCount
           : (await sessionLogOf(id)).promptCount();
         const model = stored ? stored.modelOverride : session?.modelOverride;
+        // What a running agent calls at this second, which is not what it was resolved to: a run
+        // that walked its route names the account answering now -- the roster row is the only place
+        // that says so while the run is going.
+        const liveModel = running ? runRegistry.liveModelOf(id) : undefined;
         out.push({
           id,
           displayName: meta.displayName,
@@ -963,7 +967,8 @@ export class SubAgentRunner {
           visibility: meta.visibility,
           ...(meta.workspaceKey ? { workspaceKey: meta.workspaceKey } : {}),
           ...(meta.workspaceDir ? { workspaceDir: meta.workspaceDir } : {}),
-          ...(model ? { model } : {}),
+          ...(liveModel ?? model ? { model: liveModel ?? model } : {}),
+          ...(liveModel && liveModel !== model ? { modelLive: true } : {}),
           createdAt: meta.createdAt,
         });
       }

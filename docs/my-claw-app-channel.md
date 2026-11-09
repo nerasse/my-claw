@@ -904,6 +904,11 @@ runs fresh like any other message.
   and the SDK's own mid-run boundary push it as well, since each moves the figure with no
   turn behind it. A push is a `model.result` like any other, matched only by `threadId`: there is no
   correlation id, and the app applies it through the path it already had.
+- `model.result.live` is what is answering **right now**, when it is not what the conversation
+  resolves to: the run walked its route on a full bar, or its provider fell. It comes from the live
+  run node (`RunNode.model`), so it follows the run and clears itself when the node leaves the tree
+  (`agent:run:left`), which is the only event that can say so -- a run end fires while the node still
+  exists. Absent means nothing is running, or that what runs is the conversation's own model.
 - `model.set`, `model.effort.set` and `model.context.set` answer **every device of the owner**, not
   only the one that asked: the pick belongs to the thread, so a browser left open on the same
   conversation would otherwise keep naming the previous model until it reloaded. `model.get` stays a

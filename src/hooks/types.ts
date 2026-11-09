@@ -82,6 +82,29 @@ export interface HookEventMap {
     model: string;
     systemPromptLength: number;
   };
+  /**
+   * The run adopted another model mid-flight -- a route walked on a wall, a provider that fell.
+   *
+   * Emitted only on a real change, and never for the run's first model (agent:run:start names that
+   * one): what a surface shows is the model that answers, not the one the run was resolved to.
+   */
+  "agent:model:changed": {
+    sessionId: string;
+    /** The conversation or agent this run bills to: a roster row lives on the parent. */
+    parentSessionId: string;
+    model: string;
+    previous: string;
+    reason: "provider" | "capability";
+  };
+  /**
+   * The run has left the live tree: its node is gone, so nothing is "calling now" for that session
+   * any more. Emitted after the node is removed rather than at run end, because the end of the run
+   * still owns the node (a speculative compaction reads that).
+   */
+  "agent:run:left": {
+    sessionId: string;
+    parentSessionId: string;
+  };
   "agent:turn:start": {
     sessionId: string;
     model: string;

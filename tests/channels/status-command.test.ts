@@ -70,7 +70,7 @@ function call(sessionId: string, over: Partial<Parameters<typeof recordApiCall>[
 }
 
 test("no session still reports the model and the live runs", async () => {
-  const { text, status } = await statusReport({ config, sessionId: "matrix/room/!empty:test", session: null, liveRuns: [{ label: "main", depth: 0, startedAt: Date.now() }] });
+  const { text, status } = await statusReport({ config, sessionId: "matrix/room/!empty:test", session: null, liveRuns: [{ label: "main", depth: 0, startedAt: Date.now(), sessionId: "matrix/room/!empty:test" }] });
   expect(status.session).toBeNull();
   expect(status.usage).toBeNull();
   expect(status.model.current).toBe("claude-opus-5");
@@ -119,7 +119,7 @@ test("the sub-agents a conversation drove are rows of their own, named, with the
   };
   const status = await report({
     sessionId: parent,
-    liveRuns: [{ label: "main", depth: 0, startedAt: Date.now() }, { label: "digger", depth: 1, startedAt: Date.now() }],
+    liveRuns: [{ label: "main", depth: 0, startedAt: Date.now(), sessionId: parent }, { label: "digger", depth: 1, startedAt: Date.now(), sessionId: "subagent/digger-aaaa" }],
     subAgentOf: async (id) => metas[id] ?? null,
   });
   const agents = status.usage?.agents ?? [];
@@ -274,12 +274,12 @@ test("the live run tree and a compaction in progress travel as structure", async
     config,
     sessionId: id,
     session: session(id),
-    liveRuns: [{ label: "digger", depth: 1, startedAt: started }, { label: "main", depth: 0, startedAt: started }],
+    liveRuns: [{ label: "digger", depth: 1, startedAt: started, sessionId: "subagent/digger" }, { label: "main", depth: 0, startedAt: started, sessionId: id, model: "claude-2/opus-5" }],
     compacting: true,
   });
   expect(status.runtime.runs).toEqual([
     { label: "digger", depth: 1, startedAt: new Date(started).toISOString() },
-    { label: "main", depth: 0, startedAt: new Date(started).toISOString() },
+    { label: "main", depth: 0, startedAt: new Date(started).toISOString(), model: "claude-2/opus-5" },
   ]);
   expect(status.runtime.compacting).toBe(true);
   expect(text).toContain("running: digger, main");

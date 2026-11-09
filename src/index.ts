@@ -1155,6 +1155,7 @@ async function main() {
       // The cap in force on this model, not the global one: a tag pins its own, and the app
       // offers exactly this number in the tune sheet (docs/context-window.md).
       const cap = standingContextCap(config, model, "main");
+      const live = session ? runRegistry.liveModelOf(session.id) : undefined;
       return {
         model,
         defaultModel,
@@ -1189,6 +1190,10 @@ async function main() {
         // Siphon, when the conversation is pinned: the tree's model, which is not always the one
         // `model` above names -- a sub-agent under it runs this one regardless (docs/siphon.md).
         ...(session?.pinModel ? { siphon: session.pinModel } : {}),
+        // What the run in flight is calling, when it left the model above: a route walked on a wall,
+        // a provider that fell. Read from the live run node, so it follows the run and clears itself
+        // at the end with no second piece of state to keep in sync.
+        ...(live && live !== model ? { live } : {}),
       };
     };
     /** Provider keys served by OpenRouter: only their models can have a route pinned. */
@@ -2726,7 +2731,23 @@ async function main() {
     // under their own session id, which is how the parent's page sees its delegated spend grow.
     hooks.on("analytics:call:recorded", ({ sessionId, parentSessionId }) => myClawApp.statusChanged(sessionId, parentSessionId));
     hooks.on("agent:run:start", ({ sessionId }) => myClawApp.statusChanged(sessionId));
+    // A run that walks its route or loses its provider calls another model from that second on.
+    // Both surfaces that name a model follow it: the header (what is answering) and the status
+    // page (which node is on which model) -- docs/my-claw-app-channel.md.
+    hooks.on("agent:model:changed", ({ sessionId, parentSessionId }) => {
+      myClawApp.notifyModelStateForSession(sessionId);
+      myClawApp.statusChanged(sessionId);
+      // A sub-agent's row lives on the parent's roster: the model it now calls is that row's news.
+      if (parentSessionId && parentSessionId !== sessionId) void myClawApp.notifyRoster(parentSessionId);
+    });
     hooks.on("agent:run:finish", ({ sessionId }) => myClawApp.statusChanged(sessionId));
+    // The run's node is gone: nothing is calling on that session any more, and both surfaces that
+    // could still name a live model have to be told (a run end fires while the node still exists).
+    hooks.on("agent:run:left", ({ sessionId, parentSessionId }) => {
+      myClawApp.notifyModelStateForSession(sessionId);
+      myClawApp.statusChanged(sessionId);
+      if (parentSessionId && parentSessionId !== sessionId) void myClawApp.notifyRoster(parentSessionId);
+    });
     hooks.on("agent:run:aborted", ({ sessionId }) => myClawApp.statusChanged(sessionId));
     hooks.on("agent:run:error", ({ sessionId }) => myClawApp.statusChanged(sessionId));
     hooks.on("session:compact:start", ({ sessionId }) => myClawApp.statusChanged(sessionId));

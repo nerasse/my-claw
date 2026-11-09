@@ -72,9 +72,9 @@ test("run-registry: live view groups main + sub-agents by shared signal", () => 
   runRegistry.clear();
   const { signal, end } = runRegistry.startRoot("sess-A");
 
-  const main = runRegistry.enter(signal, "main", 0);
-  const sub1 = runRegistry.enter(signal, "researcher", 1);
-  const sub2 = runRegistry.enter(signal, "coder", 1);
+  const main = runRegistry.enter(signal, "main", 0, "sess-A", "alpha-1");
+  const sub1 = runRegistry.enter(signal, "researcher", 1, "sess-B");
+  const sub2 = runRegistry.enter(signal, "coder", 1, "sess-C");
 
   let live = runRegistry.list("sess-A");
   assert.equal(live.length, 3);
@@ -93,7 +93,36 @@ test("run-registry: live view groups main + sub-agents by shared signal", () => 
 
 test("run-registry: enter is a no-op for an untracked signal", () => {
   runRegistry.clear();
-  const handle = runRegistry.enter(new AbortController().signal, "x", 0);
+  const handle = runRegistry.enter(new AbortController().signal, "x", 0, "sess-X");
   assert.equal(handle, undefined);
+  runRegistry.clear();
+});
+
+test("run-registry: a node names its session and the model it is calling now", () => {
+  runRegistry.clear();
+  const { signal, end } = runRegistry.startRoot("sess-root");
+  const child = runRegistry.enter(signal, "researcher", 1, "subagent/child", "anthropic/opus-5");
+  assert.equal(runRegistry.liveModelOf("subagent/child"), "anthropic/opus-5", "the model is known from the first call");
+
+  // A run that walks its route moves the node it already owns: no second node, no stale model.
+  child?.setModel("claude-2/opus-5");
+  assert.equal(runRegistry.liveModelOf("subagent/child"), "claude-2/opus-5");
+  assert.equal(runRegistry.list("sess-root").length, 1);
+
+  child?.exit();
+  assert.equal(runRegistry.liveModelOf("subagent/child"), undefined, "a finished run has no live model");
+  end();
+  runRegistry.clear();
+});
+
+test("run-registry: two agents with the same display name are still told apart by session", () => {
+  runRegistry.clear();
+  const { signal, end } = runRegistry.startRoot("sess-root");
+  runRegistry.enter(signal, "worker", 1, "subagent/first", "alpha-1");
+  runRegistry.enter(signal, "worker", 1, "subagent/second", "beta-1");
+  assert.equal(runRegistry.liveModelOf("subagent/first"), "alpha-1");
+  assert.equal(runRegistry.liveModelOf("subagent/second"), "beta-1");
+  assert.equal(runRegistry.liveModelOf("subagent/third"), undefined);
+  end();
   runRegistry.clear();
 });

@@ -299,7 +299,12 @@ async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {
     },
     usage,
     runtime: {
-      runs: p.liveRuns.map((r) => ({ label: r.label, depth: r.depth, startedAt: new Date(r.startedAt).toISOString() })),
+      runs: p.liveRuns.map((r) => ({
+        label: r.label,
+        depth: r.depth,
+        startedAt: new Date(r.startedAt).toISOString(),
+        ...(r.model ? { model: r.model } : {}),
+      })),
       compacting: p.compacting === true,
       verbose: session?.verbose !== false,
       approvedTools: session?.approvedTools ?? [],

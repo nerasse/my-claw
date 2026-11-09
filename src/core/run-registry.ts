@@ -23,6 +23,17 @@ export interface RunNode {
   label: string;
   depth: number;
   startedAt: number;
+  /**
+   * The session this node runs: what tells two sub-agents' nodes apart, and what lets a roster row
+   * or the header ask "what is this agent calling right now" without matching on a display name.
+   */
+  sessionId: string;
+  /**
+   * The model the run is calling at this second. Written at run start and again every time the run
+   * adopts another one (a route walked on a wall, a provider that fell), so a surface that shows it
+   * names the model that answers rather than the one the run was resolved to.
+   */
+  model?: string;
 }
 
 /** Thrown into a pending injection's promise when the run ended without absorbing it
@@ -74,6 +85,12 @@ interface Compaction {
   finish: () => void;
 }
 
+/** What `enter` hands back: leaving the live view, and moving the model the node is on. */
+export interface RunHandle {
+  exit: () => void;
+  setModel: (model: string) => void;
+}
+
 class RunRegistry {
   private controllers = new Map<string, AbortController>();
   private runs = new Map<AbortSignal, RunNode[]>();
@@ -118,17 +135,34 @@ class RunRegistry {
   }
 
   /** Called by every AgentBridge.handle (main and sub-agents) to register itself in the live view. */
-  enter(signal: AbortSignal, label: string, depth: number): { exit: () => void } | undefined {
+  enter(signal: AbortSignal, label: string, depth: number, sessionId: string, model?: string): RunHandle | undefined {
     const list = this.runs.get(signal);
     if (!list) return undefined;
-    const node: RunNode = { label, depth, startedAt: Date.now() };
+    const node: RunNode = { label, depth, startedAt: Date.now(), sessionId, ...(model ? { model } : {}) };
     list.push(node);
     return {
       exit: () => {
         const i = list.indexOf(node);
         if (i >= 0) list.splice(i, 1);
       },
+      setModel: (next: string) => {
+        node.model = next;
+      },
     };
+  }
+
+  /**
+   * The model a session's run is calling right now, when it is running.
+   *
+   * A node is keyed by the root signal it shares, so this scans the trees: the set in flight at any
+   * instant is a handful, and matching on the session id is exact where matching on a label is not
+   * (the model writes display names, and two agents may carry the same one).
+   */
+  liveModelOf(sessionId: string): string | undefined {
+    for (const nodes of this.runs.values()) {
+      for (const node of nodes) if (node.sessionId === sessionId) return node.model;
+    }
+    return undefined;
   }
 
   /**

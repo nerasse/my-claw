@@ -336,6 +336,8 @@ export class AgentBridge implements AgentBackend {
     attempted: Set<string>;
     notes: string[];
     runModel?: RunModel;
+    /** This run's node in the live view: the model it names moves with the run. */
+    runNode?: { setModel: (model: string) => void };
     session: SessionData;
     message: UnifiedMessage;
     agentToolType: string;
@@ -418,6 +420,16 @@ export class AgentBridge implements AgentBackend {
         this.recordFailedCall({ ...params, config, durationMs: Date.now() - startedAt, error: err });
         params.attempted.add(next.model);
         config = { ...next.config, cacheKey: next.config.cacheKey ?? params.session.id };
+        // The live view and every surface reading it say what is calling now, not what the run was
+        // resolved to. Emitted only on a real change: the header and the status page follow it.
+        params.runNode?.setModel(next.model);
+        hooks.emit("agent:model:changed", {
+          sessionId: params.session.id,
+          parentSessionId: attributionParent(params.session),
+          model: next.model,
+          previous: failed.model,
+          reason: capability ? "capability" : "provider",
+        });
         await this.noteFallback(
           capability
             ? `[fallback] ${failed.model} cannot do this (${capability}: ${reason}). This run used ${next.model} instead (${next.label}).`
@@ -663,7 +675,7 @@ export class AgentBridge implements AgentBackend {
     const injectionBonus = resolveInjectionBudgetBonus(this.config);
 
     const runLabel = this.depth === 0 ? "main" : session.meta?.displayName ?? agentType;
-    const runNode = signal ? runRegistry.enter(signal, runLabel, this.depth) : undefined;
+    const runNode = signal ? runRegistry.enter(signal, runLabel, this.depth, session.id, llmConfig.model) : undefined;
 
     hooks.emit("agent:run:start", {
       messageId: message.id,
@@ -1111,6 +1123,7 @@ export class AgentBridge implements AgentBackend {
             attempted: attemptedModels,
             notes: fallbackNotes,
             runModel,
+            runNode,
             session,
             message,
             agentToolType,
@@ -1631,6 +1644,9 @@ export class AgentBridge implements AgentBackend {
       throw err;
     } finally {
       runNode?.exit();
+      // The node is gone: what a header or a status page read as "calling now" is stale from this
+      // instant, and the run-end event fired while the node still existed.
+      hooks.emit("agent:run:left", { sessionId: session.id, parentSessionId: attributionParent(session) });
       // The run is over and the owner is reading what it wrote: the one moment where a minute of
       // summarizer time costs nothing. Only inside the band, and never while a run holds the
       // session -- `runNode.exit()` above is what makes this the outside.

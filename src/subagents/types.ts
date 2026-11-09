@@ -42,7 +42,13 @@ export interface SubAgentInfo {
    * spawned before the field existed.
    */
   workspaceDir?: string;
+  /** The model this agent runs: its pin, or what its run in flight is calling right now. */
   model?: string;
+  /**
+   * Set when `model` is the live one rather than the pin: the run walked its route or its provider
+   * fell, so the row names the account answering now (docs/provider-failures.md).
+   */
+  modelLive?: boolean;
   createdAt: string;
 }
 

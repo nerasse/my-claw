@@ -93,8 +93,8 @@ test("/status shows the live run tree (main + sub-agents)", async () => {
   const run = handler();
   const sessionId = SessionManager.resolveSessionId("my-claw-app", "dm", "u1", "u1", { threadId: "t1" });
   const { signal, end } = runRegistry.startRoot(sessionId);
-  runRegistry.enter(signal, "main", 0);
-  runRegistry.enter(signal, "researcher", 1);
+  runRegistry.enter(signal, "main", 0, sessionId);
+  runRegistry.enter(signal, "researcher", 1, `${sessionId}/sub`);
 
   const output = await run("u1", "t1", "status", "");
   assert.ok(output && typeof output !== "string", "the status answers with the structured report");

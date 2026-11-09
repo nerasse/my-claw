@@ -99,6 +99,19 @@ The app side keeps no ask path at all: a `status.result` lands on the page open 
 whatever the page was doing; a report for another thread is dropped; a reconnection re-watches the
 page still open (`resumeFrames`). The refresh button is gone with the reason it existed.
 
+## The live run tree names models
+
+`runtime.runs` is one node per run in flight: `label` (the agent's display name), `depth`, and
+`model` -- the model that node is **calling at this second**. It is not the model the run was
+resolved to: a run that walked its route on a spent bar, or lost its provider, adopts another one
+mid-flight and the node moves with it (`RunNode.model`, written at run start and on every adoption).
+
+The same field feeds two other surfaces, which is why it lives on the node rather than in each:
+`model.result.live` (the chat header, when the root run is off its own model) and the roster row of
+a sub-agent (`SubAgentInfo.model` + `modelLive`). `agent:model:changed` is the event that pushes all
+three, and `agent:run:left` is what clears the live half when the node is gone -- the run-end event
+fires while the node still exists, so it cannot carry that.
+
 ## The two totals problem
 
 A session id is derived from the room or chat, never from the conversation:

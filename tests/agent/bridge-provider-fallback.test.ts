@@ -790,3 +790,40 @@ test("a cached reading older than the wall does not answer the wall question", a
     mock.restore();
   }
 });
+
+/**
+ * What the run is calling now, not what it was resolved to -- the answer to "which model is
+ * running", which used to be the model the run started on for the whole of its life.
+ *
+ * The live node follows the run (so a status page or a roster row reads it), and the hook is what
+ * pushes the change to the surfaces that are not the run: the header and the status page.
+ */
+test("a run that adopts another model moves its live node and says so", async () => {
+  const { hooks } = await import("../../src/hooks/index.ts");
+  const changes: Array<{ model: string; previous: string }> = [];
+  const listener = ({ model, previous }: { model: string; previous: string }): void => void changes.push({ model, previous });
+  hooks.on("agent:model:changed", listener);
+
+  const models: string[] = [];
+  const mock = mockFetch(async (_input, init) => {
+    const model = modelOf(init);
+    models.push(model);
+    if (model === "alpha-1") return failure(402, "upstream unavailable");
+    // Read while the run is going: the live node must already name the model that answered.
+    assert.equal(runRegistry.liveModelOf(SESSION_ID), "beta-1", "the run's node follows the fallback");
+    return jsonAnswer("fini ailleurs");
+  });
+  const bridge = new AgentBridge(config(), new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+
+  try {
+    await run(bridge, createSession("alpha-1"), signal);
+    assert.deepEqual(models, ["alpha-1", "alpha-1", "beta-1"]);
+    assert.deepEqual(changes.at(-1), { model: "beta-1", previous: "alpha-1" });
+    assert.equal(runRegistry.liveModelOf(SESSION_ID), undefined, "the run ended: nothing is live");
+  } finally {
+    hooks.off("agent:model:changed", listener);
+    end();
+    mock.restore();
+  }
+});

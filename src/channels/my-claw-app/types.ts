@@ -2808,6 +2808,12 @@ export interface MyClawAppModelState {
    * else. Absent means off, which is every conversation that never turned it on.
    */
   siphon?: string;
+  /**
+   * What the run in flight is calling right now, when it is not the model above -- it walked its
+   * route, or its provider fell. Absent means nothing is running, or that what runs is what this
+   * conversation resolves to: one field for "what would run", one for "what is answering".
+   */
+  live?: string;
 }
 
 export interface MyClawAppModelResult extends MyClawAppModelState {
@@ -3230,8 +3236,11 @@ export interface MyClawAppStatusPayload {
     since?: string;
   } | null;
   runtime: {
-    /** The live run tree of this conversation: `main` at depth 0, each sub-agent below it. */
-    runs: Array<{ label: string; depth: number; startedAt: string }>;
+    /**
+     * The live run tree of this conversation: `main` at depth 0, each sub-agent below it. `model`
+     * is what that node is calling at this second, which is not always the model it started on.
+     */
+    runs: Array<{ label: string; depth: number; startedAt: string; model?: string }>;
     /** A /compact holds the session: work in progress with no run node of its own. */
     compacting: boolean;
     verbose: boolean;

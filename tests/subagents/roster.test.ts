@@ -10,7 +10,8 @@ import { SkillRegistry } from "../../src/skills/registry.ts";
 import { VoiceManager, SttPipeline } from "../../src/voice/index.ts";
 import { metaOf, writeMeta } from "../../src/sessions/meta.ts";
 import { sessionLogOf } from "../../src/sessions/log-access.ts";
-import { deleteSession, type SessionData } from "../../src/sessions/store.ts";
+import { deleteSession, loadSession, type SessionData } from "../../src/sessions/store.ts";
+import { runRegistry } from "../../src/core/run-registry.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 
 const config = { whitelist: [], blacklist: [], channels: {}, llm: { provider: "x", baseUrl: "https://x", model: "m" }, agents: {}, memory: { enabled: false } } as unknown as MyClawConfig;
@@ -51,4 +52,32 @@ test("an idle agent's count is the one in meta.json: the log is not opened to li
   // A running one moves faster than its meta, so its log is the count.
   const live = (await runner.list({ isRunning: () => true }, ROOT)).find((a) => a.id === VOLET);
   expect(live?.messageCount).toBe(2);
+});
+
+/**
+ * A running agent's row names the model it is calling, not the pin it started on -- the roster is
+ * the only place that says so while the run is going, and a tag pin walked on a wall changes it
+ * mid-run (docs/provider-failures.md).
+ */
+test("a running agent's row carries the live model, an idle one keeps its pin", async () => {
+  await subagent(VOLET, ROOT, "global", 1, 1);
+  // What a run recorded at start: the tag it was pinned to, which names no single account.
+  const session = (await loadSession(VOLET))!;
+  session.modelOverride = "tag:Quota";
+  await writeMeta(VOLET, metaOf(session, (await sessionLogOf(VOLET)).leaf(), undefined, { promptCount: 1 }));
+
+  const idleRow = (await runner.list(idle, ROOT)).find((a) => a.id === VOLET);
+  expect(idleRow?.model).toBe("tag:Quota");
+  expect(idleRow?.modelLive).toBeUndefined();
+
+  const { signal, end } = runRegistry.startRoot(ROOT);
+  runRegistry.enter(signal, "volet", 1, VOLET, "claude-2/claude-fable-5-2");
+  try {
+    const liveRow = (await runner.list({ isRunning: () => true }, ROOT)).find((a) => a.id === VOLET);
+    expect(liveRow?.model).toBe("claude-2/claude-fable-5-2");
+    expect(liveRow?.modelLive).toBe(true);
+  } finally {
+    end();
+    runRegistry.clear();
+  }
 });
