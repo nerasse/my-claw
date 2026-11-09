@@ -73,7 +73,8 @@ function trapBackend(): AgentBackend & { calls: string[] } {
     hadAudioInbound: () => false,
     transcriptsOf: () => [],
     setApprovalHandler: () => {},
-      setMediaStore: () => {},
+    setMediaStore: () => {},
+    setConversationQuotaRetry: () => {},
     handleMessage: async (_m, session) => {
       calls.push(`handleMessage:${session.id}`);
       return "reached the normal path";

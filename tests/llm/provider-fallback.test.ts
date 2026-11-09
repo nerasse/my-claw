@@ -222,3 +222,56 @@ test("the route wins over the tag reference when both are present", () => {
   });
   assert.deepEqual(targets.map((t) => t.model), ["mimo"]);
 });
+
+/**
+ * Which targets are the run's own route, and which are siblings -- docs/quota-retry.md.
+ *
+ * A conversation that asked to wait out its wall still walks the list it wrote: the tag it picked
+ * or pinned is the model, in order, and the wait is for when nothing in that list is left. What it
+ * refuses is a model the pick never named, so the two have to be tellable apart here rather than by
+ * reading a label.
+ */
+test("a route's candidates are marked as the run's own route, a sibling is not", () => {
+  const cfg = config();
+  cfg.tags = { Route: { route: [{ model: "claude-opus-5" }, { model: "claude-sonnet-5" }] } };
+  const targets = providerFallbackTargets({
+    config: cfg,
+    agent: "main",
+    route: { tag: "Route", candidates: [{ model: "claude-opus-5" }, { model: "claude-sonnet-5" }], fallbackToGlobalDefault: false, selectedIndex: 0 },
+    current: { model: "claude-opus-5", provider: "anthropic" },
+    hasImages: false,
+    attempted: attempted(["claude-opus-5"]),
+  });
+  assert.deepEqual(targets.map((t) => [t.model, t.fromRoute]), [["claude-sonnet-5", true]]);
+});
+
+test("the tag's global default is part of the route it belongs to", () => {
+  const cfg = config();
+  cfg.tags = { Route: { route: [{ model: "claude-opus-5" }], fallbackToGlobalDefault: true } };
+  const targets = providerFallbackTargets({
+    config: cfg,
+    agent: "main",
+    tagRef: "tag:Route",
+    current: { model: "claude-opus-5", provider: "anthropic" },
+    hasImages: false,
+    attempted: attempted(["claude-opus-5"]),
+  });
+  assert.deepEqual(targets.map((t) => [t.model, t.fromRoute]), [["mimo", true]]);
+});
+
+test("the agent's own pin is a sibling, never the run's route", () => {
+  // A run that left the agent's pin on purpose -- a spawn `model` -- must not be walked back onto
+  // it when the owner's conversation asked to wait out a wall.
+  const cfg = config();
+  cfg.tags = { Pinned: { route: [{ model: "claude-opus-5" }, { model: "claude-sonnet-5" }] } };
+  cfg.agents = { orchestrator: { llm: { defaultModel: "tag:Pinned" } } };
+  const targets = providerFallbackTargets({
+    config: cfg,
+    agent: "orchestrator",
+    current: { model: "claude-sonnet-5", provider: "anthropic" },
+    hasImages: false,
+    attempted: attempted(["claude-sonnet-5"]),
+  });
+  assert.ok(targets.length > 0);
+  assert.deepEqual(targets.filter((t) => t.fromRoute), [], "nothing here is the run's own route");
+});

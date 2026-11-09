@@ -3,7 +3,11 @@
 Deux phases, dans l'ordre. La phase 1 est une option du retry ; la phase 2 change la forme de
 cette option.
 
-Statut : **proposition, rien n'est implémenté.** Rien n'entre dans le code avant ton accord.
+Statut : phase 2 **proposition, rien n'est implémenté**. Ce qui est en place depuis le 2026-11-09 :
+une route est **parcourue** sur un mur (candidat suivant, puis le défaut global du tag), et l'attente
+ne s'arme que quand il n'en reste plus -- voir docs/quota-retry.md. Ce qui reste de la phase 2 est
+l'**ordre** de la route décidé par les barres, avec retour en haut de liste quand une barre se
+rouvre.
 
 ## Le nom
 

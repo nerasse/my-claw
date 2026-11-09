@@ -340,3 +340,103 @@ test("the tick clears a due wait before it resumes the session", async () => {
   assert.equal(order[1], "resume");
   assert.equal(order[2], "resume-saw-wait:false", "and the resume cannot re-write what is already gone");
 });
+
+/**
+ * The walk reads the switch at the root too, not only the arming -- docs/quota-retry.md.
+ *
+ * The runner already walks to the root for Siphon's pin, so the answer is in hand; without handing
+ * it to the engine, a child's own empty field decided whether a delegated run answered on a model
+ * the owner never named. Measured 2026-11-09, one thread and one minute: the conversation stopped at
+ * its first wall while two of its sub-agents walked the whole route.
+ */
+const TWO_ACCOUNTS = {
+  providers: {
+    dry: { baseUrl: "https://api.synthetic.new/openai/v1", apiKeyEnv: "SYNTH_KEY" },
+    other: { baseUrl: "https://other.example/v1", apiKeyEnv: "SYNTH_KEY" },
+  },
+  models: [
+    { id: "dry/m1", provider: "dry" },
+    { id: "other/m2", provider: "other" },
+  ],
+  defaultProvider: "other",
+  defaultModel: "other/m2",
+};
+
+function twoAccountRunner(): SubAgentRunner {
+  const cfg = { whitelist: [], blacklist: [], channels: {}, llm: TWO_ACCOUNTS, agents: {}, memory: { enabled: false } } as unknown as MyClawConfig;
+  return new SubAgentRunner(
+    cfg, new ToolRegistry(), new SkillRegistry(),
+    new VoiceManager(cfg), new SttPipeline(new VoiceManager(cfg)),
+    new AgentRegistry(new Map([["worker", agentFile("worker")]])) as unknown as AgentRegistry,
+  );
+}
+
+/** The named model hits its spent plan; anything else answers. */
+function wallOnDry(): { asked: string[]; restore: () => void } {
+  const asked: string[] = [];
+  const mock = mockFetch(async (input, init) => {
+    if (String(input).includes("/v2/quotas")) {
+      return new Response(JSON.stringify({
+        planWeeklyLimit: { percentRemaining: 0, nextRegenAt: new Date(Date.now() + 3600_000).toISOString() },
+      }), { status: 200 }) as never;
+    }
+    const body = JSON.parse(String(init?.body ?? "{}")) as { model?: string };
+    asked.push(body.model ?? "");
+    if (body.model === "m1") {
+      return new Response(
+        JSON.stringify({ error: { type: "usage_limit_reached", message: "The usage limit has been reached" } }),
+        { status: 429 },
+      ) as never;
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content: "answered" } }] }), { status: 200 }) as never;
+  });
+  return { asked, restore: () => mock.restore() };
+}
+
+async function spawnOnDry(runner: SubAgentRunner): Promise<string> {
+  const ids = new SubAgentRegistry();
+  const setup = mockFetch(async () => new Response(JSON.stringify({ choices: [{ message: { content: "first" } }] }), { status: 200 }) as never);
+  try {
+    const { id } = await runner.spawn({
+      displayName: "worker", type: "worker", mode: "session", task: "first pass", model: "dry/m1",
+      parentMessage: parentMessage(), existingIds: await ids.listExistingIds(),
+      generateId: (n, e) => ids.generateId(n, e), parentSessionId: PARENT, visibility: "global",
+    });
+    made.push(id);
+    return id;
+  } finally {
+    setup.restore();
+  }
+}
+
+test("a child of a waiting conversation does not answer on a sibling it never named", async () => {
+  const runner = twoAccountRunner();
+  const id = await spawnOnDry(runner);
+  await writeRoot(true);
+
+  const wire = wallOnDry();
+  try {
+    await runner.send(id, "hit the wall", undefined, parentMessage(), new SubAgentRegistry(), PARENT).catch(() => undefined);
+  } finally {
+    wire.restore();
+  }
+
+  assert.ok(!wire.asked.includes("m2"), `the promoted default must not answer, saw ${wire.asked.join(", ")}`);
+  assert.ok((await readMeta(id))?.quotaRetry?.pending, "the wait is armed on the child instead");
+});
+
+test("with the conversation's switch off, the same child walks to the default", async () => {
+  const runner = twoAccountRunner();
+  const id = await spawnOnDry(runner);
+  await writeRoot(false);
+
+  const wire = wallOnDry();
+  try {
+    await runner.send(id, "hit the wall", undefined, parentMessage(), new SubAgentRegistry(), PARENT).catch(() => undefined);
+  } finally {
+    wire.restore();
+  }
+
+  assert.deepEqual(wire.asked, ["m1", "m2"], "one request to the spent account, then the default");
+  assert.equal((await readMeta(id))?.quotaRetry, undefined, "off is off: nothing is armed");
+});

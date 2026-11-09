@@ -138,6 +138,10 @@ export class BackendDispatcher implements AgentBackend {
     this.home.setMediaStore(store);
   }
 
+  setConversationQuotaRetry(enabled: boolean): void {
+    this.home.setConversationQuotaRetry(enabled);
+  }
+
   handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal): Promise<string> {
     const resolved = this.resolveRun(message, session);
     return this.runResolved(resolved, message, session, (backend, modelId, modelOverride) =>

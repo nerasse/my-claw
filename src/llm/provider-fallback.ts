@@ -21,6 +21,14 @@ export interface ProviderFallbackTarget {
   config: ResolvedLlmConfig;
   /** Where the target comes from, in the owner's terms: a route candidate, a default. */
   label: string;
+  /**
+   * Whether this target is an entry of the route the run is on -- the tag the owner picked or
+   * pinned, candidates and its own global-default step. A conversation that asked to wait out its
+   * wall still moves along that list: the route is the model, in order, and waiting is for when
+   * nothing in it is left (docs/quota-retry.md). Everything else here is a sibling the switch
+   * refuses.
+   */
+  fromRoute: boolean;
 }
 
 export interface ProviderFallbackRequest {
@@ -63,32 +71,37 @@ export function providerFallbackTargets(request: ProviderFallbackRequest): Provi
 
   const isCurrent = (resolved: ResolvedLlmConfig): boolean =>
     resolved.model === request.current.model && (request.current.provider === undefined || resolved.provider === request.current.provider);
-  const walk = (walked: RunModelRoute): ProviderFallbackTarget[] => {
+  /**
+   * `fromRoute` is the run's own route, the one the owner wrote and this run is on -- never the
+   * agent's pin: a run that left that pin on purpose (a spawn `model`) must not be walked back onto
+   * it behind the owner's back.
+   */
+  const walk = (walked: RunModelRoute, fromRoute: boolean): ProviderFallbackTarget[] => {
     walked.candidates.forEach((candidate, index) => {
       if (index === walked.selectedIndex) return;
       if (walked.unavailableIndices?.includes(index)) return;
       if (attempted.has(candidate.model)) return;
       const resolved = candidateConfig(candidate.model, candidate.effort);
       if (!resolved || attempted.has(resolved.model) || isCurrent(resolved)) return;
-      targets.push({ model: candidate.model, config: resolved, label: `${walked.tag} route candidate ${index + 1}` });
+      targets.push({ model: candidate.model, config: resolved, label: `${walked.tag} route candidate ${index + 1}`, fromRoute });
     });
     if (walked.fallbackToGlobalDefault) {
       const global = resolveLlmConfigForAgentMessage(config.llm, undefined, undefined, hasImages);
       if (!attempted.has(global.model) && !isCurrent(global) && !targets.some((t) => t.model === global.model)) {
-        targets.push({ model: global.model, config: global, label: `${walked.tag} global default` });
+        targets.push({ model: global.model, config: global, label: `${walked.tag} global default`, fromRoute });
       }
     }
     return targets;
   };
 
-  if (route) return walk(route);
+  if (route) return walk(route, true);
 
   // The conversation's own tag still names the chain when the resolved route did not travel with
   // the run. Only when the run is *on* one of its candidates: a tag that the preflight fell through
   // to the global default has already been judged unavailable, and walking it would retry a model
   // the resolver refused rather than continue past it.
   const ownRoute = routeOfTagRef(config, request.tagRef, request.current.model);
-  if (ownRoute) return walk(ownRoute);
+  if (ownRoute) return walk(ownRoute, true);
 
   // Off its route -- a model the caller picked, like a spawn's `model` -- a run whose agent default
   // is a tag falls back along that tag's whole route, not only its first candidate: taking the first
@@ -102,12 +115,12 @@ export function providerFallbackTargets(request: ProviderFallbackRequest): Provi
   } catch {
     agentRoute = undefined;
   }
-  if (agentRoute) return walk({ ...agentRoute, selectedIndex: -1 });
+  if (agentRoute) return walk({ ...agentRoute, selectedIndex: -1 }, false);
 
   const agentDefault = resolveLlmConfigForAgentMessage(config.llm, resolveAgentLlm(config, request.agent), undefined, hasImages);
   if (agentDefault.provider === request.current.provider || agentDefault.model === request.current.model) return targets;
   if (attempted.has(agentDefault.model)) return targets;
-  targets.push({ model: agentDefault.model, config: agentDefault, label: "configured default" });
+  targets.push({ model: agentDefault.model, config: agentDefault, label: "configured default", fromRoute: false });
   return targets;
 }
 

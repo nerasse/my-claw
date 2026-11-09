@@ -1182,7 +1182,10 @@ export class SubAgentRunner {
     // read from the root at every run, never copied onto the child, so a change (or a removal)
     // reaches the next run of every level. `forcedModel` is the step that skips the chain, which is
     // what makes it outrank the explicit spawn `model` sitting just below it.
-    const pin = pinModelOf(await rootSessionOf(session, loadSession));
+    // Same root, same reason: the switch is the conversation's, so a child's fallback behaviour is
+    // decided where the owner set it -- docs/quota-retry.md.
+    const root = await rootSessionOf(session, loadSession);
+    const pin = pinModelOf(root);
     const request: RunModelRequest = {
       agent: type,
       ...(fileModel ? { fileModel } : {}),
@@ -1232,6 +1235,7 @@ export class SubAgentRunner {
     // A sub-agent's pictures belong to the conversation that asked for it, and the hook is how it
     // stores them before its own end marker names them (2026-09-15).
     bridge.setMediaStore(this.mediaStore);
+    bridge.setConversationQuotaRetry(root.quotaRetry?.enabled === true);
     // Same door for a prompt: a tool of this run that must ask the owner raises its sheet in the
     // parent conversation, where the human who spawned the agent is actually looking.
     bridge.setApprovalHandler(this.approvalHandler);

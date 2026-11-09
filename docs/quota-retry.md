@@ -86,16 +86,29 @@ request would exceed your account's rate limit."}` — word for word what a per-
 with the 5 h bar at 100 % and a reset twenty-two minutes out. Twelve requests and 210 seconds for
 one wall, before the run moved at all.
 
-## The switch outranks the fallback
+## The switch outranks the fallback, not the route
 
-A conversation with **Retry when the quota returns** on does not fall back when the oracle confirms
-a wall: it stops, the adapter arms the wait, and the run resumes at the reset. A conversation
-without it moves to the next candidate immediately — the other model answers now, and the note says
-which bar was full.
+A wall on a conversation with **Retry when the quota returns** on stops the run when its route is
+spent: the adapter arms the wait, and the run resumes at the reset.
 
-The asymmetry is deliberate. Without the switch the run's job is to answer; with it the owner has
-said the wall is what they want to wait for, and a silent fallback would look exactly like a run
-that respected the setting.
+The route comes first. A tag is a list of candidates in order, and a picked or pinned tag *is* the
+model — so a run walks what is left of that list before it waits, switch or not. The wait is what
+happens when nothing in it is left. That is the order the owner asked for, said once and for all:
+the next candidate, then the tag's own global default, then the reset.
+
+What the switch refuses is everything *outside* that route: the agent's configured default, a
+sibling model the pick never named. Without the switch the run's job is to answer and it takes
+those too; with it the owner has said the wall is what they want to wait for, and answering on a
+model they did not choose would look exactly like a run that respected the setting.
+
+Measured 2026-11-09, CubeFlow on `tag:Quota` (five accounts, three with room at that second): the
+first candidate hit its five-hour bar and the conversation sat until that one account reset, four
+hours out, because the switch stopped the run before the route was consulted. The pin was a tag
+throughout — the tag was simply never walked.
+
+`ProviderFallbackTarget.fromRoute` is the distinction: the run's own route (candidates and that
+tag's global-default step) is marked, everything else is not, and the switch keeps only the marked
+ones.
 
 ## Which failures consult the oracle
 
@@ -198,6 +211,13 @@ A sub-agent has no switch of its own, and nothing ever set one: the runner read
 silently ignored a switch the owner had visibly turned on. `armQuotaWait` now walks to the root
 (`rootSessionOf`) and reads the setting there. A child with the conversation's switch off arms
 nothing, which is the same rule said the other way round.
+
+The walk reads it at the root too, and it has to: the bridge only ever sees the session it is
+running, which for a child is the child. The runner already walks to the root for Siphon's pin, and
+hands that answer to the bridge (`setConversationQuotaRetry`). Without it one conversation behaved
+two ways — measured 2026-11-09, same thread, same minute: the root stopped at the first wall, and
+two sub-agents walked the whole route to the last account before arming. The only difference was
+which session the field happened to be on.
 
 The wait itself stays on the child's own session: a resumed child is its own run, and the
 attempt ceiling has always been per session. What the root supplies is the decision, not the

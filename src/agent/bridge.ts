@@ -295,6 +295,22 @@ export class AgentBridge implements AgentBackend {
   private mediaStore?: MediaStoreHook;
 
   /**
+   * The conversation's answer to "wait out a wall", for a run whose own session is a child and
+   * therefore never carries the switch -- docs/quota-retry.md, "The switch is the conversation's,
+   * at every depth". The sub-agent runner sets it from the root it already reads for the pin; a
+   * conversation's own run leaves it unset and its session answers.
+   */
+  setConversationQuotaRetry(enabled: boolean): void {
+    this.conversationQuotaRetry = enabled;
+  }
+
+  private conversationQuotaRetry?: boolean;
+
+  private waitsForQuota(session: SessionData): boolean {
+    return this.conversationQuotaRetry ?? session.quotaRetry?.enabled === true;
+  }
+
+  /**
    * One model call, with a provider failure handled: the waits this run owes, then the run's
    * fallback targets in order -- and the run adopts whichever target answers.
    *
@@ -351,11 +367,6 @@ export class AgentBridge implements AgentBackend {
         // word like a per-minute burst -- and treating it as a burst costs three transport retries
         // plus 30 s, 60 s and 120 s on a bar that does not move (measured 2026-10-31).
         const wall = capability ? undefined : await this.quotaWallOf(err, config.provider);
-        // The owner's decision outranks the run's: a conversation told to wait out its wall waits,
-        // even when another model could answer right now. Anything else makes the switch a guess.
-        if (wall && params.session.quotaRetry?.enabled === true) {
-          throw withFailureContext(err, config);
-        }
         // A spent quota is never waited for: nothing refills it within the run.
         const wait = capability || wall || isQuotaSpent(err) ? undefined : params.waits.shift();
         if (wait !== undefined) {
@@ -393,6 +404,14 @@ export class AgentBridge implements AgentBackend {
           hasImages: params.message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
           attempted: params.attempted,
         });
+        // The owner's decision outranks the run's *siblings*: a conversation told to wait out its
+        // wall waits, even when another model could answer right now. It does not outrank the route
+        // the owner wrote -- that list is the model, in order, and a wall moves along it. The wait is
+        // for when nothing in the route is left (docs/quota-retry.md).
+        if (wall && this.waitsForQuota(params.session)) {
+          const onRoute = targets.findIndex((target) => target.fromRoute);
+          targets = onRoute === -1 ? [] : targets.slice(onRoute);
+        }
         const next = targets.shift();
         if (!next) throw withFailureContext(err, config);
 

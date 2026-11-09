@@ -549,10 +549,14 @@ test("a bare rate_limit_error on a full bar skips the waits, the retries, and na
 });
 
 /**
- * The owner's decision outranks the run's: a conversation told to wait out its wall waits, even
- * when another model could answer this second. Anything else makes the switch a guess.
+ * A conversation told to wait out its wall walks its own route first -- docs/quota-retry.md.
+ *
+ * The switch refuses the models the owner did not name, not the list they wrote. Measured
+ * 2026-11-09 on `tag:Quota` (five accounts): the first candidate hit its five-hour bar and the
+ * conversation sat four hours while the tag's second account was answering fine. A tag is the
+ * model, in order; the wait is for when nothing in it is left.
  */
-test("a conversation set to wait stops on a confirmed wall instead of falling back", async () => {
+test("a conversation set to wait still walks its own route before it waits", async () => {
   process.env["SYNTHETIC_KEY_FOR_TEST"] = "sk-test";
   const models: string[] = [];
   const mock = mockFetch(async (input, init) => {
@@ -564,7 +568,7 @@ test("a conversation set to wait stops on a confirmed wall instead of falling ba
     if (model === "quenched-1") {
       return failure(429, '{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}}');
     }
-    return jsonAnswer("ne doit pas arriver");
+    return jsonAnswer("le deuxieme compte repond");
   });
   const bridge = new AgentBridge(walledConfig(), new ToolRegistry(), new SkillRegistry());
   const { signal, end } = runRegistry.startRoot(SESSION_ID);
@@ -572,14 +576,115 @@ test("a conversation set to wait stops on a confirmed wall instead of falling ba
   session.quotaRetry = { enabled: true };
 
   try {
-    const outcome = await bridge
-      .handleMessage(createMessage(), session, signal, "quenched-1")
-      .then((text) => ({ text }))
-      .catch((err: unknown) => ({ error: err }));
-    // Either the run dies with the failure (which arms the wait in the adapter) or it refuses to
-    // move; what it must never do is answer on the other account.
-    if ("text" in outcome) assert.doesNotMatch(outcome.text, /ne doit pas arriver/);
-    assert.ok(!models.includes("beta-1"), `the run must not leave its model, saw ${models.join(", ")}`);
+    const text = await bridge.handleMessage(createMessage(), session, signal, "quenched-1");
+    assert.match(text, /le deuxieme compte repond/, text);
+    assert.match(text, /\(Quenched route candidate 2\)/, text);
+    assert.match(text, /\[quota\] quenched-1 is out of its week allowance/, text);
+    assert.deepEqual(models, ["quenched-1", "beta-1"], "one request to the refusing account, then the route");
+  } finally {
+    delete process.env["SYNTHETIC_KEY_FOR_TEST"];
+    end();
+    mock.restore();
+  }
+});
+
+/**
+ * The wait is what happens when the route is spent -- and the tag's own global-default step is part
+ * of that route: the owner wrote `fallbackToGlobalDefault` into the tag, so it is a model they
+ * named.
+ */
+test("a spent route falls to the tag's own global default, and only then waits", async () => {
+  process.env["SYNTHETIC_KEY_FOR_TEST"] = "sk-test";
+  const cfg = walledConfig();
+  cfg.tags = { Quenched: { route: [{ model: "quenched-1" }], fallbackToGlobalDefault: true } };
+  const models: string[] = [];
+  const mock = mockFetch(async (input, init) => {
+    if (String(input).includes("/v2/quotas")) {
+      return new Response(JSON.stringify(SYNTHETIC_SPENT), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    const model = modelOf(init);
+    models.push(model);
+    if (model === "quenched-1") {
+      return failure(429, '{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit."}}');
+    }
+    return jsonAnswer("le defaut global du tag");
+  });
+  const bridge = new AgentBridge(cfg, new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+  const session = createSession("tag:Quenched");
+  session.quotaRetry = { enabled: true };
+
+  try {
+    const text = await bridge.handleMessage(createMessage(), session, signal, "quenched-1");
+    assert.match(text, /le defaut global du tag/, text);
+    assert.match(text, /\(Quenched global default\)/, text);
+    assert.deepEqual(models, ["quenched-1", "beta-1"]);
+  } finally {
+    delete process.env["SYNTHETIC_KEY_FOR_TEST"];
+    end();
+    mock.restore();
+  }
+});
+
+/**
+ * Off its route, the switch does what it always said: the run stops on the wall and the adapter arms
+ * the wait. The configured default is a model the owner did not name for this run, and answering on
+ * it would look exactly like a run that respected the setting.
+ */
+test("off its route, a conversation set to wait stops instead of falling back", async () => {
+  process.env["SYNTHETIC_KEY_FOR_TEST"] = "sk-test";
+  const models: string[] = [];
+  const mock = mockFetch(async (input, init) => {
+    if (String(input).includes("/v2/quotas")) {
+      return new Response(JSON.stringify(SYNTHETIC_SPENT), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    const model = modelOf(init);
+    models.push(model);
+    return failure(429, '{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit."}}');
+  });
+  const bridge = new AgentBridge(walledConfig(), new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+  const session = createSession("quenched-1");
+  session.quotaRetry = { enabled: true };
+
+  try {
+    await assert.rejects(() => bridge.handleMessage(createMessage(), session, signal), /rate limit/i);
+    assert.deepEqual(models, ["quenched-1"], `the run must not leave its model, saw ${models.join(", ")}`);
+  } finally {
+    delete process.env["SYNTHETIC_KEY_FOR_TEST"];
+    end();
+    mock.restore();
+  }
+});
+
+/**
+ * A sub-agent is the conversation's work, so the walk reads the switch where the owner set it --
+ * docs/quota-retry.md, "The switch is the conversation's, at every depth".
+ *
+ * The bridge only ever sees the session it runs, which for a child is the child: measured
+ * 2026-11-09, same thread and same minute, the root stopped at the first wall while two sub-agents
+ * walked the whole route. The runner hands the root's answer down for exactly this.
+ */
+test("a child's walk obeys the conversation's switch, not the child's empty field", async () => {
+  process.env["SYNTHETIC_KEY_FOR_TEST"] = "sk-test";
+  const models: string[] = [];
+  const mock = mockFetch(async (input, init) => {
+    if (String(input).includes("/v2/quotas")) {
+      return new Response(JSON.stringify(SYNTHETIC_SPENT), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    const model = modelOf(init);
+    models.push(model);
+    return failure(429, '{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit."}}');
+  });
+  const bridge = new AgentBridge(walledConfig(), new ToolRegistry(), new SkillRegistry());
+  bridge.setConversationQuotaRetry(true);
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+  const session = createSession("quenched-1");
+  assert.equal(session.quotaRetry, undefined, "the child carries no switch of its own");
+
+  try {
+    await assert.rejects(() => bridge.handleMessage(createMessage(), session, signal), /rate limit/i);
+    assert.deepEqual(models, ["quenched-1"], `nothing may answer for the pinned conversation, saw ${models.join(", ")}`);
   } finally {
     delete process.env["SYNTHETIC_KEY_FOR_TEST"];
     end();

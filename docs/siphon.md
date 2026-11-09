@@ -52,8 +52,9 @@ Siphon makes, and it is why the pin does **not** go through `modelOverride`:
 | `session.modelOverride` | a conversation's own stored pick | the agent pin |
 | agent file `model:` | the agent's own chain | the global default |
 
-A pick can be a tag with a route to walk, so it keeps its own step. Siphon names one model, so it
-takes the step that admits no route and no sibling.
+A pick can be a tag with a route to walk, so it keeps its own step. Siphon pins one subject, and a
+subject may be a tag: the route then travels with the pin exactly as it does with a pick, and a wall
+moves along it. What the pin rules out is a *sibling* -- any model the owner did not name.
 
 ## A pin that no longer resolves
 
@@ -92,8 +93,9 @@ means, kept as one decision rather than resolved in the client.
 
 What a tag does *not* do yet is choose among its candidates by available quota: the run lands on the
 first one that is reachable, which is the resolver's rule everywhere else. Ordering a route by what
-the bars say is phase 2 (docs/quota-pin-plan.md), and until then a pinned tag behaves exactly like
-the same tag picked as a model.
+the bars say is phase 2 (docs/quota-pin-plan.md). What a pinned tag does do is get walked when a
+candidate hits its wall -- remaining candidates, then the tag's own global default -- and the wait
+only arms when nothing in the route is left (docs/quota-retry.md).
 
 ## Hot reload
 
@@ -105,8 +107,10 @@ The pin is read at the start of every run, so:
 
 ## What it does not do yet
 
-- **Tags and quota looping** (phase 2). A tag route ordered by available quota, returning to the
-  top of the list when a bar reopens, is drawn in docs/quota-pin-plan.md and not implemented.
+- **Tags ordered by available quota** (phase 2). A route walked in the order the owner wrote it is
+done -- a wall moves to the next candidate before anything waits (docs/quota-retry.md). A route
+*reordered* by what the bars say, returning to the top of the list when one reopens, is drawn in
+docs/quota-pin-plan.md and not implemented.
 - **The vision reroute.** A model without image input plus an image is still a question this mode
   does not answer by itself: the pin names a model, and the reroute that saves the run picks
   another one. Current behaviour is the resolver's, unchanged by Siphon.

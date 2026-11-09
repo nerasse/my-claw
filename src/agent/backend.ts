@@ -94,6 +94,12 @@ export interface AgentBackend {
 
   /** Where a run stores what its tools produced -- the channel owns the bytes, never the agent. */
   setMediaStore(store: MediaStoreHook | undefined): void;
+  /**
+   * The conversation's "wait out a wall" answer, for a run whose own session is a child -- the
+   * sub-agent runner reads it at the root (docs/quota-retry.md). A conversation's own run leaves it
+   * unset and its session answers.
+   */
+  setConversationQuotaRetry(enabled: boolean): void;
   handleMessage(message: UnifiedMessage, session: SessionData, signal?: AbortSignal, modelId?: string, modelOverride?: RunModelOverride, userEntryWritten?: boolean): Promise<string>;
   handleMessageStreaming(
     message: UnifiedMessage,
