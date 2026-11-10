@@ -24,6 +24,23 @@ const SPENT = 99;
 /** Guards a loop: a provider that keeps answering 429 across resets stops being retried here. */
 export const QUOTA_RETRY_MAX_ATTEMPTS = 8;
 
+/**
+ * A wall the oracle cannot put a clock on is checked again, not abandoned.
+ *
+ * Not every spent plan publishes a reset: a balance can be empty with no date, a gateway can
+ * refuse with no usage endpoint at all, and the usage read itself can fail exactly when the
+ * account is out. Waiting only on a published reset meant the switch did nothing in all three
+ * cases -- the run failed, Continue failed again, and the owner had no way to leave it parked
+ * (2026-11-10). So those walls get a probe: one cheap call, growing, until the plan answers.
+ *
+ * Base is the first gap; every probe after it doubles up to the cap, which keeps an all-day
+ * outage at two calls an hour rather than twelve.
+ */
+export const QUOTA_PROBE_BASE_MS = 5 * 60_000;
+export const QUOTA_PROBE_MAX_MS = 30 * 60_000;
+/** Probes are cheap and a plan can reopen any hour of the day; this only stops a runaway. */
+export const QUOTA_RETRY_MAX_PROBES = 12;
+
 /** A balance the provider will not draw on: a wall, even when the status is a 400. */
 const BALANCE_SPENT = /out of credits|insufficient (?:credits|balance|funds)|credit balance is too low|out of extra usage/i;
 
@@ -96,6 +113,18 @@ export function kindOfWindow(window: Pick<QuotaWindow, "id" | "label" | "windowS
     }
   }
   return "other";
+}
+
+/**
+ * When a probe wait comes due, from how many attempts the conversation has already spent.
+ *
+ * 5 min, 10, 20, then every 30: the first look is soon enough to catch a burst that was simply
+ * misreported, and the later ones cost nothing while a plan sits empty for hours.
+ */
+export function probeWaitFrom(attempts: number, now: number = Date.now()): { at: string; windows: string[] } {
+  const steps = Math.max(1, attempts) - 1;
+  const gap = Math.min(QUOTA_PROBE_BASE_MS * 2 ** Math.min(steps, 10), QUOTA_PROBE_MAX_MS);
+  return { at: new Date(now + gap).toISOString(), windows: [] };
 }
 
 /** The period a kind stands for, for the message the reader gets. */

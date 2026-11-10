@@ -14,7 +14,14 @@
  * armed by either path.
  */
 
-import { isQuotaFailure, quotaWaitFrom, QUOTA_RETRY_MAX_ATTEMPTS } from "./retry.ts";
+import {
+  isQuotaFailure,
+  probeWaitFrom,
+  quotaWaitFrom,
+  QUOTA_RETRY_MAX_ATTEMPTS,
+  QUOTA_RETRY_MAX_PROBES,
+  spentWindowOf,
+} from "./retry.ts";
 import type { QuotaOutcome } from "./types.ts";
 import type { SessionQuotaRetry } from "../../sessions/store.ts";
 
@@ -23,6 +30,12 @@ export interface ArmedQuotaWait {
   attempts: number;
   windows: string[];
   error?: string;
+  /**
+   * No reset was published, so this wait is a check rather than a promise: the plan is spent and
+   * the clock is unknown (a balance with no date, a provider with no usage endpoint, a read that
+   * failed). The attempt is one cheap call that either answers or re-arms.
+   */
+  probe?: true;
   /**
    * What the wait will run when it fires. Absent for the ordinary case, a conversation resumed
    * where it stopped; `compact` is a `/compact` that hit the wall and queued itself behind it.
@@ -34,7 +47,7 @@ export interface QuotaWaitDecision {
   /** The wait to store, or nothing when this failure earns none. */
   wait?: ArmedQuotaWait;
   /** Why nothing was armed, for the log: a read that fails silently is a bug that never surfaces. */
-  skipped?: "not-a-quota" | "switch-off" | "no-reset" | "gave-up";
+  skipped?: "not-a-quota" | "switch-off" | "gave-up";
 }
 
 /**
@@ -57,15 +70,30 @@ export async function decideQuotaWait(input: {
   if (!isQuotaFailure(input.err)) return { skipped: "not-a-quota" };
   const provider = (input.err as { provider?: string } | undefined)?.provider;
   const outcome = provider ? await input.readQuota(provider).catch(() => undefined) : undefined;
-  const wait = outcome ? quotaWaitFrom(outcome) : undefined;
-  if (!wait) return { skipped: "no-reset" };
   const attempts = input.previousAttempts + 1;
-  if (attempts > QUOTA_RETRY_MAX_ATTEMPTS) return { skipped: "gave-up" };
   const message = input.err instanceof Error ? input.err.message : String(input.err);
+
+  const published = outcome ? quotaWaitFrom(outcome) : undefined;
+  if (published) {
+    if (attempts > QUOTA_RETRY_MAX_ATTEMPTS) return { skipped: "gave-up" };
+    return { wait: { ...published, attempts, error: message.slice(0, 200) } };
+  }
+
+  // The oracle could not name a reset. Two very different readings hide behind that:
+  //
+  // - Every bar has room. Then this failure is a burst limit wearing a quota's clothes and
+  //   nothing should be waited on: the run keeps its ordinary backoff.
+  // - The plan is spent with no clock (no source, a balance, a read that failed), or spent on a
+  //   bar that publishes no reset. That is a wall the owner asked to wait out, so it is checked
+  //   again instead of being abandoned -- without this the switch did nothing at all for those
+  //   accounts, and Continue just failed again at every press (2026-11-10).
+  if (outcome?.ok && !spentWindowOf(outcome)) return { skipped: "not-a-quota" };
+  if (attempts > QUOTA_RETRY_MAX_PROBES) return { skipped: "gave-up" };
   return {
     wait: {
-      ...wait,
+      ...probeWaitFrom(attempts),
       attempts,
+      probe: true,
       error: message.slice(0, 200),
     },
   };

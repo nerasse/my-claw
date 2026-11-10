@@ -685,6 +685,68 @@ describe("MyClawAppAdapter", () => {
     assert.equal(store.quotaRetry.get("default")?.enabled, true, "the owner's switch survives it");
   });
 
+  test("a wall with no published reset is probed, not abandoned", async () => {
+    // A spent plan whose usage endpoint names no reset (an empty balance, a bar with no clock) is
+    // still a wall the owner asked to wait out. Arming nothing meant the switch did nothing at all:
+    // every Continue died on the same wall one call later (2026-11-10).
+    adapter.onQuotaController({
+      get: async () => ({
+        ok: true as const,
+        snapshot: {
+          provider: "claude-2",
+          source: "claude" as const,
+          windows: [{ id: "session", label: "5 h", usedPercent: 100 }],
+          balances: [],
+          extras: [],
+          fetchedAt: new Date().toISOString(),
+        },
+      }),
+      redeem: async () => ({ ok: false, code: "unsupported", message: "not under test" }),
+    });
+    store.quotaRetry.set("default", { enabled: true });
+    const before = Date.now();
+    await adapter.settleQuotaRetry(
+      DEVICE_ID,
+      "default",
+      Object.assign(new Error("HTTP 429 — quota exhausted"), { status: 429, provider: "claude-2" }),
+    );
+    const armed = store.quotaRetry.get("default")?.waiting;
+    assert.ok(armed, "a wall with no clock still arms a wait");
+    assert.equal(armed.attempts, 1);
+    assert.deepEqual(armed.windows, []);
+    assert.ok(Date.parse(armed.at) > before, "the probe is in the future");
+  });
+
+  test("the switch turned on after the failure arms the wait it already earned", async () => {
+    // The wall is only seen by the run that hit it, and the switch is usually flipped afterwards,
+    // from the menu, on an error already on screen. Nothing was running to notice, so the tap
+    // changed a setting and the conversation stayed dead until the owner pressed Continue -- which
+    // failed the same way.
+    const spent = {
+      ok: true as const,
+      snapshot: {
+        provider: "claude-2",
+        source: "claude" as const,
+        windows: [{ id: "session", label: "5 h", usedPercent: 100, resetAt: new Date(Date.now() + 3_600_000).toISOString() }],
+        balances: [],
+        extras: [],
+        fetchedAt: new Date().toISOString(),
+      },
+    };
+    adapter.onQuotaController({ get: async () => spent, redeem: async () => ({ ok: false, code: "unsupported", message: "not under test" }) });
+    store.quotaRetry.clear();
+    await adapter.settleQuotaRetry(
+      DEVICE_ID,
+      "default",
+      Object.assign(new Error("HTTP 429 — quota exhausted"), { status: 429, provider: "claude-2" }),
+    );
+    assert.equal(store.quotaRetry.get("default")?.waiting, undefined, "the switch is off: nothing is armed");
+
+    client.ws.send(JSON.stringify({ type: "session.quotaRetry.set", threadId: "default", enabled: true }));
+    await waitUntil(() => store.quotaRetry.get("default")?.waiting !== undefined);
+    assert.equal(store.quotaRetry.get("default")?.waiting?.attempts, 1);
+  });
+
   test("names the server version on connect so the settings page can label it", async () => {
     const greeted = await connectClient(adapter.port, DEVICE_ID, TOKEN, false, true);
     const frame = await nextFrame(greeted);

@@ -719,6 +719,7 @@ export class SubAgentRunner {
       at: decision.wait.at,
       attempts: decision.wait.attempts,
       windows: decision.wait.windows,
+      ...(decision.wait.probe ? { probe: true } : {}),
     });
   }
 

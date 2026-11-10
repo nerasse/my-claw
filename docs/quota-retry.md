@@ -10,6 +10,34 @@ setting, not a one-shot: once on, every quota wall in that conversation arms a w
 turns it off. The pill under the last run is where the wait shows, and where it can be cancelled
 or fired now — cancelling is the same switch, said from where the owner is looking.
 
+Turning it on **after** the error is on screen arms the wait immediately. The wall is only seen by
+the run that hit it, and nothing runs after it fails, so arming used to wait for the next failure --
+which meant the switch changed a setting, the conversation stayed dead, and the Continue the owner
+pressed died on the same wall one call later (2026-11-10). The adapter keeps the last quota failure
+it was handed (`lastQuotaFailure`, in memory, cleared when a wait is armed, when the owner turns the
+switch off and when the retry fires) purely so that tap can decide from it.
+
+## A wall with no clock on it is probed, not abandoned
+
+The oracle names a reset when the provider publishes one. Three walls have none, and all three used
+to arm nothing at all -- so the switch did nothing on exactly the accounts that had no quota:
+
+| Case | What the oracle says |
+| --- | --- |
+| Empty balance | a spent bar with no `resetAt`, or `ok: false` with an `out of credits` message |
+| No usage endpoint | nothing to read: a custom gateway, a provider this build does not know |
+| The read itself failed | a 500 or a timeout from the usage endpoint, at the worst possible moment |
+
+Those get a **probe**: the plan is spent, the clock is unknown, so the wait is one cheap call that
+either answers or re-arms. Gaps grow from five minutes, doubling to a 30-minute cap
+(`probeWaitFrom`), and the pill carries no bar names because no bar was named. Reset waits keep
+their eight-attempt ceiling; probes get twelve (`QUOTA_RETRY_MAX_PROBES`), about five hours of
+checking before the failure stands with Continue again.
+
+The distinction that must not be lost: **every bar with room is not a wall.** A 429 whose oracle
+answers 40 % and 61 % is a per-minute burst and keeps its ordinary backoff -- `decideQuotaWait`
+answers `not-a-quota` and arms nothing.
+
 ## The switch is a mutation, so it reads with `peek`
 
 `meta.json` carries it, and the three mutations that write it (`setQuotaRetryEnabled`,
@@ -34,8 +62,8 @@ reset, though — the usage endpoint does:
    week, and waiting for the week would park the conversation for days over a bucket that refills
    tonight. If another window is blocking too, the next attempt fails the same way and re-arms on
    the new answer.
-4. Nothing spent, or no reset published, or no source: no wait, and the failure stands with
-   Continue.
+4. No reset to name, but the plan is spent: a probe at five minutes, doubling (see above).
+5. Every bar with room: no wait, and the failure stands with Continue.
 
 This is what makes OpenCode Go waitable at all: its 429 body says nothing, its usage endpoint names
 every reset. A plain per-minute 429 reads every window below full and arms nothing.

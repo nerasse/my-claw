@@ -41,6 +41,7 @@ import { LiveTurnJournal } from "./live-turn.ts";
 import { StatusWatch } from "./status-watch.ts";
 import { QuotaWatch } from "./quota-watch.ts";
 import { decideQuotaWait } from "../../llm/quota/arm.ts";
+import { isQuotaFailure } from "../../llm/quota/retry.ts";
 import { LruMap } from "../../utils/lru-map.ts";
 import { questionAskFrame, questionPendingFrame } from "./questions.ts";
 import { hooks } from "../../hooks/index.ts";
@@ -441,6 +442,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private quota?: MyClawAppQuotaController;
   private readonly quotaWaits = new Set<string>();
   private readonly quotaAttempts = new Map<string, number>();
+  /**
+   * The quota failure each conversation last died on, until a wait is armed from it.
+   *
+   * A wall is only seen by the run that hit it, and the switch is often turned on afterwards,
+   * from the menu, on an error already on screen. Without the failure kept here, that tap changed
+   * a setting and nothing else: no run was happening, so nothing ever asked for a wait, and the
+   * owner had to press Continue -- which died on the same wall one call later (2026-11-10).
+   */
+  private readonly lastQuotaFailure = new Map<string, unknown>();
   private quotaRetryTimer: ReturnType<typeof setInterval> | null = null;
   /** One redemption in flight per provider: a double tap must not spend two credits. */
   private readonly redeeming = new Set<string>();
@@ -3339,9 +3349,16 @@ export class MyClawAppAdapter implements ChannelAdapter {
       const key = waitKey(this.store.resolveSessionId(owner, threadId));
       this.quotaWaits.delete(key);
       this.quotaAttempts.delete(key);
+      this.lastQuotaFailure.delete(key);
     }
     this.broadcast(owner, state);
     this.statusChanged(this.store.resolveSessionId(owner, threadId));
+    // Turned on while the wall is already on screen: arm it now instead of waiting for a run that
+    // nothing is going to start. The failure the last run died on is the one to decide from.
+    if (frame.enabled) {
+      const failed = this.lastQuotaFailure.get(waitKey(this.store.resolveSessionId(owner, threadId)));
+      if (failed !== undefined) await this.settleQuotaRetry(owner, threadId, failed);
+    }
   }
 
   /** The pill's "retry now": the provider came back before its published second. */
@@ -3381,11 +3398,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
       previousAttempts: this.quotaAttempts.get(key) ?? 0,
     });
     if (!decision.wait) {
+      // Kept for the moment the owner turns the switch on, if this was a wall at all.
+      if (isQuotaFailure(err)) this.lastQuotaFailure.set(key, err);
+      else this.lastQuotaFailure.delete(key);
       await this.cancelQuotaWait(owner, threadId);
       return;
     }
     const armed = await this.store.armQuotaRetry(owner, threadId, decision.wait);
     if (!armed) return;
+    this.lastQuotaFailure.delete(key);
     this.quotaAttempts.set(key, decision.wait.attempts);
     this.quotaWaits.add(key);
     this.broadcast(owner, await this.store.quotaRetryOf(owner, threadId));
@@ -3396,6 +3417,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       at: decision.wait.at,
       attempts: decision.wait.attempts,
       windows: decision.wait.windows,
+      ...(decision.wait.probe ? { probe: true } : {}),
     });
   }
 
@@ -3425,6 +3447,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     // now, where an ordinary wait resumes the conversation it interrupted.
     const pending = await this.store.pendingQuotaWaitBySession(sessionId).catch(() => undefined);
     this.quotaWaits.delete(key);
+    this.lastQuotaFailure.delete(key);
     await this.store.clearQuotaRetryPending(owner, threadId).catch(() => undefined);
     this.broadcast(owner, await this.store.quotaRetryOf(owner, threadId));
     if (pending?.task === "compact") {
