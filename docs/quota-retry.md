@@ -17,6 +17,10 @@ pressed died on the same wall one call later (2026-11-10). The adapter keeps the
 it was handed (`lastQuotaFailure`, in memory, cleared when a wait is armed, when the owner turns the
 switch off and when the retry fires) purely so that tap can decide from it.
 
+**A Siphon pin holds a wait too** (`waitsForQuotaOf`, docs/siphon.md): pinning a model is the same
+answer as the switch, so a pinned conversation, its sub-agents and their children park on a wall
+without it. The switch itself is untouched by that, and unpinning releases a wait the pin armed.
+
 ## A wall with no clock on it is probed, not abandoned
 
 The oracle names a reset when the provider publishes one. Three walls have none, and all three used

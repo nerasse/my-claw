@@ -102,13 +102,15 @@ async function spawnChild(runner: SubAgentRunner, parentSessionId = PARENT): Pro
  * A conversation on disk, with the switch as written. The root is a real session: the runner
  * reaches it by `attributionParent`, so a fabricated id with no file would answer "no root".
  */
-async function writeRoot(enabled: boolean): Promise<void> {
+async function writeRoot(enabled: boolean, pin?: string): Promise<void> {
   const session = await loadSession(PARENT);
   const next = session ?? {
     id: PARENT, platform: "my-claw-app", chatType: "dm",
     createdAt: new Date().toISOString(), lastActiveAt: new Date().toISOString(),
   };
   next.quotaRetry = { enabled };
+  if (pin) next.pinModel = pin;
+  else delete next.pinModel;
   await writeMeta(PARENT, metaOf(next, null));
 }
 
@@ -151,8 +153,8 @@ test("a child arms its wait off the conversation's switch, without ever having o
   }
 
   const stored = (await readMeta(id))?.quotaRetry;
-  assert.equal(stored?.enabled, true, "the wait is armed on the child");
-  assert.ok(stored?.pending, "the provider's reset was read");
+  assert.ok(stored?.pending, "the wait is armed on the child, and the provider's reset was read");
+  assert.equal(stored?.enabled, undefined, "the child carries the wait, never a switch it does not own");
   // The switch is not copied onto the child as a setting: only the wait is written, so turning the
   // conversation's switch off later reaches every run without a broadcast that could miss one.
   assert.equal((await readMeta(PARENT))?.quotaRetry?.enabled, true);
@@ -173,6 +175,24 @@ test("a child of a child reaches the same root switch", async () => {
   }
 
   assert.ok((await readMeta(grandchild))?.quotaRetry?.pending, "two levels down still waits");
+});
+
+test("a Siphon pin on the conversation parks its children too, switch off", async () => {
+  // The pin is the owner saying "this model, whatever it takes", so a wall under it is waited out
+  // at every depth exactly as the switch is -- a pinned tree does not fail its sub-agents because
+  // the accounts happen to be empty (docs/siphon.md).
+  const runner = makeRunner();
+  const id = await spawnChild(runner);
+  await writeRoot(false, "tag:Quota");
+
+  const wire = dryPlan(new Date(Date.now() + 3600_000).toISOString());
+  try {
+    await runner.send(id, "hit the wall", undefined, parentMessage(), new SubAgentRegistry(), PARENT).catch(() => undefined);
+  } finally {
+    wire.restore();
+  }
+
+  assert.ok((await readMeta(id))?.quotaRetry?.pending, "the pin's child waits for its reset");
 });
 
 test("with the conversation's switch off, a child arms nothing", async () => {

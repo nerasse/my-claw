@@ -5,6 +5,7 @@ import { SessionManager } from "../../sessions/manager.ts";
 import { FAILURE_TEXT_LIMIT, attributionParent } from "../../sessions/store.ts";
 import { summaryBodyOf } from "../../sessions/compaction.ts";
 import type { ArmedQuotaWait } from "../../llm/quota/arm.ts";
+import { waitsForQuotaOf } from "../../sessions/siphon.ts";
 import { readToolOutput } from "../../sessions/tool-output.ts";
 import { sessionLogOf } from "../../sessions/log-access.ts";
 import { listingFactsOf, readMeta, type ListingFacts } from "../../sessions/meta.ts";
@@ -121,7 +122,8 @@ export interface MyClawAppSessionStore {
   /** The conversation's quota-retry setting, and the wait it has armed. */
   quotaRetryOf(owner: string, threadId: string): Promise<MyClawAppSessionQuotaRetryState>;
   /** The stored retry setting alone, for the one decision that needs it before arming. */
-  quotaRetrySettingOf(owner: string, threadId: string): Promise<SessionQuotaRetry | undefined>;
+  /** Whether this conversation waits its walls out: the retry switch, or a Siphon pin. */
+  waitsForQuota(owner: string, threadId: string): Promise<boolean>;
   /** Turns it on or off; turning it off cancels a wait in the same write. */
   setQuotaRetryEnabled(owner: string, threadId: string, enabled: boolean): Promise<MyClawAppSessionQuotaRetryState>;
   /** Arms a wait, refused when the owner never turned the setting on. */
@@ -1161,7 +1163,9 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
 
   async pendingQuotaWaitBySession(sessionId: string): Promise<ArmedQuotaWait | undefined> {
     const meta = await readMeta(sessionId).catch(() => null);
-    return meta?.quotaRetry?.enabled === true ? meta.quotaRetry.pending : undefined;
+    // A pending wait only exists while something holds it: the switch or a Siphon pin. Asking the
+    // switch here would have dropped every wait a pin armed (docs/siphon.md).
+    return meta?.quotaRetry?.pending;
   }
 
   async clearQuotaWaitBySession(sessionId: string): Promise<void> {
@@ -1173,9 +1177,10 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     await this.sessionManager.persist(session.id);
   }
 
-  async quotaRetrySettingOf(owner: string, threadId: string): Promise<SessionQuotaRetry | undefined> {
+  /** Whether this conversation waits its walls out: the retry switch, or a Siphon pin. */
+  async waitsForQuota(owner: string, threadId: string): Promise<boolean> {
     const session = await this.sessionManager.read(this.resolveSessionId(owner, threadId));
-    return session?.quotaRetry;
+    return session ? waitsForQuotaOf(session) : false;
   }
 
   /** Turning it off is also what cancels a wait: one switch, one meaning. */
@@ -1200,8 +1205,10 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     wait: ArmedQuotaWait,
   ): Promise<boolean> {
     const session = await this.sessionManager.peek(this.resolveSessionId(owner, threadId));
-    if (!session || session.quotaRetry?.enabled !== true) return false;
-    session.quotaRetry = { enabled: true, pending: wait };
+    if (!session || !waitsForQuotaOf(session)) return false;
+    // The switch keeps its own value: a pin arming a wait must not turn a setting on behind the
+    // owner's back, or turning the pin off would leave the switch lit (docs/siphon.md).
+    session.quotaRetry = { ...(session.quotaRetry ?? {}), pending: wait };
     await this.sessionManager.persist(session.id);
     return true;
   }

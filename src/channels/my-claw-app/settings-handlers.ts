@@ -109,6 +109,11 @@ export interface MyClawAppSettingsDeps {
   sessionIdOf(ws: ServerWebSocket<MyClawAppSessionData>, threadId: string | undefined): { sessionId?: string };
   /** A conversation's status report moved (model, effort, context choice): its open pages are pushed. */
   statusChanged?(owner: string, threadId: string): void;
+  /**
+   * The pin moved: a wait it was holding may be released. The adapter owns the armed waits, so it
+   * is the only one that can drop one and tell every device (docs/siphon.md).
+   */
+  siphonChanged?(owner: string, threadId: string): Promise<void>;
 }
 
 /**
@@ -1511,6 +1516,9 @@ export async function handleModelSiphon(
     const state = await d.models.setSiphon(ws.data.owner, safeThread, frame.model);
     d.broadcastFrame(ws.data.owner, { type: "model.result", threadId: safeThread, ...state });
     d.statusChanged?.(ws.data.owner, safeThread);
+    // Unpinning a conversation whose wait the pin armed releases that wait: the owner turned the
+    // mode off, and the retry was part of it.
+    if (frame.model === undefined || frame.model === "") await d.siphonChanged?.(ws.data.owner, safeThread);
   } catch (err) {
     await d.refuse(ws, "model", "model.siphon.set failed", { threadId: safeThread, error: String(err) });
   }

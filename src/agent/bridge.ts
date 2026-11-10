@@ -28,7 +28,7 @@ import { classifyProviderFailure, isCapabilityRefusal, isProviderOutage, isQuota
 import { needsQuotaOracle, spentWindowOf, kindOfWindow, labelOfKind } from "../llm/quota/retry.ts";
 import { quotaFor, quotaSourceOf } from "../llm/quota/index.ts";
 import { wallConfig } from "../llm/quota/wall.ts";
-import { pinModelOf } from "../sessions/siphon.ts";
+import { pinModelOf, waitsForQuotaOf } from "../sessions/siphon.ts";
 import { providerFallbackTargets } from "../llm/provider-fallback.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
@@ -307,7 +307,9 @@ export class AgentBridge implements AgentBackend {
   private conversationQuotaRetry?: boolean;
 
   private waitsForQuota(session: SessionData): boolean {
-    return this.conversationQuotaRetry ?? session.quotaRetry?.enabled === true;
+    // Siphon counts as the owner's answer too: a pin is "this model, whatever it takes", so its
+    // walls are waited out with or without the retry switch (docs/siphon.md).
+    return this.conversationQuotaRetry ?? waitsForQuotaOf(session);
   }
 
   /**

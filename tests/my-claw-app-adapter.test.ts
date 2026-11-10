@@ -324,8 +324,9 @@ class FakeSessionStore {
   }
 
   async armQuotaRetry(_deviceId: string, threadId: string, wait: { at: string; attempts: number; windows: string[]; error?: string }): Promise<boolean> {
-    if (this.quotaRetry.get(threadId)?.enabled !== true) return false;
-    this.quotaRetry.set(threadId, { enabled: true, waiting: wait });
+    const state = this.quotaRetry.get(threadId);
+    if (state?.enabled !== true && !this.pins.has(threadId)) return false;
+    this.quotaRetry.set(threadId, { ...(state ?? { enabled: false }), waiting: wait });
     return true;
   }
 
@@ -342,9 +343,11 @@ class FakeSessionStore {
     return waits;
   }
 
-  async quotaRetrySettingOf(_deviceId: string, threadId: string) {
-    const state = this.quotaRetry.get(threadId);
-    return state ? { enabled: state.enabled, ...(state.waiting ? { pending: state.waiting } : {}) } : undefined;
+  /** The conversations under a Siphon pin: their walls are waited out without the switch. */
+  pins = new Set<string>();
+
+  async waitsForQuota(_deviceId: string, threadId: string): Promise<boolean> {
+    return this.quotaRetry.get(threadId)?.enabled === true || this.pins.has(threadId);
   }
 
   async pendingQuotaWaitBySession(sessionId: string) {
@@ -715,6 +718,42 @@ describe("MyClawAppAdapter", () => {
     assert.equal(armed.attempts, 1);
     assert.deepEqual(armed.windows, []);
     assert.ok(Date.parse(armed.at) > before, "the probe is in the future");
+  });
+
+  test("a Siphon pin waits its walls out without the retry switch", async () => {
+    // A pin is "this model, whatever it takes": a tag whose accounts are all spent must park the
+    // conversation instead of failing it, and the switch is a different decision that stays off
+    // (docs/siphon.md).
+    const spent = {
+      ok: true as const,
+      snapshot: {
+        provider: "claude-2",
+        source: "claude" as const,
+        windows: [{ id: "session", label: "5 h", usedPercent: 100, resetAt: new Date(Date.now() + 3_600_000).toISOString() }],
+        balances: [],
+        extras: [],
+        fetchedAt: new Date().toISOString(),
+      },
+    };
+    adapter.onQuotaController({ get: async () => spent, redeem: async () => ({ ok: false, code: "unsupported", message: "not under test" }) });
+    store.quotaRetry.clear();
+    store.pins.add("default");
+    try {
+      await adapter.settleQuotaRetry(
+        DEVICE_ID,
+        "default",
+        Object.assign(new Error("HTTP 429 — quota exhausted"), { status: 429, provider: "claude-2" }),
+      );
+      assert.notEqual(store.quotaRetry.get("default")?.waiting, undefined, "the pin's wall is waited out");
+      assert.notEqual(store.quotaRetry.get("default")?.enabled, true, "the switch stays the switch");
+
+      // Unpinning hands the conversation back: the wait the pin armed goes with it.
+      store.pins.delete("default");
+      await adapter.siphonChanged(DEVICE_ID, "default");
+      assert.equal(store.quotaRetry.get("default")?.waiting, undefined, "nothing holds the wait any more");
+    } finally {
+      store.pins.clear();
+    }
   });
 
   test("the switch turned on after the failure arms the wait it already earned", async () => {

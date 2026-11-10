@@ -14,12 +14,26 @@ The mode is called **Siphon** in the UI. The code stays descriptive: `session.pi
 Siphon is **the pin**. It chooses which model the whole tree runs.
 
 It is **not** the resume. Waiting for a quota reset and picking the conversation back up is general
-behaviour, armed by **Retry when the quota returns** on the conversation, with or without Siphon --
-docs/quota-retry.md. The two share one engine, and Siphon changes only which model the resumed run
-lands on.
+behaviour -- `decideQuotaWait`, the tick that fires it, the pill, Continue -- shared with the
+**Retry when the quota returns** switch (docs/quota-retry.md). Siphon changes only which model the
+resumed run lands on.
 
-That split matters for the menu: one entry turns Siphon on and off, and the retry switch stays the
-switch. Turning Siphon off leaves the retry exactly as it was.
+**A pin also asks for the wait.** "This model, whatever it takes" is not a promise a spent account
+can keep by failing: pinning a tag whose candidates are all empty used to fail the run, and the
+owner had to know to turn on a second switch before the mode did anything (2026-11-10). So
+`waitsForQuotaOf` answers "the switch, or a pin", and that one predicate is what the bridge, the
+sub-agent runner, the compaction and both arm paths read. A pinned tree parks its orchestrator, its
+sub-agents and their children at the reset instead of dying -- the same pill, the same tick, the
+same resume.
+
+The switch keeps its own value throughout: a wait armed by a pin does not turn it on, and the menu
+row still shows the switch's state (its hint says the pin is holding the wait). Clearing the pin
+**releases** a wait the pin armed, unless the switch is on -- it was the pin's wait, and the owner
+just turned the mode off.
+
+What a pin does *not* change is the order inside a tag. The route is walked as written, and a
+resumed run starts again at its first candidate, which is what makes the first model of a tag the
+priority whenever its quota comes back.
 
 ## Where the pin lives
 

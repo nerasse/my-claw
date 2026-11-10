@@ -19,7 +19,7 @@ import { sessionLogOf } from "../sessions/log-access.ts";
 import { metaOf, readMeta, writeMeta } from "../sessions/meta.ts";
 import type { SessionLog, UserEntry } from "../sessions/log.ts";
 import { continuable, lastAnswer } from "../sessions/resume.ts";
-import { pinModelOf, rootSessionOf } from "../sessions/siphon.ts";
+import { pinModelOf, rootSessionOf, waitsForQuotaOf } from "../sessions/siphon.ts";
 import { pathOf, type Entry, type ToolEntry } from "../sessions/log.ts";
 import { log } from "../utils/logger.ts";
 import type { SessionManager } from "../sessions/manager.ts";
@@ -702,7 +702,9 @@ export class SubAgentRunner {
     // switch the owner had visibly turned on (2026-11-01).
     const root = await rootSessionOf(session, loadSession);
     const setting = root.id === session.id ? session : root;
-    if (setting.quotaRetry?.enabled !== true) return;
+    // The conversation's switch, or its Siphon pin: a pinned tree that hits a wall parks instead of
+    // failing, at every depth (docs/siphon.md).
+    if (!waitsForQuotaOf(setting)) return;
     const decision = await decideQuotaWait({
       readQuota: (provider) => quotaFor(this.config, provider, { force: true }),
       err,
@@ -712,7 +714,7 @@ export class SubAgentRunner {
       previousAttempts: session.quotaRetry?.pending?.attempts ?? 0,
     });
     if (!decision.wait) return;
-    session.quotaRetry = { enabled: true, pending: decision.wait };
+    session.quotaRetry = { ...(session.quotaRetry ?? {}), pending: decision.wait };
     await log("info", "sub-agent quota wait armed", {
       id: session.id,
       ...(root.id === session.id ? {} : { switchFrom: root.id }),
@@ -1241,7 +1243,7 @@ export class SubAgentRunner {
     // A sub-agent's pictures belong to the conversation that asked for it, and the hook is how it
     // stores them before its own end marker names them (2026-09-15).
     bridge.setMediaStore(this.mediaStore);
-    bridge.setConversationQuotaRetry(root.quotaRetry?.enabled === true);
+    bridge.setConversationQuotaRetry(waitsForQuotaOf(root));
     // Same door for a prompt: a tool of this run that must ask the owner raises its sheet in the
     // parent conversation, where the human who spawned the agent is actually looking.
     bridge.setApprovalHandler(this.approvalHandler);

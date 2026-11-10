@@ -41,3 +41,17 @@ export function pinModelOf(session: SessionData): string | undefined {
   const pin = typeof session.pinModel === "string" ? session.pinModel.trim() : "";
   return pin.length > 0 ? pin : undefined;
 }
+
+/**
+ * Whether this session's walls are waited out: the retry switch, or a Siphon pin.
+ *
+ * A pin is the owner saying "this model, whatever it takes", so a wall under it parks the
+ * conversation and resumes at the reset exactly as the switch does -- and the owner does not have
+ * to remember a second toggle to make a tag full of spent accounts usable (2026-11-10).
+ *
+ * Read on the session that holds the decision. A child asks its root (`rootSessionOf`), which is
+ * the one place either answer lives.
+ */
+export function waitsForQuotaOf(session: SessionData): boolean {
+  return pinModelOf(session) !== undefined || session.quotaRetry?.enabled === true;
+}

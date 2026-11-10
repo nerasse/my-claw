@@ -5,6 +5,7 @@ import { resolveUtilityLlmConfig } from "../llm/utility-model.ts";
 import { providerFallbackTargets } from "../llm/provider-fallback.ts";
 import { isCapabilityRefusal, isProviderOutage, isQuotaSpent } from "../llm/outage.ts";
 import { isQuotaFailure } from "../llm/quota/retry.ts";
+import { waitsForQuotaOf } from "./siphon.ts";
 import { llmCompleteStream } from "../llm/transport.ts";
 import { wallConfig } from "../llm/quota/wall.ts";
 import { tryResolveRunModel } from "../llm/run-model.ts";
@@ -694,7 +695,7 @@ export async function summarizeForCompaction(
       const next = candidates[index + 1];
       // The owner's decision outranks the chain, exactly as it does for a run: a conversation with
       // the quota switch on waits the wall out instead of quietly answering on another model.
-      if (next && session.quotaRetry?.enabled === true && isQuotaFailure(err)) {
+      if (next && waitsForQuotaOf(session) && isQuotaFailure(err)) {
         return {
           ok: false,
           reason: `Compaction error: ${err instanceof Error ? err.message : String(err)}`,

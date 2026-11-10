@@ -23,7 +23,6 @@ import {
   spentWindowOf,
 } from "./retry.ts";
 import type { QuotaOutcome } from "./types.ts";
-import type { SessionQuotaRetry } from "../../sessions/store.ts";
 
 export interface ArmedQuotaWait {
   at: string;
@@ -97,9 +96,4 @@ export async function decideQuotaWait(input: {
       error: message.slice(0, 200),
     },
   };
-}
-
-/** The stored wait as a session holds it, or nothing when there is none left to fire. */
-export function pendingWaitOf(retry: SessionQuotaRetry | undefined): ArmedQuotaWait | undefined {
-  return retry?.enabled === true ? retry.pending : undefined;
 }

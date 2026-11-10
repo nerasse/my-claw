@@ -1808,6 +1808,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       refuse: (ws, scope, message, data) => this.refuse(ws, scope, message, data),
       sessionIdOf: (ws, threadId) => this.sessionIdOf(ws, threadId),
       statusChanged: (owner, threadId) => this.statusChanged(this.store.resolveSessionId(owner, threadId)),
+      siphonChanged: (owner, threadId) => this.siphonChanged(owner, threadId),
     };
   }
 
@@ -3390,11 +3391,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
     const key = waitKey(this.store.resolveSessionId(owner, threadId));
     // The decision is shared with the sub-agent path (llm/quota/arm.ts): two answers to "when does
     // this plan reopen" is how a pill and a roster end up disagreeing.
-    const setting = await this.store.quotaRetrySettingOf(owner, threadId).catch(() => undefined);
+    // The switch, or a Siphon pin: either one is the owner asking for the wall to be waited out.
+    const waits = await this.store.waitsForQuota(owner, threadId).catch(() => false);
     const decision = await decideQuotaWait({
       readQuota: (provider) => this.quota!.get(provider, true),
       err,
-      switchOff: setting?.enabled !== true,
+      switchOff: !waits,
       previousAttempts: this.quotaAttempts.get(key) ?? 0,
     });
     if (!decision.wait) {
@@ -3419,6 +3421,23 @@ export class MyClawAppAdapter implements ChannelAdapter {
       windows: decision.wait.windows,
       ...(decision.wait.probe ? { probe: true } : {}),
     });
+  }
+
+  /**
+   * The pin changed: what it was holding may be released.
+   *
+   * A wait armed under Siphon belongs to the pin, not to the switch, so clearing the pin drops it
+   * -- and leaving it would resume a conversation the owner has just unpinned. When the switch is
+   * on, the wait is the owner's anyway and stays exactly where it was (docs/siphon.md).
+   */
+  async siphonChanged(owner: string, threadId: string): Promise<void> {
+    if (await this.store.waitsForQuota(owner, threadId).catch(() => false)) return;
+    const key = waitKey(this.store.resolveSessionId(owner, threadId));
+    if (!this.quotaWaits.has(key) && !(await this.store.pendingQuotaWaitBySession(this.store.resolveSessionId(owner, threadId)).catch(() => undefined))) return;
+    this.quotaWaits.delete(key);
+    this.quotaAttempts.delete(key);
+    await this.store.clearQuotaRetryPending(owner, threadId).catch(() => undefined);
+    this.broadcast(owner, await this.store.quotaRetryOf(owner, threadId));
   }
 
   private async cancelQuotaWait(owner: string, threadId: string): Promise<void> {
@@ -3488,11 +3507,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
     const quota = this.quota;
     if (!quota) return undefined;
     const key = waitKey(this.store.resolveSessionId(owner, threadId));
-    const setting = await this.store.quotaRetrySettingOf(owner, threadId).catch(() => undefined);
+    const waits = await this.store.waitsForQuota(owner, threadId).catch(() => false);
     const decision = await decideQuotaWait({
       readQuota: (provider) => quota.get(provider, true),
       err,
-      switchOff: setting?.enabled !== true,
+      switchOff: !waits,
       previousAttempts: this.quotaAttempts.get(key) ?? 0,
     });
     if (!decision.wait) return undefined;
