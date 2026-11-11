@@ -664,27 +664,6 @@ export function clearApprovalGrantsForOrigin(origin: string): Promise<{ ok: bool
 }
 
 /**
- * Turns the app's approval round trips on. Asking before a tool runs is meaningless while the
- * channel refuses instead of asking, so every switch that means "ask first" goes through here
- * (a blacklisted tool, a node whose record says to ask). Never turns it back off: with an empty
- * set it asks nothing, and flipping it off under another switch would read as "never run this".
- */
-export function enableToolApprovals(): Promise<ConfigEditResult> {
-  return oneEditAtATime(async () => {
-    const read = await readConfigFile();
-    if (!read.ok) return read;
-    const app = objectAt(objectAt(read.data, "channels"), "my-claw-app");
-    if (app["approvals"] === true) return { ok: true, previous: {} };
-    app["approvals"] = true;
-
-    await snapshot(CONFIG_PATH, { origin: "pre-write", note: "avant approbations app" });
-    await writeFileAtomically(CONFIG_PATH, `${JSON.stringify(read.data, null, INDENT)}\n`, { mode: read.mode });
-    await journal("edit", artifactId(CONFIG_PATH), { approvals: true });
-    return { ok: true, previous: {} };
-  });
-}
-
-/**
  * Asks before each run of a tool, or stops asking: one name in the top-level `blacklist`. Asking
  * also turns the app's approvals on: with them off, a listed tool is refused, not asked, and the
  * switch the owner just flipped would read as "never run it" (docs/tool-approvals.md).

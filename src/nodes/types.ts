@@ -55,7 +55,10 @@ export interface NodeRecord {
    * machine's own config stays the ceiling.
    */
   tools?: string[];
-  /** Ask before running anything on that machine (the app's second lock). */
+  /**
+   * `false` when the owner let that machine run without asking (the app's second lock). Absent or
+   * `true`, every call there asks first: `nodeAsksFirst`.
+   */
   approval?: boolean;
   /**
    * The node's agent does not run. The machine stays connected -- its version, its tools and its

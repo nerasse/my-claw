@@ -675,7 +675,9 @@ Key fields:
   the device on its own threads).
 - `streaming` — live token streaming to the device.
 - `approvals` — answer tool-approval prompts from the device. **Off by default, and the only
-  surface that can answer one**: with it off, every blacklisted tool is denied outright.
+  surface that can answer one**: with it off, every blacklisted tool is denied outright. A remote
+  node's prompts are raised either way, since a machine asks before every call
+  (`docs/remote-nodes.md`).
 - `pairing` — the unauthenticated `/pair` route. Off by default: it does not exist until opened.
 - `files.warnSizeBytes` — attachments above this size are logged with a warning and stored anyway.
 

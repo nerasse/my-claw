@@ -1,7 +1,7 @@
 import type { Tool, ToolResult } from "../tools/types.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
 import { callNodeTool, nodeFactsOf, nodeNameOf, putFileToNode } from "./hub.ts";
-import { nodeRecord } from "./store.ts";
+import { nodeAsksFirst, nodeRecord } from "./store.ts";
 
 /**
  * The tools a node agent holds that run on this server rather than on the machine: `skills`, and
@@ -46,7 +46,7 @@ export function nodeToolsFor(
       description: `${manifest.description}\n\nThis tool runs on the remote node "${name}", not on this machine.`,
       parameters: manifest.parameters,
       get requiresApproval(): boolean {
-        return nodeRecord(nodeId)?.approval === true;
+        return nodeAsksFirst(nodeRecord(nodeId));
       },
       approvalOrigin: { kind: "node", nodeId },
       execute: (args) => {
@@ -74,7 +74,7 @@ export function nodeToolsFor(
       required: ["path"],
     },
     get requiresApproval(): boolean {
-      return nodeRecord(nodeId)?.approval === true;
+      return nodeAsksFirst(nodeRecord(nodeId));
     },
     approvalOrigin: { kind: "node", nodeId },
     execute: async (args) => {

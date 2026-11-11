@@ -36,7 +36,8 @@ export interface MyClawAppChannelConfig {
   };
   /**
    * Tool approvals answered from the device (approval.request / approval.response frames).
-   * Off by default: approval-required tools are denied until the app surfaces the request.
+   * Off by default: a blacklisted tool is denied until the app surfaces the request. A remote
+   * node's prompts are raised either way: a machine asks before every call (docs/remote-nodes.md).
    */
   approvals?: boolean;
   files?: {

@@ -3,11 +3,13 @@ import { readFile, rm } from "node:fs/promises";
 import {
   findNodeByToken,
   mintNode,
+  nodeAsksFirst,
   nodeRecord,
   nodeRecords,
   nodesFilePath,
   revokeNode,
   resetNodesStore,
+  setNodeAccess,
   setNodeFacts,
   touchNode,
 } from "../../src/nodes/store.ts";
@@ -54,6 +56,29 @@ describe("node store", () => {
     const second = await mintNode({ name: "WEB01", facts: FACTS });
     expect(second.ok).toBe(false);
     if (!second.ok) expect(second.error).toContain("already exists");
+  });
+
+  test("a paired machine asks first, and only the owner's false is ever stored", async () => {
+    const minted = await mintNode({ name: "web01", facts: FACTS });
+    if (!minted.ok) throw new Error("mint failed");
+    const nodeId = minted.minted.record.nodeId;
+    expect(nodeRecord(nodeId)?.approval).toBeUndefined();
+    expect(nodeAsksFirst(nodeRecord(nodeId))).toBe(true);
+
+    await setNodeAccess(nodeId, { approval: false });
+    expect(nodeRecord(nodeId)?.approval).toBe(false);
+    expect(nodeAsksFirst(nodeRecord(nodeId))).toBe(false);
+    expect(await readFile(nodesFilePath(), "utf-8")).toContain('"approval": false');
+
+    await setNodeAccess(nodeId, { approval: true });
+    expect(nodeRecord(nodeId)?.approval).toBeUndefined();
+    expect(nodeAsksFirst(nodeRecord(nodeId))).toBe(true);
+  });
+
+  test("a record written before the default flipped asks too, with or without its flag", () => {
+    expect(nodeAsksFirst({ nodeId: "node-a", name: "a", tokenHash: "00", createdAt: "2026-10-20T00:00:00.000Z" })).toBe(true);
+    expect(nodeAsksFirst({ nodeId: "node-b", name: "b", tokenHash: "00", createdAt: "2026-10-20T00:00:00.000Z", approval: true })).toBe(true);
+    expect(nodeAsksFirst(undefined)).toBe(true);
   });
 
   test("a revoke removes the record and invalidates its token", async () => {

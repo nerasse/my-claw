@@ -79,6 +79,14 @@ export function nodeRecord(nodeId: string): NodeRecord | undefined {
   return load().get(nodeId);
 }
 
+/**
+ * Whether a call on that machine waits for the owner's yes. Pairing grants no rights of its own:
+ * only the owner's explicit `false` lets a machine run unasked (owner, 2026-11-11).
+ */
+export function nodeAsksFirst(record: NodeRecord | undefined): boolean {
+  return record?.approval !== false;
+}
+
 function newToken(): string {
   return randomBytes(32).toString("base64url");
 }
@@ -170,7 +178,8 @@ export async function setNodeName(nodeId: string, name: string): Promise<{ ok: b
 
 /**
  * What the node's agent may run, and whether running it asks first. `tools: null` removes the
- * narrowing (everything the machine offers), an empty list exposes nothing.
+ * narrowing (everything the machine offers), an empty list exposes nothing. `approval: false` is
+ * the only way a machine runs unasked; `true` takes it back to the default, which is not stored.
  */
 export async function setNodeAccess(
   nodeId: string,
@@ -188,8 +197,8 @@ export async function setNodeAccess(
     }
   }
   if (access.approval !== undefined) {
-    if (access.approval) record.approval = true;
-    else delete record.approval;
+    if (access.approval) delete record.approval;
+    else record.approval = false;
   }
   if (access.disabled !== undefined) {
     if (access.disabled) record.disabled = true;
@@ -199,7 +208,7 @@ export async function setNodeAccess(
   void log("info", "node access set", {
     nodeId,
     tools: record.tools?.length ?? "all",
-    approval: record.approval === true,
+    approval: nodeAsksFirst(record),
     disabled: record.disabled === true,
   });
   return { ok: true };
