@@ -182,3 +182,25 @@ test("probe gaps start soon and grow to the cap", () => {
   assert.equal(gap(9), QUOTA_PROBE_MAX_MS);
   assert.equal(gap(QUOTA_RETRY_MAX_PROBES), QUOTA_PROBE_MAX_MS);
 });
+
+test("a Siphon tag of two Claude accounts waits for the one that reopens first, not the one it died on", async () => {
+  // Measured 2026-11-11 on a tag pinned across two Claude accounts: the run died on claude-2 (its
+  // 5 h bar full for four hours) while anthropic's had an hour left, and the pill named claude-2.
+  // The route travelled as `providers`, so asking all of it is what puts the earliest first.
+  const hour = new Date(Date.now() + 3_600_000).toISOString();
+  const four = new Date(Date.now() + 4 * 3_600_000).toISOString();
+  const decision = await decideQuotaWait({
+    readQuota: async (provider: string) =>
+      snapshot([{ label: "5 h", usedPercent: 100, resetAt: provider === "anthropic" ? hour : four }]),
+    err: Object.assign(new Error("HTTP 429 — rate limited"), {
+      status: 429,
+      provider: "claude-2",
+      providers: ["anthropic", "claude-2"],
+    }),
+    switchOff: false,
+    previousAttempts: 0,
+  });
+  assert.ok(decision.wait);
+  assert.equal(decision.wait.provider, "anthropic");
+  assert.equal(decision.wait.at, new Date(Date.parse(hour) + QUOTA_RETRY_BUFFER_MS).toISOString());
+});

@@ -11,7 +11,8 @@
  */
 
 import { resolveAgentLlm, tagNameOf, tagRouteOf, type EffortLevel, type MyClawConfig, type ResolvedLlmConfig } from "../core/config.ts";
-import { resolveLlmConfigForAgentMessage } from "./resolver.ts";
+import { findModel, resolveLlmConfigForAgentMessage } from "./resolver.ts";
+import { parseModelRef } from "./model-ref.ts";
 import { directRouteOf, type RunModelRoute } from "./run-model.ts";
 
 export interface ProviderFallbackTarget {
@@ -125,13 +126,37 @@ export function providerFallbackTargets(request: ProviderFallbackRequest): Provi
 }
 
 /**
+ * The providers a route can be tried on, in the order the owner wrote them.
+ *
+ * A candidate that names no provider inherits the config's default one, which is also how the
+ * resolver reads it. Used where the *route* is the question rather than the run's walk: a resumed
+ * run starts on the candidate it was left on, so the accounts it never called this time are
+ * exactly the ones a quota wait has to ask (2026-11-11).
+ */
+export function routeProvidersOf(config: MyClawConfig, route: RunModelRoute | undefined): string[] {
+  const names = Object.keys(config.llm?.providers ?? {});
+  const fallback = config.llm?.defaultProvider ?? config.llm?.provider;
+  const out: string[] = [];
+  for (const candidate of route?.candidates ?? []) {
+    // A qualified candidate names its account; an unqualified one is found in the model list the
+    // same way the resolver finds it, and only falls back to the default provider when it is in
+    // neither.
+    const provider = parseModelRef(candidate.model, names).provider
+      ?? (config.llm ? findModel(config.llm, candidate.model)?.provider : undefined)
+      ?? fallback;
+    if (provider && !out.includes(provider)) out.push(provider);
+  }
+  return out;
+}
+
+/**
  * The route a stored `tag:<name>` pick names, with the candidate the run is on as its selection.
  *
  * `undefined` when there is nothing to walk without inventing one: no tag pick, a tag that no longer
  * exists, or a run whose current model is not one of that tag's candidates (it already left the
  * route, so the route is not the answer).
  */
-function routeOfTagRef(
+export function routeOfTagRef(
   config: MyClawConfig,
   tagRef: string | undefined,
   currentModel: string,

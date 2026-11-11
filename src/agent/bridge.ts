@@ -29,7 +29,7 @@ import { needsQuotaOracle, spentWindowOf, kindOfWindow, labelOfKind } from "../l
 import { quotaFor, quotaSourceOf } from "../llm/quota/index.ts";
 import { wallConfig } from "../llm/quota/wall.ts";
 import { pinModelOf, waitsForQuotaOf } from "../sessions/siphon.ts";
-import { providerFallbackTargets } from "../llm/provider-fallback.ts";
+import { providerFallbackTargets, routeOfTagRef, routeProvidersOf } from "../llm/provider-fallback.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format.ts";
@@ -92,16 +92,18 @@ function withFallbackNotes(text: string, notes: readonly string[]): string {
  * in hand, rather than guessed from the session later -- a run that walked three fallbacks has no
  * other record of which one it ended on.
  */
-function withFailureContext(err: unknown, config: ResolvedLlmConfig, tried?: string[]): unknown {
+function withFailureContext(err: unknown, config: ResolvedLlmConfig, route?: readonly string[]): unknown {
   if (err && typeof err === "object") {
     const failure = err as { provider?: string; model?: string; providers?: string[] };
     failure.provider ??= config.provider;
     failure.model ??= config.model;
-    // Every provider this run walked, in order. A tag whose candidates are all spent ends on the
-    // last one, and waiting for *its* reset parked the conversation behind the model that happened
-    // to be tried last while an earlier account had already reopened (2026-11-11). The arm asks
-    // each of them, and takes the earliest.
-    if (tried && tried.length > 1) failure.providers ??= tried;
+    // Every provider this run can still be tried on, in order: the ones it already called and the
+    // rest of its route. A tag whose candidates are all spent ends on the last one, and waiting for
+    // *its* reset parked the conversation behind the model that happened to be tried last while an
+    // earlier account had already reopened (2026-11-11). The arm asks each of them, and takes the
+    // earliest. The route matters as much as the walk: a resumed run starts on the candidate it was
+    // left on, so the account it never called this time is exactly the one worth asking.
+    if (route && route.length > 1) failure.providers ??= [...route];
   }
   return err;
 }
@@ -341,6 +343,8 @@ export class AgentBridge implements AgentBackend {
     emitted: () => boolean;
     waits: number[];
     attempted: Set<string>;
+    /** Every provider this run has called, across every call it has made. Mutated here. */
+    tried: string[];
     notes: string[];
     runModel?: RunModel;
     /** This run's node in the live view: the model it names moves with the run. */
@@ -357,18 +361,31 @@ export class AgentBridge implements AgentBackend {
   }): Promise<{ response: LlmResponse; config: ResolvedLlmConfig }> {
     let config = params.config;
     let targets: ReturnType<typeof providerFallbackTargets> | undefined;
-    /** Every provider this run has actually called, in the order it called them. */
-    const tried: string[] = [];
+    // What a quota wait has to ask: the whole route, not the model that happens to be calling now.
+    // A resumed run starts on the candidate it was left on, so its earlier accounts are never in
+    // `tried` -- and asking only the walk is how the pill parked a conversation behind the second
+    // account while the first had already reopened (2026-11-11).
+    const route = [
+      ...new Set([
+        ...params.tried,
+        // The route does not always travel with the run (a forced model from the dispatcher); what
+        // the conversation picked does, and it names the chain.
+        ...routeProvidersOf(
+          this.config,
+          params.runModel?.route ?? routeOfTagRef(this.config, params.session.modelOverride, config.model),
+        ),
+      ]),
+    ];
 
     for (;;) {
       const startedAt = Date.now();
-      if (config.provider && !tried.includes(config.provider)) tried.push(config.provider);
+      if (config.provider && !params.tried.includes(config.provider)) params.tried.push(config.provider);
       try {
         const response = await params.call(this.walledConfig(config));
         return { response, config };
       } catch (err) {
         rethrowIfAborted(err, params.signal);
-        if (isOverflowError(err) || params.emitted() || !(isProviderOutage(err) || isCapabilityRefusal(err))) throw withFailureContext(err, config, tried);
+        if (isOverflowError(err) || params.emitted() || !(isProviderOutage(err) || isCapabilityRefusal(err))) throw withFailureContext(err, config, route);
 
         const reason = String((err as Error | undefined)?.message ?? err).slice(0, 200);
         const failed = { model: config.model, provider: config.provider };
@@ -403,7 +420,7 @@ export class AgentBridge implements AgentBackend {
         // model or the failure, never a sibling it did not approve (docs/provider-failures.md).
         // The failure travels with the provider that produced it, so the caller can still tell a
         // spent account from an outage.
-        if (params.forbidFallback) throw withFailureContext(err, config, tried);
+        if (params.forbidFallback) throw withFailureContext(err, config, route);
 
         targets ??= providerFallbackTargets({
           config: this.config,
@@ -425,7 +442,7 @@ export class AgentBridge implements AgentBackend {
           targets = onRoute === -1 ? [] : targets.slice(onRoute);
         }
         const next = targets.shift();
-        if (!next) throw withFailureContext(err, config, tried);
+        if (!next) throw withFailureContext(err, config, route);
 
         this.recordFailedCall({ ...params, config, durationMs: Date.now() - startedAt, error: err });
         params.attempted.add(next.model);
@@ -666,6 +683,9 @@ export class AgentBridge implements AgentBackend {
     // order), the models it already tried, and the notes it owes the reader for both.
     const providerWaits = providerRetryDelays(this.config.llm);
     const attemptedModels = new Set<string>([llmConfig.model]);
+    // Providers this run has called, in order, kept across every iteration: a fallback adopted on
+    // one turn is the model that starts the next one, and a wait must still see the whole walk.
+    const triedProviders: string[] = [];
     const fallbackNotes: string[] = [];
     // A sub-agent is its own run and warns for its own chain; the dedupe by message id keeps the
     // orchestrator's run to a single notice even though it resolves here as well.
@@ -1131,6 +1151,7 @@ export class AgentBridge implements AgentBackend {
             emitted: () => callEmitted,
             waits: providerWaits,
             attempted: attemptedModels,
+            tried: triedProviders,
             notes: fallbackNotes,
             runModel,
             runNode,

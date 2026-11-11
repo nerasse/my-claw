@@ -3418,7 +3418,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
     await myClawAppLog("info", "quota retry armed", {
       owner,
       threadId,
-      provider: (err as { provider?: string } | undefined)?.provider,
+      // The account the wait waits for, not the model the run happened to die on.
+      provider: decision.wait.provider ?? (err as { provider?: string } | undefined)?.provider,
+      providers: (err as { providers?: string[] } | undefined)?.providers,
       at: decision.wait.at,
       attempts: decision.wait.attempts,
       windows: decision.wait.windows,

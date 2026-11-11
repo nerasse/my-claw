@@ -125,8 +125,12 @@ if that one is spent too the run dies on candidate 2. The wait used to be decide
 alone, which names only the last one -- so on 2026-11-11 a two-candidate pin parked the
 conversation until the *second* account reset, while the first had reopened ninety minutes earlier.
 
-`withFailureContext` now carries `providers`, every provider the run actually called in order, and
-`decideQuotaWait` reads the usage of each of them:
+`withFailureContext` now carries `providers` -- the whole route, in the order the owner wrote it,
+union the providers this run actually called -- and `decideQuotaWait` reads the usage of each of
+them. The union is not a detail: a resumed run (a Continue after a wait) starts on the candidate it
+was left on, so the account it never called *this time* is exactly the one worth asking. Tracking
+only the walk is what armed a four-hour wait on 2026-11-11 while the other account of the same tag
+had one hour left.
 
 | What the route answers | The wait |
 | --- | --- |

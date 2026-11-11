@@ -9,7 +9,7 @@
 
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { providerFallbackTargets } from "../../src/llm/provider-fallback.ts";
+import { providerFallbackTargets, routeProvidersOf } from "../../src/llm/provider-fallback.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 
 function config(): MyClawConfig {
@@ -274,4 +274,29 @@ test("the agent's own pin is a sibling, never the run's route", () => {
   });
   assert.ok(targets.length > 0);
   assert.deepEqual(targets.filter((t) => t.fromRoute), [], "nothing here is the run's own route");
+});
+
+test("a route's providers are all of them, in the order the owner wrote them", () => {
+  // Measured 2026-11-11: a Siphon tag with two Claude accounts armed its wait from the account the
+  // run died on, because only the providers it had *called* reached the arm. A resumed run starts on
+  // the candidate it was left on, so the account it never called this time is exactly the one the
+  // wait has to ask. The route is the answer, not the walk.
+  const route = {
+    tag: "Fable",
+    candidates: [{ model: "anthropic/claude-fable-5-2" }, { model: "claude-2/claude-fable-5-2" }],
+    fallbackToGlobalDefault: false,
+    selectedIndex: 1,
+  };
+  const two = config();
+  two.llm!.providers = { ...two.llm!.providers, "claude-2": { type: "anthropic" } };
+  assert.deepEqual(routeProvidersOf(two, route), ["anthropic", "claude-2"]);
+});
+
+test("a candidate with no provider of its own is read as the config's default", () => {
+  const route = { tag: "Cheap", candidates: [{ model: "mimo" }, { model: "claude-opus-5" }], fallbackToGlobalDefault: false, selectedIndex: 0 };
+  assert.deepEqual(routeProvidersOf(config(), route), ["litellm", "anthropic"]);
+});
+
+test("no route has no provider to ask", () => {
+  assert.deepEqual(routeProvidersOf(config(), undefined), []);
 });

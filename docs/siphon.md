@@ -35,6 +35,13 @@ What a pin does *not* change is the order inside a tag. The route is walked as w
 resumed run starts again at its first candidate, which is what makes the first model of a tag the
 priority whenever its quota comes back.
 
+A run that is still going does not move back up on its own: it stays on the candidate that answered,
+because switching mid-run throws away the prefix cache the conversation has been building there. The
+route is walked again when the run fails on its wall or when the conversation resumes -- and it is
+walked from the top, so the first candidate with room is the one the resume lands on. For the same
+reason the wait asks the whole route (docs/quota-retry.md): the candidate a resumed run never called
+is the one whose reset is worth waiting for.
+
 ## Where the pin lives
 
 On the **root conversation's** session, in `meta.json`, beside the retry setting:
