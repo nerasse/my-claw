@@ -1147,7 +1147,14 @@ export class MyClawAppSessionStoreImpl implements MyClawAppSessionStore {
     return {
       enabled: session.quotaRetry?.enabled === true,
       ...(pending
-        ? { waiting: { at: pending.at, attempts: pending.attempts, windows: pending.windows } }
+        ? {
+            waiting: {
+              at: pending.at,
+              attempts: pending.attempts,
+              windows: pending.windows,
+              ...(pending.provider ? { provider: pending.provider } : {}),
+            },
+          }
         : {}),
     };
   }

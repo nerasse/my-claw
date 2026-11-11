@@ -28,6 +28,14 @@ export interface ArmedQuotaWait {
   at: string;
   attempts: number;
   windows: string[];
+  /**
+   * The provider whose bar reopens first, when the run walked more than one.
+   *
+   * A tag with several candidates ends its run on the last one, and a wait armed from that alone
+   * parked the conversation behind the model tried last while an earlier account had already
+   * reopened (2026-11-11). The pill names this one, not the last model it saw.
+   */
+  provider?: string;
   error?: string;
   /**
    * No reset was published, so this wait is a check rather than a promise: the plan is spent and
@@ -67,16 +75,48 @@ export async function decideQuotaWait(input: {
 }): Promise<QuotaWaitDecision> {
   if (input.switchOff) return { skipped: "switch-off" };
   if (!isQuotaFailure(input.err)) return { skipped: "not-a-quota" };
-  const provider = (input.err as { provider?: string } | undefined)?.provider;
-  const outcome = provider ? await input.readQuota(provider).catch(() => undefined) : undefined;
+  const failure = input.err as { provider?: string; providers?: string[] } | undefined;
+  const providers = [...new Set([...(failure?.providers ?? []), failure?.provider].filter((one): one is string => typeof one === "string" && one.length > 0))];
   const attempts = input.previousAttempts + 1;
   const message = input.err instanceof Error ? input.err.message : String(input.err);
 
-  const published = outcome ? quotaWaitFrom(outcome) : undefined;
+  // One read per provider the run walked: the tag's whole route is the question, not the model it
+  // happened to die on. `readQuota` is cached per provider by the caller, so this is a handful of
+  // requests at the moment a run stops -- and only then.
+  const readings: Array<{ provider: string; outcome: QuotaOutcome | undefined; wait?: { at: string; windows: string[] }; spent?: boolean }> = [];
+  for (const one of providers) {
+    const outcome = await input.readQuota(one).catch(() => undefined);
+    readings.push({
+      provider: one,
+      outcome,
+      wait: outcome ? quotaWaitFrom(outcome) : undefined,
+      spent: outcome?.ok === true ? spentWindowOf(outcome) !== undefined : undefined,
+    });
+  }
+  const answered = readings.filter((one) => one.outcome?.ok === true);
+  // Every account that answered has room: a burst limit wearing a quota's clothes, and nothing to
+  // wait on. The run keeps its ordinary backoff.
+  if (answered.length > 0 && answered.every((one) => one.spent === false)) return { skipped: "not-a-quota" };
+  // Part of the route has room right now: nothing is worth waiting for, the run only has to walk
+  // back to it. One tick is the delay, not the reset of the model it died on.
+  if (answered.some((one) => one.spent === false)) {
+    return { wait: { at: new Date().toISOString(), windows: [], attempts, error: message.slice(0, 200) } };
+  }
+  const published = readings
+    .filter((one) => one.wait)
+    .sort((left, right) => Date.parse(left.wait!.at) - Date.parse(right.wait!.at))[0];
   if (published) {
     if (attempts > QUOTA_RETRY_MAX_ATTEMPTS) return { skipped: "gave-up" };
-    return { wait: { ...published, attempts, error: message.slice(0, 200) } };
+    return {
+      wait: {
+        ...published.wait!,
+        provider: published.provider,
+        attempts,
+        error: message.slice(0, 200),
+      },
+    };
   }
+  const outcome = readings.find((one) => one.provider === failure?.provider)?.outcome ?? readings[0]?.outcome;
 
   // The oracle could not name a reset. Two very different readings hide behind that:
   //
@@ -86,13 +126,17 @@ export async function decideQuotaWait(input: {
   //   bar that publishes no reset. That is a wall the owner asked to wait out, so it is checked
   //   again instead of being abandoned -- without this the switch did nothing at all for those
   //   accounts, and Continue just failed again at every press (2026-11-10).
-  if (outcome?.ok && !spentWindowOf(outcome)) return { skipped: "not-a-quota" };
+  // Every provider that answered has room: a burst limit, not a plan.
+  if (readings.length > 0 && readings.every((one) => one.outcome?.ok === true && one.spent === false)) {
+    return { skipped: "not-a-quota" };
+  }
   if (attempts > QUOTA_RETRY_MAX_PROBES) return { skipped: "gave-up" };
   return {
     wait: {
       ...probeWaitFrom(attempts),
       attempts,
       probe: true,
+      ...(providers.length === 1 ? { provider: providers[0] } : {}),
       error: message.slice(0, 200),
     },
   };

@@ -27,6 +27,12 @@ export interface SessionQuotaRetry {
     attempts: number;
     /** The spent windows that set the wait, as labels. */
     windows: string[];
+    /**
+     * The account whose bar reopens first, when the run walked more than one -- docs/quota-retry.md.
+     * It travels with the wait so the pill names where the quota is coming back instead of the
+     * model the run happened to die on.
+     */
+    provider?: string;
     /** What the run died on, short, so the pill can say it after a reload. */
     error?: string;
     /** `compact` for a `/compact` queued behind the wall instead of a run to resume. */

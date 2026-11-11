@@ -92,11 +92,16 @@ function withFallbackNotes(text: string, notes: readonly string[]): string {
  * in hand, rather than guessed from the session later -- a run that walked three fallbacks has no
  * other record of which one it ended on.
  */
-function withFailureContext(err: unknown, config: ResolvedLlmConfig): unknown {
+function withFailureContext(err: unknown, config: ResolvedLlmConfig, tried?: string[]): unknown {
   if (err && typeof err === "object") {
-    const failure = err as { provider?: string; model?: string };
+    const failure = err as { provider?: string; model?: string; providers?: string[] };
     failure.provider ??= config.provider;
     failure.model ??= config.model;
+    // Every provider this run walked, in order. A tag whose candidates are all spent ends on the
+    // last one, and waiting for *its* reset parked the conversation behind the model that happened
+    // to be tried last while an earlier account had already reopened (2026-11-11). The arm asks
+    // each of them, and takes the earliest.
+    if (tried && tried.length > 1) failure.providers ??= tried;
   }
   return err;
 }
@@ -352,15 +357,18 @@ export class AgentBridge implements AgentBackend {
   }): Promise<{ response: LlmResponse; config: ResolvedLlmConfig }> {
     let config = params.config;
     let targets: ReturnType<typeof providerFallbackTargets> | undefined;
+    /** Every provider this run has actually called, in the order it called them. */
+    const tried: string[] = [];
 
     for (;;) {
       const startedAt = Date.now();
+      if (config.provider && !tried.includes(config.provider)) tried.push(config.provider);
       try {
         const response = await params.call(this.walledConfig(config));
         return { response, config };
       } catch (err) {
         rethrowIfAborted(err, params.signal);
-        if (isOverflowError(err) || params.emitted() || !(isProviderOutage(err) || isCapabilityRefusal(err))) throw withFailureContext(err, config);
+        if (isOverflowError(err) || params.emitted() || !(isProviderOutage(err) || isCapabilityRefusal(err))) throw withFailureContext(err, config, tried);
 
         const reason = String((err as Error | undefined)?.message ?? err).slice(0, 200);
         const failed = { model: config.model, provider: config.provider };
@@ -395,7 +403,7 @@ export class AgentBridge implements AgentBackend {
         // model or the failure, never a sibling it did not approve (docs/provider-failures.md).
         // The failure travels with the provider that produced it, so the caller can still tell a
         // spent account from an outage.
-        if (params.forbidFallback) throw withFailureContext(err, config);
+        if (params.forbidFallback) throw withFailureContext(err, config, tried);
 
         targets ??= providerFallbackTargets({
           config: this.config,
@@ -417,7 +425,7 @@ export class AgentBridge implements AgentBackend {
           targets = onRoute === -1 ? [] : targets.slice(onRoute);
         }
         const next = targets.shift();
-        if (!next) throw withFailureContext(err, config);
+        if (!next) throw withFailureContext(err, config, tried);
 
         this.recordFailedCall({ ...params, config, durationMs: Date.now() - startedAt, error: err });
         params.attempted.add(next.model);

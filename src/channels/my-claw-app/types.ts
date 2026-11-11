@@ -2155,7 +2155,7 @@ export interface MyClawAppSessionSyncResult {
   /** Why the delta was replaced by a full page. */
   reset?: "unknown-cursor" | "branch-switch";
   /** The owner's quota-retry setting, and the wait it has armed, carried on every answer. */
-  quotaRetry?: { enabled: boolean; waiting?: { at: string; attempts: number; windows: string[] } };
+  quotaRetry?: { enabled: boolean; waiting?: { at: string; attempts: number; windows: string[]; provider?: string } };
   /** Whether entries were truncated by the limit. */
   truncated?: boolean;
   /**
@@ -3732,6 +3732,8 @@ export interface MyClawAppSessionQuotaRetryState {
     attempts: number;
     /** The windows that were spent, as labels: "5 h", "Week". */
     windows: string[];
+    /** The account whose bar reopens first, when the run walked more than one. */
+    provider?: string;
   };
 }
 

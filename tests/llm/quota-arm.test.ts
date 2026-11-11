@@ -129,6 +129,51 @@ test("reset waits keep their eight attempts; probes are cheap and allowed a doze
   assert.equal(spent.skipped, "gave-up");
 });
 
+test("a route of several accounts waits for whichever reopens first, not the last one tried", async () => {
+  // Measured 2026-11-11: a Siphon tag with two candidates moved from the first to the second, both
+  // spent, and the wait was armed from the second alone -- so the conversation sat behind the
+  // account it died on while the first had reopened an hour and a half earlier.
+  const now = Date.now();
+  const soon = new Date(now + 600_000).toISOString();
+  const late = new Date(now + 5_400_000).toISOString();
+  const decision = await decideQuotaWait({
+    readQuota: async (provider: string) =>
+      provider === "claude-2"
+        ? snapshot([{ label: "5 h", usedPercent: 100, resetAt: soon }])
+        : snapshot([{ label: "Week", usedPercent: 100, resetAt: late }]),
+    err: Object.assign(new Error("HTTP 429 — quota exhausted"), {
+      status: 429,
+      provider: "chatgpt-2",
+      providers: ["claude-2", "chatgpt-2"],
+    }),
+    switchOff: false,
+    previousAttempts: 0,
+  });
+  assert.ok(decision.wait);
+  assert.equal(decision.wait.provider, "claude-2", "the account that reopens first is the one named");
+  assert.equal(decision.wait.at, new Date(Date.parse(soon) + QUOTA_RETRY_BUFFER_MS).toISOString());
+  assert.deepEqual(decision.wait.windows, ["5 h"]);
+});
+
+test("an account of the route that already has room means retry now, not wait for the wall", async () => {
+  const decision = await decideQuotaWait({
+    readQuota: async (provider: string) =>
+      provider === "claude-2"
+        ? snapshot([{ label: "5 h", usedPercent: 12, resetAt: new Date(Date.now() + 600_000).toISOString() }])
+        : snapshot([{ label: "Week", usedPercent: 100, resetAt: new Date(Date.now() + 5_400_000).toISOString() }]),
+    err: Object.assign(new Error("HTTP 429 — quota exhausted"), {
+      status: 429,
+      provider: "chatgpt-2",
+      providers: ["claude-2", "chatgpt-2"],
+    }),
+    switchOff: false,
+    previousAttempts: 0,
+  });
+  assert.ok(decision.wait, "the run resumes on the account that came back");
+  assert.ok(Date.parse(decision.wait.at) <= Date.now(), "now, not the other account's reset");
+  assert.deepEqual(decision.wait.windows, []);
+});
+
 test("probe gaps start soon and grow to the cap", () => {
   const gap = (attempts: number) => Date.parse(probeWaitFrom(attempts, NOW).at) - NOW;
   assert.equal(gap(1), QUOTA_PROBE_BASE_MS);

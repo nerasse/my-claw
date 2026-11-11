@@ -118,6 +118,26 @@ request would exceed your account's rate limit."}` — word for word what a per-
 with the 5 h bar at 100 % and a reset twenty-two minutes out. Twelve requests and 210 seconds for
 one wall, before the run moved at all.
 
+## A route is asked as a whole, not as the model it died on
+
+A tag lists candidates, and the run walks them: candidate 1 hits its wall, candidate 2 answers, and
+if that one is spent too the run dies on candidate 2. The wait used to be decided from the error
+alone, which names only the last one -- so on 2026-11-11 a two-candidate pin parked the
+conversation until the *second* account reset, while the first had reopened ninety minutes earlier.
+
+`withFailureContext` now carries `providers`, every provider the run actually called in order, and
+`decideQuotaWait` reads the usage of each of them:
+
+| What the route answers | The wait |
+| --- | --- |
+| every account has room | nothing: a burst limit, the run keeps its backoff |
+| some have room | **now**: the run only has to walk back to one of them, and one tick is the delay |
+| all spent, some with a published reset | the earliest of those resets, and `provider` names whose it is |
+| all spent, no clock | a probe (below) |
+
+The wait carries `provider` so the pill says where the quota is coming back instead of naming the
+model the run happened to die on.
+
 ## The switch outranks the fallback, not the route
 
 A wall on a conversation with **Retry when the quota returns** on stops the run when its route is
