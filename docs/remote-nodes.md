@@ -18,7 +18,7 @@ node is reached through a sub-agent of its own; the orchestrator never receives 
 | Admin install | system service under a dedicated account `myclaw-node`, with a targeted sudoers file |
 | User install | user service (`systemd --user` + linger, LaunchAgent, Scheduled Task), the user's rights only |
 | OS in v1 | Linux, macOS, Windows |
-| Approvals | per node, default none; the tools a node exposes are chosen per tool |
+| Approvals | per node, **default: every call asks** (owner, 2026-11-11); the tools a node exposes are chosen per tool |
 | Distribution | dl-hub, product path `node/` |
 
 ## Transport and identity
@@ -183,7 +183,7 @@ announces, its agent file, when it was last seen -- and opens a page for it:
   the catalog reads `[disabled]`. The machine stays paired and connected: its version, its tools
   and its updates are all still visible, and nothing else changes.
 - **What it may run**: per tool, exposed or not, and one switch to ask before running anything
-  there. A tool left out is absent from the agent's set, never added back.
+  there, on from pairing. A tool left out is absent from the agent's set, never added back.
 - **MCP servers**: add, edit or remove a server the machine runs (a name, and a command with its
   arguments or a URL), with how each came up -- 3 tools, failed and why. A server the machine's
   own config declares is shown, marked as not managed here.
@@ -212,10 +212,11 @@ server it runs came up.
    A node announces exactly what its config allows, so a name the record holds and the machine
    does not offer is never matched.
 2. **In the app**: `nodes.json` holds the node's `tools` (the exposed subset; absent means
-   everything the machine offers, an empty list nothing), `approval` (ask before running
-   anything there) and `disabled` (its agent does not run). The agent file's `tools:` narrows the
-   same way, exactly like a local baseline, and the config denylist applies on top. All three are
-   filters: a name outside a set is dropped, never added.
+   everything the machine offers, an empty list nothing), `approval` (`false` when the owner let
+   the machine run unasked; absent, every call there asks) and `disabled` (its agent does not
+   run). The agent file's `tools:` narrows the same way, exactly like a local baseline, and the
+   config denylist applies on top. All three are filters: a name outside a set is dropped, never
+   added.
 
 Everything here is read again at each turn of a run, not frozen when it starts: the set is
 rebuilt before every request, so a tool added or taken away applies to the next turn of a run
@@ -224,14 +225,21 @@ the prompt, which invalidates the provider's cached prefix for that turn -- the 
 never works from a stale set. A machine that goes away keeps its last set, so its calls answer
 "not connected" instead of the prompt emptying under the model.
 
-Approval rides the existing flow (`Tool.requiresApproval` on every tool of a node whose record
-asks for it): the sheet appears once per tool and a session grant covers the rest, except for
-the per-invocation tools (`bash`, `memory`) which are reviewed one call at a time. Default none.
+Approval rides the existing flow (`Tool.requiresApproval` on every tool of a node, `nodeAsksFirst`).
+**A paired machine asks before every call**, a read or an `ls` included: pairing grants it no
+rights of its own, whatever its install mode (owner, 2026-11-11). Until 0.7.165 the default was
+none, and a machine ran everything its config exposed the moment it was paired. Only the owner's
+switch writes `approval: false`; a record without the key, or with the `true` older versions
+wrote, asks. Each call is a prompt unless the owner answers "allow for this session" (offered
+for every tool but the per-invocation ones, `bash` and `memory`) or "always allow this exact
+call".
 The node's agent is a sub-agent, so its sheet is drawn in the parent conversation -- the run carries
 the parent's thread and the runner injects the approval handler into every sub-agent bridge -- and a
 push goes out when the sheet has to reach a device that is not on that thread (docs/tool-approvals.md).
-Turning the switch on also enables `channels["my-claw-app"].approvals`: a prompt nobody can answer
-is refused, not asked.
+A node's prompt is raised whatever `channels["my-claw-app"].approvals` says: that flag is the
+opt-in for this server's own blacklisted tools, and a machine that asks by default would
+otherwise be refused on every install that never turned it on. With no device of the owner
+connected, the prompt is refused: an unattended run cannot use a machine that asks.
 
 Every node tool carries its `approvalOrigin`, so the sheet and the approvals page say which machine
 a prompt is about, and a standing grant ("always allow this exact call") is scoped to that machine:

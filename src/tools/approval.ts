@@ -4,7 +4,7 @@ import type { UnifiedMessage } from "../channels/types.ts";
 import { askOwner, hasApprovalSurface, pendingApprovals } from "../approvals/ask.ts";
 import { rethrowIfAborted } from "../core/aborted.ts";
 import type { ApprovalGrantConfig, MyClawConfig } from "../core/config.ts";
-import { nodeRecords } from "../nodes/store.ts";
+import { nodeAsksFirst, nodeRecords } from "../nodes/store.ts";
 import { nodeState } from "../nodes/hub.ts";
 
 /**
@@ -157,7 +157,7 @@ function machinesOf(config: MyClawConfig | undefined): MachineReport[] {
       name: record.name,
       key: record.nodeId,
       state: state === "online" ? "" : state,
-      gate: gateLabel(blacklist, record.approval === true),
+      gate: gateLabel(blacklist, nodeAsksFirst(record)),
       live: true,
       grants: byOrigin.get(record.nodeId) ?? [],
     });

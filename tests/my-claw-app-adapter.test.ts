@@ -1866,6 +1866,16 @@ describe("MyClawAppAdapter", () => {
     assert.equal(decision, "deny");
   });
 
+  // A machine asks before every call from its pairing on: refused here, it could never run.
+  test("a node's prompt is asked even with approvals disabled", async () => {
+    const decision = adapter.confirmTool({ ...approvalRequest(), origin: { kind: "node", nodeId: "node-1" } });
+    const request = await nextFrame(client);
+    assert.equal(request.type, "approval.request");
+    assert.deepEqual(request.origin, { kind: "node", nodeId: "node-1" });
+    client.ws.send(JSON.stringify({ type: "approval.response", id: request.id, decision: "allow-once" }));
+    assert.equal(await decision, "allow-once");
+  });
+
   test("chat.send with threadId routes into that thread", async () => {
     client.ws.send(JSON.stringify({ type: "chat.send", id: "m9", text: "bonjour", threadId: "projet" }));
     await waitUntil(() => received.length === 1);

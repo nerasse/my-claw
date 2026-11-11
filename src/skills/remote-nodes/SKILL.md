@@ -18,10 +18,11 @@ Read the half that is yours. The other one explains what you will get back.
   `[disabled]` when it cannot run. Spawning an offline node fails immediately with the reason.
 - **Match the task to the machine.** The description in the spawn catalog is what that machine is
   for, written by the owner. Send work a machine is meant for, not work that happens to be there.
-- **Read the gate before planning.** A node whose record asks first opens a prompt on *every*
-  call; one with standing grants only asks outside them:
-  `approval(action="grants", origin="archy")`. Do it before the first call, not after it.
-  The arguments listed there match key for key.
+- **Read the gate before planning.** A node asks before every call unless the owner switched
+  that off, a read or an `ls` included; its standing grants are the exact calls that go straight
+  through: `approval(action="grants", origin="archy")`. Do it before the first call, not after
+  it. The arguments listed there match key for key, and a run with no device of the owner
+  connected gets every other call refused.
 - **A file for that machine goes first, in its own call.** `send_file_to_node(path)` runs as a
   tool of the node's agent, not yours, so it is a `spawn`/`send` step: hand the asset over, then
   ask for the work that needs it. There is no reverse direction: a file produced there comes back
@@ -72,8 +73,8 @@ If you are reading this as `node-<name>`, the rest is your set of rules.
 - There is no `read` of this server's files, no `spawn`, no `memory`, no `cron`, no `notify`.
   You cannot reach other machines either.
 - `skills` loads the knowledge this install carries: use it when the task matches one.
-- An approval prompt interrupts you: a node whose record asks first pauses on every call until
-  the owner answers, and a refusal says so. Do not retry a denied call: report it.
+- An approval prompt interrupts you: unless the owner switched it off, every call pauses until he
+  answers, and a refusal says so. Do not retry a denied call: report it.
 
 ### Reporting back
 

@@ -83,6 +83,15 @@ function runnerFor(agent: FileAgent): SubAgentRunner {
   );
 }
 
+/**
+ * The owner saying yes: a machine asks before every call, and these tests are about what runs next.
+ */
+function approvedRunnerFor(agent: FileAgent): SubAgentRunner {
+  const runner = runnerFor(agent);
+  runner.setApprovalHandler(async () => "allow-once");
+  return runner;
+}
+
 async function spawnIt(runner: SubAgentRunner) {
   return runner.spawn({
     displayName: "web",
@@ -238,11 +247,10 @@ function toolNamesOf(request: Record<string, unknown> | undefined): string[] {
   return (tools ?? []).map((tool) => tool.function.name).sort();
 }
 
-test("a node tool that must ask reaches the parent conversation, and runs once allowed", async () => {
+test("a freshly paired machine asks the parent conversation before its first call, and runs once allowed", async () => {
   const minted = await mintNode({ name: "web01", facts: FACTS });
   if (!minted.ok) throw new Error("mint failed");
   const nodeId = minted.minted.record.nodeId;
-  await setNodeAccess(nodeId, { approval: true });
   const ws = nodeSocket(nodeId);
   attachNodeSocket(ws);
   handleNodeFrame(ws, JSON.stringify({ type: "node.hello", protocol: 1, facts: FACTS }));
@@ -285,6 +293,39 @@ test("a node tool that must ask reaches the parent conversation, and runs once a
   }
 });
 
+test("a machine the owner let run unasked runs its call without a prompt", async () => {
+  const minted = await mintNode({ name: "web01", facts: FACTS });
+  if (!minted.ok) throw new Error("mint failed");
+  const nodeId = minted.minted.record.nodeId;
+  await setNodeAccess(nodeId, { approval: false });
+  let called = 0;
+  const ws = nodeSocket(nodeId, async () => {
+    called += 1;
+  });
+  attachNodeSocket(ws);
+  handleNodeFrame(ws, JSON.stringify({ type: "node.hello", protocol: 1, facts: FACTS }));
+
+  const requests: Array<Record<string, unknown>> = [];
+  const mock = mockFetch(async (_input, init) => {
+    requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return requests.length === 1 ? chatCompletion({}, { tool: { id: "call-1", name: "read", args: JSON.stringify({ path: "/etc/hosts" }) } }) : chatCompletion({});
+  });
+  try {
+    const runner = runnerFor(nodeAgent(nodeId));
+    let asked = 0;
+    runner.setApprovalHandler(async () => {
+      asked += 1;
+      return "deny";
+    });
+    const spawned = await spawnIt(runner);
+    expect(spawned.result).toBe("done");
+    expect(asked).toBe(0);
+    expect(called).toBe(1);
+  } finally {
+    mock.restore();
+  }
+});
+
 test("a tool exposed while the run is going is in the next turn's payload", async () => {
   const minted = await mintNode({ name: "web01", facts: FACTS });
   if (!minted.ok) throw new Error("mint failed");
@@ -300,7 +341,7 @@ test("a tool exposed while the run is going is in the next turn's payload", asyn
     return requests.length === 1 ? chatCompletion({}, { tool: { id: "call-1", name: "read", args: JSON.stringify({ path: "/etc/hosts" }) } }) : chatCompletion({});
   });
   try {
-    const spawned = await spawnIt(runnerFor(nodeAgent(nodeId)));
+    const spawned = await spawnIt(approvedRunnerFor(nodeAgent(nodeId)));
     expect(spawned.result).toBe("done");
     expect(toolNamesOf(requests[0])).toEqual(["read", "send_file_to_node"]);
     // The owner opened `bash` while the tool call was in flight: the second turn carries it.
@@ -324,7 +365,7 @@ test("a tool taken away while the run is going is gone from the next turn's payl
     return requests.length === 1 ? chatCompletion({}, { tool: { id: "call-1", name: "read", args: JSON.stringify({ path: "/etc/hosts" }) } }) : chatCompletion({});
   });
   try {
-    const spawned = await spawnIt(runnerFor(nodeAgent(nodeId)));
+    const spawned = await spawnIt(approvedRunnerFor(nodeAgent(nodeId)));
     expect(spawned.result).toBe("done");
     expect(toolNamesOf(requests[0])).toEqual(["bash", "read", "send_file_to_node"]);
     expect(toolNamesOf(requests[1])).toEqual(["read", "send_file_to_node"]);

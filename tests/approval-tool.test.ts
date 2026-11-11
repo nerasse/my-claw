@@ -28,11 +28,11 @@ function run(args: Record<string, unknown>, cfg?: MyClawConfig) {
   return createApprovalTool(cfg).execute({ __message: message, __sessionId: "s1", __toolCallId: "t-call_1", ...args });
 }
 
-async function pair(name: string, approval = false): Promise<string> {
+async function pair(name: string, asks = true): Promise<string> {
   const minted = await mintNode({ name, facts: { os: "linux", arch: "x64", hostname: name, user: "neras", mode: "user", version: "0.1.0", tools: [] } });
   if (!minted.ok) throw new Error(minted.error);
   const nodeId = minted.minted.record.nodeId;
-  if (approval) await setNodeAccess(nodeId, { approval: true });
+  if (!asks) await setNodeAccess(nodeId, { approval: false });
   return nodeId;
 }
 
@@ -119,10 +119,16 @@ describe("approval tool: grants", () => {
     expect(result.output).toContain("local -- asks before: bash, memory");
   });
 
-  test("a node that asks before every call says so, with its id and live state", async () => {
-    const nodeId = await pair("archy", true);
+  test("a freshly paired node asks before every call, and says so with its id and live state", async () => {
+    const nodeId = await pair("archy");
     const result = await run({ action: "grants", origin: "archy" }, config());
     expect(result.output).toContain(`archy (${nodeId}) [offline] -- asks before every call`);
+  });
+
+  test("a node the owner let run unasked says so", async () => {
+    const nodeId = await pair("archy", false);
+    const result = await run({ action: "grants", origin: "archy" }, config());
+    expect(result.output).toContain(`archy (${nodeId}) [offline] -- nothing asks`);
   });
 
   test("grants ride the machine they were given on, and only that one", async () => {

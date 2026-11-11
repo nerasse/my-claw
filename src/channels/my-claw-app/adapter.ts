@@ -760,7 +760,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   async confirmTool(request: ToolApprovalRequest): Promise<ApprovalDecision> {
-    if (this.config.approvals !== true) return "deny";
+    // `approvals` is the opt-in for this machine's blacklisted tools. A node asks before every
+    // call from its pairing on, so its prompt is raised either way: refusing it would leave every
+    // machine unusable on an install that never turned the flag on (docs/remote-nodes.md).
+    if (this.config.approvals !== true && request.origin?.kind !== "node") return "deny";
     if (this.socketsFor(request.chatId).length === 0) return "deny";
 
     const id = crypto.randomUUID();

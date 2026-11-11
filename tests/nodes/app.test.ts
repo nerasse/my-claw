@@ -301,6 +301,13 @@ describe("node description", () => {
 });
 
 describe("node access", () => {
+  test("a freshly paired machine reads as asking before anything runs", async () => {
+    await pairNode();
+    const summary = (await nodeSummaries())[0];
+    expect(summary?.approval).toBe(true);
+    expect(nodeFrame(summary!).approval).toBe(true);
+  });
+
   test("an exposed subset and the approval flag are stored, and read back", async () => {
     const { nodeId } = await pairNode();
     expect(await setNodeAccessForApp(nodeId, { tools: ["read"], approval: true })).toEqual({ ok: true });
@@ -312,7 +319,7 @@ describe("node access", () => {
     expect(frame.approval).toBe(true);
   });
 
-  test("null removes the narrowing, false removes the flag", async () => {
+  test("null removes the narrowing, false lets the machine run unasked", async () => {
     const { nodeId } = await pairNode();
     await setNodeAccessForApp(nodeId, { tools: ["read"], approval: true });
     await setNodeAccessForApp(nodeId, { tools: null, approval: false });
@@ -320,6 +327,7 @@ describe("node access", () => {
     expect(summary?.exposed).toBeUndefined();
     expect(summary?.approval).toBeUndefined();
     expect(nodeRecord(nodeId)?.tools).toBeUndefined();
+    expect(nodeRecord(nodeId)?.approval).toBe(false);
   });
 
   test("an empty list is a decision: nothing exposed", async () => {
@@ -405,10 +413,10 @@ describe("node frames", () => {
   test("access.set takes the subset and the flag, refusing what is not there", async () => {
     const { nodeId } = await pairNode();
     const app = fakeAppSocket();
-    await handleNodesAccessSet(deps(), app.ws, { nodeId, tools: ["read", 42, "read"], approval: true });
+    await handleNodesAccessSet(deps(), app.ws, { nodeId, tools: ["read", 42, "read"], approval: false });
     expect(app.frames[0]).toMatchObject({ type: "nodes.access.set.result", ok: true, nodeId });
     expect(nodeRecord(nodeId)?.tools).toEqual(["read"]);
-    expect(nodeRecord(nodeId)?.approval).toBe(true);
+    expect(nodeRecord(nodeId)?.approval).toBe(false);
     const refused = fakeAppSocket();
     await handleNodesAccessSet(deps(), refused.ws, { nodeId: "nope", approval: true });
     expect(refused.frames[0]).toMatchObject({ type: "nodes.access.set.result", ok: false, error: "unknown node" });

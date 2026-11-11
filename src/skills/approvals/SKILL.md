@@ -6,8 +6,9 @@ description: Ask the owner before something risky, read what is already waiting 
 # Approvals: the owner in the loop
 
 Some tools do not run until the owner says yes: a tool in `blacklist`, and every tool of a remote
-node whose record asks first. When that happens the run stops on a prompt and waits. This skill is
-about the tool you can call to ask on purpose, and about what the three answers mean.
+node unless he switched that off for the machine. When that happens the run stops on a prompt and
+waits. This skill is about the tool you can call to ask on purpose, and about what the three
+answers mean.
 
 ## Asking on purpose
 

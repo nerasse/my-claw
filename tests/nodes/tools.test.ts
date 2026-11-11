@@ -91,17 +91,17 @@ describe("node tools", () => {
     expect(nodeToolsFor(nodeId)?.map((t) => t.name)).toEqual(["read", "bash", "send_file_to_node"]);
   });
 
-  test("the approval flag rides every tool of the node", async () => {
+  test("every tool of a paired machine asks first, until the owner lets it run unasked", async () => {
     const minted = await mintNode({ name: "web01", facts: FACTS });
     if (!minted.ok) throw new Error("mint failed");
     const nodeId = minted.minted.record.nodeId;
     connect(nodeId);
 
-    expect(nodeToolsFor(nodeId)?.every((t) => t.requiresApproval === false)).toBe(true);
-    await setNodeAccess(nodeId, { approval: true });
     expect(nodeToolsFor(nodeId)?.every((t) => t.requiresApproval === true)).toBe(true);
     await setNodeAccess(nodeId, { approval: false });
     expect(nodeToolsFor(nodeId)?.every((t) => t.requiresApproval === false)).toBe(true);
+    await setNodeAccess(nodeId, { approval: true });
+    expect(nodeToolsFor(nodeId)?.every((t) => t.requiresApproval === true)).toBe(true);
   });
 
   test("executing a tool sends the call and returns the answer", async () => {
@@ -128,11 +128,11 @@ describe("node tools follow the app's settings on the next call, not the next ru
     const nodeId = minted.minted.record.nodeId;
     connect(nodeId);
     const tool = nodeToolsFor(nodeId)?.find((t) => t.name === "read");
-    expect(tool?.requiresApproval).toBe(false);
-    await setNodeAccess(nodeId, { approval: true });
     expect(tool?.requiresApproval).toBe(true);
     await setNodeAccess(nodeId, { approval: false });
     expect(tool?.requiresApproval).toBe(false);
+    await setNodeAccess(nodeId, { approval: true });
+    expect(tool?.requiresApproval).toBe(true);
   });
 
   test("a tool taken off the exposed list refuses its call without reaching the machine", async () => {

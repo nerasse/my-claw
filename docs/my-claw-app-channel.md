@@ -60,7 +60,9 @@ src/channels/my-claw-app/
   is planned with the chat UI.
 - `approvals: true` turns on tool-approval round trips (`approval.request` /
   `approval.response`). Off by default: approval-required tools are denied. This is the only
-  surface that can answer a prompt, so with it off a blacklisted tool never runs.
+  surface that can answer a prompt, so with it off a blacklisted tool never runs. A remote node's
+  prompts are the exception: a machine asks before every call, so they are asked either way
+  (docs/remote-nodes.md).
 - `owner` groups devices onto one conversation namespace. Omit it and the device stands
   alone under its own id. Changing it moves the device to another namespace: the threads and
   files of the previous owner stay where they are.
