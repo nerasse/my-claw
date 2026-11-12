@@ -21,7 +21,7 @@ import { AgentBridge } from "../../src/agent/bridge.ts";
 import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
-import { openSessionLog } from "../../src/sessions/log.ts";
+import { sessionLogOf } from "../../src/sessions/log-access.ts";
 import { bashTool } from "../../src/tools/bash.ts";
 import { deleteSession, type LegacySessionData } from "../../src/sessions/store.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
@@ -192,7 +192,11 @@ test("a failure between two calls costs the wait, not the work: the run continue
     assert.match(text, /termine sur le defaut/, text);
     // alpha-1: the tool turn, then two failures (the second after the wait); beta-1: the answer.
     assert.deepEqual(models, ["alpha-1", "alpha-1", "alpha-1", "beta-1"]);
-    const log = await openSessionLog(SESSION_ID);
+    // The run's own handle, not a second one opened from disk: an append is fire-and-forget, and a
+    // fresh handle can read the file before the tool entry lands. That raced under CI load on
+    // 2026-11-12 -- the tool had run (the run's log says so) and this read saw 0 of it.
+    const log = await sessionLogOf(SESSION_ID);
+    await log.flush();
     const bashCalls = (await log.all()).filter((entry) => entry.type === "tool" && entry.name === "bash");
     assert.equal(bashCalls.length, 1, "the tool ran once: a fallback continues the run, it does not replay it");
   } finally {
@@ -345,7 +349,8 @@ test("the owner's turn is written once, whatever the run went through", async ()
 
   try {
     await run(bridge, createSession("alpha-1"), signal);
-    const log = await openSessionLog(SESSION_ID);
+    const log = await sessionLogOf(SESSION_ID);
+    await log.flush();
     const users = (await log.all()).filter((entry) => entry.type === "user");
     assert.equal(users.length, 1, "a fallback continues the run, it does not start a second one");
   } finally {
