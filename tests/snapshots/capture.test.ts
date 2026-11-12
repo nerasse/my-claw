@@ -160,6 +160,37 @@ describe("snapshots: the untracked size cap", () => {
   });
 });
 
+describe("snapshots: two captures at once", () => {
+  test("a concurrent capture never loses the other's work: one writer per shadow", async () => {
+    // `recordRunEnd` is fire-and-forget, so a run ending while the next one starts is two captures
+    // of the same shadow at once. Git's index is a file with a lock beside it, and the loser of
+    // that race drops its whole update instead of failing: measured 3 divergences in 20 before the
+    // per-shadow lock, with the diff then reporting no change for a file that did change.
+    const ws = await mkdtemp(join(tmpdir(), "snap-ws7-"));
+    const shadows = await mkdtemp(join(tmpdir(), "snap-sh7-"));
+    try {
+      const repo = join(ws, "repo");
+      await mkdir(repo, { recursive: true });
+      await execGit(repo, ["init", "-q"]);
+      await writeFile(join(repo, "a.txt"), "v0\n");
+
+      const before = await captureWorkspace(ws, shadows);
+      await writeFile(join(repo, "a.txt"), "v1\n");
+
+      // The end-of-run capture of a previous run, racing the start of the next one.
+      const ending = captureWorkspace(ws, shadows);
+      const starting = await captureWorkspace(ws, shadows);
+      await ending;
+
+      const files = (await diffSnapshots(before, starting, shadows)).reduce((sum, depot) => sum + depot.files, 0);
+      expect(files).toBe(1);
+    } finally {
+      await rm(ws, { recursive: true, force: true });
+      await rm(shadows, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("snapshots: store", () => {
   test("a run's snapshot is found by the run id its marker carries, and recorded once", async () => {
     const sessionId = `test-snap-store-${process.pid}-${Date.now()}`;

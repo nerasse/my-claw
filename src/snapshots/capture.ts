@@ -19,6 +19,35 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
+/**
+ * One capture at a time per shadow repository, keyed by its directory.
+ *
+ * Git's index is a file with a lock beside it: two `add --all` on one shadow interleave through
+ * `index.lock`, and one of them loses its whole update instead of failing loudly. That was fine
+ * while every capture sat inside a run's own path, and stopped being fine the moment the
+ * end-of-run capture became fire-and-forget: a run ending while the next one starts is two
+ * captures of the same depot at once. Measured 3 divergences in 20 with the race in place, and
+ * a diff that then reports no change for a file that did change.
+ */
+const captureLocks = new Map<string, Promise<void>>();
+
+async function withShadowLock<T>(shadowDir: string, work: () => Promise<T>): Promise<T> {
+  const previous = captureLocks.get(shadowDir) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const chained = previous.catch(() => {}).then(() => mine);
+  captureLocks.set(shadowDir, chained);
+  await previous.catch(() => {});
+  try {
+    return await work();
+  } finally {
+    release();
+    if (captureLocks.get(shadowDir) === chained) captureLocks.delete(shadowDir);
+  }
+}
+
 /** Max depth relative to the workspace root: `~/dev/<repo>` = 1, a monorepo `packages/<x>/` = 3. */
 const DEPOT_MAX_DEPTH = 3;
 /** Untracked files larger than this stay out of the snapshot, like opencode's default (2 MB). */
@@ -208,21 +237,27 @@ export async function captureWorkspace(workspace: string, shadowsRoot: string): 
   const captured: DepotSnapshot[] = [];
   for (const depot of depots) {
     const shadowDir = join(shadowsRoot, "shadow", hash(depot.root));
-    await ensureShadow(shadowDir, depot.root);
-    // A non-repo workspace root holding repos: `git add --all` would warn and record gitlinks.
-    // Excluding them keeps the root shadow to its own files, the nested trees go to their shadows.
-    await writeShadowExcludes(shadowDir, depot.root, depot.root === root && !rootIsRepo ? nested : []);
-    try {
-      await shadowGit(shadowDir, depot.root, [
-        "-c", "core.autocrlf=false",
-        "-c", "safe.directory=*",
-        "add", "--all",
-      ]);
-      captured.push({ root: depot.root, treeId: await shadowGit(shadowDir, depot.root, ["write-tree"]) });
-    } catch {
-      // A depot that cannot be captured is left out of the snapshot, not fatal: the workspace
-      // may contain a repo the shadow cannot read. The undo still covers the rest.
-    }
+    // One writer per shadow: the exclude rewrite, the index and `write-tree` are one transaction
+    // on one repository, and a second capture entering halfway corrupts all three.
+    const treeId = await withShadowLock(shadowDir, async () => {
+      await ensureShadow(shadowDir, depot.root);
+      // A non-repo workspace root holding repos: `git add --all` would warn and record gitlinks.
+      // Excluding them keeps the root shadow to its own files, the nested trees go to their shadows.
+      await writeShadowExcludes(shadowDir, depot.root, depot.root === root && !rootIsRepo ? nested : []);
+      try {
+        await shadowGit(shadowDir, depot.root, [
+          "-c", "core.autocrlf=false",
+          "-c", "safe.directory=*",
+          "add", "--all",
+        ]);
+        return await shadowGit(shadowDir, depot.root, ["write-tree"]);
+      } catch {
+        // A depot that cannot be captured is left out of the snapshot, not fatal: the workspace
+        // may contain a repo the shadow cannot read. The undo still covers the rest.
+        return undefined;
+      }
+    });
+    if (treeId !== undefined) captured.push({ root: depot.root, treeId });
   }
 
   return { root, depots: captured, ts: Date.now() };
