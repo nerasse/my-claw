@@ -119,12 +119,27 @@ test("settleMailbox reject reroutes a pending-but-unread injection", async () =>
   runRegistry.clear();
 });
 
-// The exception: the owner asked for the stop, so reviving the message they interrupted would
-// defeat it.
-test("an aborted run does not revive its unread injections", async () => {
+// A pending message was never read: the run never looked at it, so neither a Stop nor an error
+// interrupted it, and its own attempt is still owed. Only a *claimed* one was read, and the Stop
+// does interrupt that.
+test("an unread injection survives the abort and gets its own run", async () => {
+  // Pending, never drained: the run never looked at this message, so the owner's Stop did not
+  // interrupt it. Killing it with the run made a send typed a moment before Stop vanish -- the
+  // bubble stayed with nothing under it (2026-11-12). It is rerouted instead, which the router
+  // turns into a run of its own.
   runRegistry.clear();
   runRegistry.startRoot("s1");
   const p = runRegistry.enqueueInjection("s1", msg("unread"))!;
+  runRegistry.settleMailbox("s1", "reject", new AbortedError());
+  await assert.rejects(p, (e: unknown) => e instanceof RerouteSignal);
+  runRegistry.clear();
+});
+
+test("a claimed injection is interrupted by the abort: the model did read it", async () => {
+  runRegistry.clear();
+  runRegistry.startRoot("s1");
+  const p = runRegistry.enqueueInjection("s1", msg("read"))!;
+  runRegistry.drainInjections("s1");
   runRegistry.settleMailbox("s1", "reject", new AbortedError());
   await assert.rejects(p, (e: unknown) => e instanceof AbortedError);
   runRegistry.clear();

@@ -1688,14 +1688,10 @@ export class AgentBridge implements AgentBackend {
           startSpeculation(this.config, session);
         }
       }
-      // Snapshot the after-state for the diff: only a snapshot that was taken is worth completing.
-      if (runSnapshotId) {
-        try {
-          await recordRunEnd(session.id, runSnapshotId, workspaceDir);
-        } catch (err) {
-          void log("warn", "snapshot capture failed at run end", { sessionId: session.id, error: String(err) });
-        }
-      }
+      // Snapshot the after-state for the diff: only a snapshot that was taken is worth completing,
+      // and it is written off this path -- a second capture of a 34 GB workspace is not something a
+      // run's wind-down, and a Stop's report, may wait for.
+      if (runSnapshotId) recordRunEnd(session.id, runSnapshotId, workspaceDir);
       await this.preprocessor.cleanupTempFiles(message.id);
     }
   }

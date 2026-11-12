@@ -76,16 +76,27 @@ export async function recordRunStart(sessionId: string, workspace: string, runId
   return entry;
 }
 
-/** Records the *after* state of the run (same runId), for the diff shown by `/undo`. */
-export async function recordRunEnd(sessionId: string, runId: string, workspace: string): Promise<void> {
-  const dir = sessionDir(sessionId);
-  const file = join(dir, `${runId}.json`);
-  const existing = await readSnapshot(file);
-  if (!existing) return;
-  const after = await captureWorkspace(workspace, shadowRoot());
-  existing.after = after;
-  await writeFile(file, JSON.stringify(existing), "utf8");
-  await pruneSessionSnapshots(sessionId);
+/**
+ * Records the *after* state of the run (same runId), for the diff shown by `/undo`.
+ *
+ * Off the run's own path on purpose. The diff `/undo` shows is computed by `changesSince`, which
+ * recaptures the workspace when the owner asks -- so what this writes has no reader today. It is
+ * kept because it is the record a future surface would read, and it must never cost a run its
+ * wind-down: a stop used to wait for a second full capture of a 34 GB workspace (9.3 s measured
+ * on 2026-11-12) before it could be reported. One capture per run is the budget.
+ */
+export function recordRunEnd(sessionId: string, runId: string, workspace: string): void {
+  void (async () => {
+    const dir = sessionDir(sessionId);
+    const file = join(dir, `${runId}.json`);
+    const existing = await readSnapshot(file);
+    if (!existing) return;
+    existing.after = await captureWorkspace(workspace, shadowRoot());
+    await writeFile(file, JSON.stringify(existing), "utf8");
+    await pruneSessionSnapshots(sessionId);
+  })().catch((err: unknown) => {
+    void log("warn", "snapshot after-state not recorded", { sessionId, runId, error: String(err) });
+  });
 }
 
 /**

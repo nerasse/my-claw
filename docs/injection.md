@@ -112,6 +112,29 @@ around it). A message that loses the race lands after the close and falls back t
 never lost, never double-run. If a run is force-closed with an undrained injection (iteration budget
 exhausted), that injection is rerouted to a fresh run via `RerouteSignal`.
 
+### A message the run never read is never lost
+
+The mailbox has two halves, and a stop treats them differently since 2026-11-12.
+
+A **pending** message was never read: the run did not reach a turn boundary after it arrived, so it
+is not part of anything the owner stopped. It is rerouted to a run of its own (`RerouteSignal`,
+turned into a fresh routing by `routeWithReroute`), on an abort exactly like on an error or a forced
+close. It used to be killed with the run, which is the "message sent around Stop goes nowhere" bug:
+the bubble stayed on screen with nothing under it and the owner typed it again.
+
+A **claimed** message was drained into the run and answered in it, so the stop does interrupt it:
+its outcome is the run's, and it learns the abort.
+
+The distinction is the drain, not the stop. `settleMailbox` reads it off `claimed` versus `pending`,
+so no caller has to decide which case it is in.
+
+A message typed **after** the stop never enters the dying run at all: the mailbox was closed for its
+wind-down (see below), so it opens a run of its own directly.
+
+The app's two surfaces agree through the run's own life: `chat.run.end` (reason `aborted`) lifts every
+queued badge for the thread, matching the journal's `close` dropping the parked sends, so a badge is
+never replayed for a run that will not read it. The rerouted message's run then answers normally.
+
 ### A stop closes the mailbox for its wind-down
 
 A stopped run has no next boundary, and `settleMailbox` rejects whatever it never read. So a message
@@ -125,8 +148,9 @@ normally, and nothing is left refusing injections for the rest of the process.
 The mailbox is not deleted at the stop: its pending items are still owed their rejection, and dropping
 it would leave their promises unsettled.
 
-The line stays where it was for a message parked **before** the stop: it dies with the run. The owner
-asked for the stop, and reviving what it interrupted would defeat it.
+The line is drawn by the drain, not by the stop: a message parked **before** the stop but never read
+is rerouted, not killed. See "A message the run never read is never lost" above -- this section only
+concerns arrivals *after* the stop.
 
 The app's two surfaces agreed too late, which is the other half of the same report. The live journal
 kept a parked send until the run drained it, and a run that dies never does -- so `close` now drops

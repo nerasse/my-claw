@@ -431,13 +431,17 @@ class RunRegistry {
       else item.reject(aborted ? err : new FoldedRunError(err));
     }
     for (const item of mb.pending) {
-      // Pending-but-undrained at settle only happens on forced close (budget exhausted) or
-      // abort/error. Either way this message was never read, so its own attempt is still owed: the
-      // run that died died for its own reasons. It used to inherit that failure and vanish, which
-      // read as a send silently dropped. An abort is the exception -- the owner asked for the stop,
-      // and reviving the message they interrupted would defeat it.
-      if (aborted) item.reject(err);
-      else item.reject(new RerouteSignal(item.message));
+      // Pending-but-undrained at settle means the run never read this message: not on an abort, not
+      // on an error, not on a forced close. Its own attempt is therefore still owed, and it is
+      // rerouted to a fresh run in every one of those cases.
+      //
+      // An abort used to be the exception, on the reading that reviving a message the owner
+      // interrupted would defeat their stop. It conflated the two halves of this function: a
+      // *claimed* message was read into the run and the stop does interrupt it, but a pending one
+      // was never looked at. Killing it meant a message typed a moment before Stop -- or parked
+      // while a slow tool finished -- vanished: the bubble sat there with nothing under it and the
+      // owner had to type it again (2026-11-12, reproduced in tests/injection/mailbox.test.ts).
+      item.reject(new RerouteSignal(item.message));
     }
     mb.claimed.length = 0;
     mb.pending.length = 0;

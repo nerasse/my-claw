@@ -1638,6 +1638,45 @@ describe("MyClawAppAdapter", () => {
     reloaded.ws.close();
   });
 
+  /**
+   * The owner's report: a message sent right around Stop looked as if it went nowhere.
+   *
+   * Two halves, and both are visible here. A message parked in the run's mailbox before the stop
+   * is rerouted to a run of its own (`settleMailbox`), and the run that opens acks it, so the
+   * bubble stops wearing "queued for the next turn" the moment its turn really starts. A message
+   * typed after the stop never enters the dying run at all -- the mailbox was closed for its
+   * wind-down -- so it opens a run directly.
+   *
+   * What the app must never see is the third outcome: a bubble marked queued with nothing coming.
+   */
+  test("a send parked before a Stop is acked by the run it is rerouted to", async () => {
+    client.ws.send(JSON.stringify({ type: "chat.send", id: "m-parked", text: "avant le stop" }));
+    await waitUntil(() => received.length === 1);
+    adapter.notifyRun(DEVICE_ID, "default", true);
+    assert.equal((await nextFrame(client)).type, "chat.run.start");
+    adapter.notifyQueued(DEVICE_ID, "default", "m-parked", "injection");
+    assert.equal((await nextFrame(client)).type, "chat.send.queued");
+
+    // The stop: the run ends aborted, and every queued mark lifts with it -- the parked send is
+    // no longer waiting on that run.
+    adapter.notifyRun(DEVICE_ID, "default", false, "aborted");
+    assert.equal((await nextFrame(client)).type, "chat.run.end");
+
+    // Its own run opens. No ack here, and that is the right shape: the mark already went with
+    // the aborted run's `chat.run.end`, which is what lifts every queued badge on the app. A send
+    // that were still parked would be acked here; one whose run has ended is simply answered by
+    // the run now starting.
+    adapter.notifyRun(DEVICE_ID, "default", true, undefined, "m-parked");
+    assert.equal((await nextFrame(client)).type, "chat.run.start");
+
+    // Nothing is left parked in the journal for this thread: a reload is handed no badge.
+    const reloaded = await connectClient(adapter.port);
+    reloaded.ws.send(JSON.stringify({ type: "session.sync", threadId: "default" }));
+    assert.equal((await nextFrame(reloaded)).type, "session.sync.result");
+    await assert.rejects(() => nextFrame(reloaded, 300));
+    reloaded.ws.close();
+  });
+
   test("the replayed bubble arrives whole, so a window that was already watching does not paint it twice", async () => {
     // The window asking for a sync is usually the one that was watching a second ago: a blip, a
     // thread switched away from and back, a refresh. It still holds the bubble, and the client

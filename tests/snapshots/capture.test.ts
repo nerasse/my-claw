@@ -123,6 +123,43 @@ describe("snapshots: a depot that cannot be captured", () => {
   });
 });
 
+describe("snapshots: the untracked size cap", () => {
+  test("a big untracked file stays out, a small one goes in, and the exclude file is not re-appended", async () => {
+    // The cap is what keeps a 500 MB blob out of the shadow, and it is now read off git's own
+    // untracked list instead of a walk of the whole tree (2026-11-12). What must not change is
+    // the outcome: the big file excluded, the small one captured -- and the exclude file
+    // derived, not concatenated onto itself once per capture.
+    const ws = await mkdtemp(join(tmpdir(), "snap-ws6-"));
+    const shadows = await mkdtemp(join(tmpdir(), "snap-sh6-"));
+    try {
+      const repo = join(ws, "repo");
+      await mkdir(repo, { recursive: true });
+      await execGit(repo, ["init", "-q"]);
+      await writeFile(join(repo, "small.txt"), "kept\n");
+      await writeFile(join(repo, "huge.bin"), Buffer.alloc(3 * 1024 * 1024, 1));
+
+      await captureWorkspace(ws, shadows);
+      const shadow = await shadowOf(shadows, repo);
+      const first = await readFile(join(shadow, "info", "exclude"), "utf8");
+      expect(first).toContain("/huge.bin");
+
+      // A second capture of the same depot: same lines, not the same lines twice.
+      await captureWorkspace(ws, shadows);
+      const second = await readFile(join(shadow, "info", "exclude"), "utf8");
+      expect(second).toBe(first);
+      expect(second.split("\n").filter((line) => line === "/huge.bin")).toHaveLength(1);
+
+      // The big file is not in the captured tree; the small one is.
+      const tree = await gitOut(shadow, repo, ["write-tree"]).then((id) => gitOut(shadow, undefined, ["ls-tree", "-r", "--name-only", id.trim()]));
+      expect(tree).toContain("small.txt");
+      expect(tree).not.toContain("huge.bin");
+    } finally {
+      await rm(ws, { recursive: true, force: true });
+      await rm(shadows, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("snapshots: store", () => {
   test("a run's snapshot is found by the run id its marker carries, and recorded once", async () => {
     const sessionId = `test-snap-store-${process.pid}-${Date.now()}`;
@@ -206,4 +243,13 @@ async function execGit(cwd: string, args: string[]): Promise<void> {
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");
   await promisify(execFile)("git", args, { cwd });
+}
+
+/** Git against a shadow, with the worktree when the command reads it. */
+async function gitOut(shadow: string, workTree: string | undefined, args: string[]): Promise<string> {
+  const { execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  const env = workTree ? { ...process.env, GIT_DIR: shadow, GIT_WORK_TREE: workTree } : { ...process.env, GIT_DIR: shadow };
+  const { stdout } = await promisify(execFile)("git", args, { env });
+  return stdout;
 }

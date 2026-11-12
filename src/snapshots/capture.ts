@@ -13,8 +13,8 @@
  */
 
 import { execFile } from "node:child_process";
-import { readdir, stat, writeFile, readFile } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
+import { mkdir, readdir, stat, writeFile, readFile } from "node:fs/promises";
+import { dirname, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -99,57 +99,85 @@ function hash(input: string): string {
   return (h >>> 0).toString(36);
 }
 
-/** Files any depot's capture will index, with the untracked size cap applied. */
-async function oversizedFiles(root: string): Promise<string[]> {
-  const out: string[] = [];
-  async function walk(dir: string): Promise<void> {
-    const entries = await readdir(dir, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries) {
-      if (!entry.isDirectory() && entry.name === ".git") continue;
-      if (entry.isDirectory() && (entry.name === ".git" || entry.name === "node_modules" || entry.name === "dist")) continue;
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await walk(full);
-      } else {
-        const size = await stat(full).then((s) => s.size).catch(() => 0);
-        if (size > MAX_UNTRACKED_BYTES) out.push(`/${relative(root, full)}`);
-      }
-    }
+/**
+ * The untracked files of a depot that are too big to belong in a snapshot.
+ *
+ * Read off git's own idea of what is untracked, never off a walk of the tree. The walk cost a
+ * `readdir` and a `stat` per file of the whole workspace -- 3.7 s on a 33k-file tree, 12 s on a
+ * 88k-file one -- and it ran twice per run, at both ends, inside the run's own lifecycle: a
+ * stopped run spent its whole wind-down there (2026-11-12, 26 s between the abort and the stop
+ * being reported). Git already knows which files are untracked, and it walks natively.
+ *
+ * The paths come back relative to the depot root, which is what `info/exclude` wants.
+ */
+async function oversizedUntracked(shadowDir: string, workTree: string): Promise<string[]> {
+  let listed: string;
+  try {
+    ({ stdout: listed } = await execFileAsync(
+      "git",
+      ["ls-files", "--others", "--exclude-standard", "-z"],
+      { env: { ...process.env, GIT_DIR: shadowDir, GIT_WORK_TREE: workTree }, maxBuffer: 64 * 1024 * 1024 },
+    ));
+  } catch {
+    // A depot git cannot read has nothing to cap; the capture below omits it either way.
+    return [];
   }
-  await walk(root);
+  const out: string[] = [];
+  for (const name of listed.split("\0")) {
+    if (!name) continue;
+    const size = await stat(join(workTree, name)).then((s) => s.size).catch(() => 0);
+    if (size > MAX_UNTRACKED_BYTES) out.push(`/${name}`);
+  }
   return out;
 }
 
-/** Initialises the shadow of a depot if needed, and excludes the nested depots from the root shadow. */
-async function ensureShadow(
-  shadowDir: string,
-  workTree: string,
-  nestedToExclude: string[],
-): Promise<void> {
-  await execFileAsync("mkdir", ["-p", shadowDir]).catch(() => {});
+/** Initialises the shadow of a depot if needed. */
+async function ensureShadow(shadowDir: string, workTree: string): Promise<void> {
+  await mkdir(shadowDir, { recursive: true }).catch(() => {});
   try {
     await shadowGit(shadowDir, workTree, ["init", "-q"]);
   } catch {
     // Already initialised; a hot index is exactly the point.
   }
-  if (nestedToExclude.length > 0) {
-    // A non-repo workspace root holding repos: `git add --all` would warn and record gitlinks.
-    // Excluding them keeps the root shadow to its own files, the nested trees go to their shadows.
-    const exclude = nestedToExclude
-      .map((dir) => `/${relative(workTree, dir)}/`)
-      .join("\n");
-    await writeFile(join(shadowDir, "info", "exclude"), exclude, "utf8").catch(() => {});
-  }
 }
 
-/** The untracked-larger-than-cap exclusions of one depot, merged into info/exclude. */
-async function writeUntrackedCapExcludes(shadowDir: string, workTree: string): Promise<void> {
-  const big = await oversizedFiles(workTree);
-  if (big.length === 0) return;
-  // Overwrite is wrong (the nested exclusions already live there): read-modify-write.
-  const existing = await readFile(join(shadowDir, "info", "exclude"), "utf8").catch(() => "");
-  const merged = [existing.trim(), ...big].filter(Boolean).join("\n");
-  await writeFile(join(shadowDir, "info", "exclude"), merged, "utf8").catch(() => {});
+/**
+ * The shadow's whole exclude file: the nested depots it must not swallow, then the untracked
+ * files past the size cap.
+ *
+ * Written whole, from what this capture computed. It used to read the file and append, so every
+ * capture added its own copy of the same lines: 4080 lines for 1371 distinct paths after a few
+ * runs, growing for good. The file is derived state, and deriving it is the only way two captures
+ * of one depot can agree.
+ *
+ * The lines already there are re-checked rather than replaced by what git reports, and that is not
+ * belt-and-braces: `info/exclude` is one of git's own exclusion sources, so a file this function
+ * excluded a moment ago is *no longer untracked* as far as `ls-files --others --exclude-standard`
+ * is concerned. Deriving only from git's answer made the second capture drop the line and the third
+ * capture take the 2 GB blob it was there to keep out. A line survives while its file is still
+ * there and still too big, which also bounds the file to the big files actually present.
+ */
+async function writeShadowExcludes(shadowDir: string, workTree: string, nested: string[]): Promise<void> {
+  const file = join(shadowDir, "info", "exclude");
+  const existing = await readFile(file, "utf8").catch(() => "");
+  const kept: string[] = [];
+  for (const line of existing.split("\n")) {
+    const name = line.trim();
+    // A nested depot's line ends with a slash and stays as it is; a capped file is re-measured.
+    if (!name) continue;
+    if (name.endsWith("/")) {
+      kept.push(name);
+      continue;
+    }
+    const size = await stat(join(workTree, name.slice(1))).then((s) => s.size).catch(() => 0);
+    if (size > MAX_UNTRACKED_BYTES) kept.push(name);
+  }
+  const lines = nested.map((dir) => `/${relative(workTree, dir)}/`);
+  lines.push(...kept, ...await oversizedUntracked(shadowDir, workTree));
+  const body = [...new Set(lines)].sort().join("\n");
+  if (existing.trim() === body) return;
+  await mkdir(dirname(file), { recursive: true }).catch(() => {});
+  await writeFile(file, body, "utf8").catch(() => {});
 }
 
 /**
@@ -180,9 +208,10 @@ export async function captureWorkspace(workspace: string, shadowsRoot: string): 
   const captured: DepotSnapshot[] = [];
   for (const depot of depots) {
     const shadowDir = join(shadowsRoot, "shadow", hash(depot.root));
-    const exclude = depot.root === root && !rootIsRepo ? nested : [];
-    await ensureShadow(shadowDir, depot.root, exclude);
-    await writeUntrackedCapExcludes(shadowDir, depot.root);
+    await ensureShadow(shadowDir, depot.root);
+    // A non-repo workspace root holding repos: `git add --all` would warn and record gitlinks.
+    // Excluding them keeps the root shadow to its own files, the nested trees go to their shadows.
+    await writeShadowExcludes(shadowDir, depot.root, depot.root === root && !rootIsRepo ? nested : []);
     try {
       await shadowGit(shadowDir, depot.root, [
         "-c", "core.autocrlf=false",

@@ -35,6 +35,21 @@ Otherwise a sub-agent's abort would be converted into "tool result: error" and t
 going. This is the key to making the stop actually stop. The LLM provider also treats an external abort
 as terminal: no retry, no circuit-breaker trip.
 
+### Nothing on the wind-down path may wait on the workspace
+
+The abort is instant; the report is not. Between `agent run aborted` and the router's `run stopped
+by user` the run walks its `finally`, and that block used to take a second full snapshot of the
+workspace. Measured 2026-11-12: 12.0 s for `recordRunStart` + 9.3 s for `recordRunEnd` on a 34 GB
+workspace, 26.6 s between the abort and the stop being reported on a real session. The snapshot is
+taken at the *start* of a run for `/undo`; the one at the end had no reader at all (`changesSince`
+recaptures the workspace when the owner asks), so it is now written off the run's path.
+
+`captureWorkspace` itself was the cost: a `readdir` + `stat` walk of every file to find untracked
+ones past the size cap, 3.7 s on a 33k-file tree and 12 s on an 88k-file one, run once per depot.
+It now asks git (`ls-files --others --exclude-standard`) and stats only what that returns: 0.32 s on
+the same 33k-file workspace, 0.6 s warm on the 88k-file one. The shadow's `info/exclude` is derived
+whole instead of appended, which also stops it growing an unbounded copy of itself.
+
 ### Kill the whole process group for `bash`
 
 Shell commands run under `setsid` (own process group). On abort the group is killed

@@ -2,7 +2,7 @@ import { test } from "bun:test";
 import assert from "node:assert/strict";
 import { MessageRouter } from "../../src/core/router.ts";
 import { SessionManager } from "../../src/sessions/manager.ts";
-import { runRegistry } from "../../src/core/run-registry.ts";
+import { runRegistry, RerouteSignal } from "../../src/core/run-registry.ts";
 import { AbortedError } from "../../src/core/aborted.ts";
 import { hooks } from "../../src/hooks/index.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
@@ -74,33 +74,52 @@ test("a message during an active run is injected, not run separately", async () 
   runRegistry.clear();
 });
 
-test("aborting a run rejects a pending injected message", async () => {
+test("a message parked before the stop runs on its own, not into the void", async () => {
+  // It was parked in run #1's mailbox and never drained: the model never saw it. Killing it with
+  // the abort left the bubble on screen with nothing under it, and the owner typed it again
+  // (2026-11-12). The abort reroutes what it never read; the router turns that into a run.
+  //
+  // The reroute is taken here the way the composition root takes it (`routeWithReroute`): a second
+  // routing of the same message with `noInject`, so it opens a run of its own.
   runRegistry.clear();
+  const ran: string[] = [];
   const router = new MessageRouter(new SessionManager(), {
-    async handleMessage(_m: UnifiedMessage, _s: SessionData, signal?: AbortSignal) {
-      await new Promise<void>((_res, rej) => {
-        if (signal?.aborted) {
-          rej(new AbortedError());
-          return;
-        }
-        signal?.addEventListener("abort", () => rej(new AbortedError()), { once: true });
-      });
-      return "x";
+    async handleMessage(m: UnifiedMessage, _s: SessionData, signal?: AbortSignal) {
+      ran.push(m.id);
+      if (m.id === "m1") {
+        await new Promise<void>((_res, rej) => {
+          if (signal?.aborted) {
+            rej(new AbortedError());
+            return;
+          }
+          signal?.addEventListener("abort", () => rej(new AbortedError()), { once: true });
+        });
+      }
+      return `answer-${m.id}`;
     },
     async handleMessageStreaming() { throw new Error("unused"); },
     getResponseAttachments() { return []; },
   } as never, config);
+  const route = async (m: UnifiedMessage, noInject = false) => {
+    try {
+      return await router.route(m, noInject ? { noInject: true } : {});
+    } catch (err) {
+      if (err instanceof RerouteSignal) return await router.route(m, { noInject: true });
+      throw err;
+    }
+  };
 
   const injected = injectionSignal();
-  const p1 = router.route(message("m1"));
+  const p1 = route(message("m1"));
   await waitUntil(() => runRegistry.isRunning(SESSION_ID), "run #1 to start");
-  const p2 = router.route(message("m2")); // injected, pending (never drained)
+  const p2 = route(message("m2")); // injected, pending (never drained)
   await waitUntil(injected.seen, "m2 to be injected into run #1");
   injected.dispose();
 
   assert.equal(router.stop(SESSION_ID), "stopped");
   assert.equal(await p1, undefined);
-  await assert.rejects(p2, (e: unknown) => e instanceof AbortedError);
+  assert.equal((await p2)?.text, "answer-m2");
+  assert.deepEqual(ran, ["m1", "m2"]);
   runRegistry.clear();
 });
 
@@ -164,12 +183,14 @@ test("a message sent while a stopped run winds down runs on its own", async () =
   runRegistry.clear();
 });
 
-/** The other half: a message parked *before* the stop still dies with it. The owner asked for the
- *  stop, and reviving what they interrupted would defeat it. */
-test("a message parked before the stop still dies with it", async () => {
+/** The other half: a message the run *did* read is interrupted by the stop. The model saw it, so
+ *  it was part of the work the owner ended -- only what was never read is rerouted. */
+test("a message the run drained dies with the stop", async () => {
   runRegistry.clear();
   const router = new MessageRouter(new SessionManager(), {
-    async handleMessage(_m: UnifiedMessage, _s: SessionData, signal?: AbortSignal) {
+    async handleMessage(_m: UnifiedMessage, s: SessionData, signal?: AbortSignal) {
+      // Drain: this is the point where the message is read into the run's prompt.
+      runRegistry.drainInjections(s.id);
       await new Promise<void>((resolve) => {
         if (signal?.aborted) return resolve();
         signal?.addEventListener("abort", () => resolve(), { once: true });
