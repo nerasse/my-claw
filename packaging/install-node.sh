@@ -1,5 +1,7 @@
-#!/bin/bash
-set -euo pipefail
+#!/bin/sh
+# POSIX sh on purpose: this file is piped into whatever shell the machine has (`| sh`), which on
+# Debian is dash. No pipefail, no arrays, no `local` -- those are what broke the piped install.
+set -eu
 
 # Installs the my-claw node client (docs/remote-nodes.md). Served by the my-claw it joins:
 #
@@ -65,9 +67,11 @@ case "$(uname -m)" in
 esac
 TARGET="${OS}-${ARCH}"
 
-PAIR_ARGS=(--server "$SERVER" --code "$PAIR_CODE")
-[ -n "$NAME" ] && PAIR_ARGS+=(--name "$NAME")
-[ -n "$WORKDIR" ] && PAIR_ARGS+=(--workdir "$WORKDIR")
+# The pair arguments travel as this script's positionals, so they stay quoted (a name or a work
+# directory may hold spaces) while the functions below receive them through "$@".
+set -- --server "$SERVER" --code "$PAIR_CODE"
+[ -n "$NAME" ] && set -- "$@" --name "$NAME"
+[ -n "$WORKDIR" ] && set -- "$@" --workdir "$WORKDIR"
 
 # Linux is not only systemd: OpenRC (Alpine, Gentoo), runit (Void), s6 and plain SysVinit are
 # still around, and an install that fails halfway through is worse than one that says what is
@@ -121,7 +125,7 @@ install_admin_linux() {
   fi
 
   echo "Pairing..."
-  sudo -u myclaw-node env MYCLAW_NODE_DIR="$CONFIG_DIR" "$BIN" pair "${PAIR_ARGS[@]}"
+  sudo -u myclaw-node env MYCLAW_NODE_DIR="$CONFIG_DIR" "$BIN" pair "$@"
 
   if has_systemd; then
     cat > /etc/systemd/system/my-claw-node.service <<UNIT
@@ -161,7 +165,7 @@ install_admin_macos() {
   if ! id -u myclaw-node >/dev/null 2>&1; then
     echo "Creating the myclaw-node account..."
     # Hidden system user with no shell, like the Linux one. First unused id from 350 downward.
-    local uid=350
+    uid=350
     while dscl . -list /Users UniqueID | awk '{print $2}' | grep -q "^${uid}$"; do uid=$((uid - 1)); done
     dscl . -create /Users/myclaw-node
     dscl . -create /Users/myclaw-node UserShell /usr/bin/false
@@ -185,7 +189,7 @@ install_admin_macos() {
   fi
 
   echo "Pairing..."
-  sudo -u myclaw-node env MYCLAW_NODE_DIR="$CONFIG_DIR" "$BIN" pair "${PAIR_ARGS[@]}"
+  sudo -u myclaw-node env MYCLAW_NODE_DIR="$CONFIG_DIR" "$BIN" pair "$@"
 
   PLIST=/Library/LaunchDaemons/fr.kssimi.myclaw-node.plist
   cat > "$PLIST" <<PLIST_END
@@ -218,7 +222,7 @@ install_user_linux() {
   install -m 755 "${TMP_DIR}/myclaw-node" "$BIN"
 
   echo "Pairing..."
-  "$BIN" pair "${PAIR_ARGS[@]}" --dir "$CONFIG_DIR"
+  "$BIN" pair "$@" --dir "$CONFIG_DIR"
 
   if has_systemd; then
     UNIT_DIR="$HOME/.config/systemd/user"
@@ -259,7 +263,7 @@ install_user_macos() {
   install -m 755 "${TMP_DIR}/myclaw-node" "$BIN"
 
   echo "Pairing..."
-  "$BIN" pair "${PAIR_ARGS[@]}" --dir "$CONFIG_DIR"
+  "$BIN" pair "$@" --dir "$CONFIG_DIR"
 
   PLIST="$HOME/Library/LaunchAgents/fr.kssimi.myclaw-node.plist"
   mkdir -p "$HOME/Library/LaunchAgents"
@@ -283,9 +287,9 @@ PLIST_END
 # ---------------------------------------------------------------------- dispatch
 
 if [ "$MODE" = "admin" ]; then
-  if [ "$OS" = "linux" ]; then install_admin_linux; else install_admin_macos; fi
+  if [ "$OS" = "linux" ]; then install_admin_linux "$@"; else install_admin_macos "$@"; fi
 else
-  if [ "$OS" = "linux" ]; then install_user_linux; else install_user_macos; fi
+  if [ "$OS" = "linux" ]; then install_user_linux "$@"; else install_user_macos "$@"; fi
 fi
 
 echo ""
