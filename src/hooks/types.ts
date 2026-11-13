@@ -370,6 +370,24 @@ export interface HookEventMap {
     /** What ran instead. */
     ran: string;
   };
+  /**
+   * One line about a provider during a run: a wait before a retry, a window that ran out, a model
+   * the run left. Stated out of band, as a notice, and never as a paragraph of the answer.
+   *
+   * It used to ride the token stream, which is why a run that retried twice and then fell back
+   * showed three blocks of red above the reply, and none of them after a reload: the notes were
+   * never journalled. A notice is drawn apart from the agent's voice and is not part of the answer
+   * -- the owner sees what happened, the thread keeps the answer alone (2026-11-13).
+   */
+  "provider:notice": {
+    platform: string;
+    chatId: string;
+    threadId?: string;
+    /** Which session produced it: a sub-agent's notes belong to its own run. */
+    sessionId: string;
+    /** `[retry] …`, `[quota] …`, `[fallback] …`: the kind is the bracket tag. */
+    note: string;
+  };
 
   // === MCP LIFECYCLE ===
   "mcp:synced": { servers: string[]; toolCount: number };

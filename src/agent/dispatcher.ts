@@ -7,6 +7,7 @@ import { MessagePreprocessor } from "./preprocess.ts";
 import { resolveRunModel, type RunModel, type RunModelOverride } from "../llm/run-model.ts";
 import { withoutEndpoint } from "../llm/model-ref.ts";
 import { announceModelFallback } from "../llm/fallback-notice.ts";
+import { hooks } from "../hooks/index.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import { log } from "../utils/logger.ts";
 import { ToolRegistry } from "../tools/registry.ts";
@@ -168,9 +169,6 @@ export class BackendDispatcher implements AgentBackend {
         backend.handleMessageStreaming(message, session, onToken, onToolUse, signal, onTurnSwitch, resolvedModelId, reasoning, onToolStart, modelOverride),
       {
         signal,
-        // The streaming channel shows the note live; the returned text (persisted as the
-        // reply) carries it too, so the live bubble and the history stay in agreement.
-        onFallbackNote: async (note) => onToken(`${note}\n\n`),
       },
     );
   }
@@ -187,9 +185,8 @@ export class BackendDispatcher implements AgentBackend {
     message: UnifiedMessage,
     session: SessionData,
     run: (backend: AgentBackend, modelId?: string, modelOverride?: RunModelOverride) => Promise<string>,
-    options: { signal?: AbortSignal; onFallbackNote?: (note: string) => Promise<void> } = {},
+    options: { signal?: AbortSignal } = {},
   ): Promise<string> {
-    const notes: string[] = [];
     const preflightRouteEntries = resolved.skipped.filter(entry => entry.origin.startsWith("tags.") && entry.origin.includes(".route["));
     if (resolved.route || preflightRouteEntries.length > 0) {
       const routeName = resolved.route?.tag ?? preflightRouteEntries[0]?.origin.split(".")[1] ?? "route";
@@ -197,7 +194,6 @@ export class BackendDispatcher implements AgentBackend {
         ? resolved.skipped.filter(entry => entry.origin.startsWith(`tags.${resolved.route!.tag}.route[`))
         : preflightRouteEntries) {
         const note = `[fallback] ${routeName}: ${skipped.model} was unavailable before the run (${skipped.availability.state}); using ${resolved.model} instead.`;
-        notes.push(note);
         void log("warn", "model route preflight fallback", {
           sessionId: session.id,
           messageId: message.id,
@@ -206,7 +202,15 @@ export class BackendDispatcher implements AgentBackend {
           targetModel: resolved.model,
           reason: skipped.availability.state,
         });
-        if (options.onFallbackNote) await options.onFallbackNote(note);
+        // Out of band, like the bridge's own notes: the app draws a notice, the answer stays the
+        // answer. It used to ride the token stream -- see the event's own note.
+        hooks.emit("provider:notice", {
+          platform: message.platform,
+          chatId: message.chatId,
+          ...(message.threadId ? { threadId: message.threadId } : {}),
+          sessionId: session.id,
+          note,
+        });
       }
     }
 
@@ -220,22 +224,14 @@ export class BackendDispatcher implements AgentBackend {
 
     try {
       const firstCandidate = resolved.route?.candidates[resolved.route.selectedIndex];
-      const result = await run(
+      return await run(
         this.engineFor(resolved),
         resolved.route ? resolved.model : undefined,
         resolved.route ? candidateOverride(firstCandidate ?? {}) : undefined,
       );
-      return notes.length > 0 ? `${notes.join("\n\n")}\n\n${result}` : result;
     } catch (error) {
-      // A notice the owner never saw, standing in front of the error that made it matter.
-      if (notes.length > 0 && !options.onFallbackNote) {
-        const message = String((error as Error | undefined)?.message ?? error);
-        const decorated = new Error(`${notes.join("\n\n")}\n\n${message}`);
-        if (typeof error === "object" && error !== null && "status" in error) {
-          (decorated as Error & { status?: unknown }).status = (error as { status?: unknown }).status;
-        }
-        throw decorated;
-      }
+      // The notes were delivered as notices before the run started, so the failure travels as
+      // itself: an error bubble prefixed with three `[fallback]` lines reads as four errors.
       throw error;
     }
   }

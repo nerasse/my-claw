@@ -75,16 +75,6 @@ import { nodeRecord } from "../nodes/store.ts";
 import { normalizeUntrusted } from "./prompt/normalize-untrusted.ts";
 
 /**
- * A note the reader owes for a retry or a reroute, in front of the answer.
- *
- * The live stream gets the same note as it happens, so the bubble and the history say the same
- * thing -- the channel replaces the streamed bubble with this text when the run ends.
- */
-function withFallbackNotes(text: string, notes: readonly string[]): string {
-  return notes.length > 0 ? `${notes.join("\n\n")}\n\n${text}` : text;
-}
-
-/**
  * Names the model that actually failed on the error the run dies of.
  *
  * The provider's own text says what it refused; it does not say which configured provider it was,
@@ -345,7 +335,6 @@ export class AgentBridge implements AgentBackend {
     attempted: Set<string>;
     /** Every provider this run has called, across every call it has made. Mutated here. */
     tried: string[];
-    notes: string[];
     runModel?: RunModel;
     /** This run's node in the live view: the model it names moves with the run. */
     runNode?: { setModel: (model: string) => void };
@@ -400,7 +389,7 @@ export class AgentBridge implements AgentBackend {
         const wait = capability || wall || isQuotaSpent(err) ? undefined : params.waits.shift();
         if (wait !== undefined) {
           this.recordFailedCall({ ...params, config, durationMs: Date.now() - startedAt, error: err });
-          await this.noteFallback(
+          this.noteFallback(
             `[retry] ${failed.model} failed on the provider's side (${reason}); trying again in ${Math.round(wait / 1000)}s.`,
             params,
           );
@@ -410,7 +399,7 @@ export class AgentBridge implements AgentBackend {
         // The wall is worth saying out loud once, in the words of the bar that is full rather than
         // the provider's own rate-limit phrasing: the reader is about to see another model answer.
         if (wall) {
-          await this.noteFallback(
+          this.noteFallback(
             `[quota] ${failed.model} is out of its ${labelOfKind(kindOfWindow(wall))} allowance (${wall.label} at ${Math.round(wall.usedPercent)}%). Moving on now instead of waiting for a bar that does not move.`,
             params,
           );
@@ -457,7 +446,7 @@ export class AgentBridge implements AgentBackend {
           previous: failed.model,
           reason: capability ? "capability" : "provider",
         });
-        await this.noteFallback(
+        this.noteFallback(
           capability
             ? `[fallback] ${failed.model} cannot do this (${capability}: ${reason}). This run used ${next.model} instead (${next.label}).`
             : `[fallback] ${failed.model} via ${failed.provider ?? "provider"} is unavailable (${reason}). This run used ${next.model} instead (${next.label}); it returns to ${failed.model} once the provider recovers.`,
@@ -512,11 +501,27 @@ export class AgentBridge implements AgentBackend {
     return wallConfig(this.config, config);
   }
 
-  /** The note goes to the reader twice: live, and in front of the answer the history keeps. */
-  private async noteFallback(note: string, params: { notes: string[]; onToken?: TokenCallback }): Promise<void> {
-    params.notes.push(note);
+  /**
+   * A provider note, for the record and for the live reader -- never for the answer's prose.
+   *
+   * It used to be pushed into the token stream (`onToken`), which made every note a paragraph of
+   * the answer: a run that retried twice and then fell back painted three of them above the reply,
+   * and the bubble the owner saw live held text no entry would ever carry. A reload then showed the
+   * answer alone, so the two surfaces disagreed by exactly the notes -- "je vois trois erreurs en
+   * live et une seule apres refresh" (2026-11-13).
+   *
+   * The live surface gets them as system notices instead (`provider:notice`), which are drawn apart
+   * from the agent's voice and are not part of the answer at all.
+   */
+  private noteFallback(note: string, params: { session: SessionData; message: UnifiedMessage }): void {
     void log("warn", "provider fallback", { note });
-    if (params.onToken) await params.onToken(`${note}\n\n`);
+    hooks.emit("provider:notice", {
+      platform: params.message.platform,
+      chatId: params.message.chatId,
+      ...(params.message.threadId ? { threadId: params.message.threadId } : {}),
+      sessionId: params.session.id,
+      note,
+    });
   }
 
   /** A call that never answered is still a call: analytics counts it, and so does its cost. */
@@ -680,13 +685,12 @@ export class AgentBridge implements AgentBackend {
     // A session that forbade the fallback says so once, here: the run's own model or the failure.
     const forbidFallback = session.fallbackPolicy === "forbid";
     // What this run may do when the provider itself fails: the waits it owes (spent once, in
-    // order), the models it already tried, and the notes it owes the reader for both.
+    // order), and the models it already tried.
     const providerWaits = providerRetryDelays(this.config.llm);
     const attemptedModels = new Set<string>([llmConfig.model]);
     // Providers this run has called, in order, kept across every iteration: a fallback adopted on
     // one turn is the model that starts the next one, and a wait must still see the whole walk.
     const triedProviders: string[] = [];
-    const fallbackNotes: string[] = [];
     // A sub-agent is its own run and warns for its own chain; the dedupe by message id keeps the
     // orchestrator's run to a single notice even though it resolves here as well.
     if (runModel) announceModelFallback(runModel, message, agentToolType);
@@ -1153,7 +1157,6 @@ export class AgentBridge implements AgentBackend {
             waits: providerWaits,
             attempted: attemptedModels,
             tried: triedProviders,
-            notes: fallbackNotes,
             runModel,
             runNode,
             session,
@@ -1364,7 +1367,7 @@ export class AgentBridge implements AgentBackend {
           });
           const media = await this.mediaForMarker(message, session);
           recorder.runEnd("done", media.paths, media.ids);
-          return withFallbackNotes(transformedResponse, fallbackNotes);
+          return transformedResponse;
         }
 
         void log("info", "agent requested tool calls", {
@@ -1627,7 +1630,7 @@ export class AgentBridge implements AgentBackend {
         toolExecutions,
       });
       const summary = await this.handleMaxIterations(chatMessages, session, message, llmConfig, agentToolType, startedAt, toolExecutions, iteration, budget, recorder, signal);
-      return withFallbackNotes(summary, fallbackNotes);
+      return summary;
     } catch (err) {
       if (isAbort(err, signal)) {
         hooks.emit("agent:run:aborted", {

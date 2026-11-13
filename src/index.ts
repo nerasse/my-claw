@@ -325,9 +325,10 @@ async function main() {
   hooks.on("channel:stopped", ({ platform }) => void liveChannels.delete(platform));
   hooks.on("channel:error", ({ platform }) => void liveChannels.delete(platform));
 
-  // Out-of-band statements that belong to a chat but not to the agent's answer -- today, a run
-  // that had to fall back off a configured model. Registered per channel where the adapter is
-  // built, so one subscriber serves all three and a disabled channel simply has no sender.
+  // Out-of-band statements that belong to a chat but not to the agent's answer: a run that had to
+  // fall back off a configured model, and the provider notes a retry or a wall owes the reader.
+  // Registered per channel where the adapter is built, so one subscriber serves all three and a
+  // disabled channel simply has no sender.
   const noticeSenders = new Map<string, (chatId: string, text: string, threadId?: string) => Promise<void>>();
   hooks.on("model:fallback", (event) => {
     const send = noticeSenders.get(event.platform);
@@ -335,6 +336,16 @@ async function main() {
     // Never let a notice failure touch the run it is about.
     void send(event.chatId, fallbackNoticeText(event), event.threadId).catch((err) =>
       void log("warn", "model fallback notice not delivered", { platform: event.platform, error: String(err) }),
+    );
+  });
+  // A retry, a wall, a model the run left. Stated as a notice rather than written into the answer
+  // -- it used to ride the token stream, and three of them above a reply read as three failures
+  // that vanished on the next reload (2026-11-13).
+  hooks.on("provider:notice", (event) => {
+    const send = noticeSenders.get(event.platform);
+    if (!send) return;
+    void send(event.chatId, event.note, event.threadId).catch((err) =>
+      void log("warn", "provider notice not delivered", { platform: event.platform, error: String(err) }),
     );
   });
 

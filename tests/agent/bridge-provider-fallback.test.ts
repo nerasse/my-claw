@@ -22,6 +22,7 @@ import { ToolRegistry } from "../../src/tools/registry.ts";
 import { SkillRegistry } from "../../src/skills/registry.ts";
 import { runRegistry } from "../../src/core/run-registry.ts";
 import { sessionLogOf } from "../../src/sessions/log-access.ts";
+import { hooks } from "../../src/hooks/index.ts";
 import { bashTool } from "../../src/tools/bash.ts";
 import { deleteSession, type LegacySessionData } from "../../src/sessions/store.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
@@ -115,14 +116,27 @@ function answer(text: string): Response {
 
 let cleanupLog: () => void;
 
+/**
+ * The provider notes a run owes the reader, in order.
+ *
+ * They used to ride the token stream, which made them paragraphs of the answer: a run that retried
+ * twice and then fell back painted three of them above the reply, and a reload showed the answer
+ * alone. They are notices now -- drawn apart, and never part of what the model wrote.
+ */
+let notices: string[] = [];
+const collectNotice = (event: { note: string }): void => { notices.push(event.note); };
+
 beforeEach(async () => {
   await deleteSession(SESSION_ID);
   await writeLegacySessionFile(SESSION_ID, createSession());
   cleanupLog = (await setupSessionLog(SESSION_ID)).cleanup;
+  notices = [];
+  hooks.on("provider:notice", collectNotice);
 });
 
 afterEach(() => {
   cleanupLog();
+  hooks.off("provider:notice", collectNotice);
   runRegistry.clear();
 });
 
@@ -152,10 +166,10 @@ test("a run on a failing provider waits, then finishes on the configured default
 
   try {
     const text = await run(bridge, session, signal);
-    assert.match(text, /\[retry\] alpha-1/, text);
-    assert.match(text, /trying again in 0s/, text);
-    assert.match(text, /\[fallback\] alpha-1/, text);
-    assert.match(text, /This run used beta-1 instead \(configured default\)/, text);
+    assert.match(notices.join("\n"), /\[retry\] alpha-1/, notices.join("\n"));
+    assert.match(notices.join("\n"), /trying again in 0s/, notices.join("\n"));
+    assert.match(notices.join("\n"), /\[fallback\] alpha-1/, notices.join("\n"));
+    assert.match(notices.join("\n"), /This run used beta-1 instead \(configured default\)/, notices.join("\n"));
     assert.match(text, /fini sur le defaut/, text);
     // The same model once more after the wait, then the default: the schedule first, the target
     // second, and never the other way round.
@@ -220,7 +234,7 @@ test("a policy refusal is the provider's own, so the run moves on", async () => 
 
   try {
     const text = await run(bridge, createSession("alpha-1"), signal);
-    assert.match(text, /\[fallback\]/, text);
+    assert.match(notices.join("\n"), /\[fallback\]/, notices.join("\n"));
     assert.match(text, /passe par un autre provider/, text);
     assert.deepEqual(models, ["alpha-1", "alpha-1", "beta-1"]);
   } finally {
@@ -302,8 +316,9 @@ test("a route walks what is left of it, then the tag's global default", async ()
   try {
     const text = await run(bridge, session, signal);
     assert.match(text, /le defaut global/, text);
-    assert.match(text, /\(Cheap route candidate 2\)/, text);
-    assert.match(text, /\(Cheap global default\)/, text);
+    // Which candidate answered is a provider note now, not the answer's own line.
+    assert.match(notices.join("\n"), /\(Cheap route candidate 2\)/, notices.join("\n"));
+    assert.match(notices.join("\n"), /\(Cheap global default\)/, notices.join("\n"));
     assert.deepEqual(models, ["alpha-1", "alpha-1", "alpha-2", "beta-1"]);
     assert.equal(session.modelOverride, "tag:Cheap", "the tag stays the session's choice");
   } finally {
@@ -329,8 +344,8 @@ test("a spent quota is not waited for: the run moves to the next model at once",
   try {
     const text = await run(bridge, createSession("alpha-1"), signal);
     assert.match(text, /fini ailleurs/, text);
-    assert.doesNotMatch(text, /\[retry\]/, text);
-    assert.match(text, /\[fallback\] alpha-1/, text);
+    assert.doesNotMatch(notices.join("\n"), /\[retry\]/, notices.join("\n"));
+    assert.match(notices.join("\n"), /\[fallback\] alpha-1/, notices.join("\n"));
     // One request to the spent model: neither the transport nor the run tried it again.
     assert.deepEqual(models, ["alpha-1", "beta-1"]);
   } finally {
@@ -394,9 +409,11 @@ test("the streaming path announces the fallback as it happens", async () => {
 
   try {
     const text = await run(bridge, createSession("alpha-1"), signal, async (token) => void tokens.push(token));
-    assert.ok(tokens[0]!.startsWith("[retry]"), tokens.join(""));
+    // The retry is a notice now: the answer stream carries the answer and nothing else.
     assert.ok(tokens.join("").includes("la reponse"), tokens.join(""));
-    assert.ok(text.startsWith("[retry]"), text);
+    assert.ok(!tokens[0]!.startsWith("[retry]"), tokens.join(""));
+    assert.match(notices[0] ?? "", /^\[retry\]/, notices.join(""));
+    assert.ok(!text.startsWith("[retry]"), text);
     assert.deepEqual(models, ["alpha-1", "alpha-1", "beta-1"]);
   } finally {
     end();
@@ -436,7 +453,7 @@ test("a run forced onto its tag's first candidate still walks that tag", async (
     // Exactly what the dispatcher does: the concrete candidate, plus the session's own tag pick.
     const text = await bridge.handleMessage(createMessage(), createSession("tag:TwoAccounts"), signal, "alpha-1");
     assert.match(text, /le deuxieme compte/, text);
-    assert.match(text, /\(TwoAccounts route candidate 2\)/, text);
+    assert.match(notices.join("\n"), /\(TwoAccounts route candidate 2\)/, notices.join("\n"));
     assert.deepEqual(models, ["alpha-1", "alpha-2"], "the tag's second account, never the default");
     assert.doesNotMatch(text, /beta-1/, "the agent default is not the answer to an exhausted route");
   } finally {
@@ -473,8 +490,8 @@ test("a spent plan limit gets one request, no wait, and the next account", async
   try {
     const text = await bridge.handleMessage(createMessage(), createSession("tag:TwoAccounts"), signal, "alpha-1");
     assert.match(text, /le deuxieme compte/, text);
-    assert.doesNotMatch(text, /\[retry\]/, "nothing is waited for: no wait refills a plan");
-    assert.match(text, /\[fallback\]/, text);
+    assert.doesNotMatch(notices.join("\n"), /\[retry\]/, "nothing is waited for: no wait refills a plan");
+    assert.match(notices.join("\n"), /\[fallback\]/, notices.join("\n"));
     // One request to the exhausted account -- the transport's three attempts are gone too.
     assert.deepEqual(models, ["alpha-1", "alpha-2"]);
   } finally {
@@ -541,9 +558,9 @@ test("a bare rate_limit_error on a full bar skips the waits, the retries, and na
     assert.match(text, /le deuxieme compte/, text);
     // The schedule is not spent on a bar that does not move, and the transport's own three
     // attempts are gone with it: this is the "twelve requests and 210 seconds" case.
-    assert.doesNotMatch(text, /\[retry\]/, "no wait on a confirmed wall");
+    assert.doesNotMatch(notices.join("\n"), /\[retry\]/, "no wait on a confirmed wall");
     // The bar is named, not the provider's misleading sentence: the note reads the oracle.
-    assert.match(text, /\[quota\] quenched-1 is out of its week allowance \(Week at 100%\)/, text);
+    assert.match(notices.join("\n"), /\[quota\] quenched-1 is out of its week allowance \(Week at 100%\)/, notices.join("\n"));
     // One request to the refusing model: the transport's three attempts are gone with the waits.
     assert.deepEqual(models, ["quenched-1", "beta-1"]);
   } finally {
@@ -583,8 +600,8 @@ test("a conversation set to wait still walks its own route before it waits", asy
   try {
     const text = await bridge.handleMessage(createMessage(), session, signal, "quenched-1");
     assert.match(text, /le deuxieme compte repond/, text);
-    assert.match(text, /\(Quenched route candidate 2\)/, text);
-    assert.match(text, /\[quota\] quenched-1 is out of its week allowance/, text);
+    assert.match(notices.join("\n"), /\(Quenched route candidate 2\)/, notices.join("\n"));
+    assert.match(notices.join("\n"), /\[quota\] quenched-1 is out of its week allowance/, notices.join("\n"));
     assert.deepEqual(models, ["quenched-1", "beta-1"], "one request to the refusing account, then the route");
   } finally {
     delete process.env["SYNTHETIC_KEY_FOR_TEST"];
@@ -622,7 +639,7 @@ test("a spent route falls to the tag's own global default, and only then waits",
   try {
     const text = await bridge.handleMessage(createMessage(), session, signal, "quenched-1");
     assert.match(text, /le defaut global du tag/, text);
-    assert.match(text, /\(Quenched global default\)/, text);
+    assert.match(notices.join("\n"), /\(Quenched global default\)/, notices.join("\n"));
     assert.deepEqual(models, ["quenched-1", "beta-1"]);
   } finally {
     delete process.env["SYNTHETIC_KEY_FOR_TEST"];
@@ -727,8 +744,8 @@ for (const [name, body] of [
       const text = await bridge.handleMessage(createMessage(), createSession("tag:Quenched"), signal, "quenched-1");
       // The run still moves on (the switch is off here), but the note proves the oracle answered:
       // it is the only thing that knows the bar, and the adapter arms off the same read.
-      assert.match(text, /\[quota\] quenched-1 is out of its week allowance \(Week at 100%\)/, text);
-      assert.doesNotMatch(text, /\[retry\]/, "no wait on a spent plan");
+      assert.match(notices.join("\n"), /\[quota\] quenched-1 is out of its week allowance \(Week at 100%\)/, notices.join("\n"));
+      assert.doesNotMatch(notices.join("\n"), /\[retry\]/, "no wait on a spent plan");
     } finally {
       delete process.env["SYNTHETIC_KEY_FOR_TEST"];
       end();
@@ -786,8 +803,8 @@ test("a cached reading older than the wall does not answer the wall question", a
     const text = await bridge.handleMessage(createMessage(), createSession("tag:Quenched"), signal, "quenched-1");
     // The stale reading said "not a wall"; the forced one says otherwise, so the run moves on with
     // the bar named and no wait spent on it.
-    assert.match(text, /\[quota\] quenched-1 is out of its week allowance/, text);
-    assert.doesNotMatch(text, /\[retry\]/, "no wait on a bar that is full now");
+    assert.match(notices.join("\n"), /\[quota\] quenched-1 is out of its week allowance/, notices.join("\n"));
+    assert.doesNotMatch(notices.join("\n"), /\[retry\]/, "no wait on a bar that is full now");
   } finally {
     resetQuotaCache();
     delete process.env["SYNTHETIC_KEY_FOR_TEST"];
