@@ -48,7 +48,7 @@ export const COMMANDS: readonly CommandInfo[] = [
   { command: "branches", description: "List branches, switch: /branches [n], name: /branches name <n> <label>", channels: ["my-claw-app"], quiet: true },
   { command: "retry", description: "Retry from before the last user turn: /retry [n]", channels: ["my-claw-app"], quiet: true },
   { command: "fork", description: "Fork conversation to a new thread: /fork [entryId]", channels: ["my-claw-app"], quiet: true },
-  { command: "undo", description: "Undo last turn (aborts running), /redo to revert", channels: ["my-claw-app"], quiet: true },
+  { command: "undo", description: "Undo: /undo [n] [soft|hard], /undo list to pick a turn (aborts running), /redo to revert", channels: ["my-claw-app"], quiet: true },
   { command: "redo", description: "Redo after /undo (only if no new turn was written)", channels: ["my-claw-app"], quiet: true },
   { command: "help", description: "List available commands" },
 ];

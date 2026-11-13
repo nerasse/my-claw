@@ -97,7 +97,7 @@ import { createAccounts } from "./llm/subscription-accounts.ts";
 import { choicesOf, installKind, probeService, serviceStates } from "./services/catalog.ts";
 import { diskBytes, transformersRuntime, whisperRuntime } from "./services/local-engines.ts";
 import { createMyClawAppCommandHandler } from "./channels/my-claw-app/commands.ts";
-import { askUndoMode } from "./channels/branch-commands.ts";
+import { askUndoList, askUndoMode } from "./channels/branch-commands.ts";
 import { effectiveEffort, EFFORT_LEVELS, leafModelId } from "./llm/resolver.ts";
 import { SessionManager } from "./sessions/manager.ts";
 import { readMeta } from "./sessions/meta.ts";
@@ -2499,6 +2499,7 @@ async function main() {
       listSubAgents: (sessionId) => subAgentRunner.list(subAgentRegistry, sessionId),
       pricing,
       undoPrompt: askUndoMode,
+      undoListPrompt: askUndoList,
       // The typed `/stop` claims through the channel's one door, like the app's Stop button:
       // the stop frame is written by the adapter alone, so neither door can answer without the
       // other hearing (docs/stop.md).

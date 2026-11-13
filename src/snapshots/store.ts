@@ -29,7 +29,7 @@ const execFileAsync = promisify(execFile);
 const SNAPSHOT_RETENTION_DAYS = 30;
 const SNAPSHOT_RETENTION_MS = SNAPSHOT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 /** Kept per session whatever their age, so a busy conversation cannot bury its own recent undo. */
-const MAX_SNAPSHOTS_PER_SESSION = 20;
+export const MAX_SNAPSHOTS_PER_SESSION = 20;
 const SHADOW_GC_TIMEOUT_MS = 120_000;
 
 export interface RunSnapshot {
@@ -153,6 +153,19 @@ export async function gcShadows(): Promise<void> {
 
 function readSnapshot(file: string): Promise<RunSnapshot | null> {
   return readFile(file, "utf8").then((text) => JSON.parse(text) as RunSnapshot).catch(() => null);
+}
+
+/**
+ * The run ids a session still holds a snapshot for, read from the directory once.
+ *
+ * For a surface that asks about a whole conversation rather than one turn: `/undo list` shows
+ * where the hard mode still reaches, and asking per turn would open the directory once per row.
+ * A run with a snapshot file is a run whose files can come back; the file's *content* is not read
+ * here, so a damaged one still counts until `snapshotOfRuns` refuses it at restore time.
+ */
+export async function sessionSnapshotRunIds(sessionId: string): Promise<Set<string>> {
+  const files = await readdir(sessionDir(sessionId)).catch(() => [] as string[]);
+  return new Set(files.filter((name) => name.endsWith(".json")).map((name) => name.slice(0, -5)));
 }
 
 /**

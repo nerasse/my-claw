@@ -114,6 +114,7 @@ import { SessionFileStore, filePathFor, parseStoredName } from "./files.ts";impo
   MyClawAppApprovalGrantRemove,
   MyClawAppQuestionReply,
   MyClawAppUndoChoose,
+  MyClawAppUndoChooseList,
   MyClawAppUndoCancel,
   MyClawAppAttachmentMeta,
   MyClawAppChatCompacting,
@@ -540,6 +541,16 @@ export class MyClawAppAdapter implements ChannelAdapter {
         turnPreview: undo.turnPreview,
         diff: undo.diff,
         ts: new Date(undo.requestedAt).toISOString(),
+      });
+    });
+    // The turn picker: `/undo list` shows the last turns, each with the mode it allows, and
+    // picking one is the undo. Same broadcast shape, same short life -- the command awaits it.
+    undoManager.setListHandler((list) => {
+      this.broadcast(list.owner, {
+        type: "undo.list",
+        id: list.id,
+        threadId: list.threadId,
+        turns: list.turns,
       });
     });
     this.server = Bun.serve({
@@ -1865,6 +1876,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
         break;
       case "undo.choose":
         this.resolveUndo(frame);
+        break;
+      case "undo.choose.list":
+        this.resolveUndoList(frame);
         break;
       case "undo.cancel":
         this.cancelUndo(frame);
@@ -4173,6 +4187,18 @@ export class MyClawAppAdapter implements ChannelAdapter {
       type: "undo.resolved",
       id: frame.id,
       threadId: undo.threadId,
+      reason: "chosen",
+    });
+  }
+
+  /** The owner picked a turn in the picker: the command is awaiting this, and it runs the undo. */
+  private resolveUndoList(frame: MyClawAppUndoChooseList): void {
+    const list = undoManager.chooseList(frame.id, frame.n, frame.mode);
+    if (!list) return;
+    this.broadcast(list.owner, {
+      type: "undo.resolved",
+      id: frame.id,
+      threadId: list.threadId,
       reason: "chosen",
     });
   }

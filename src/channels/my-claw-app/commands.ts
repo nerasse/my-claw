@@ -91,6 +91,24 @@ export interface MyClawAppCommandDeps {
     turnPreview: string;
   }) => Promise<UndoMode | null>;
   /**
+   * `/undo list` opens the turn picker. Absent on a surface that cannot show one (then the list
+   * is answered in text). The rows are the server's, the choice is `{ n, mode }`.
+   */
+  undoListPrompt?: (input: {
+    sessionId: string;
+    owner: string;
+    threadId: string;
+    turns: Array<{
+      n: number;
+      preview: string;
+      ts: number;
+      attachments: number;
+      transcripts: number;
+      hard: boolean;
+      compaction?: boolean;
+    }>;
+  }) => Promise<{ n: number; mode: UndoMode } | null>;
+  /**
    * The channel's one stop door, injected by the adapter: the typed `/stop` and the app's Stop
    * button must claim through the same function, or a stop claimed by one door is invisible to
    * the other and the channel's stop frame has two writers (docs/stop.md). Absent on a test or a
@@ -464,6 +482,7 @@ export function createMyClawAppCommandHandler(deps: MyClawAppCommandDeps): MyCla
           },
           resolveNewSessionId: (newThreadId: string) => sessionIdFor(owner, newThreadId),
           ...(deps.undoPrompt ? { undoPrompt: deps.undoPrompt } : {}),
+          ...(deps.undoListPrompt ? { undoListPrompt: deps.undoListPrompt } : {}),
         };
         if (command === "branches") {
           const result = await handleBranchesCommand(ctx, args);

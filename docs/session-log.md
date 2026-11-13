@@ -887,6 +887,51 @@ Pas de hardlink non plus, même raison. Un fichier source déjà manquant ne fai
 fork : l'entrée garde son chemin mort, exactement comme elle l'avait dans la source.
 `forkedFrom` porte `sessionId` et `entryId`, d'où et depuis quel point exactement.
 
+### `/undo` — rembobiner, d'un tour ou de n
+
+```
+/undo                 rembobine avant le dernier tour (aborts running), feuille si les fichiers changent
+/undo <n>             idem, n messages en arrière -- même comptage que /retry <n>
+/undo <n> hard        conversation + fichiers, sans feuille
+/undo list [n]        les n derniers tours (10 par défaut, 100 max), avec ce que chacun permet
+```
+
+`n` compte les messages user depuis la fin, exactement comme `/retry n`. Le mode reste
+facultatif : sans lui, la feuille s'ouvre quand les fichiers changent, et le mode choisi
+s'applique au tour visé.
+
+**`/undo list` ne tue pas le run en cours.** Il lit et répond ; un run qui écrit un tour
+pendant ce temps continue. C'est la seule commande d'undo dans ce cas, et c'est
+volontaire : demander ce qu'il y a à annuler n'est pas annuler.
+
+**La liste est née du volume réel.** Mesuré sur cette session : 588 tours user, le plus gros
+à 54 KB, 64 avec pièces jointes, 200 avec transcription vocale. Une liste qui porterait les
+corps de messages coûterait 850 KB pour un écran. Le serveur envoie donc **une ligne par
+tour** : aperçu à 72 caractères, sur une seule ligne, plus le nombre de fichiers et de
+vocaux. Les corps ne reviennent qu'au composer, après l'undo.
+
+**`hard` dit la vérité, il ne la promet pas.** Un snapshot de fichiers existe par run, et
+une session n'en garde que les vingt derniers (`MAX_SNAPSHOTS_PER_SESSION`). Au-delà,
+`hard` n'est pas disponible et la ligne le dit (`[soft]`). Le sélectionner explicitement
+sur un tour sans snapshot **refuse** plutôt que de faire la moitié conversation :
+
+```
+Pas de snapshot pour le tour #4 (les 20 runs les plus récents seulement sont gardés).
+/undo 4 soft pour ne rembobiner que la conversation.
+```
+
+C'est une différence de comportement assumée : avant, `/undo hard` faisait un soft en
+ajoutant « Aucun snapshot » au message de succès, ce qui laissait douter de ce qui avait
+vraiment eu lieu.
+
+**Où c'est branché.** `listUndoTurns` construit les lignes depuis le *path* (une branche
+sœur n'est pas un message dont on peut sortir), `sessionSnapshotRunIds` lit le répertoire
+des snapshots **une fois** pour tout l'écran, et `sessionSnapshotRunIds` n'ouvre pas les
+fichiers : un snapshot corrompu compte encore, et c'est `snapshotOfRuns` qui le refusera à
+la restauration. Côté app, `undo.list` porte les lignes, `UndoPickSheet` les dessine, et
+choisir une ligne est la réponse (`{ n, mode }`) -- le serveur exécute alors exactement
+l'undo qu'un `/undo n mode` aurait fait.
+
 ### `/branches` — voir et changer de branche
 
 ```

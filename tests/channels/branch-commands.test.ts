@@ -712,7 +712,10 @@ describe("branch-commands: /undo", () => {
     expect(result.text).not.toContain("Fichiers restaurés");
   });
 
-  test("undo hard with no snapshot reports it", async () => {
+  test("undo hard with no snapshot refuses, and says what to ask instead", async () => {
+    // An explicit hard asks for the files too. Refusing is the honest answer: doing the
+    // conversation half while saying "no snapshot" left the owner unsure which of the two
+    // happened, and the picker never offers hard where it cannot deliver.
     const id = freshId();
     const log = await openSessionLog(id);
     log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
@@ -722,7 +725,9 @@ describe("branch-commands: /undo", () => {
     const ctx = await createContext(id, log);
     const result = await handleUndoCommand(ctx, "hard");
 
-    expect(result.text).toContain("Aucun snapshot");
+    expect(result.text).toContain("Pas de snapshot pour le tour #1");
+    expect(result.text).toContain("/undo 1 soft");
+    expect(result.reset).toBeUndefined();
   });
 
   /** A turn whose run changed a file: the case where soft and hard differ, and the sheet asks. */
@@ -1060,7 +1065,7 @@ describe("branch-commands: /undo and the files", () => {
 
     const result = await handleUndoCommand(await createContext(id, log), "hard");
 
-    expect(result.text).toContain("Aucun snapshot");
+    expect(result.text).toContain("Pas de snapshot");
     expect(await readFile(join(ws, "note.txt"), "utf8")).toBe("edited by hand\n");
   });
 });

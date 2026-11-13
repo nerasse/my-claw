@@ -377,6 +377,39 @@ export interface MyClawAppUndoPrompt {
   ts: string;
 }
 
+/**
+ * `/undo list`: the turns this conversation can be rewound to, newest first.
+ *
+ * The same frame serves the picker and a plain listing: a client that can draw rows draws them,
+ * and the rows are already clipped and counted by the server -- one line each, never a message
+ * body. `n` is what `/undo n` takes, so a row is an answer, not an id the client has to translate.
+ */
+export interface MyClawAppUndoList {
+  type: "undo.list";
+  /** Pending picker id; echoed back in `undo.choose.list`. */
+  id: string;
+  threadId: string;
+  turns: Array<{
+    n: number;
+    preview: string;
+    /** Epoch ms of the message. */
+    ts: number;
+    attachments: number;
+    transcripts: number;
+    /** Whether the files can come back with this turn, or only the conversation. */
+    hard: boolean;
+    compaction?: boolean;
+  }>;
+}
+
+/** The owner picked a row of the turn list: `n` is the row's own number, mode what it allows. */
+export interface MyClawAppUndoChooseList {
+  type: "undo.choose.list";
+  id: string;
+  n: number;
+  mode: "soft" | "hard";
+}
+
 /** The owner picked a mode in the undo sheet. */
 export interface MyClawAppUndoChoose {
   type: "undo.choose";
@@ -1285,6 +1318,7 @@ export type MyClawAppClientFrame =
   | MyClawAppApprovalGrantRemove
   | MyClawAppQuestionReply
   | MyClawAppUndoChoose
+  | MyClawAppUndoChooseList
   | MyClawAppUndoCancel
   | MyClawAppCapabilitiesFrame
   | MyClawAppDiagSnapshot
@@ -4687,6 +4721,7 @@ export type MyClawAppServerFrame =
   | MyClawAppQuestionPending
   | MyClawAppQuestionResolved
   | MyClawAppUndoPrompt
+  | MyClawAppUndoList
   | MyClawAppUndoResolved
   | MyClawAppSessionListResult
   | MyClawAppSessionWorkspaceSetResult

@@ -16,7 +16,7 @@ import { readMeta, writeMeta, metaOf, type BranchLabel, type ForkOrigin, type Un
 import type { SessionData, SessionAttachment } from "../sessions/store.ts";
 import type { SessionManager } from "../sessions/manager.ts";
 import { MY_CLAW_DIR } from "../core/config.ts";
-import { changesSince, restoreSnapshot, snapshotOfRuns } from "../snapshots/store.ts";
+import { changesSince, MAX_SNAPSHOTS_PER_SESSION, restoreSnapshot, sessionSnapshotRunIds, snapshotOfRuns } from "../snapshots/store.ts";
 import type { DepotDiff } from "../snapshots/capture.ts";
 import { log } from "../utils/logger.ts";
 import { undoManager, type UndoMode } from "./my-claw-app/undo.ts";
@@ -63,6 +63,19 @@ export interface BranchCommandContext {
     diff: DepotDiff[];
     turnPreview: string;
   }) => Promise<UndoMode | null>;
+  /**
+   * When set, `/undo list` opens the app's turn picker instead of answering in text: the rows are
+   * the last turns, each with the mode it allows, and picking one IS the undo.
+   *
+   * Same shape as `undoPrompt` and for the same reason: the command awaits the choice, so the
+   * handler is the channel's, and a surface without one still gets `renderUndoTurns`.
+   */
+  undoListPrompt?: (input: {
+    sessionId: string;
+    owner: string;
+    threadId: string;
+    turns: UndoTurnRow[];
+  }) => Promise<{ n: number; mode: UndoMode } | null>;
 }
 
 /**
@@ -85,6 +98,28 @@ export async function askUndoMode(deps: {
     turnPreview: deps.turnPreview,
   });
   return outcome.kind === "chosen" ? outcome.mode : null;
+}
+
+/**
+ * Wires the turn picker for the my-claw-app channel: `/undo list` opens it instead of answering.
+ *
+ * The rows are the server's, the choice is the owner's: picking a row answers `{ n, mode }`, and
+ * the command then runs the undo it would have run had the n been typed. A dismissed sheet is
+ * `null`, and the command answers nothing -- the list was seen, and nothing was asked of it.
+ */
+export async function askUndoList(deps: {
+  sessionId: string;
+  owner: string;
+  threadId: string;
+  turns: UndoTurnRow[];
+}): Promise<{ n: number; mode: UndoMode } | null> {
+  const outcome = await undoManager.promptList({
+    sessionId: deps.sessionId,
+    owner: deps.owner,
+    threadId: deps.threadId,
+    turns: deps.turns,
+  });
+  return outcome.kind === "chosen" ? { n: outcome.n, mode: outcome.mode } : null;
 }
 
 /**
@@ -160,6 +195,126 @@ function findNthUserFromEnd(path: readonly Entry[], n: number): UserEntry | unde
     }
   }
   return undefined;
+}
+
+/** How many turns `/undo list` shows when nothing is asked: enough to place yourself, not a feed. */
+export const UNDO_LIST_DEFAULT = 10;
+/** The list is bounded: a 588-turn conversation is not a list, and nothing scrolls that far. */
+export const UNDO_LIST_MAX = 100;
+
+/** One row of `/undo list`: a user turn, and what an undo to it would actually do. */
+export interface UndoTurnRow {
+  /** 1 = the last message, the value to pass to `/undo n`. */
+  n: number;
+  /** The owner's words, clipped for the sheet. Never the whole message: a list of 588 is not a feed. */
+  preview: string;
+  /** When it was sent, epoch ms. */
+  ts: number;
+  /** Attachments, voice notes and stems, counted so the row can say what it holds. */
+  attachments: number;
+  transcripts: number;
+  /**
+   * Whether a file snapshot still exists for this turn's runs.
+   *
+   * Not "whether an undo is possible": the conversation can always be rewound. This says whether
+   * the *files* can come back too, and it is false for most of an old conversation -- a session
+   * keeps the twenty most recent snapshots (docs/session-log.md §7), so the hard mode reaches a
+   * handful of turns back and no further.
+   */
+  hard: boolean;
+  /** The turn a compaction closed, rather than a message: it can only be undone softly. */
+  compaction?: boolean;
+}
+
+/**
+ * The last `limit` user turns of a conversation, with the undo depth each one allows.
+ *
+ * Built from the path, never from the whole log: a branch holds what the conversation is, and a
+ * sibling branch's turns are not messages the owner can undo his way out of. The hard flag is
+ * computed per turn from the session's snapshot directory, in one read rather than one per turn.
+ */
+export async function listUndoTurns(
+  ctx: { sessionId: string; log: SessionLog },
+  limit: number,
+): Promise<UndoTurnRow[]> {
+  const path = await ctx.log.path();
+  const available = await sessionSnapshotRunIds(ctx.sessionId);
+  const rows: UndoTurnRow[] = [];
+  for (let i = path.length - 1; i >= 0 && rows.length < limit; i--) {
+    const entry = path[i]!;
+    // A compaction that closes the branch is a turn like a message: undoing takes it back alone.
+    if (entry.type === "compaction") {
+      rows.push({
+        n: rows.length + 1,
+        preview: `Compaction (${entry.count} tours repliés)`,
+        ts: entry.ts,
+        attachments: 0,
+        transcripts: 0,
+        hard: false,
+        compaction: true,
+      });
+      continue;
+    }
+    if (entry.type !== "user") continue;
+    // The runs between this turn and the next one, which are the ones its snapshot belongs to.
+    const runs: string[] = [];
+    for (let j = i + 1; j < path.length; j++) {
+      const next = path[j]!;
+      if (next.type === "user" || next.type === "compaction") break;
+      if (next.type === "run_start") runs.push(next.runId ?? next.id);
+    }
+    rows.push({
+      n: rows.length + 1,
+      preview: previewOf(entry),
+      ts: entry.ts,
+      attachments: entry.attachments?.length ?? 0,
+      transcripts: entry.transcripts ? Object.keys(entry.transcripts).length : 0,
+      hard: runs.some((runId) => available.has(runId)),
+    });
+  }
+  return rows;
+}
+
+/**
+ * One line per turn, for a surface that can only carry text.
+ *
+ * The sheet is the normal surface; this is what a channel without one answers with, and what a
+ * log or a test reads. The preview is clipped here too: a row exists to be recognised, not read.
+ */
+export function renderUndoTurns(rows: readonly UndoTurnRow[], now = Date.now()): string {
+  if (rows.length === 0) return "Rien à annuler : aucun tour utilisateur.";
+  const lines = rows.map((row) => {
+    const when = formatAgo(now - row.ts);
+    const mode = row.compaction ? "soft" : row.hard ? "hard" : "soft";
+    const holds = [
+      row.attachments > 0 ? `${row.attachments} fichier${row.attachments > 1 ? "s" : ""}` : "",
+      row.transcripts > 0 ? `${row.transcripts} vocal${row.transcripts > 1 ? "s" : ""}` : "",
+    ].filter(Boolean).join(", ");
+    return `#${row.n}  ${when}  [${mode}]  ${row.preview}${holds ? ` (${holds})` : ""}`;
+  });
+  return [
+    ...lines,
+    "",
+    "/undo <n> [soft|hard] pour rembobiner avant ce tour.",
+    "hard = conversation + fichiers, seulement où un snapshot existe encore.",
+  ].join("\n");
+}
+
+/** A message as a row shows it: one line, clipped, never the whole body. */
+function previewOf(entry: UserEntry): string {
+  const flat = entry.text.replace(/\s+/g, " ").trim();
+  if (flat.length <= 72) return flat || "(vide)";
+  return `${flat.slice(0, 72)}…`;
+}
+
+/** "5 min", "2 h", "3 j": a distance the owner can place without arithmetic. */
+function formatAgo(ms: number): string {
+  const min = Math.round(ms / 60_000);
+  if (min < 1) return "à l'instant";
+  if (min < 60) return `${min} min`;
+  const hours = Math.round(min / 60);
+  if (hours < 24) return `${hours} h`;
+  return `${Math.round(hours / 24)} j`;
 }
 
 /**
@@ -266,6 +421,34 @@ export async function handleUndoCommand(
   ctx: BranchCommandContext,
   args: string,
 ): Promise<BranchCommandResult> {
+  const tokens = args.trim().split(/\s+/).filter(Boolean);
+
+  // `/undo list [n]`: what there is to undo, before anything is rewound. Answered before the
+  // abort below, on purpose -- asking what the turns are must not kill the run that is writing
+  // one. The sheet is the normal surface; `renderUndoTurns` is the text a channel without one
+  // (and a log, and a test) gets.
+  if (tokens[0] === "list") {
+    const asked = tokens[1] === undefined ? UNDO_LIST_DEFAULT : Number.parseInt(tokens[1], 10);
+    if (!Number.isFinite(asked) || asked < 1) {
+      return { text: "Usage: /undo list [n] — n tours, 10 par défaut." };
+    }
+    const limit = Math.min(asked, UNDO_LIST_MAX);
+    const rows = await listUndoTurns(ctx, limit);
+    if (ctx.undoListPrompt) {
+      const chosen = await ctx.undoListPrompt({
+        sessionId: ctx.sessionId,
+        owner: ctx.owner,
+        threadId: ctx.threadId,
+        turns: rows,
+      });
+      // The sheet is showing the list and the owner picked a row: that IS the undo, n and mode.
+      if (chosen) return await undoAtTurn(ctx, chosen.n, chosen.mode);
+      // Dismissed with nothing picked: the list was still answered, and it is on screen.
+      return { text: "" };
+    }
+    return { text: renderUndoTurns(rows) };
+  }
+
   // A compaction in flight is the turn in flight: stopping it is the whole undo. It has written
   // nothing yet, so there is nothing to rewind and no /redo to offer.
   if (ctx.isCompacting()) {
@@ -277,17 +460,37 @@ export async function handleUndoCommand(
     await ctx.abortRun();
   }
 
-  // The mode is validated before the turn check: a typo is answered wherever the command
-  // lands, even on an empty conversation.
-  const argTrimmed = args.trim();
-  if (argTrimmed && argTrimmed !== "soft" && argTrimmed !== "hard") {
-    return { text: "Usage: /undo [soft|hard] — sans argument, choix dans l'app." };
+  // `/undo [n] [soft|hard]`: n counts back from the last message, exactly like `/retry n`, and
+  // the mode is optional. Anything else is a typo, answered wherever the command lands.
+  const argv = tokens[0] === "soft" || tokens[0] === "hard" ? ["1", tokens[0]] : tokens;
+  const depth = argv[0] === undefined ? 1 : Number.parseInt(argv[0], 10);
+  const modeArg = argv[1];
+  if (!Number.isFinite(depth) || depth < 1 || (modeArg !== undefined && modeArg !== "soft" && modeArg !== "hard") || argv.length > 2) {
+    return { text: "Usage: /undo [n] [soft|hard] — /undo list pour voir les tours." };
   }
+  return await undoAtTurn(ctx, depth, modeArg);
+}
+
+/**
+ * The undo itself: rewind before the `depth`-th turn from the end, in the given mode.
+ *
+ * Split from the command because the list sheet reaches the same place with an n it read off a
+ * row: one implementation of what an undo does, whatever picked the depth.
+ */
+async function undoAtTurn(
+  ctx: BranchCommandContext,
+  depth: number,
+  modeArg: "soft" | "hard" | undefined,
+): Promise<BranchCommandResult> {
 
   const path = await ctx.log.path();
-  const turn = lastTurnOf(path);
+  // `/undo n` counts user messages back from the end, exactly like `/retry n`. Depth 1 also
+  // catches the compaction that closes the branch, which `lastTurnOf` is the only thing that
+  // looks for: a deeper undo is about messages, and a compaction in between belongs to the turn
+  // it was written for, so it goes with it.
+  const turn = depth === 1 ? lastTurnOf(path) : findNthUserFromEnd(path, depth);
   if (!turn) {
-    return { text: "Rien à annuler : aucun tour utilisateur." };
+    return { text: depth === 1 ? "Rien à annuler : aucun tour utilisateur." : `Pas assez de tours (${depth} demandé).` };
   }
   if (turn.type === "compaction") {
     return undoCompaction(ctx, turn);
@@ -296,9 +499,11 @@ export async function handleUndoCommand(
 
   const preview = userTurn.text.slice(0, 50) + (userTurn.text.length > 50 ? "..." : "");
   let mode: UndoMode = "soft";
-  const ask = argTrimmed === "";
-  if (argTrimmed === "hard" || argTrimmed === "soft") {
-    mode = argTrimmed;
+  // A bare `/undo` opens the sheet; a bare `/undo n` does the same, since the mode still has to
+  // be picked and the sheet is where the owner sees what it costs. Only an explicit mode skips it.
+  const ask = modeArg === undefined;
+  if (modeArg !== undefined) {
+    mode = modeArg;
   }
 
   // The files as they were before this turn: the snapshot of its first run, never the newest of
@@ -309,6 +514,14 @@ export async function handleUndoCommand(
     .filter((entry): entry is RunStartEntry => entry.type === "run_start")
     .map((entry) => entry.runId ?? entry.id);
   const snapshot = await snapshotOfRuns(ctx.sessionId, runIds);
+  // Asked for the files and there are none to give: refuse rather than silently rewind the
+  // conversation alone, which would look like the restore happened. The list already says which
+  // turns still reach a snapshot, so this is the deep-undo case the owner was warned about.
+  if (modeArg === "hard" && !snapshot) {
+    return {
+      text: `Pas de snapshot pour le tour #${depth} (les ${MAX_SNAPSHOTS_PER_SESSION} runs les plus récents seulement sont gardés).\n/undo ${depth} soft pour ne rembobiner que la conversation.`,
+    };
+  }
   // What a hard undo would change: computed before the branch moves, against the files as they
   // are now. Unknown (git could not read the trees) is not "nothing": the owner is asked.
   let diff: DepotDiff[] = [];
