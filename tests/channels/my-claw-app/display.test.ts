@@ -1120,10 +1120,13 @@ describe("displayOf: a card the log does not hold yet", () => {
 
     const drawn = displayOf(entries, resolvers, 1000, spawnView(entries, () => true));
     expect(drawn.map((e) => e.role)).toEqual(["user", "tool"]);
+    // `ok` describes the launch, and the launch was accepted: a child was started. Its failure is
+    // the state on the card (`spawn.status`), and the report of it is the child's own return turn.
+    // `ok: false` here made a card that had worked read as a refusal, which is what the app draws.
     expect(drawn[1]).toMatchObject({
       id: "t-c1",
       name: "spawn",
-      ok: false,
+      ok: true,
       args: { type: "research", mode: "run", task: "balaye les agregateurs francais" },
       spawn: { displayName: "pass14-aggregateurs", status: "error" },
     });

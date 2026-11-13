@@ -824,7 +824,11 @@ export function displayOf(
           ...(state.mode ? { mode: state.mode } : {}),
           ...(state.task ? { task: state.task } : {}),
         },
-        ok: state.status === "complete",
+        // The launch itself was accepted: this card exists because a child was started. Its fate
+        // belongs to the child's own report (a `return` turn, drawn as a card of its own), and
+        // `ok: false` here made a launch that worked read as a refusal -- the tool entry is the
+        // only thing allowed to say `ok`, and it says it about the call.
+        ok: true,
         output: "",
         truncated: false,
         spawn: state,
