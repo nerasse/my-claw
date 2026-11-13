@@ -88,8 +88,12 @@ export interface UserEntry extends EntryBase {
   attachments?: SessionAttachment[];
   location?: ChatLocation;
   transcripts?: Record<string, string>;
-  /** Set when the turn came from another agent (a driven `send`, a hand-back) rather than a human. */
-  from?: { sessionId: string; label: string };
+  /**
+   * Set when the turn came from another agent rather than a human: a model-driven `send`, a
+   * hand-back, or a background sub-agent's return. `kind` tells the last one apart, so the display
+   * draws a card where it would otherwise show the owner's own words.
+   */
+  from?: { sessionId: string; label: string; kind?: "send" | "return"; status?: string };
 }
 
 export interface PhaseEntry extends EntryBase {

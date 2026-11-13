@@ -559,6 +559,18 @@ function durationFrom(details: string[]): number | undefined {
  * showed the sentence under its player. Pulled back out here, a reopened thread renders the
  * same thing it did when it was sent.
  */
+/**
+ * The body of a sub-agent's return, without the tag the model reads.
+ *
+ * The log keeps the turn the model was given -- `<subagent …>` and the line that says what to do
+ * with it -- because that is the exact bytes the next request replays. The reader only wants the
+ * report itself.
+ */
+function returnBodyOf(text: string): string {
+  const match = /<subagent[^>]*>\n?([\s\S]*?)\n?<\/subagent>/.exec(text);
+  return match ? match[1]!.trim() : text;
+}
+
 function splitTranscript(text: string): string {
   const paragraphs = text.split("\n\n");
   const rest: string[] = [];
@@ -737,7 +749,8 @@ export function displayOf(
       // structured `entry.attachments`, which carries only the images the provider needs.
       const block = splitAttachmentBlock(entry.text);
       const stripped = stripLocationBlock(block.text);
-      const text = splitTranscript(stripped);
+      const plain = splitTranscript(stripped);
+      const text = entry.from?.kind === "return" ? returnBodyOf(plain) : plain;
       const attachments =
         block.attachments.length > 0
           ? resolvers.attachmentsOfBlock(block.attachments)
@@ -756,6 +769,7 @@ export function displayOf(
         ...(transcripts && Object.keys(transcripts).length > 0 ? { transcripts } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
         ...(entry.location ? { location: entry.location } : {}),
+        ...(entry.from ? { from: entry.from } : {}),
       }));
       continue;
     }

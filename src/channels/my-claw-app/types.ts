@@ -1656,6 +1656,12 @@ export type MyClawAppHistoryEntry =
       compactionMs?: number;
       /** On a boundary: what it archived (finished work), folded beside the summary. */
       archive?: string;
+      /**
+       * Set when another agent wrote this turn rather than the owner: a background sub-agent's
+       * return (`kind: "return"`, with what became of its run), or a report it handed back. The app
+       * draws it as an agent card, never as the owner's own words.
+       */
+      from?: { sessionId: string; label: string; kind?: "send" | "return"; status?: string };
       /** The run this entry belongs to, when it sits inside one. */
       run?: MyClawAppRunMeta;
     }
@@ -1695,6 +1701,11 @@ export interface MyClawAppSessionSummary {
   folderId?: string;
   /** A run is answering on this thread right now: the app keeps the Stop button visible. */
   activeRun?: boolean;
+  /**
+   * Sub-agents this conversation launched that are still working in the background. A thread with
+   * some and no run of its own is idle, not answering: the listing marks it apart.
+   */
+  subagents?: number;
   /** Workspace key the conversation runs in: "default" or a config.workspaces key. */
   workspace?: string;
   /**
@@ -1743,6 +1754,23 @@ export interface MyClawAppChatUser {
   ts?: string;
   attachments?: MyClawAppHistoryAttachment[];
   location?: ChatLocation;
+}
+
+/**
+ * A background sub-agent reporting back: the turn that wakes a conversation at rest.
+ *
+ * Its own frame rather than `chat.user`, because the owner did not type it -- the app draws an
+ * agent card, and a reopened thread reads the same thing off the entry's `from`.
+ */
+export interface MyClawAppSubAgentReturn {
+  type: "chat.subagent.return";
+  threadId: string;
+  id: string;
+  text: string;
+  ts: string;
+  subagentId: string;
+  label: string;
+  status: "complete" | "error" | "stopped";
 }
 
 /**
@@ -4688,6 +4716,7 @@ export type MyClawAppServerFrame =
   | MyClawAppBrowserControlResult
   | MyClawAppChatMessage
   | MyClawAppChatUser
+  | MyClawAppSubAgentReturn
   | MyClawAppChatCompaction
   | MyClawAppChatCompacting
   | MyClawAppChatCompactingDelta

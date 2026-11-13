@@ -142,7 +142,7 @@ import { apnsStore, registeredAPNsDevices, relayURL, setAPNsDeviceAuthorization 
 import { endpointStore, foregroundStore, loadOrCreateVapid, publishNotification, isForegroundOn, cleanNotificationText } from "./notifications/push.ts";
 import { targetOfSession } from "./notifications/target.ts";
 import { registerRunNotifications } from "./notifications/run-notifications.ts";
-import { SubAgentRunner, type SubAgentStream } from "./subagents/runner.ts";
+import { SubAgentRunner, returnBody, returnText, type SubAgentStream } from "./subagents/runner.ts";
 import { SubAgentRegistry } from "./subagents/registry.ts";
 import { SkillRegistry } from "./skills/registry.ts";
 import { loadAllSkills } from "./skills/loader.ts";
@@ -2513,10 +2513,46 @@ async function main() {
     // one outcome and nothing here has to be flattened.
     myClawApp.onStop((sessionId): StopOutcome => {
       const root = runRegistry.stop(sessionId);
+      // A background child does not hold this conversation's signal, so a Stop that stopped its
+      // run would leave the children the owner launched running with nobody left to read them.
+      void subAgentRunner.stopBackgroundOf(sessionId);
       if (root !== "idle") return root;
       return subAgentRunner.stopSession(sessionId);
     });
     myClawApp.onRunActive((sessionId) => runRegistry.isRunning(sessionId) || subAgentRunner.isRunningSession(sessionId));
+    // A conversation whose children are still working is not answering, but it is not idle either.
+    // The listing marks it apart so the owner can see a launch still in flight (docs/subagents.md).
+    myClawApp.onSubagentsActive((sessionId) => subAgentRunner.backgroundCountOf(sessionId));
+
+    // A background child's answer reaches the conversation that launched it, never the caller that
+    // happens to be talking to it now: it is one turn of that conversation, and it wakes it when it
+    // is at rest (docs/subagents.md).
+    subAgentRunner.setReturnSink({
+      deliver: async (notice) => {
+        const owner = ownerOfAppSession(notice.parentSessionId);
+        const thread = appThreadOfSession(notice.parentSessionId);
+        if (!owner || !thread) {
+          void log("warn", "sub-agent return has no conversation to reach", {
+            subagentId: notice.subagentId,
+            parentSessionId: notice.parentSessionId,
+          });
+          return;
+        }
+        await myClawApp.deliverSubAgentReturn(
+          owner,
+          thread,
+          returnText(notice),
+          returnBody(notice),
+          {
+            sessionId: notice.subagentId,
+            label: notice.displayName,
+            kind: "return",
+            status: notice.status,
+          },
+          notice.attachments,
+        );
+      },
+    });
 
     // A message the app sends inside a sub-agent goes through the runner, never through a normal
     // run: see the refusal in MessageRouter.

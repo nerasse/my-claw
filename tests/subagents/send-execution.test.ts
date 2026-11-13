@@ -294,7 +294,7 @@ test("a nonsense fallback or scope is refused, never silently ignored", async ()
 test("the schema names the execution fields and requires only the id", () => {
   const tool = sendTool(makeRunner());
   const schema = tool.parameters as { properties: Record<string, { enum?: string[] }>; required: string[] };
-  assert.deepEqual(Object.keys(schema.properties).sort(), ["attachments", "contextCap", "effort", "fallback", "id", "message", "model", "scope"]);
+  assert.deepEqual(Object.keys(schema.properties).sort(), ["attachments", "contextCap", "effort", "fallback", "id", "message", "model", "scope", "wait"]);
   assert.deepEqual(schema.properties["fallback"]!.enum, ["forbid", "inherit"]);
   assert.deepEqual(schema.properties["scope"]!.enum, ["run", "session"]);
   assert.deepEqual(schema.required, ["id"]);

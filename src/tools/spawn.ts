@@ -39,7 +39,10 @@ export function createSpawnTool(
           return `- ${a.name}: ${a.description}${state === "online" ? "" : ` [${state}]`}`;
         }).join("\n")}\n`
         : "";
-      return "Spawn a sub-agent. mode='run' = one-shot, answers once and is not meant to be driven again. " +
+      return "Spawn a sub-agent. It starts working immediately and this call returns its id at once: the" +
+        " answer comes back later as a message tagged <subagent>, which wakes this conversation if it is" +
+        " at rest. Do not poll it, and do not redo its work. Pass wait=true only when you need the answer" +
+        " in this very call. mode='run' = one-shot, answers once and is not meant to be driven again. " +
         "mode='session' = persistent on disk: the answer ends with the id to reuse with send(). " +
         types +
         "Provide workspaceDir to isolate the sub-agent's filesystem. " +
@@ -82,6 +85,10 @@ export function createSpawnTool(
           contextCap: {
             type: "number",
             description: "Optional ceiling on the context window this sub-agent may use, in tokens. Omit to keep the scope's ceiling.",
+          },
+          wait: {
+            type: "boolean",
+            description: "Block until the sub-agent answers and return its answer here, instead of launching it in the background. Use it only when this call cannot do anything without the result: a background launch costs nothing and reports back by itself.",
           },
         },
         required: ["name", "type", "mode", "task"],
@@ -134,7 +141,7 @@ export function createSpawnTool(
         }
         const visibility: "global" | "workspace" | "private" = requested ?? (args["private"] === true ? "private" : "global");
         const existing = await registry.listExistingIds();
-        const { id, result, attachments } = await runner.spawn({
+        const { id, result, attachments, background } = await runner.spawn({
           displayName: name,
           type,
           mode: mode as "run" | "session",
@@ -148,6 +155,7 @@ export function createSpawnTool(
           visibility,
           signal,
           model,
+          wait: args["wait"] === true,
           ...(asked.pins.effort || asked.pins.contextCap !== undefined ? { pins: asked.pins } : {}),
           enqueue: <T,>(i: string, task2: () => Promise<T>) => registry.enqueue(i, task2),
           ...(toolCallId ? { toolCallId } : {}),
@@ -157,7 +165,8 @@ export function createSpawnTool(
         // A persistent sub-agent is only reachable by id, and the caller has no other way to learn
         // it: without this line the one thing `send` requires has to be guessed, and a guess is a
         // "sub-agent not found" every time. One-shots are left alone, nothing is meant to drive them.
-        const handle = mode === "session" && id ? `\n\n[sub-agent id: ${id}]` : "";
+        // A background launch already ends with it.
+        const handle = mode === "session" && id && !background ? `\n\n[sub-agent id: ${id}]` : "";
         // A picture the sub-agent's tools produced (a screenshot, a chart) reaches the person who
         // asked the same way the answer does: through the caller's own reply.
         return { success: true, output: `${result}${handle}`, ...(attachments.length > 0 ? { attachments } : {}) };

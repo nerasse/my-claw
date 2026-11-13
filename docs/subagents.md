@@ -73,6 +73,39 @@ reached through `delegate_browser_task`, which is the one door deliberately open
   own. Omitted, nothing is written and the agent's own scope decides — a spawn only ever adds to
   what the agent file and the config say.
 
+### Background, and the return
+
+Delegating never waits. `spawn`, `send` and `delegate_browser_task` return as soon as the child is
+working, with its id:
+
+```
+Started eyes (research, id: subagent/eyes-1a2b) in the background. It works on its own and you will
+get a <subagent> message when it is done. Do not sleep, poll or duplicate its work: continue with
+something else, or end your turn and let the return wake you.
+```
+
+Same rule as opencode, codex and deepseek-harness: the model-facing call returns immediately and the
+runtime owns the completion. `wait: true` is the escape hatch for a caller that cannot do anything
+without the answer (a cron job, one step of a browser chain); it blocks and returns the child's own
+words, and it is the only path that still appends `[sub-agent id: …]` for a `session` spawn.
+
+- **The child outlives the run.** A background child is started without the caller's abort signal:
+  the end of that run -- the normal case, the model ends its turn while the child works -- must not
+  cut it. A Stop of the conversation is different: it names the children explicitly
+  (`stopBackgroundOf`), because there is no signal left to cascade.
+- **The return is one turn of the caller's conversation.** Written as a `user` entry with
+  `from: { sessionId, label, kind: "return", status }`, and carried as a `<subagent …>` tag so the
+  model never mistakes it for the owner speaking. The app reads `from` and draws a card, not a
+  bubble; `display.ts` strips the tag for the reader.
+- **Delivery reuses the one door.** A conversation with a run in flight has an open mailbox and
+  absorbs it at the next boundary; a conversation at rest is woken by it, through the same path a
+  cron `followUp` or a hand-back uses. A child stopped with its conversation reports nothing: a
+  return would wake the run the owner just ended.
+- **The launch card is the same card.** `subagent:spawn` opens it, the terminal state folds onto it
+  from `spawn_state`, and the return draws its own card with the child's answer and pictures.
+- **A runner with no return sink launches nothing in the background** — every call waits, which is
+  what keeps the behaviour unchanged on a channel with nobody to wake.
+
 The same three parameters are on `delegate_browser_task` (a browsing run is pinned like a spawned
 one), and they are read by `judgePins` in `src/tools/model-choice.ts` so one door cannot accept an
 effort the other refuses. The effort ladder is the resolver's own, not the model's trimmed list:

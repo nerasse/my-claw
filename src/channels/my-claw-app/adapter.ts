@@ -424,6 +424,9 @@ export class MyClawAppAdapter implements ChannelAdapter {
   private locationResolver?: MyClawAppLocationResolver;
   private stopRun?: (sessionId: string) => StopOutcome;
   private runActive?: (sessionId: string) => boolean;
+
+  /** Background children a conversation is waiting on. Injected like `runActive`. */
+  private subagentsActive?: (sessionId: string) => number;
   private sweeper?: ReturnType<typeof setInterval>;
   /** The turn in flight, per thread, so a reload mid-run is not a hole -- docs/live-turn-replay.md. */
   private live = new LiveTurnJournal();
@@ -1131,6 +1134,24 @@ export class MyClawAppAdapter implements ChannelAdapter {
   onRunActive(check: (sessionId: string) => boolean): void {
     this.runActive = check;
     this.store.onRunActive(check);
+  }
+
+  /** How many background children a session is waiting on; injected, like `onRunActive`. */
+  onSubagentsActive(check: (sessionId: string) => number): void {
+    this.subagentsActive = check;
+  }
+
+  /** The `subagents` field for a single thread's frame: absent when nothing is running there. */
+  private subagentsOf(owner: string, threadId: string): { subagents?: number } {
+    if (!this.subagentsActive) return {};
+    const count = this.subagentsActive(this.store.resolveSessionId(owner, threadId));
+    return count > 0 ? { subagents: count } : {};
+  }
+
+  private withSubagents<T extends { threadId: string }>(owner: string, session: T): T & { subagents?: number } {
+    if (!this.subagentsActive) return session;
+    const count = this.subagentsActive(this.store.resolveSessionId(owner, session.threadId));
+    return count > 0 ? { ...session, subagents: count } : session;
   }
 
   /**
@@ -2898,6 +2919,55 @@ export class MyClawAppAdapter implements ChannelAdapter {
   }
 
   /**
+   * Delivers a background sub-agent's answer into the conversation that launched it.
+   *
+   * Same pipeline as `deliverOwnerTurn`, one thing apart: the turn says where it came from, and the
+   * frame that opens it is not `chat.user`. The owner did not type this, and a reopened thread has
+   * to keep saying so -- the marker rides the log entry, the frame is only how it is drawn live.
+   */
+  async deliverSubAgentReturn(
+    owner: string,
+    threadId: string,
+    text: string,
+    display: string,
+    from: { sessionId: string; label: string; kind: "send" | "return"; status?: string },
+    attachments: Attachment[],
+  ): Promise<boolean> {
+    const safe = sanitizeThreadId(threadId);
+    if (!safe || !this.messageHandler || !text.trim()) return false;
+    const id = crypto.randomUUID();
+    const ts = new Date().toISOString();
+    this.broadcast(owner, {
+      type: "chat.subagent.return",
+      threadId: safe,
+      id,
+      text: display,
+      ts,
+      subagentId: from.sessionId,
+      label: from.label,
+      status: from.status === "error" || from.status === "stopped" ? from.status : "complete",
+    });
+    void this.messageHandler({
+      id,
+      platform: "my-claw-app",
+      userId: owner,
+      chatId: owner,
+      chatType: "dm",
+      text,
+      timestamp: ts,
+      attachments,
+      isForwarded: false,
+      threadId: safe,
+      sessionScope: "per-user",
+      from,
+      raw: { type: "subagent.return", id, threadId: safe },
+    }).catch((err) => {
+      void myClawAppLog("error", "sub-agent return failed", { owner, threadId: safe, error: String(err) });
+    });
+    return true;
+  }
+
+  /**
    * Mirrors a prompt to the owner's *other* windows. The sender drew this bubble the moment it
    * hit send and owns the id, so echoing it back would be a frame whose only job is to be
    * ignored. The app still drops an echo whose id it already holds, as a reconnect can put two
@@ -3792,9 +3862,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
    */
   private async sessionListFrame(owner: string): Promise<MyClawAppSessionListResult> {
     const sessions = await this.store.list(owner);
-    const withRuns = this.runActive
-      ? sessions.map((session) => ({ ...session, activeRun: this.runActive!(this.store.resolveSessionId(owner, session.threadId)) }))
-      : sessions;
+    const withRuns = sessions
+      .map((session) => (this.runActive
+        ? { ...session, activeRun: this.runActive!(this.store.resolveSessionId(owner, session.threadId)) }
+        : session))
+      .map((session) => this.withSubagents(owner, session));
     return { type: "session.list.result", sessions: withRuns, folders: await this.store.folders(owner) };
   }
 
@@ -3831,6 +3903,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
         // Always sent, both ways: the app makes this page authoritative over its own run flag, so
         // an omitted false would leave a stale one standing after a run ended during a disconnect.
         ...(this.runActive ? { activeRun: this.runActive(this.store.resolveSessionId(ws.data.owner, threadId)) } : {}),
+        ...this.subagentsOf(ws.data.owner, threadId),
       };
       this.sendFrame(ws, result);
     } catch (err) {
@@ -3873,6 +3946,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
         // it on from the chat menu, which holds no listing row -- had no way to learn it.
         ...(page.quotaRetry ? { quotaRetry: page.quotaRetry } : {}),
         ...(this.runActive ? { activeRun: this.runActive(this.store.resolveSessionId(ws.data.owner, threadId)) } : {}),
+        ...this.subagentsOf(ws.data.owner, threadId),
         ...(page.lastRun ? { lastRun: page.lastRun } : {}),
       };
       this.sendFrame(ws, result);

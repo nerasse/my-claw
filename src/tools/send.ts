@@ -55,7 +55,7 @@ export function createSendTool(
 ): Tool {
   return {
     name: "send",
-    description: "Send a message to an existing sub-agent. The sub-agent loads its full session history, processes the message, and saves the updated session. Blocks if the sub-agent is already running. Leave the message out to resume a sub-agent whose run was stopped or failed: it continues where it stopped, with everything it had already done. model/effort/contextCap/fallback change how it runs as part of the same call; scope='run' (default) applies them to this call alone.",
+    description: "Send a message to an existing sub-agent, or resume one by leaving the message out. The call returns as soon as the sub-agent is working: its answer comes back later as a message tagged <subagent>, which wakes this conversation if it is at rest. Pass wait=true only when you need the answer in this very call. model/effort/contextCap/fallback change how it runs as part of the same call; scope='run' (default) applies them to this call alone.",
     parameters: {
       type: "object",
       properties: {
@@ -95,6 +95,10 @@ export function createSendTool(
           enum: ["run", "session"],
           description: "How long model/effort/contextCap/fallback last: 'run' (default) for this call only, 'session' to keep them for the agent's later runs.",
         },
+        wait: {
+          type: "boolean",
+          description: "Block until the sub-agent answers and return its answer here, instead of driving it in the background. Use it only when this call cannot do anything without the result.",
+        },
       },
       required: ["id"],
     },
@@ -116,7 +120,7 @@ export function createSendTool(
         // Carried for the same reason as in `spawn`: it is what ties the sub-agent's lifecycle to
         // the card this tool call painted, live and in replayed history.
         const toolCallId = typeof args["__toolCallId"] === "string" ? args["__toolCallId"] : undefined;
-        const result = await runner.send(id, message, attachments, parentMessage, registry, callerSessionId, signal, undefined, toolCallId, streamProvider, asked.execution);
+        const result = await runner.send(id, message, attachments, parentMessage, registry, callerSessionId, signal, undefined, toolCallId, streamProvider, asked.execution, args["wait"] === true);
         return { success: !result.startsWith("Error:"), output: result, error: result.startsWith("Error:") ? result : undefined };
       } catch (e) {
         // A real Stop of the caller ends the caller's run. Anything else is this call's own

@@ -199,7 +199,7 @@ export class RunRecorder {
     attachments?: SessionAttachment[];
     location?: ChatLocation;
     transcripts?: Record<string, string>;
-    from?: { sessionId: string; label: string };
+    from?: { sessionId: string; label: string; kind?: "send" | "return"; status?: string };
   }): UserEntry {
     const entry = this.entries.append<UserEntry>({
       type: "user",

@@ -226,6 +226,75 @@ interface ActiveSubAgentRun {
   done: Promise<void>;
 }
 
+/**
+ * What a background sub-agent has to say when it settles, for the conversation that launched it.
+ *
+ * A launched child outlives the run that started it, so its answer cannot ride that run's tool
+ * result: it is delivered as a turn of its own -- docs/subagents.md, "Background".
+ */
+export interface SubAgentReturn {
+  subagentId: string;
+  parentSessionId: string;
+  /** The `spawn`, `send` or `delegate_browser_task` call that launched it, when a tool did. */
+  toolCallId?: string;
+  displayName: string;
+  agentType: string;
+  action: "spawn" | "send" | "browser";
+  status: "complete" | "error" | "stopped";
+  text: string;
+  error?: string;
+  attachments: Attachment[];
+}
+
+/**
+ * Where a return goes. Injected by the entry point: the runner knows when a background child
+ * settles, the channel knows which conversation can be woken by it.
+ *
+ * A runner with no sink launches nothing in the background -- every call waits, which is what the
+ * feature needs to stay safe on a channel that has nobody to wake.
+ */
+export interface SubAgentReturnSink {
+  deliver(notice: SubAgentReturn): Promise<void>;
+}
+
+/** What a launch hands back: the child's id, and whether the answer is still coming. */
+export interface SubAgentLaunch {
+  id: string;
+  result: string;
+  attachments: Attachment[];
+  background: boolean;
+}
+
+/** What a launched call tells its caller instead of an answer. */
+export function startedText(displayName: string, type: string, id: string, action: "spawn" | "send" | "browser"): string {
+  const verb = action === "send" ? "Sent" : "Started";
+  return `${verb} ${displayName} (${type}, id: ${id}) in the background. It works on its own and you will get a` +
+    " <subagent> message when it is done. Do not sleep, poll or duplicate its work: continue with" +
+    " something else, or end your turn and let the return wake you." +
+    `\n\n[sub-agent id: ${id}]`;
+}
+
+/**
+ * What the caller's model reads when a background child settles: a tag, so a report is never
+ * mistaken for the owner talking, and one line that says what to do with it.
+ */
+export function returnBody(notice: SubAgentReturn): string {
+  return notice.status === "complete"
+    ? notice.text.trim() || "The sub-agent finished without a written answer."
+    : notice.error ?? notice.text;
+}
+
+export function returnText(notice: SubAgentReturn): string {
+  const body = returnBody(notice);
+  return [
+    `<subagent id="${notice.subagentId}" status="${notice.status}" description="${notice.displayName}">`,
+    body,
+    "</subagent>",
+    "",
+    "This is a report from a sub-agent you launched, not a message from the owner. Continue with what it makes possible, or tell the owner what it returned.",
+  ].join("\n");
+}
+
 export class SubAgentRunner {
   private activeRuns = new Map<string, Set<ActiveSubAgentRun>>();
 
@@ -234,6 +303,17 @@ export class SubAgentRunner {
   private mediaStore?: MediaStoreHook;
 
   private approvalHandler?: ToolApprovalHandler;
+
+  private returnSink?: SubAgentReturnSink;
+
+  /** Conversations with children working in the background: caller session -> sub-agent ids. */
+  private background = new Map<string, Set<string>>();
+
+  /**
+   * Children a Stop took down with their conversation. They report nothing: the return would wake
+   * the very conversation the owner just stopped.
+   */
+  private silenced = new Set<string>();
 
   constructor(
     private config: MyClawConfig,
@@ -284,6 +364,30 @@ export class SubAgentRunner {
 
   setSessionManager(manager: SessionManager): void {
     this.sessionManager = manager;
+  }
+
+  /** Where a background child's answer is delivered -- set by the entry point, absent in tests. */
+  setReturnSink(sink: SubAgentReturnSink | undefined): void {
+    this.returnSink = sink;
+  }
+
+  /** How many children of this conversation are working in the background right now. */
+  backgroundCountOf(callerSessionId: string): number {
+    return this.background.get(callerSessionId)?.size ?? 0;
+  }
+
+  /**
+   * Stops every background child a conversation launched.
+   *
+   * A background child does not hold the caller's abort signal -- it has to outlive the run that
+   * started it -- so the owner's Stop, which used to reach the children by cascade, has to name
+   * them here.
+   */
+  async stopBackgroundOf(callerSessionId: string): Promise<string[]> {
+    const ids = [...(this.background.get(callerSessionId) ?? [])];
+    for (const id of ids) this.silenced.add(id);
+    await Promise.allSettled(ids.map((id) => this.stopTracked(id)));
+    return ids;
   }
 
   private async runTracked<T>(id: string, parentSignal: AbortSignal | undefined, task: (signal: AbortSignal) => Promise<T>): Promise<T> {
@@ -437,7 +541,18 @@ export class SubAgentRunner {
      * have no live view (cron, CLI).
      */
     streamProvider?: (id: string) => SubAgentStream | undefined;
-  }): Promise<{ id: string; result: string; attachments: Attachment[] }> {
+    /**
+     * Block until the child answers and return its answer, instead of launching it and returning
+     * at once. Off by default: a delegation is work the caller is not supposed to wait for, and
+     * polling for it is exactly what the return makes unnecessary (docs/subagents.md).
+     */
+    wait?: boolean;
+    /**
+     * What the return says, when the run's own last words are not the whole answer: a browser task
+     * reports a kept window or a human hand-off that its final message cannot carry.
+     */
+    describeResult?: (id: string, result: string) => string;
+  }): Promise<SubAgentLaunch> {
     const { type, mode, task, workspaceDir, parentWorkspaceDir, parentMessage, existingIds, generateId, parentSessionId, visibility, signal, model, pins, enqueue, toolCallId, streamProvider } = opts;
     // Sanitized here rather than only inside SubAgentRegistry.generateId: that function arrives as
     // a callback, so this is the one place every caller passes through, and it keeps the stored
@@ -453,21 +568,32 @@ export class SubAgentRunner {
         id: "",
         result: `Error: this would start a level-${depth} sub-agent, and sub-agents nest at most ${MAX_SUBAGENT_DEPTH} deep. Do this step with your own tools, or return what you have to your caller and say what is left.`,
         attachments: [],
+        background: false,
       };
     }
 
     const resolved = this.resolveWorkspace(type, workspaceDir, parentWorkspaceDir);
-    if ("error" in resolved) return { id: "", result: `Error: ${resolved.error}`, attachments: [] };
+    if ("error" in resolved) return { id: "", result: `Error: ${resolved.error}`, attachments: [], background: false };
     // A node agent whose machine is away answers here, before a session or a log entry exists:
     // the spawn itself says so. docs/remote-nodes.md.
     const offline = this.offlineNodeError(type, resolved.key);
-    if (offline) return { id: "", result: offline, attachments: [] };
+    if (offline) return { id: "", result: offline, attachments: [], background: false };
+
+    // A background child answers to the conversation, not to the run that launched it: holding the
+    // caller's signal would cut it the instant that run ends, which is the one thing it must
+    // outlive. Its Stop comes from `stopBackgroundOf` instead.
+    const background = opts.wait !== true && this.returnSink !== undefined;
+    const runSignal = background ? undefined : signal;
+    let announce!: (id: string) => void;
+    const launched = new Promise<string>((resolve) => { announce = resolve; });
 
     if (mode === "run") {
-      return this.runOneShot(displayName, type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, signal, model, toolCallId, streamProvider, enqueue, pins);
+      const work = this.runOneShot(displayName, type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, runSignal, model, toolCallId, streamProvider, enqueue, pins, announce);
+      if (!background) return { ...(await work), background: false };
+      return this.inBackground(parentSessionId, launched, work, { displayName, type, action: "spawn", ...(toolCallId ? { toolCallId } : {}), ...(opts.describeResult ? { describeResult: opts.describeResult } : {}) });
     }
-
     const id = generateId(displayName, existingIds);
+    announce(id);
     // The scope of a workspace-visible agent is the conversation that spawned it, not the
     // workspace the agent was pinned to run in: `agents.<name>.workspace` moves the filesystem,
     // not the roster the orchestrator sees.
@@ -495,7 +621,7 @@ export class SubAgentRunner {
       prompt: true,
       text: task,
     });
-    return this.runTracked(id, signal, async (trackedSignal) => {
+    const work = this.runTracked(id, runSignal, async (trackedSignal) => {
       await entryLog.flush();
       await this.persistSession(id, session);
       await this.indexForSearch(id, session);
@@ -515,6 +641,75 @@ export class SubAgentRunner {
       hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
       return { id, result, attachments: this.takeAttachments(id) };
     });
+    if (!background) return { ...(await work), background: false };
+    return this.inBackground(parentSessionId, launched, work, { displayName, type, action: "spawn", ...(toolCallId ? { toolCallId } : {}), ...(opts.describeResult ? { describeResult: opts.describeResult } : {}) });
+  }
+
+  /**
+   * Returns at once, with the child's id, and delivers its answer later as a turn of the caller's
+   * conversation.
+   *
+   * The work is already in flight: the id is announced before the first `await` of the run, so a
+   * launch never reports on a child whose id it does not have.
+   */
+  private async inBackground(
+    parentSessionId: string,
+    launched: Promise<string>,
+    work: Promise<{ id: string; result: string; attachments: Attachment[] }>,
+    meta: { displayName: string; type: SubAgentType; action: "spawn" | "send" | "browser"; toolCallId?: string; describeResult?: (id: string, result: string) => string },
+  ): Promise<SubAgentLaunch> {
+    const id = await launched;
+    let tracked = this.background.get(parentSessionId);
+    if (!tracked) {
+      tracked = new Set<string>();
+      this.background.set(parentSessionId, tracked);
+    }
+    tracked.add(id);
+    const forget = (): void => {
+      const set = this.background.get(parentSessionId);
+      set?.delete(id);
+      if (set && set.size === 0) this.background.delete(parentSessionId);
+    };
+    const settled = work.then(
+      (done) => ({ status: "complete" as const, text: meta.describeResult ? meta.describeResult(done.id, done.result) : done.result, attachments: done.attachments }),
+      (err: unknown) => (isAbort(err)
+        ? { status: "stopped" as const, text: "The sub-agent was stopped before it answered.", attachments: [] }
+        : { status: "error" as const, text: "", error: String(err), attachments: [] }),
+    );
+    void settled.then((outcome) => {
+      forget();
+      return this.reportReturn({
+        subagentId: id,
+        parentSessionId,
+        displayName: meta.displayName,
+        agentType: meta.type,
+        action: meta.action,
+        ...meta.toolCallId ? { toolCallId: meta.toolCallId } : {},
+        ...outcome,
+      });
+    });
+    return { id, result: startedText(meta.displayName, meta.type, id, meta.action), attachments: [], background: true };
+  }
+
+  /**
+   * Hands a settled child's answer to the conversation that launched it.
+   *
+   * One turn, written and delivered where that conversation is: absorbed at the next boundary when
+   * a run is in flight, a new run when it is at rest. A child a Stop took down with its conversation
+   * says nothing -- waking the conversation the owner just stopped is the one report nobody wants.
+   */
+  private async reportReturn(notice: SubAgentReturn): Promise<void> {
+    if (this.silenced.delete(notice.subagentId)) return;
+    if (!this.returnSink) return;
+    try {
+      await this.returnSink.deliver(notice);
+    } catch (err) {
+      void log("warn", "sub-agent return could not be delivered", {
+        subagentId: notice.subagentId,
+        parentSessionId: notice.parentSessionId,
+        error: String(err),
+      });
+    }
   }
 
   /**
@@ -598,9 +793,21 @@ export class SubAgentRunner {
      * this account" from becoming the agent's permanent setting.
      */
     execution?: SubAgentExecution,
+    /**
+     * Block until the child answers, instead of returning as soon as it is working. Off by
+     * default, like `spawn`: a driven child reports back when it settles (docs/subagents.md).
+     */
+    wait?: boolean,
   ): Promise<string> {
     id = await this.canonicalId(id, callerSessionId);
-    return this.runTracked(id, signal, (trackedSignal) => registry.enqueue(id, async () => {
+    const background = wait !== true && this.returnSink !== undefined;
+    // A launch answers before the child has done anything, so the one thing it can still say now is
+    // that it was pointed at nothing. Said here, where a caller can react to it.
+    const launchedSession = background ? await loadSession(id) : undefined;
+    if (background && (!launchedSession?.meta || !isReachableFrom(launchedSession.meta, await this.resolveCaller(callerSessionId)))) {
+      return `Error: sub-agent ${id} not found.`;
+    }
+    const work = this.runTracked(id, background ? undefined : signal, (trackedSignal) => registry.enqueue(id, async () => {
       const session = await loadSession(id);
       if (!session || !session.meta) {
         return `Error: sub-agent ${id} not found.`;
@@ -685,6 +892,34 @@ export class SubAgentRunner {
         await this.indexForSearch(id, session);
       }
     }));
+    if (!background) return work;
+    const displayName = launchedSession?.meta?.displayName || id.slice("subagent/".length);
+    const type = launchedSession?.meta?.type ?? "sub-agent";
+    let tracked = this.background.get(callerSessionId);
+    if (!tracked) {
+      tracked = new Set<string>();
+      this.background.set(callerSessionId, tracked);
+    }
+    tracked.add(id);
+    void work.then(
+      (result) => {
+        tracked.delete(id);
+        if (tracked.size === 0) this.background.delete(callerSessionId);
+        // A missing agent comes back as prose from the queue entry, not as a throw: a launch that
+        // found nothing has to report as the failure it is, not as an answer.
+        return this.reportReturn(result.startsWith("Error:")
+          ? { subagentId: id, parentSessionId: callerSessionId, displayName, agentType: type, action: "send", status: "error", text: result, attachments: [] }
+          : { subagentId: id, parentSessionId: callerSessionId, displayName, agentType: type, action: "send", status: "complete", text: result, attachments: [] });
+      },
+      (err: unknown) => {
+        tracked.delete(id);
+        if (tracked.size === 0) this.background.delete(callerSessionId);
+        return this.reportReturn(isAbort(err)
+          ? { subagentId: id, parentSessionId: callerSessionId, displayName, agentType: type, action: "send", status: "stopped", text: "The sub-agent was stopped before it answered.", attachments: [] }
+          : { subagentId: id, parentSessionId: callerSessionId, displayName, agentType: type, action: "send", status: "error", text: "", error: String(err), attachments: [] });
+      },
+    );
+    return startedText(displayName, type, id, "send");
   }
 
   /**
@@ -1078,8 +1313,11 @@ export class SubAgentRunner {
     enqueue?: <T>(id: string, task: () => Promise<T>) => Promise<T>,
     /** The caller's effort and ceiling, set on the session this one-shot creates. */
     pins?: { effort?: EffortLevel; contextCap?: number },
+    /** Called with the id before the run starts: a launch returns the child's name at once. */
+    onLaunched?: (id: string) => void,
   ): Promise<{ id: string; result: string; attachments: Attachment[] }> {
     const id = `subagent/run-${crypto.randomUUID()}`;
+    onLaunched?.(id);
     // A one-shot keeps its session now: the app lists it as a temporary sub-agent and can open it
     // like a chat, so deleting it would make the roster promise something it cannot deliver. It
     // stays private -- an unnamed agent must not leak past the conversation that asked for it --

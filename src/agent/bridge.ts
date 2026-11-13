@@ -833,6 +833,7 @@ export class AgentBridge implements AgentBackend {
           ...(images.length > 0 ? { attachments: images } : {}),
           ...(message.location ? { location: message.location } : {}),
           ...(transcripts.length > 0 ? { transcripts: Object.fromEntries(transcripts.map((t) => [t.path, t.text])) } : {}),
+          ...(message.from ? { from: message.from } : {}),
         });
       }
       // Sub-agent calls a lost run never settled get their result now, in the turn that made them
@@ -1751,6 +1752,7 @@ export class AgentBridge implements AgentBackend {
         ...(images.length > 0 ? { attachments: images } : {}),
         ...(injected.location ? { location: injected.location } : {}),
         ...(transcripts.length > 0 ? { transcripts: Object.fromEntries(transcripts.map((t) => [t.path, t.text])) } : {}),
+        ...(injected.from ? { from: injected.from } : {}),
       });
     }
 

@@ -25,6 +25,12 @@ export interface UnifiedMessage {
    * suggestions, memory), and is never written.
    */
   resume?: boolean;
+  /**
+   * Set when the turn came from another agent rather than the owner: a background sub-agent's
+   * return, or a report a sub-agent handed back. Stamped on the log entry, so a reopened thread
+   * still knows this was not the owner speaking (docs/subagents.md).
+   */
+  from?: { sessionId: string; label: string; kind: "send" | "return"; status?: string };
   raw: unknown;
 }
 

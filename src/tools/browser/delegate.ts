@@ -10,6 +10,42 @@ import { DEFAULT_NOVNC_URL, takeBrowserOutcome, type BrowserSession } from "./se
 import { keptWindows } from "./held.ts";
 
 /**
+ * What a browser run's outcome says, in the words the caller reads.
+ *
+ * Shared by the call that waited and the return that did not: a kept window and a human hand-off
+ * live in what the browser session recorded for the run, so a background task that reported only
+ * its last sentence would lose the two things worth knowing.
+ */
+function outcomeText(
+  outcome: NonNullable<ReturnType<typeof takeBrowserOutcome>>,
+  config: MyClawConfig,
+): string {
+  const keptNote = outcome.kept
+    ? `\nKept for this conversation until ${new Date(outcome.kept.until).toLocaleString("fr-FR", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}: window ${outcome.kept.windows.join(", ")}. To continue there, delegate the next step: the task will be offered that window first. Release it with delegate_browser_task(kept: "release", window) once it is no longer needed.`
+    : "";
+  if (!outcome.needsHuman) return `${outcome.summary}${keptNote}`;
+  const novncUrl = config.browser?.novncUrl ?? DEFAULT_NOVNC_URL;
+  // Same host as the web viewer: whatever host the server is reached on, the VNC
+  // path stays in lockstep with it (port 5900 is pinned by my-claw-vnc).
+  let vncHost = "localhost";
+  try {
+    vncHost = new URL(novncUrl).hostname || vncHost;
+  } catch { /* novncUrl is malformed: fall back to localhost */ }
+  const screen = outcome.onScreen !== undefined ? ` Window ${outcome.onScreen} is on the VNC screen.` : "";
+  return `Browser task paused, a human must take over.\n${outcome.summary}\nLive browser: the app's Browser page (live view), ${novncUrl} (web) or ${vncHost}:5900 (VNC app).${screen} Resolve the blocker, then reply "continue".${keptNote}`;
+}
+
+/** The return's body for a background browser task: its outcome, or what it managed to say. */
+function browserOutcomeText(runId: string, result: string, config: MyClawConfig): string {
+  const outcome = takeBrowserOutcome(runId);
+  if (outcome?.infraError) {
+    return `Browser infrastructure is unavailable: the sidecar or its Chromium is not reachable: ${outcome.infraError}`;
+  }
+  if (!outcome?.summary) return result || "Browser task ended without a result.";
+  return outcomeText(outcome, config);
+}
+
+/**
  * The door to the browser: a task, run by the `browser` agent as a private one-shot sub-agent of
  * the caller, exactly the way `spawn` runs the others. The run is a session of its own, so the app
  * opens it, watches it live, steers it and can `send` to it afterwards to carry on in the same
@@ -61,6 +97,10 @@ export function createDelegateBrowserTool(
           window: { type: "number", description: "kept: the window number to release or extend" },
           hold: { type: "string", description: "kept=extend: how long to keep it from now, e.g. 24h. Capped at browser.holdMax." },
           all: { type: "boolean", description: "kept=release: every window kept for this conversation" },
+          wait: {
+            type: "boolean",
+            description: "Block until the browsing task answers and return its outcome here, instead of launching it in the background. Omit unless this call cannot do anything without it.",
+          },
         },
       };
     },
@@ -96,7 +136,7 @@ export function createDelegateBrowserTool(
         // Described for the caller: a window kept for this conversation is the one this run is
         // meant to continue in, and without the caller it read as somebody else's.
         const task = `Task: ${instructions}\nStart URL: ${url}\n\n${await session.describeWindows(callerSessionId)}`;
-        const { id, result, attachments } = await runner.spawn({
+        const { id, result, attachments, background } = await runner.spawn({
           displayName: "browser",
           type: "browser",
           mode: "run",
@@ -110,18 +150,25 @@ export function createDelegateBrowserTool(
           signal,
           ...(model ? { model } : {}),
           ...(asked.pins.effort || asked.pins.contextCap !== undefined ? { pins: asked.pins } : {}),
+          wait: args["wait"] === true,
+          // The run's last words are not the outcome: the kept window and the human hand-off live in
+          // what the browser session recorded for this run, and they are the reason the task is
+          // worth reporting at all.
+          describeResult: (runId, result) => browserOutcomeText(runId, result, config),
           enqueue: <T,>(runId: string, run: () => Promise<T>) => registry.enqueue(runId, run),
           ...(toolCallId ? { toolCallId } : {}),
           ...(streamProvider ? { streamProvider } : {}),
         });
         if (result.startsWith("Error:")) return { success: false, output: "", error: result, attachments };
+        // Launched: the outcome lands later as the return, and the run is still going.
+        if (background) return { success: true, output: result };
 
         const outcome = takeBrowserOutcome(id);
         if (outcome?.infraError) {
           return {
             success: false,
             output: "",
-            error: `Browser infrastructure is unavailable — the browser sidecar (${session.sidecarUrl()}) or its Chromium is not reachable: ${outcome.infraError}`,
+            error: `Browser infrastructure is unavailable: the browser sidecar (${session.sidecarUrl()}) or its Chromium is not reachable: ${outcome.infraError}`,
             attachments,
           };
         }
@@ -130,26 +177,11 @@ export function createDelegateBrowserTool(
         if (!outcome?.summary) {
           return { success: false, output: "", error: result || "Browser task ended without a result.", attachments };
         }
-        const summary = outcome.summary;
-        const keptNote = outcome.kept
-          ? `\nKept for this conversation until ${new Date(outcome.kept.until).toLocaleString("fr-FR", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}: window ${outcome.kept.windows.join(", ")}. To continue there, delegate the next step: the task will be offered that window first. Release it with delegate_browser_task(kept: "release", window) once it is no longer needed.`
-          : "";
-        if (outcome.needsHuman) {
-          const novncUrl = config.browser?.novncUrl ?? DEFAULT_NOVNC_URL;
-          // Same host as the web viewer: whatever host the server is reached on, the VNC
-          // path stays in lockstep with it (port 5900 is pinned by my-claw-vnc).
-          let vncHost = "localhost";
-          try {
-            vncHost = new URL(novncUrl).hostname || vncHost;
-          } catch { /* novncUrl is malformed: fall back to localhost */ }
-          const screen = outcome.onScreen !== undefined ? ` Window ${outcome.onScreen} is on the VNC screen.` : "";
-          return {
-            success: false,
-            output: `Browser task paused — a human must take over.\n${summary}\nLive browser: the app's Browser page (live view), ${novncUrl} (web) or ${vncHost}:5900 (VNC app).${screen} Resolve the blocker, then reply "continue".${keptNote}`,
-            attachments,
-          };
-        }
-        return { success: true, output: `${summary}${keptNote}`, attachments };
+        return {
+          success: !outcome.needsHuman,
+          output: outcomeText(outcome, config),
+          attachments,
+        };
       } catch (e) {
         // Same rule as spawn/send: the caller's Stop is the caller's, and a delegated run that was
         // stopped on its own says that instead (docs/stop.md).
