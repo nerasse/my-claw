@@ -36,6 +36,7 @@ import { toOpenAiToolDefinitions, toOpenAiToolCalls } from "../llm/openai-format
 import { trimToContextWindow, estimateTokens } from "../llm/tokens.ts";
 import { usageModelOf } from "../llm/model-ref.ts";
 import { resolveContextWindow, occupiedContextTokens, measuredPrompt } from "../llm/context-window.ts";
+import { noticeReason } from "../utils/errors.ts";
 import type { ToolCallResult } from "./tool-status.ts";
 import { compactSession, type CompactionResult, type CompactionPrefix } from "../sessions/compaction.ts";
 import {
@@ -376,7 +377,7 @@ export class AgentBridge implements AgentBackend {
         rethrowIfAborted(err, params.signal);
         if (isOverflowError(err) || params.emitted() || !(isProviderOutage(err) || isCapabilityRefusal(err))) throw withFailureContext(err, config, route);
 
-        const reason = String((err as Error | undefined)?.message ?? err).slice(0, 200);
+        const reason = noticeReason(err);
         const failed = { model: config.model, provider: config.provider };
         // A capability the model does not have is not a wait: the next target is the only cure.
         const capability = (err as { capability?: string }).capability;
