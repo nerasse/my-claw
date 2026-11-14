@@ -1585,6 +1585,13 @@ export interface MyClawAppRunSummaryEntry {
   run: MyClawAppRunMeta;
   /** Tool calls in the whole run, whatever this page holds of it: the header counts them. */
   toolCount: number;
+  /**
+   * The display name of every tool the row folds, and how many calls each took -- the same
+   * breakdown the open group prints (`28 shell · 7 web`), without the cards. Counts rather than
+   * names: a long run is hundreds of calls, and this row exists to keep a page in kilobytes.
+   * Absent on a server that predates it, and the header then says only how many steps there are.
+   */
+  toolKinds?: Record<string, number>;
   /** Display name of the run's first tool, for the header line. */
   firstTool?: string;
   /** Folded rows, so the group can draw a skeleton the size of what is coming. */

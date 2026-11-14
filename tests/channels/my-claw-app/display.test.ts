@@ -757,6 +757,8 @@ describe("runFoldPlan: a finished run travels as its header", () => {
       toolCount: 10,
       itemCount: 10,
       firstTool: "bash",
+      // Counts by tool name, so the header can print the same breakdown the open group does.
+      toolKinds: { bash: 10 },
       run: { id: path[1]!.id, status: "done" },
     });
     // The row stands where the work stood, so segments sort in the order the reader met them.
@@ -778,6 +780,26 @@ describe("runFoldPlan: a finished run travels as its header", () => {
     const summary = foldedShow(path)[1]!;
     expect(summary.role === "run" ? summary.itemCount : -1).toBe(rendered);
     expect(rendered).toBe(9);
+  });
+
+  test("the breakdown counts every tool by name, not just the first", () => {
+    // The row a reload draws has to say what the group it replaces said: naming the first tool
+    // said nothing about the other fifty (owner, 2026-11-14: the breakdown vanished on reload).
+    const path = chain([
+      user("q"),
+      runStart(),
+      tool("c1"),
+      tool("c2", { name: "mcp__myclaw__read" }),
+      tool("c3", { name: "mcp__myclaw__web_search" }),
+      tool("c4", { name: "mcp__myclaw__read" }),
+      runEnd(),
+    ]);
+    const summary = foldedShow(path)[1]!;
+    expect(summary.role === "run" ? summary.toolKinds : undefined).toEqual({
+      bash: 1,
+      read: 2,
+      web_search: 1,
+    });
   });
 
   test("nothing folds unless asked", () => {

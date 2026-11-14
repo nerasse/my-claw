@@ -399,6 +399,15 @@ export function runFoldPlan(
         const last = group[group.length - 1]!;
         const tools = group.filter((entry) => entry.type === "tool");
         const firstTool = tools[0];
+        // What the header's breakdown is built from. Counts by display name, so the row that
+        // replaces a run's work says the same thing as the group it stands for -- and never names
+        // the first tool alone, which said nothing about the other fifty.
+        const toolKinds: Record<string, number> = {};
+        for (const tool of tools) {
+          if (tool.type !== "tool") continue;
+          const name = toolDisplayName(tool.name);
+          toolKinds[name] = (toolKinds[name] ?? 0) + 1;
+        }
         plan.summaries.set(first.id, {
           id: `run-${first.id}`,
           role: "run",
@@ -407,6 +416,7 @@ export function runFoldPlan(
           ts: new Date(first.ts).toISOString(),
           run: groupRun,
           toolCount: tools.length,
+          ...(Object.keys(toolKinds).length > 0 ? { toolKinds } : {}),
           ...(firstTool?.type === "tool" ? { firstTool: toolDisplayName(firstTool.name) } : {}),
           itemCount: rows,
           lastId: last.id,

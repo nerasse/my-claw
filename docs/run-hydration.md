@@ -37,6 +37,10 @@ interface MyClawAppRunSummaryEntry {
   run: MyClawAppRunMeta;    // { id, status, startTs, endTs } -- la forme que l'app rend déjà
   /** Ce que l'en-tête affiche, et rien de plus -- RunGroup.tsx. */
   toolCount: number;
+  /** Chaque outil replié et son nombre d'appels : la ventilation de l'en-tête
+   *  (`28 shell · 7 web`), sans les cartes. Des comptes, pas des noms : un long run fait des
+   *  centaines d'appels, et cette ligne existe pour tenir une page en kilo-octets. */
+  toolKinds?: Record<string, number>;
   firstTool?: string;
   /** Lignes repliées (pas entrées) : squelette de chargement à la bonne taille. */
   itemCount: number;
