@@ -196,6 +196,11 @@ async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {
   // The same chain the run uses, rather than a copy of it that happens to agree today.
   const currentModel = chatModel(p.config, p.session?.modelOverride) || "unknown";
   const tagName = tagNameOf(currentModel);
+  // The tag's identity answers two questions the leaf cannot: which tag was picked, and -- through
+  // `effectiveEffort` -- which rung it pins. `chatModel` already reports the reference (the tag)
+  // while `displayModel` names the model the API receives, and the two are only the same for a
+  // plain pick. Reading effort off the leaf reported the global `max` on a conversation whose tag
+  // pins `xhigh` on Opus: the tag's own rung is only reachable from the tag (2026-11-14).
   const displayModel = leafModelId(p.config.llm, currentModel);
   // Which of the three picks it, from the resolver itself: reading `override ?? default` here is
   // how a screen came to name the global default while every run went to the agent's own pin
@@ -206,8 +211,9 @@ async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {
     availabilityWorld(),
   );
   // Session > tag > agent > global > what the API or the provider does on its own. The level alone
-  // cannot be drawn: "high" pinned here and "high" inherited are the same string.
-  const effort = effectiveEffort(p.config.llm, displayModel, p.session?.effortOverride, configured?.effort);
+  // cannot be drawn: "high" pinned here and "high" inherited are the same string. Asked of the
+  // reference, not of the leaf: a tag carries its own rung and only its own name reaches it.
+  const effort = effectiveEffort(p.config.llm, currentModel, p.session?.effortOverride, configured?.effort);
   const contextAgent = p.session ? agentTypeOf(p.session) : "main";
   const window = resolveModelContextWindow(p.config, currentModel, p.session?.contextOverride, contextAgent);
   // Every clause here is a reason the number can look wrong, so each one that applies is named.
@@ -304,6 +310,10 @@ async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {
         depth: r.depth,
         startedAt: new Date(r.startedAt).toISOString(),
         ...(r.model ? { model: r.model } : {}),
+        // The rung that node is asked for. A route's candidates each carry their own, so the
+        // conversation's effort is not the running one's, and a row that named one level while the
+        // request carried another is exactly the mismatch this field removes.
+        ...(r.effort ? { effort: r.effort } : {}),
       })),
       compacting: p.compacting === true,
       verbose: session?.verbose !== false,

@@ -45,6 +45,12 @@ export interface SubAgentInfo {
   /** The model this agent runs: its pin, or what its run in flight is calling right now. */
   model?: string;
   /**
+   * The rung that model is asked for, when it takes one. Read from the live node while a run is in
+   * flight, and from the session's own pin otherwise -- a sub-agent inherits the effort of the
+   * spawn that created it, so this is the only way a roster says how hard it is thinking.
+   */
+  effort?: string;
+  /**
    * When the last message was delivered to this agent -- what a roster is now ordered by.
    *
    * The roster used to group by kind and then by type, so the agent that answered a minute ago

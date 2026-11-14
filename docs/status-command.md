@@ -101,16 +101,23 @@ page still open (`resumeFrames`). The refresh button is gone with the reason it 
 
 ## The live run tree names models
 
-`runtime.runs` is one node per run in flight: `label` (the agent's display name), `depth`, and
-`model` -- the model that node is **calling at this second**. It is not the model the run was
-resolved to: a run that walked its route on a spent bar, or lost its provider, adopts another one
-mid-flight and the node moves with it (`RunNode.model`, written at run start and on every adoption).
+`runtime.runs` is one node per run in flight: `label` (the agent's display name), `depth`, `model`
+-- the model that node is **calling at this second** -- and `effort`, the rung that call carries. It
+is not the model the run was resolved to: a run that walked its route on a spent bar, or lost its
+provider, adopts another one mid-flight and the node moves with it (`RunNode.model` and
+`RunNode.effort`, written at run start and on every adoption).
 
-The same field feeds two other surfaces, which is why it lives on the node rather than in each:
-`model.result.live` (the chat header, when the root run is off its own model) and the roster row of
-a sub-agent (`SubAgentInfo.model` + `modelLive`). `agent:model:changed` is the event that pushes all
-three, and `agent:run:left` is what clears the live half when the node is gone -- the run-end event
-fires while the node still exists, so it cannot carry that.
+`effort` is a field of its own and not a repetition of `model.effort`, because a route's candidates
+do not share a rung: `tag:Quota` pins `xhigh` on Opus while its first account answers at `max`, and
+the conversation's level cannot answer for the node that is actually calling.
+
+The same fields feed two other surfaces, which is why they live on the node rather than in each:
+`model.result.live` + `.liveEffort` (the chat header, when the root run is off its own model) and
+the roster row of a sub-agent (`SubAgentInfo.model` + `modelLive` + `effort`).
+`agent:model:changed` is the event that pushes all of them (`agent:run:start` pushes the model state
+again, since a re-resolution can land on another candidate), and `agent:run:left` is what clears the
+live half when the node is gone -- the run-end event fires while the node still exists, so it
+cannot carry that.
 
 ## The two totals problem
 
@@ -847,6 +854,12 @@ two cannot:
   global default) > `api-default` / `provider-default`, with `unsupported`. Sent as a pair, because
   the level alone is not drawable: "high" pinned by this chat and "high" inherited are the same
   string and two different states.
+
+  **It is asked of the reference, not of the leaf.** `current` is the model the API receives; a tag
+  is the reference that chose it, and its rung is only reachable by its own name --
+  `effectiveEffort(leaf)` sees no tag and falls through to `llm.effort`, which reported `max` on a
+  conversation whose tag pins `xhigh` on every candidate (measured 2026-11-14). The ladder
+  (`effortLevels`) still comes from the leaf, which is the model that publishes it.
 
 `effort` and the model block answer the same question at two levels, and neither falls back to the
 other: a run sends the effort of the model it resolved, and a model that takes none is told none

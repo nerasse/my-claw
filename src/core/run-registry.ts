@@ -34,6 +34,12 @@ export interface RunNode {
    * names the model that answers rather than the one the run was resolved to.
    */
   model?: string;
+  /**
+   * The effort that model is being asked for, moved with it. A route's candidates do not all carry
+   * the same rung (a tag of five accounts can start at `max` and walk to `low`), so the level has to
+   * travel with the model or a page names one and runs the other.
+   */
+  effort?: string;
 }
 
 /** Thrown into a pending injection's promise when the run ended without absorbing it
@@ -88,7 +94,7 @@ interface Compaction {
 /** What `enter` hands back: leaving the live view, and moving the model the node is on. */
 export interface RunHandle {
   exit: () => void;
-  setModel: (model: string) => void;
+  setModel: (model: string, effort?: string) => void;
 }
 
 class RunRegistry {
@@ -135,18 +141,30 @@ class RunRegistry {
   }
 
   /** Called by every AgentBridge.handle (main and sub-agents) to register itself in the live view. */
-  enter(signal: AbortSignal, label: string, depth: number, sessionId: string, model?: string): RunHandle | undefined {
+  enter(
+    signal: AbortSignal,
+    label: string,
+    depth: number,
+    sessionId: string,
+    model?: string,
+    effort?: string,
+  ): RunHandle | undefined {
     const list = this.runs.get(signal);
     if (!list) return undefined;
     const node: RunNode = { label, depth, startedAt: Date.now(), sessionId, ...(model ? { model } : {}) };
+    if (effort) node.effort = effort;
     list.push(node);
     return {
       exit: () => {
         const i = list.indexOf(node);
         if (i >= 0) list.splice(i, 1);
       },
-      setModel: (next: string) => {
+      setModel: (next: string, nextEffort?: string) => {
         node.model = next;
+        // Assigned, not merged: the new target's own rung replaces the previous one, and an absent
+        // effort means that model takes none -- keeping the old level would name a rung it is not sent.
+        if (nextEffort) node.effort = nextEffort;
+        else delete node.effort;
       },
     };
   }
@@ -159,8 +177,20 @@ class RunRegistry {
    * (the model writes display names, and two agents may carry the same one).
    */
   liveModelOf(sessionId: string): string | undefined {
+    return this.liveNodeOf(sessionId)?.model;
+  }
+
+  /**
+   * The effort that live model is asked for. Read beside the model, never instead of it: the rung
+   * belongs to the candidate answering, and a route's candidates do not all publish the same one.
+   */
+  liveEffortOf(sessionId: string): string | undefined {
+    return this.liveNodeOf(sessionId)?.effort;
+  }
+
+  private liveNodeOf(sessionId: string): RunNode | undefined {
     for (const nodes of this.runs.values()) {
-      for (const node of nodes) if (node.sessionId === sessionId) return node.model;
+      for (const node of nodes) if (node.sessionId === sessionId) return node;
     }
     return undefined;
   }

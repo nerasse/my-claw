@@ -911,6 +911,15 @@ runs fresh like any other message.
   run node (`RunNode.model`), so it follows the run and clears itself when the node leaves the tree
   (`agent:run:left`), which is the only event that can say so -- a run end fires while the node still
   exists. Absent means nothing is running, or that what runs is the conversation's own model.
+- `model.result.liveEffort` is the rung that live model is asked for, and `model.result.tag` the tag
+  that picked the conversation's model. Both exist because the two facts around them cannot answer:
+  a route's candidates each carry their own level (the conversation pins `xhigh`, the first account
+  answers at `max`), and `model` names what the API receives, so the reference that chose it is
+  otherwise lost. A header without them reads `opus-5-5` for a conversation on `tag:Quota` and cannot
+  say whether the pick landed (measured 2026-11-14). The app composes the line in
+  `app/headerControls.ts`, one function shared by a conversation's bar and a sub-agent's, and it is
+  pushed again on `agent:run:start` -- a re-resolution can land on another candidate, which is how
+  the bar came to keep naming what the previous run was resolved to.
 - `model.set`, `model.effort.set` and `model.context.set` answer **every device of the owner**, not
   only the one that asked: the pick belongs to the thread, so a browser left open on the same
   conversation would otherwise keep naming the previous model until it reloaded. `model.get` stays a

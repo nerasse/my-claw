@@ -2883,6 +2883,19 @@ export interface MyClawAppModelState {
    * conversation resolves to: one field for "what would run", one for "what is answering".
    */
   live?: string;
+  /**
+   * The rung `live` is asked for. Absent whenever `live` is, and on a server that predates the
+   * field. A route's candidates do not all publish the same level, so this is not `effort` beside
+   * another name: it is the level the answering model actually receives.
+   */
+  liveEffort?: string;
+  /**
+   * The tag this conversation picked, when its model is a `tag:` reference. Sent because `model`
+   * names the model the API receives, and that answer alone cannot say which tag chose it -- a
+   * header that shows `claude-opus-5-5` for a conversation on `tag:Quota` leaves the owner unable
+   * to tell whether the pick landed or fell through to a default (2026-11-14).
+   */
+  tag?: string;
 }
 
 export interface MyClawAppModelResult extends MyClawAppModelState {
@@ -3309,7 +3322,7 @@ export interface MyClawAppStatusPayload {
      * The live run tree of this conversation: `main` at depth 0, each sub-agent below it. `model`
      * is what that node is calling at this second, which is not always the model it started on.
      */
-    runs: Array<{ label: string; depth: number; startedAt: string; model?: string }>;
+    runs: Array<{ label: string; depth: number; startedAt: string; model?: string; effort?: string }>;
     /** A /compact holds the session: work in progress with no run node of its own. */
     compacting: boolean;
     verbose: boolean;

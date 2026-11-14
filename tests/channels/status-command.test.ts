@@ -472,6 +472,59 @@ test("a routed row carries the provider's own name beside the tag, and the tag w
   }
 });
 
+test("a tag's own effort wins over the global one, on the page and in the header", async () => {
+  // The defect this pins (2026-11-14): both surfaces asked `effectiveEffort` about the *leaf* the
+  // tag resolves to, where the tag is no longer visible -- so `llm.effort: "max"` answered instead
+  // of the tag's `xhigh`, and a conversation on `tag:Quota` reported Opus at max while every
+  // request carried xhigh. A tag is a reference, and its rung is only reachable by its own name.
+  const tagged = {
+    llm: {
+      defaultModel: "claude-opus-5",
+      effort: "max",
+      models: [{ id: "claude-opus-5", label: "Opus 5", limit: { context: 1_000_000 }, supportsEffort: true }],
+      tags: { zsmart: { model: "claude-opus-5", effort: "xhigh" } },
+    },
+  } as unknown as MyClawConfig;
+
+  const sessionId = "matrix/room/!tageffort:test";
+  const withTag = session(sessionId, { modelOverride: "tag:zsmart" });
+  const { status } = await statusReport({ config: tagged, sessionId, session: withTag, liveRuns: [] });
+  expect(status.model.tag).toBe("zsmart");
+  expect(status.model.effort).toBe("xhigh");
+  expect(status.model.effortSource).toBe("tag");
+
+  // A session that pins its own level still outranks the tag, which is the rest of the contract.
+  const pinned = session(sessionId, { modelOverride: "tag:zsmart", effortOverride: "low" as never });
+  const { status: sessionWins } = await statusReport({ config: tagged, sessionId, session: pinned, liveRuns: [] });
+  expect(sessionWins.model.effort).toBe("low");
+  expect(sessionWins.model.effortSource).toBe("session");
+
+  // A plain pick has no tag to answer for it, so the global default still names the rung.
+  const plain = session(sessionId, { modelOverride: "claude-opus-5" });
+  const { status: plainStatus } = await statusReport({ config: tagged, sessionId, session: plain, liveRuns: [] });
+  expect(plainStatus.model.effort).toBe("max");
+  expect(plainStatus.model.effortSource).toBe("config");
+});
+
+// The live tree names the model that answers and the rung it is asked for. A route's candidates do
+// not share one, so the conversation's own effort above cannot answer for the running node -- and a
+// row that named neither let a tag pinned at `xhigh` read as `max` all the way down (2026-11-14).
+test("the live run tree carries each node's model and the rung it is asked for", async () => {
+  const { status } = await statusReport({
+    config,
+    sessionId: "matrix/room/!liveeffort:test",
+    session: session("matrix/room/!liveeffort:test"),
+    liveRuns: [
+      { label: "main", depth: 0, startedAt: Date.now(), sessionId: "matrix/room/!liveeffort:test", model: "claude-opus-5", effort: "xhigh" },
+      { label: "researcher", depth: 1, startedAt: Date.now(), sessionId: "matrix/room/!liveeffort:test/sub", model: "claude-opus-5" },
+    ],
+    pricing: undefined,
+  });
+  expect(status.runtime.runs[0]!.effort).toBe("xhigh");
+  // A node that takes none sends none: the field is absent rather than inherited from the parent.
+  expect(status.runtime.runs[1]!.effort).toBeUndefined();
+});
+
 test("a tag reference is resolved to the model it runs, with the tag named", async () => {
   const tagged = {
     llm: {

@@ -1203,6 +1203,12 @@ export class SubAgentRunner {
         // that walked its route names the account answering now -- the roster row is the only place
         // that says so while the run is going.
         const liveModel = running ? runRegistry.liveModelOf(id) : undefined;
+        // The rung in force: the live node's while a run is going (a route's candidates each carry
+        // their own), the session's own pin otherwise. A sub-agent keeps its effort on its session
+        // like any chat, and nothing read it here -- so a row could name `xhigh` on an agent spawned
+        // at `low` (2026-11-14).
+        const liveEffort = running ? runRegistry.liveEffortOf(id) : undefined;
+        const effort = liveEffort ?? stored?.effortOverride ?? session?.effortOverride;
         out.push({
           id,
           displayName: meta.displayName,
@@ -1214,6 +1220,7 @@ export class SubAgentRunner {
           ...(meta.workspaceDir ? { workspaceDir: meta.workspaceDir } : {}),
           ...(liveModel ?? model ? { model: liveModel ?? model } : {}),
           ...(liveModel && liveModel !== model ? { modelLive: true } : {}),
+          ...(effort ? { effort } : {}),
           createdAt: meta.createdAt,
           lastMessageAt,
         });

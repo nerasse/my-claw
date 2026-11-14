@@ -95,6 +95,8 @@ export interface HookEventMap {
     model: string;
     previous: string;
     reason: "provider" | "capability";
+    /** The rung the new target is asked for, when it takes one. Candidates on a route differ. */
+    effort?: string;
   };
   /**
    * The run has left the live tree: its node is gone, so nothing is "calling now" for that session

@@ -1164,19 +1164,36 @@ async function main() {
       const model = run && tagNameOf(resolvedModel) !== undefined && !modelPicker.knows(resolvedModel)
         ? run.apiModel ?? resolvedModel
         : resolvedModel;
-      const effort = effectiveEffort(config.llm, model, session?.effortOverride, resolveAgentLlm(config, "main")?.effort);
+      // The reference the conversation picked, which is not the model the API receives: a tag is a
+      // reference on a route, and both things a header shows about it -- the effort it pins, the
+      // ceiling its candidate carries -- are only reachable from that reference. Reading them off
+      // the leaf reported the global `max` on a conversation whose tag pins `xhigh`, because
+      // `effectiveEffort("claude-2/claude-opus-5-5")` falls through to `llm.effort` (2026-11-14).
+      const reference = run?.requestedModel ?? model;
+      const effort = effectiveEffort(config.llm, reference, session?.effortOverride, resolveAgentLlm(config, "main")?.effort);
+      // The ladder is asked of the model the API receives, not of the reference: a tag entry in the
+      // picker carries its leaf's rungs only when that leaf is declared, and the leaf always has its
+      // own. Two questions, two sources: the rung is the tag's, the ladder is the model's.
       const levels = modelPicker.effortLevelsFor(model);
       // The app builds its own ceiling list from these three numbers, the same way the picker
       // menus do on the other channels (docs/context-window.md).
-      const choice = contextChoiceFor(config, model, session?.contextOverride);
+      const choice = contextChoiceFor(config, reference, session?.contextOverride);
       // The cap in force on this model, not the global one: a tag pins its own, and the app
       // offers exactly this number in the tune sheet (docs/context-window.md).
-      const cap = standingContextCap(config, model, "main");
+      const cap = standingContextCap(config, reference, "main");
       const live = session ? runRegistry.liveModelOf(session.id) : undefined;
+      // The rung the running model is asked for, which the conversation's own effort cannot answer:
+      // a route walks candidates that each carry their own level, and the answering one is only
+      // known from its node.
+      const liveEffort = session ? runRegistry.liveEffortOf(session.id) : undefined;
       return {
         model,
         defaultModel,
         ...(run ? { source: run.source } : {}),
+        // The tag's own name, which `model` cannot carry: it names what the API receives. A header
+        // that shows `claude-opus-5-5` for a conversation on `tag:Quota` cannot say whether the pick
+        // landed or fell through, and the two are the owner's whole question.
+        ...(tagNameOf(reference) !== undefined ? { tag: tagNameOf(reference)! } : {}),
         effort: {
           level: effort.source === "unsupported" ? "" : effort.level ?? "",
           levels,
@@ -1211,6 +1228,10 @@ async function main() {
         // a provider that fell. Read from the live run node, so it follows the run and clears itself
         // at the end with no second piece of state to keep in sync.
         ...(live && live !== model ? { live } : {}),
+        // The rung the run in flight is asked for, whenever one is running. Sent beside `live`
+        // rather than only with it: a route's candidates can share one model id across several
+        // accounts while differing in level, so the model name alone cannot say what is running.
+        ...(liveEffort ? { liveEffort } : {}),
       };
     };
     /** Provider keys served by OpenRouter: only their models can have a route pinned. */
@@ -2784,7 +2805,15 @@ async function main() {
     // live tree; the compaction moves the context. Sub-agent runs report through the same hooks,
     // under their own session id, which is how the parent's page sees its delegated spend grow.
     hooks.on("analytics:call:recorded", ({ sessionId, parentSessionId }) => myClawApp.statusChanged(sessionId, parentSessionId));
-    hooks.on("agent:run:start", ({ sessionId }) => myClawApp.statusChanged(sessionId));
+    // A run start re-resolves the model, and that answer can differ from the last one the header
+    // was told: a route's preflight moves to the first candidate that can run, and a provider that
+    // went away since then changes which one that is. The status page reads it on every event; the
+    // header only heard about a fallback or a run end, so it kept naming what the previous run was
+    // resolved to (2026-11-14).
+    hooks.on("agent:run:start", ({ sessionId }) => {
+      myClawApp.notifyModelStateForSession(sessionId);
+      myClawApp.statusChanged(sessionId);
+    });
     // A run that walks its route or loses its provider calls another model from that second on.
     // Both surfaces that name a model follow it: the header (what is answering) and the status
     // page (which node is on which model) -- docs/my-claw-app-channel.md.

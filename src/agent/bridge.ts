@@ -373,8 +373,8 @@ export class AgentBridge implements AgentBackend {
     /** Every provider this run has called, across every call it has made. Mutated here. */
     tried: string[];
     runModel?: RunModel;
-    /** This run's node in the live view: the model it names moves with the run. */
-    runNode?: { setModel: (model: string) => void };
+    /** This run's node in the live view: the model it names, and its rung, move with the run. */
+    runNode?: { setModel: (model: string, effort?: string) => void };
     session: SessionData;
     message: UnifiedMessage;
     agentToolType: string;
@@ -470,13 +470,16 @@ export class AgentBridge implements AgentBackend {
         config = { ...next.config, cacheKey: next.config.cacheKey ?? params.session.id };
         // The live view and every surface reading it say what is calling now, not what the run was
         // resolved to. Emitted only on a real change: the header and the status page follow it.
-        params.runNode?.setModel(next.model);
+        // The effort travels with the model: a route walks candidates that each carry their own
+        // rung, so a page that kept the first one would name a level the request never sends.
+        params.runNode?.setModel(next.model, next.config.effort);
         hooks.emit("agent:model:changed", {
           sessionId: params.session.id,
           parentSessionId: attributionParent(params.session),
           model: next.model,
           previous: failed.model,
           reason: capability ? "capability" : "provider",
+          ...(next.config.effort ? { effort: next.config.effort } : {}),
         });
         this.noteFallback(
           `[fallback] ${whyLeft(failed, { reason, capability, wall })} ${answeredInstead(next, failed, Boolean(wall))}`,
@@ -739,7 +742,9 @@ export class AgentBridge implements AgentBackend {
     const injectionBonus = resolveInjectionBudgetBonus(this.config);
 
     const runLabel = this.depth === 0 ? "main" : session.meta?.displayName ?? agentType;
-    const runNode = signal ? runRegistry.enter(signal, runLabel, this.depth, session.id, llmConfig.model) : undefined;
+    const runNode = signal
+      ? runRegistry.enter(signal, runLabel, this.depth, session.id, llmConfig.model, llmConfig.effort)
+      : undefined;
 
     hooks.emit("agent:run:start", {
       messageId: message.id,
