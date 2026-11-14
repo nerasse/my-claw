@@ -111,6 +111,11 @@ La FlatList porte des **rows**, pas des items bruts :
   pas concernée (`isHoisted` filtre sur le `kind` avant tout) : une commande sortie non-zéro
   est du travail, pas un verdict. Une phase qui n'a fait que **réfléchir** n'est pas un
   message : elle reste dans le pli, comme les cartes d'outils ;
+- une notice est en plus **précédée d'une clôture de bulle** : le streamer ferme la bulle en
+  cours avant qu'elle parte (`sealRunBubble`), pour que la note se place au moment où le run
+  s'est arrêté et que la prose suivante ouvre sa propre bulle. Sans ça, la note s'ajoutait à
+  côté d'une bulle qui continuait d'écrire et se retrouvait poussée en bas du tour, collée à la
+  réponse (owner, 2026-11-14) ;
 - le concept de **réponse élue** n'existe plus : le dernier message est simplement le dernier
   message, à sa place. Trois cas spéciaux tombent avec lui — l'élection par contenu, « seul un
   run `done` élit » (un run stoppé ou mort garde maintenant ses messages visibles, dans

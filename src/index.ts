@@ -105,7 +105,7 @@ import { MessageRouter, type RouteResult } from "./core/router.ts";
 import { FoldedRunError, RerouteSignal, runRegistry } from "./core/run-registry.ts";
 import type { StopOutcome } from "./core/stop.ts";
 import { isAbort } from "./core/aborted.ts";
-import { runErrorBubble, setRunBubbles, withRunContext } from "./utils/run-context.ts";
+import { runErrorBubble, sealRunBubble, setRunBubbles, withRunContext } from "./utils/run-context.ts";
 import type { ApprovalDecision, ToolApprovalHandler, UnifiedMessage } from "./channels/types.ts";
 import { BackendDispatcher } from "./agent/dispatcher.ts";
 import { ToolRegistry, mcpServerOf, baselineToolNames } from "./tools/registry.ts";
@@ -344,9 +344,15 @@ async function main() {
   hooks.on("provider:notice", (event) => {
     const send = noticeSenders.get(event.platform);
     if (!send) return;
-    void send(event.chatId, event.note, event.threadId).catch((err) =>
-      void log("warn", "provider notice not delivered", { platform: event.platform, error: String(err) }),
-    );
+    // The bubble the run is writing into is closed first, so the note lands at the moment it
+    // happened and the prose that follows opens its own: appended beside a live bubble, the note
+    // was dragged to the bottom of the turn and read as stuck there (owner, 2026-11-14).
+    void sealRunBubble(event.sessionId)
+      .catch(() => {})
+      .then(() => send(event.chatId, event.note, event.threadId))
+      .catch((err) =>
+        void log("warn", "provider notice not delivered", { platform: event.platform, error: String(err) }),
+      );
   });
 
   const confirmHealthyConfig = async (): Promise<void> => {
@@ -2854,7 +2860,11 @@ async function main() {
             // The bubbles this run paints in, so the phases the recorder writes are appended under
             // the ids already on screen -- docs/bubble-identity.md. Read through `active`, which a
             // mid-run injection replaces: the sink must follow the bubble that is open now.
-            setRunBubbles(runSessionId, { take: () => active.take(), errorBubble: () => active.errorBubble() });
+            setRunBubbles(runSessionId, {
+              take: () => active.take(),
+              errorBubble: () => active.errorBubble(),
+              seal: () => active.seal(),
+            });
             // Live tool output (bash) is a global hook; route each chunk to the streamer of the
             // session that produced it. A sub-agent's chunks carry its own session id, so matching
             // the root alone silently dropped them and a long command in a child ran blind.
@@ -2891,7 +2901,12 @@ async function main() {
               subAgentContexts.set(ev.id, context);
               // Keyed by the child's own session: unkeyed, the parent's phases would claim the
               // bubbles its child opened.
-              setRunBubbles(ev.id, { take: () => subAgentStreamers.get(ev.id)?.take() ?? [] });
+              setRunBubbles(ev.id, {
+                take: () => subAgentStreamers.get(ev.id)?.take() ?? [],
+                seal: async () => {
+                  await subAgentStreamers.get(ev.id)?.seal();
+                },
+              });
               // The boot-level stream provider has no thread to paint in; this is how a steered
               // child opens its next bubble in the right place.
               subAgentStreamRenew.set(ev.id, (injected) => myClawApp.createStreamer({

@@ -296,3 +296,41 @@ describe("MyClawAppStreamer restart", () => {
     expect([...byBubble.values()]).toEqual(["first call", "replayed"]);
   });
 });
+
+describe("a notice closes the bubble it interrupts", () => {
+  test("sealing separates the prose before it from the prose after", async () => {
+    // A provider note (a retry, a wall, a model the run left) belongs where the run stood still.
+    // Appended beside a bubble still streaming, it was dragged to the bottom of the turn and read
+    // as stuck there (owner, 2026-11-14).
+    const { streamer, frames } = collect();
+    await streamer.push("oui, je regarde");
+    await streamer.seal();
+    await streamer.push("voila");
+    await streamer.finish();
+
+    const shape = frames.map((frame) =>
+      frame.type === "chat.stream.start" ? `start:${frame.id}`
+        : frame.type === "chat.stream.delta" ? `delta:${frame.text}`
+          : frame.type === "chat.stream.done" ? `done:${frame.id}`
+            : frame.type,
+    );
+    const first = frames.find((frame) => frame.type === "chat.stream.start")!;
+    const done = frames.findIndex((frame) => frame.type === "chat.stream.done");
+    const startAgain = frames.findIndex((frame) => frame.type === "chat.stream.start" && frame.id !== first.id);
+    expect(shape.filter((label) => label.startsWith("start:"))).toHaveLength(2);
+    // The first bubble is closed before the second one opens, and the after-prose is the second's.
+    expect(done).toBeGreaterThan(-1);
+    expect(startAgain).toBeGreaterThan(done);
+    expect(frames.at(-1)).toMatchObject({ type: "chat.stream.done" });
+    expect(deltas(frames)).toBe("oui, je regardevoila");
+  });
+
+  test("sealing a streamer that wrote nothing is a no-op", async () => {
+    const { streamer, frames } = collect();
+    await streamer.seal();
+    await streamer.push("premier mot");
+    await streamer.finish();
+    expect(frames.filter((frame) => frame.type === "chat.stream.start")).toHaveLength(1);
+    expect(frames.filter((frame) => frame.type === "chat.stream.done")).toHaveLength(1);
+  });
+});

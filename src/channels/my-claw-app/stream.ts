@@ -121,6 +121,17 @@ export class MyClawAppStreamer {
     });
   }
 
+  /**
+   * Closes the bubble being written into.
+   *
+   * For a frame that belongs to this moment and not to the answer: a provider notice says the run
+   * stood still here, so the prose that follows must open its own bubble instead of growing under
+   * a note that arrived halfway through it (owner, 2026-11-14). Nothing to seal is not an error.
+   */
+  async seal(): Promise<void> {
+    return this.enqueue(() => this.sealSegment());
+  }
+
   async finish(finalText?: string): Promise<void> {
     return this.enqueue(() => this.finishInternal(finalText));
   }

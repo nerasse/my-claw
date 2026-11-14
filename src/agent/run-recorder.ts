@@ -236,12 +236,22 @@ export class RunRecorder {
     const replayable = recorded.providerMeta && !recorded.incomplete ? recorded.providerMeta : undefined;
 
     // The ids of the bubbles this turn was streamed into, so a phase and the bubble holding its
-    // text are one identity -- docs/bubble-identity.md. Used only when there are exactly as many
-    // as there are phases: a segment can hold thinking that never becomes prose, and pairing by
-    // position through a mismatch would give a phase the id of a bubble holding something else,
-    // which is worse than two ids. A turn that does not line up keeps the ids the log mints.
+    // text are one identity -- docs/bubble-identity.md.
+    //
+    // Paired from the END. A turn does not always line up: a provider can report one phase for a
+    // stream the channel cut in three, and a segment can hold thinking that never became prose.
+    // Giving up on the pairing in that case (what this did until 0.7.176) left the answer with two
+    // ids, and a window watching the run drew it twice -- once streaming, once from the page that
+    // arrived when the call returned -- until a reload replaced one (owner, 2026-11-14: "en live
+    // j'ai des message/reasoning en double"). The last phase is the answer and the last bubble is
+    // the one it was streamed into whatever the count says, so the tail pairs and only the head
+    // keeps minted ids.
     const bubbles = takeRunBubbles(this.entries.sessionId);
-    const ids = bubbles.length === phases.length ? bubbles : [];
+    const paired = Math.min(bubbles.length, phases.length);
+    const ids: Array<string | undefined> = new Array(phases.length).fill(undefined);
+    for (let k = 0; k < paired; k++) {
+      ids[phases.length - paired + k] = bubbles[bubbles.length - paired + k];
+    }
 
     return phases.map((phase, index) => {
       const last = index === phases.length - 1;

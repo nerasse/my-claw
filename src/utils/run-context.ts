@@ -18,6 +18,16 @@ export interface BubbleSink {
   take(): string[];
   /** The bubble an error was painted in, if the run died in one. Never taken, only read. */
   errorBubble?(): string | undefined;
+  /**
+   * Closes the bubble being written into, so what comes next opens another.
+   *
+   * A notice about the run -- a retry, a spent quota, a model it left -- belongs at the moment it
+   * happened, not under the answer that came after it. Appended beside a bubble still streaming,
+   * it read as stuck at the bottom of the turn: the bubble kept growing and pushed the note down
+   * (owner, 2026-11-14). Sealing first puts the note where the run stood still, and the prose that
+   * follows opens its own bubble.
+   */
+  seal?(): Promise<void>;
 }
 
 export interface RunContext {
@@ -119,6 +129,16 @@ export function setRunBubbles(sessionId: string, sink: BubbleSink): void {
  */
 export function takeRunBubbles(sessionId: string): string[] {
   return storage.getStore()?.bubbles?.get(sessionId)?.take() ?? [];
+}
+
+/**
+ * Closes the bubble this session is writing into, so a frame about to be sent lands after it.
+ *
+ * A no-op when nothing paints the session (cron, an unwatched sub-agent) and when the channel
+ * carries no seal.
+ */
+export async function sealRunBubble(sessionId: string): Promise<void> {
+  await storage.getStore()?.bubbles?.get(sessionId)?.seal?.();
 }
 
 /**

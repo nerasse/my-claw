@@ -69,15 +69,20 @@ attempt at an existing turn does not re-record it.
 
 ## When the counts disagree
 
-The recorder pairs ids to phases by position, and **only when there are exactly as many of one as
-of the other**. Otherwise it mints as it always did, and that turn keeps the old behaviour.
-
 Segments and phases usually match one for one -- the streamer seals a bubble where the provider
 cuts a phase -- but nothing guarantees it: a segment can hold reasoning that never becomes prose,
-and a provider can report phases the stream never split. Pairing those by position would give a
-phase the id of a bubble holding something else, which is worse than two ids: the client would
-merge one into the other. A conservative fallback costs a turn's alignment; a wrong pairing costs
-the reader's trust in what they are reading.
+and a provider can report phases the stream never split.
+
+The recorder used to give up on the pairing entirely in that case, and mint as it always had. The
+cost showed up in live: the answer then had two ids, so the page that arrives when the call
+returns could not replace the bubble it was streamed into, and a window watching the run drew the
+message and its thinking twice until a reload (which holds the phase alone) replaced one -- the
+owner's screenshot of 2026-11-14.
+
+It pairs **from the end** now. Whatever the counts say, the last phase is the answer and the last
+bubble is the one it was streamed into, so the tail lines up and only the head keeps the ids the
+log mints. Three bubbles for one phase: the phase takes the answer's bubble, and the two thoughts
+keep theirs (the client drops the ones the page carries in its own words, `thread-sync.md`).
 
 ## A failure is a bubble too
 

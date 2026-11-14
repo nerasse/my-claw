@@ -399,9 +399,11 @@ describe("a phase keeps the id of the bubble it was streamed into", () => {
     expect(phases[0]!.id).not.toBe("child-1");
   });
 
-  test("mints as before when the counts disagree, rather than pairing the wrong two", async () => {
-    // A segment can hold thinking that never became prose. Pairing by position through that would
-    // give a phase the id of a bubble holding something else, and the client would merge them.
+  test("pairs the tail when the counts disagree, so the answer keeps its bubble", async () => {
+    // A segment can hold thinking that never became prose, and a provider can report one phase for
+    // a stream cut in three. The last phase is the answer and the last bubble is the one it was
+    // streamed into, so the tail pairs: the reader's answer is one identity either way, and only
+    // the head keeps ids the log minted (owner, 2026-11-14: a double in live, gone on reload).
     const { id, log } = await freshLog("mismatch");
     const recorder = new RunRecorder(log);
     const phases = await withRunContext({ platform: "test" }, async () => {
@@ -409,8 +411,20 @@ describe("a phase keeps the id of the bubble it was streamed into", () => {
       return recorder.turn({ content: "deux temps", segments: [{ content: "un" }, { content: "deux" }] });
     });
     await log.flush();
-    expect(phases.map((phase) => phase.id)).not.toContain("bubble-1");
-    expect(new Set(phases.map((phase) => phase.id)).size).toBe(2);
+    expect(phases.map((phase) => phase.id)).toEqual(["bubble-2", "bubble-3"]);
+  });
+
+  test("one phase for three bubbles takes the last one, the answer's", async () => {
+    // The case the owner photographed: the stream cut three bubbles (two thoughts, then the
+    // answer) and the provider reported the turn whole, as a single phase.
+    const { id, log } = await freshLog("collapsed");
+    const recorder = new RunRecorder(log);
+    const phases = await withRunContext({ platform: "test" }, async () => {
+      setRunBubbles(id, bubbles(["think-1", "think-2", "answer"]));
+      return recorder.turn({ content: "la reponse", reasoning: "et le raisonnement" });
+    });
+    await log.flush();
+    expect(phases.map((phase) => phase.id)).toEqual(["answer"]);
   });
 
   test("mints as before when nothing is painting the run, like cron", async () => {
