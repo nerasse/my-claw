@@ -4109,6 +4109,11 @@ export interface MyClawAppSubAgentEntry {
   /** The directory the agent's tools work in, which `workspaceKey` does not name. */
   workspaceDir?: string;
   model?: string;
+  /**
+   * When the last message was delivered to this agent: the roster is ordered by it. Absent on a
+   * server that predates the field, which is then ordered by `createdAt`.
+   */
+  lastMessageAt?: string;
   createdAt: string;
 }
 

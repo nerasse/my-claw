@@ -81,3 +81,25 @@ test("a running agent's row carries the live model, an idle one keeps its pin", 
     runRegistry.clear();
   }
 });
+
+/**
+ * When the agent last spoke: the roster is ordered by it now.
+ *
+ * The app used to group the list named-before-temporary and then by agent type, so the agent that
+ * answered a minute ago sat wherever its type alphabetically fell. A date is the only thing the
+ * reader sorts by, and the meta mirrors it so an idle roster costs no log open.
+ */
+test("an idle row carries the last message date from its meta, and a run in flight from its log", async () => {
+  await subagent(VOLET, ROOT, "global", 3, 3);
+  const row = (await runner.list(idle, ROOT)).find((a) => a.id === VOLET);
+  const fromMeta = Date.parse(row!.lastMessageAt!);
+  expect(Number.isFinite(fromMeta)).toBe(true);
+  // The log's own answer for a running one: the meta is written at the run's end, so during it the
+  // date it holds is the previous turn's.
+  const log = await sessionLogOf(VOLET);
+  const logged = log.lastUserAt();
+  log.append({ type: "user", prompt: true, text: "later" });
+  await log.flush();
+  const live = (await runner.list({ isRunning: () => true }, ROOT)).find((a) => a.id === VOLET);
+  expect(Date.parse(live!.lastMessageAt!)).toBeGreaterThan(logged!);
+});

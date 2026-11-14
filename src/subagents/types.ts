@@ -45,6 +45,14 @@ export interface SubAgentInfo {
   /** The model this agent runs: its pin, or what its run in flight is calling right now. */
   model?: string;
   /**
+   * When the last message was delivered to this agent -- what a roster is now ordered by.
+   *
+   * The roster used to group by kind and then by type, so the agent that answered a minute ago
+   * sat wherever its type alphabetically fell, under a heading nobody reads twice. Absent on a
+   * server that predates the field.
+   */
+  lastMessageAt?: string;
+  /**
    * Set when `model` is the live one rather than the pin: the run walked its route or its provider
    * fell, so the row names the account answering now (docs/provider-failures.md).
    */

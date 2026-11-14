@@ -1187,10 +1187,17 @@ export class SubAgentRunner {
         if (!meta) continue;
         if (!isReachableFrom(meta, caller)) continue;
         const running = registry.isRunning(id);
-        // A running one is counted off its log, which moves before the meta is next written.
-        const messageCount = !running && stored?.promptCount !== undefined
-          ? stored.promptCount
-          : (await sessionLogOf(id)).promptCount();
+        // A running one is counted off its log, which moves before the meta is next written. The
+        // log is opened only in that case (or for a meta written before `promptCount` existed):
+        // the roster is asked for at every run end, and opening every sub-agent's log to draw it
+        // read hundreds of megabytes each time.
+        const log = !running && stored?.promptCount !== undefined ? undefined : await sessionLogOf(id);
+        const messageCount = log ? log.promptCount() : (stored?.promptCount ?? 0);
+        // When the last message landed, which is what a roster is now ordered by. The log answers
+        // for a run in flight; otherwise the meta mirrors it, and a meta written before the field
+        // falls back to the agent's own creation rather than buying a log open for one date.
+        const seen = log ? log.lastUserAt() : stored?.lastUserAt ? Date.parse(stored.lastUserAt) : undefined;
+        const lastMessageAt = new Date(seen && Number.isFinite(seen) ? seen : Date.parse(meta.createdAt) || Date.now()).toISOString();
         const model = stored ? stored.modelOverride : session?.modelOverride;
         // What a running agent calls at this second, which is not what it was resolved to: a run
         // that walked its route names the account answering now -- the roster row is the only place
@@ -1208,6 +1215,7 @@ export class SubAgentRunner {
           ...(liveModel ?? model ? { model: liveModel ?? model } : {}),
           ...(liveModel && liveModel !== model ? { modelLive: true } : {}),
           createdAt: meta.createdAt,
+          lastMessageAt,
         });
       }
     } catch {
