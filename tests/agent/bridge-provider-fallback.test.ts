@@ -559,8 +559,13 @@ test("a bare rate_limit_error on a full bar skips the waits, the retries, and na
     // The schedule is not spent on a bar that does not move, and the transport's own three
     // attempts are gone with it: this is the "twelve requests and 210 seconds" case.
     assert.doesNotMatch(notices.join("\n"), /\[retry\]/, "no wait on a confirmed wall");
-    // The bar is named, not the provider's misleading sentence: the note reads the oracle.
-    assert.match(notices.join("\n"), /\[quota\] quenched-1 is out of its week allowance \(Week at 100%\)/, notices.join("\n"));
+    // The bar is named, not the provider's misleading sentence: the note reads the oracle. One
+    // note, not two: the wall is the *reason* the run moved, and it rides the sentence that says
+    // where it moved to (owner, 2026-11-14).
+    assert.match(notices.join("\n"), /quenched-1 is out of its week allowance \(Week at 100%\)/, notices.join("\n"));
+    assert.equal(notices.length, 1, notices.join("\n"));
+    assert.match(notices[0]!, /^\[fallback\]/, notices[0]!);
+    assert.match(notices[0]!, /This run used beta-1 instead/, notices[0]!);
     // One request to the refusing model: the transport's three attempts are gone with the waits.
     assert.deepEqual(models, ["quenched-1", "beta-1"]);
   } finally {
@@ -601,7 +606,9 @@ test("a conversation set to wait still walks its own route before it waits", asy
     const text = await bridge.handleMessage(createMessage(), session, signal, "quenched-1");
     assert.match(text, /le deuxieme compte repond/, text);
     assert.match(notices.join("\n"), /\(Quenched route candidate 2\)/, notices.join("\n"));
-    assert.match(notices.join("\n"), /\[quota\] quenched-1 is out of its week allowance/, notices.join("\n"));
+    assert.match(notices.join("\n"), /quenched-1 is out of its week allowance/, notices.join("\n"));
+    // Both facts in the one row: what the bar said, and who answered.
+    assert.equal(notices.length, 1, notices.join("\n"));
     assert.deepEqual(models, ["quenched-1", "beta-1"], "one request to the refusing account, then the route");
   } finally {
     delete process.env["SYNTHETIC_KEY_FOR_TEST"];
@@ -744,7 +751,7 @@ for (const [name, body] of [
       const text = await bridge.handleMessage(createMessage(), createSession("tag:Quenched"), signal, "quenched-1");
       // The run still moves on (the switch is off here), but the note proves the oracle answered:
       // it is the only thing that knows the bar, and the adapter arms off the same read.
-      assert.match(notices.join("\n"), /\[quota\] quenched-1 is out of its week allowance \(Week at 100%\)/, notices.join("\n"));
+      assert.match(notices.join("\n"), /quenched-1 is out of its week allowance \(Week at 100%\)/, notices.join("\n"));
       assert.doesNotMatch(notices.join("\n"), /\[retry\]/, "no wait on a spent plan");
     } finally {
       delete process.env["SYNTHETIC_KEY_FOR_TEST"];
@@ -803,7 +810,7 @@ test("a cached reading older than the wall does not answer the wall question", a
     const text = await bridge.handleMessage(createMessage(), createSession("tag:Quenched"), signal, "quenched-1");
     // The stale reading said "not a wall"; the forced one says otherwise, so the run moves on with
     // the bar named and no wait spent on it.
-    assert.match(notices.join("\n"), /\[quota\] quenched-1 is out of its week allowance/, notices.join("\n"));
+    assert.match(notices.join("\n"), /quenched-1 is out of its week allowance/, notices.join("\n"));
     assert.doesNotMatch(notices.join("\n"), /\[retry\]/, "no wait on a bar that is full now");
   } finally {
     resetQuotaCache();

@@ -50,14 +50,20 @@ export function announceModelFallback(run: RunModel, message: UnifiedMessage, ag
   });
 }
 
-/** The sentence the channels post. One wording, so the three of them cannot drift. */
+/**
+ * The sentence the channels post. One wording, so the three of them cannot drift.
+ *
+ * Tagged `[fallback]` like the note a run leaves when it switches mid-flight: it is the same fact
+ * -- the model that was asked for is not the one answering -- and the surface draws one kind for
+ * it (`core/notice.ts`). Without the tag it read as a third, anonymous "Note".
+ */
 export function fallbackNoticeText(p: {
   model: string;
   reason: string;
   origin: string;
   ran: string;
 }): string {
-  return `\`${p.model}\` is not available (${p.reason}) · pinned in ${p.origin} · running \`${p.ran}\` instead`;
+  return `[fallback] ${p.model} is not available (${p.reason}), it is pinned in ${p.origin}. This run used ${p.ran} instead.`;
 }
 
 /** Test seam: the set is module state shared by every test file. */

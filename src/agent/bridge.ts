@@ -187,6 +187,42 @@ const EMPTY_TOOL_OUTPUT = "[tool returned an empty response]";
 
 /** Injected messages whose entry is waiting to be drained. Well past one run's cap. */
 
+/**
+ * Why the run left a model, in one clause -- the first half of the note it leaves behind.
+ *
+ * A switch has one cause among three, and the note used to say two of them in two rows: a
+ * `[quota]` line announcing the wall, then a `[fallback]` line announcing the move, for the same
+ * instant (owner, 2026-11-14: "un item quota et un autre fallback ... ils ont la même utilité").
+ * One clause, one row, and the reader has to read one sentence to know both.
+ */
+function whyLeft(
+  failed: { model: string; provider?: string },
+  cause: { reason: string; capability?: string; wall?: { label: string; usedPercent: number; id: string; windowSeconds?: number } },
+): string {
+  if (cause.wall) {
+    return `${failed.model} is out of its ${labelOfKind(kindOfWindow(cause.wall))} allowance (${cause.wall.label} at ${Math.round(cause.wall.usedPercent)}%).`;
+  }
+  if (cause.capability) return `${failed.model} cannot do this (${cause.capability}: ${cause.reason}).`;
+  return `${failed.model} via ${failed.provider ?? "provider"} is unavailable (${cause.reason}).`;
+}
+
+/**
+ * What answered instead, and what becomes of the model it replaced -- the second half of the note.
+ *
+ * A wall is not waited out within a run ("a bar that does not move"), a provider outage is: the
+ * run goes back on its own the next time it is resolved. Saying which is the difference between a
+ * note the owner acts on and one he learns to ignore.
+ */
+function answeredInstead(
+  next: { model: string; label: string },
+  failed: { model: string },
+  wall: boolean,
+): string {
+  return wall
+    ? `This run used ${next.model} instead (${next.label}) rather than wait out a bar that does not move.`
+    : `This run used ${next.model} instead (${next.label}); it returns to ${failed.model} once the provider recovers.`;
+}
+
 export class AgentBridge implements AgentBackend {
   private approvalManager: ToolApprovalManager;
   private preprocessor: MessagePreprocessor;
@@ -397,14 +433,9 @@ export class AgentBridge implements AgentBackend {
           await sleep(wait, params.signal);
           continue;
         }
-        // The wall is worth saying out loud once, in the words of the bar that is full rather than
-        // the provider's own rate-limit phrasing: the reader is about to see another model answer.
-        if (wall) {
-          this.noteFallback(
-            `[quota] ${failed.model} is out of its ${labelOfKind(kindOfWindow(wall))} allowance (${wall.label} at ${Math.round(wall.usedPercent)}%). Moving on now instead of waiting for a bar that does not move.`,
-            params,
-          );
-        }
+        // The wall is worth naming once, but not as a note of its own: it is why the run moved,
+        // and the sentence below says where it moved to. Two rows for one switch -- "Quota" and
+        // then "Fallback" -- read as two incidents (owner, 2026-11-14).
 
         // The run may not leave its model at all: a caller that named one on purpose gets that
         // model or the failure, never a sibling it did not approve (docs/provider-failures.md).
@@ -448,9 +479,7 @@ export class AgentBridge implements AgentBackend {
           reason: capability ? "capability" : "provider",
         });
         this.noteFallback(
-          capability
-            ? `[fallback] ${failed.model} cannot do this (${capability}: ${reason}). This run used ${next.model} instead (${next.label}).`
-            : `[fallback] ${failed.model} via ${failed.provider ?? "provider"} is unavailable (${reason}). This run used ${next.model} instead (${next.label}); it returns to ${failed.model} once the provider recovers.`,
+          `[fallback] ${whyLeft(failed, { reason, capability, wall })} ${answeredInstead(next, failed, Boolean(wall))}`,
           params,
         );
       }
