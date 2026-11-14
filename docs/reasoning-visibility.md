@@ -88,11 +88,29 @@ none: `Reasoning · 516 tokens · 4.2 s`.
   the stream.
 - **It opens no span and closes none.** The words are timed where they stream (`since`, below); a
   count is a figure about a thought that is over.
+- **A span always travels with it, and the server's figure wins.** `ms` used to be sent only for a
+  call that streamed no words, on the argument that the client had timed the ones it streamed. That
+  argument is the defect: the app measures a wall clock across a socket, from the frame that opens
+  the phase to the first prose delta, while the server measures the same span where the deltas
+  arrive -- and its figure is the one the log stores and the one a reload shows. A phase read
+  `12 s` live and `4 s` after a refresh (owner, 2026-11-14: "le ms serveur c'est lui l'important").
+  The app adopts `ms` and drops its own measurement for that bubble, so the seal at the first delta
+  cannot overwrite the answer a moment later.
+- **The span is the last phase's own, not the turn's total.** A count is one number for the whole
+  call and it lands on the last phase (`run-recorder.ts` puts `reasoningTokens` there). `reasoningMs`
+  on a multi-phase response is the sum of every phase, so the bridge reads the last segment's own
+  duration -- handing the sum to one bubble made it read the whole turn's thinking.
 - **A silent thought is timed by its reasoning item.** No delta, so the segmenter never sees it: the
   Responses transport measures each reasoning item from `output_item.added` to `output_item.done`
-  and returns that as `reasoningMs`. The frame carries it as `ms`, and only for a call that streamed
-  no words, since the client has timed those itself. A thought with words keeps the segmenter's
-  span, the one the live view measured.
+  and returns that as `reasoningMs`. A span of zero is not a span and does not travel.
+- **On Codex, the item's lifetime is the span, words or none.** That backend does not stream a
+  thought, it reports one: a thought kept to itself (`encrypted_content`) sends no delta, and a
+  thought it summarises sends its summary parts **when the item closes**. A span measured from the
+  first delta to the first word of the answer therefore measures the burst of the summary, not the
+  wait the reader sat through -- 25 ms reported for 325 ms of thinking, measured 2026-11-14. Each
+  phase takes its own item's lifetime, paired from the end like the bubbles are, and the last item
+  is what the count rides on. OpenAI-compatible providers and Anthropic do stream their reasoning
+  as it happens, so their segmenter span is the right one and stays.
 - **The log keeps it** on the last phase of the call (`reasoningTokens`, beside `reasoningMs`), so a
   reopened thread shows the same line the live one did.
 

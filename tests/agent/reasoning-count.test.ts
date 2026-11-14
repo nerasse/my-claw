@@ -42,6 +42,23 @@ function stream(chunks: unknown[]): Response {
   return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
 }
 
+
+/** A stream that delivers one chunk per `gapMs`, so a span measured at arrival is not zero. */
+function delayedStream(chunks: unknown[], gapMs: number): Response {
+  const encoder = new TextEncoder();
+  const body = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n`));
+        await new Promise((resolve) => setTimeout(resolve, gapMs));
+      }
+      controller.enqueue(encoder.encode("data: [DONE]\n"));
+      controller.close();
+    },
+  });
+  return new Response(body, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+}
+
 const usage = (reasoning: number) => ({ prompt_tokens: 10, completion_tokens: reasoning + 5, total_tokens: reasoning + 15, completion_tokens_details: { reasoning_tokens: reasoning } });
 
 /** A call that thought without a word and asked for a tool, then one that thought aloud and answered. */
@@ -116,8 +133,51 @@ test("each call reports its count once, before its tools open their cards", asyn
   }
 
   assert.deepEqual(order, ["count:300", "tool", "thought", "token", "count:40"]);
-  // The words of the second thought were on screen and timed there: no second clock for them.
-  assert.equal(counts[1]!.ms, undefined);
+});
+
+/**
+ * Every count carries the server's span, words or none.
+ *
+ * It used to travel only for a silent thought, on the argument that the client had timed the ones
+ * it streamed. That argument is the defect: the app measures a wall clock across a socket, from the
+ * frame that opens the phase to the first prose delta, while the server measures the same span where
+ * the deltas arrive -- and its figure is the one the log stores and a reload shows. A phase read
+ * `12 s` live and `4 s` after a refresh (owner, 2026-11-14: "le ms serveur c'est lui l'important").
+ */
+test("a count carries the span the server measured, and a thought aloud is timed too", async () => {
+  const bridge = new AgentBridge(config, toolsWithProbe(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+  // The span is measured where the deltas arrive, so a stream delivered in one tick measures zero
+  // -- and a zero span is not a span. The gap here is what makes the figure real.
+  const reply = delayedStream([
+    { choices: [{ delta: { reasoning_content: "thinking about it" } }] },
+    { choices: [{ delta: { content: "the answer" } }] },
+    { choices: [{ delta: {}, finish_reason: "stop" }], usage: usage(40) },
+  ], 150);
+  const fetchMock = mockFetch(async () => reply as never);
+  const counts: ReasoningCount[] = [];
+
+  try {
+    await bridge.handleMessageStreaming(
+      createMessage(),
+      createSession(),
+      async () => {},
+      undefined,
+      signal,
+      undefined,
+      undefined,
+      { onCount: async (count) => { counts.push(count); } },
+    );
+  } finally {
+    fetchMock.restore();
+    end();
+  }
+
+  // The thought had words and the client timed them on screen: the server's figure goes anyway.
+  assert.equal(counts.length, 1);
+  const span = counts[0]!.ms;
+  assert.equal(typeof span, "number");
+  assert.ok(span! >= 25, `the span should cover the gap, got ${span}`);
 });
 
 test("the log keeps the count on the phase, so a reopened thread still shows the thought", async () => {

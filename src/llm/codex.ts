@@ -371,12 +371,20 @@ async function processStream(
    */
   const reasoningItems: ReasoningItem[] = [];
   /**
-   * How long the reasoning items stayed open, from `added` to `done`. The backend writes a summary
-   * for only part of its thoughts, and a thought with no summary streams no delta at all, so the
-   * segmenter never sees it: the item's own lifetime is then the only span there is.
+   * How long each reasoning item stayed open, from `added` to `done`, in wire order.
+   *
+   * This is the only honest span on this backend, for two reasons that both come from the same
+   * fact: the Responses API does not stream a thought, it reports one. A thought the model keeps
+   * to itself (`encrypted_content`) produces no delta at all, and a thought it summarises sends its
+   * summary parts **at the very end**, when the item closes -- so a span measured from the first
+   * delta to the first word of the answer measures the burst of the summary, not the thinking. The
+   * reader watched the wait, and the item's own lifetime is what that wait was.
+   *
+   * OpenAI-compatible providers and Anthropic stream their reasoning as it happens, so the
+   * segmenter's span is the right one there and this list stays empty.
    */
+  const itemSpans: number[] = [];
   const itemOpenedAt = new Map<string, number>();
-  let silentMs = 0;
   const slots = new Map<number, FunctionCallSlot>();
   const order: number[] = [];
 
@@ -469,7 +477,11 @@ async function processStream(
         if (item?.type === "reasoning" && item.id) {
           reasoningItems.push({ id: item.id, ...(item.encrypted_content ? { encrypted: item.encrypted_content } : {}) });
           const openedAt = itemOpenedAt.get(item.id);
-          if (openedAt !== undefined) silentMs += Date.now() - openedAt;
+          // A span of zero is not a span: it is what the same tick looks like.
+          if (openedAt !== undefined) {
+            const span = Date.now() - openedAt;
+            if (span > 0) itemSpans.push(span);
+          }
           itemOpenedAt.delete(item.id);
         }
         if (item?.type === "function_call") {
@@ -548,9 +560,17 @@ async function processStream(
     });
 
   const segments = segmenter.list();
-  // The segmenter's span when the thought had words, since it is the one the live view measured;
-  // the items' own lifetime when it had none.
-  const reasoningMs = reasoning ? segmenter.thinkingMs() : silentMs > 0 ? silentMs : undefined;
+  // The span of a thought, from the item that held it -- never from the deltas, which on this
+  // backend are a burst at the close. Each phase takes its own item's lifetime, paired from the
+  // end like the bubbles are (`run-recorder.ts`): the last phase is the one the count rides on, so
+  // it has to carry the last item's span and not the turn's total.
+  const spanned = itemSpans.length > 0 ? segments?.map((segment, index) => ({
+    ...segment,
+    ...(itemSpans[itemSpans.length - segments.length + index] !== undefined
+      ? { reasoningMs: itemSpans[itemSpans.length - segments.length + index]! }
+      : {}),
+  })) : segments;
+  const reasoningMs = itemSpans.length > 0 ? itemSpans[itemSpans.length - 1] : segmenter.thinkingMs();
   return {
     content,
     ...(reasoningItems.length > 0 ? { providerMeta: { backend: self.backend, model: self.model, reasoning: reasoningItems } } : {}),
@@ -560,7 +580,7 @@ async function processStream(
     usage,
     ...(reasoning ? { reasoning } : {}),
     ...(reasoningMs !== undefined ? { reasoningMs } : {}),
-    ...(segments ? { segments } : {}),
+    ...(spanned ? { segments: spanned } : {}),
   };
 }
 

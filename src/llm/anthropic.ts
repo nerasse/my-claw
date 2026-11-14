@@ -657,6 +657,12 @@ async function processStream(
 
   const thinking = [...thinkingBlocks.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v);
   const segments = segmenter.list();
+  // The span of the thinking, measured where the deltas arrive. This backend streams a thought as
+  // it happens (`thinking_delta`), so the segmenter is the one clock that saw both ends -- and it
+  // is what the log stores, so it is what the live view must show too. A single-phase turn has no
+  // `segments` to carry it (one segment says what `content` and `reasoning` already say), which is
+  // why the figure also rides on the response itself.
+  const reasoningMs = segmenter.thinkingMs();
   return {
     content,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
@@ -667,6 +673,7 @@ async function processStream(
     incomplete: !content && toolCalls.length === 0,
     usage: normalizeUsage(rawUsage, outputTokens),
     ...(reasoning ? { reasoning } : {}),
+    ...(reasoningMs !== undefined ? { reasoningMs } : {}),
     ...(segments ? { segments } : {}),
   };
 }

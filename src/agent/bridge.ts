@@ -99,6 +99,24 @@ function withFailureContext(err: unknown, config: ResolvedLlmConfig, route?: rea
   return err;
 }
 
+/**
+ * How long the **last** phase of a call spent thinking, which is the span the count rides on.
+ *
+ * A count is one number for the whole call and it lands on the last phase (`run-recorder.ts` puts
+ * `reasoningTokens` there), so the duration beside it has to be that phase's own: `reasoningMs`
+ * on a multi-phase response is the sum of every phase, and handing the sum to the last bubble made
+ * a live phase read the whole turn's thinking. A single-phase turn carries its span there already.
+ *
+ * `undefined` when the call thought for no measurable time: a zero span is what the same tick looks
+ * like, and the server refuses to store one.
+ */
+function lastPhaseSpanOf(response: LlmResponse): number | undefined {
+  const own = response.segments?.length
+    ? response.segments[response.segments.length - 1]?.reasoningMs
+    : response.reasoningMs;
+  return own !== undefined && own > 0 ? own : undefined;
+}
+
 // The home loop is provider-agnostic except for these two transport calls: codex-backed models
 // speak the OpenAI Responses API (docs/codex-backend.md), anthropic-backed ones the Messages API
 // (docs/anthropic-backend.md), everything else chat/completions. All three share the
@@ -1331,12 +1349,21 @@ export class AgentBridge implements AgentBackend {
 
         // Before the turn is recorded and before its tools open their cards: the count belongs to
         // the bubble this call wrote into, and the recorder claims that bubble's id.
+        //
+        // The duration always travels, with or without words. It used to be sent only for a silent
+        // thought, on the argument that the client had timed the ones it streamed -- which is true
+        // and also why the two disagreed: the app measures from the frame that opens a phase to
+        // the first prose delta, a wall clock across a socket, while this is the same span measured
+        // where the deltas arrive. The server's figure is the one the log stores and the one a
+        // reload shows, so the live view adopts it too or a phase reads `12 s` on screen and `4 s`
+        // after a refresh (owner, 2026-11-14: "le ms serveur c'est lui l'important").
         const reasoningTokens = response.usage?.reasoningTokens;
+        const reasoningMs = lastPhaseSpanOf(response);
         if (reasoningTokens) {
           try {
             await reasoningSink?.onCount?.({
               tokens: reasoningTokens,
-              ...(!response.reasoning && response.reasoningMs !== undefined ? { ms: response.reasoningMs } : {}),
+              ...(reasoningMs !== undefined ? { ms: reasoningMs } : {}),
             });
           } catch {
             // A display frame must never abort the run.

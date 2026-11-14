@@ -261,11 +261,13 @@ describe("a Codex thought with no words", () => {
     expect(response.reasoningMs).toBeGreaterThanOrEqual(20);
   });
 
-  test("a thought with words keeps the span the live view measured, from its first delta", async () => {
+  test("a summarised thought is timed by its item, not by the burst its summary arrives in", async () => {
     writeAuth();
     mock = mockFetch(async () =>
       pacedResponse([
         { type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: "rs_1", summary: [] } },
+        // The model thinks for 300 ms with nothing on the wire: this backend reports a thought, it
+        // does not stream one.
         { pauseMs: 300 },
         { type: "response.reasoning_summary_text.delta", summary_index: 0, delta: "**Reading**" },
         { pauseMs: 25 },
@@ -277,10 +279,10 @@ describe("a Codex thought with no words", () => {
     const response = await codexResponseStream(config, [{ role: "user", content: "hi" }], () => {});
     expect(response.reasoning).toBe("**Reading**");
     expect(response.usage?.reasoningTokens).toBe(7);
-    // Opened by the delta, closed by the first word of the answer: the 300 ms before the delta are
-    // not in it, which is what tells it from the item's own lifetime.
-    expect(response.reasoningMs).toBeGreaterThanOrEqual(20);
-    expect(response.reasoningMs).toBeLessThan(300);
+    // The whole wait the reader sat through: the item's own lifetime. A span measured from the
+    // summary's first delta would be the 25 ms burst at the close, which is not what was waited
+    // for -- the summary arrives when the thought is already over (owner, 2026-11-14).
+    expect(response.reasoningMs).toBeGreaterThanOrEqual(300);
   });
 
   test("a response that did not think reports neither a count nor a span", async () => {
