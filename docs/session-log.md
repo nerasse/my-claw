@@ -481,6 +481,16 @@ branche morte (observé le 2026-09-06 sur deux tours de l'owner). Le manager gar
 encore, et n'en relit une du disque que quand plus personne ne la tient. `writeSettings` lit la
 feuille de cette instance-là. Le cache ne fait que garder au chaud les logs inactifs.
 
+**Un run lit la queue du tableau qu'il tient, pas la feuille vivante.** Les deux peuvent diverger,
+et quand elles ont divergé le run est mort : un envoi cron a atterri entre deux itérations par un
+second handle, la feuille a avancé vers une entrée absente du tableau que le run tenait, et
+`pathOf` est retombé sur la **dernière** entrée de ce tableau — une phase assistant. Le prompt
+finissait donc sur les mots du modèle, ce qu'Anthropic refuse net (HTTP 400 « This model does not
+support assistant message prefill ») : deux runs perdus sur un fil le 2026-11-15, à 4 minutes
+d'intervalle. `AgentBridge` calcule maintenant `leafOf()` sur le tableau lui-même ; `contextGate`
+retombe de la même façon sur la queue de la vue qu'on lui donne. En dernier recours le transport
+Anthropic ajoute un tour de relance (`endOnUserTurn`) plutôt que d'envoyer un prompt refusable.
+
 **La feuille suit le log à un tick d'autosave près.** La méta n'était réécrite qu'à la fin d'un
 run (et à chaque appel LLM via le drapeau dirty posé par l'usage). Un processus tué entre deux
 appels rouvrait le log sur la feuille du dernier appel : les outils réglés depuis, le `run_end`,

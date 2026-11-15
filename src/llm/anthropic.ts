@@ -467,7 +467,41 @@ function buildRequest(messages: ChatMessage[], self?: ReplayIdentity): { system:
     markLastCacheable(lastTurn);
   }
 
+  // A prompt that ends on the assistant's own words is refused by this API, and a retry reposts
+  // the same history: the nudge is what makes it answerable at all. See `endOnUserTurn`.
+  endOnUserTurn(turns);
   return { system, turns };
+}
+
+/**
+ * What a prompt that ended on the model's own turn is told, when nothing better is in reach. The
+ * resume path sends the same sentence for an answer cut off mid-way (`sessions/resume.ts`); it is
+ * repeated here rather than imported because this transport must not depend on the session layer.
+ */
+const CONTINUE_NOTE =
+  "[Continue] Your previous answer was cut off right after the text above. Continue it from exactly where it stopped: do not repeat what is already written, do not start over.";
+
+/**
+ * A prompt that ends on the model's own turn, made legal.
+ *
+ * The API refuses one outright -- "This model does not support assistant message prefill. The
+ * conversation must end with a user message" -- and a refusal costs the whole run: the prompt is
+ * rebuilt from the same history on every retry, so nothing about a retry helps. It happened twice
+ * on one thread on 2026-11-15, both times because a run held a context array a second handle had
+ * since moved past (`AgentBridge`, `leafOf`).
+ *
+ * The caller is expected to hand a branch that ends where its own work begins; this is the last
+ * line rather than the mechanism. A nudge turn is what the resume path already uses for the same
+ * shape (an answer cut off mid-sentence), and it is the honest reading here too: the model is asked
+ * to continue from where the history stops.
+ */
+function endOnUserTurn(turns: { role: "user" | "assistant"; content: unknown[] }[]): void {
+  const last = turns[turns.length - 1];
+  if (!last || last.role !== "assistant") return;
+  turns.push({ role: "user", content: [{ type: "text", text: CONTINUE_NOTE }] });
+  void log("warn", "prompt ended on the assistant's turn; asking the model to continue instead", {
+    turns: turns.length,
+  });
 }
 
 /**
