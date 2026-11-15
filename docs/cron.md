@@ -37,6 +37,26 @@ Filed while a run is in the middle of a turn, it is given after that turn's tool
 (`messagesOf`), never between a call and its result. Continue looks through it (`endsOnOwnText`,
 `orphanCalls`): a report is not the model moving on.
 
+### A delivery is a card, not the owner's bubble
+
+The turn is `role: 'user'` because the prompt needs a turn in that role for the conversation's
+agent to have read the report -- and it was *drawn* as one: a full-width bubble on the right, in
+the same place and shape as something the owner typed, so a cron report read as the owner talking
+to himself (owner, 2026-11-15).
+
+The entry carries `cron: { job, cadence, status? }`, and the display turns it into
+`from: { kind: 'cron', label, cadence, status }` -- the same marker a sub-agent's return wears
+(`kind: 'return'`), which is what every reader that asks "is this the owner speaking?" already
+consults. The app draws `components/CronDelivery.tsx`: the job's name, its cadence, the word for
+what happened at the right, one line of preview, and the report one tap away. Folded by default,
+because a morning job would otherwise push a screenful between two turns of the conversation.
+
+A field on the existing `command` entry rather than an entry type of its own: the index encodes
+types as bytes in a fixed order, so a new one is a file-format bump, and a server rolled back to
+the previous release would skip the lines it cannot name -- losing the parent link of everything
+filed past it. Deliveries written before the field existed carry only their quiet `cron delivery`
+input and keep the plain bubble they have always had.
+
 ### The app's job editor sets the same fields
 
 `jobs.save` carries `deliver` (`origin`, `local`, or `{ kind: "thread", title }`, the owner's

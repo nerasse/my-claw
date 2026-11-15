@@ -1665,10 +1665,18 @@ export type MyClawAppHistoryEntry =
       archive?: string;
       /**
        * Set when another agent wrote this turn rather than the owner: a background sub-agent's
-       * return (`kind: "return"`, with what became of its run), or a report it handed back. The app
-       * draws it as an agent card, never as the owner's own words.
+       * return (`kind: "return"`, with what became of its run), a report it handed back, or a
+       * scheduled job's delivery (`kind: "cron"`, with the job's cadence). The app draws each as a
+       * card of its own, never as the owner's own words.
        */
-      from?: { sessionId: string; label: string; kind?: "send" | "return"; status?: string };
+      from?: {
+        sessionId?: string;
+        label: string;
+        kind?: "send" | "return" | "cron";
+        status?: string;
+        /** A cron delivery's schedule, as the job declares it: the card's second fact. */
+        cadence?: string;
+      };
       /** The run this entry belongs to, when it sits inside one. */
       run?: MyClawAppRunMeta;
     }

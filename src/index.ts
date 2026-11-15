@@ -3147,14 +3147,21 @@ async function main() {
   // A delivered result goes into the conversation's history, so it reads back on reload and reaches
   // a phone that was asleep, and into its context: asked about the report afterwards, the
   // conversation's agent has read it (owner, 2026-10-05). Filed, not handed over: nothing runs.
-  cronScheduler.journal = async (target, text) => {
+  cronScheduler.journal = async (target, text, delivery) => {
     const sessionId = SessionManager.resolveSessionId("my-claw-app", "dm", target.chatId, target.chatId, {
       threadId: target.threadId ?? "default",
       sessionScope: "per-user",
     });
     await sessionManager.getOrCreateWithMeta(sessionId, "my-claw-app", "dm");
     const threadLog = await sessionManager.logOf(sessionId);
-    threadLog.append<CommandEntry>({ type: "command", prompt: true, input: "cron delivery", output: text, quiet: true });
+    threadLog.append<CommandEntry>({
+      type: "command",
+      prompt: true,
+      input: "cron delivery",
+      output: text,
+      quiet: true,
+      cron: delivery,
+    });
     await sessionManager.persist(sessionId);
   };
 

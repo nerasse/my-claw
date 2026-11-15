@@ -895,7 +895,15 @@ export function displayOf(
         role: "assistant",
         text: entry.output,
         ts,
+        // A scheduled job's report is a card of its own: the job, how often it runs, and the body it
+        // opens on. Every reader that asks "is this the owner speaking?" consults `from`, and
+        // `kind: 'cron'` is the one value that turns it into a delivery rather than a message.
+        ...(entry.cron
+          ? { from: { label: entry.cron.job, kind: "cron" as const, cadence: entry.cron.cadence, ...(entry.cron.status ? { status: entry.cron.status } : {}) } }
+          : {}),
         // Cron reports are filed as commands for context, but read like the normal live message.
+        // A delivery written before `cron` existed carries only this quiet input, and is left as
+        // the plain bubble it has always been: rewriting history nobody asked about is worse.
         ...(entry.quiet && entry.input === "cron delivery" ? {} : { command: true }),
         ...(entry.details ? { details: entry.details } : {}),
       }));

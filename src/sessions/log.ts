@@ -184,6 +184,14 @@ export interface CommandEntry extends EntryBase {
    */
   afterId?: string;
   /**
+   * Set on the report a scheduled job files: which job, and how often it runs.
+   *
+   * The display draws it as a delivery card rather than the owner's bubble. Absent on every command
+   * the owner typed, and on a delivery written before this existed -- which is why the display also
+   * falls back to the quiet `cron delivery` input those entries carry.
+   */
+  cron?: CronDelivery;
+  /**
    * When the owner sent it, ms. The bubbles read this rather than the journal's write time, so a
    * command that took minutes carries the instant of the send, not of its answer.
    */
@@ -263,6 +271,24 @@ export interface NoteEntry extends EntryBase {
   prompt: false;
   text: string;
   from?: { sessionId: string; label: string };
+}
+
+/**
+ * A scheduled job reporting into a conversation, filed rather than handed over.
+ *
+ * Carried on the `command` entry rather than as an entry type of its own: the index encodes types
+ * as bytes in a fixed order, so a new one is a file-format bump, and a server rolled back to the
+ * previous release would skip the lines it cannot name -- losing the parent link of everything
+ * filed past it. A command is what this already is on the wire (context the model can read, never
+ * something to answer), and the display is the only reader that has to be told more.
+ */
+export interface CronDelivery {
+  /** The job's display name: the card's title. */
+  job: string;
+  /** Its schedule as the job declares it -- "every 15m", "0 9 * * 1": the card's second fact. */
+  cadence: string;
+  /** How the run ended, in the job's own vocabulary. Absent reads as a plain delivery. */
+  status?: "ok" | "error";
 }
 
 /**

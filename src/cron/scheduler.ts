@@ -21,6 +21,7 @@ import { runRegistry } from "../core/run-registry.ts";
 import { getTreeModelUsage, getSessionModelUsage, type SessionModelRow } from "../analytics/usage-db.ts";
 import { parseDurationMs } from "../utils/duration.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
+import type { CronDelivery } from "../sessions/log.ts";
 import { continuable } from "../sessions/resume.ts";
 
 const SILENT_MARKER = "[SILENT]";
@@ -65,7 +66,11 @@ class CronWorkspaceMissingError extends Error {
 class CronInterruptedError extends Error {}
 
 /** Where a delivered result is written so the conversation keeps it: see `journal`. */
-export type CronDeliveryJournal = (target: CronDeliveryTarget, text: string) => Promise<void>;
+export type CronDeliveryJournal = (
+  target: CronDeliveryTarget,
+  text: string,
+  delivery: CronDelivery,
+) => Promise<void>;
 
 /** Hands a report to a conversation as its next turn; false when the channel could not take it. */
 export type CronHandOver = (target: CronDeliveryTarget, text: string) => Promise<boolean>;
@@ -636,10 +641,11 @@ export class CronScheduler {
     }
 
     const text = `[Cron: ${job.name}]\n\n${result}`;
+    const delivery = { job: job.name, cadence: job.schedule.display, ...(job.lastError ? { status: "error" as const } : {}) };
     // Written first: the frame only reaches the devices connected right now, the history is what
     // a phone that was asleep reads when it wakes.
     if (this.journal) {
-      await this.journal(target, text).catch((err) => {
+      await this.journal(target, text, delivery).catch((err) => {
         void log("warn", "cron delivery could not be written to the conversation", { jobId: job.id, error: String(err) });
       });
     }
