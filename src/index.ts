@@ -2860,6 +2860,25 @@ async function main() {
       });
     }
 
+    // The run a sub-agent thread carries ends here, at boot level, and not only in the turn that
+    // launched it: a background child outlives that turn by design (the launch answers in
+    // milliseconds), so the subscription registered inside it is already gone when the child
+    // settles. The child's thread then kept reading "running" and a Stop pressed on it never
+    // resolved -- the journal the end travels through had been closed by the parent's own end --
+    // and only leaving the thread, which refetches its page, showed it had stopped (owner,
+    // 2026-11-16). Same resolution as the roster loop above, and the same limit: a child of an
+    // app conversation, which is the one that has a thread to correct.
+    const endChildRun = (parentSessionId: string, subagentId: string, reason: "done" | "aborted" | "error"): void => {
+      const owner = ownerOfAppSession(parentSessionId);
+      const threadId = subagentSessionToThread(subagentId);
+      if (owner && threadId) myClawApp.notifyRun(owner, threadId, false, reason);
+    };
+    hooks.on("subagent:complete", (ev: { id: string; parentSessionId: string }) => endChildRun(ev.parentSessionId, ev.id, "done"));
+    hooks.on("subagent:error", (ev: { id: string; parentSessionId: string }) => endChildRun(ev.parentSessionId, ev.id, "error"));
+    hooks.on("subagent:aborted", (ev: { id: string; parentSessionId: string }) => endChildRun(ev.parentSessionId, ev.id, "aborted"));
+    hooks.on("subagent:killed", (ev: { id: string; parentSessionId: string }) => endChildRun(ev.parentSessionId, ev.id, "aborted"));
+    hooks.on("subagent:reset", (ev: { id: string; parentSessionId: string }) => endChildRun(ev.parentSessionId, ev.id, "aborted"));
+
     myClawApp.onMessage(async (msg) => withRunContext({ platform: "my-claw-app" }, async () => {
       let response: RouteResult | undefined;
       try {

@@ -133,6 +133,30 @@ It is dropped where the cycle it described ends: the journal's `close` (the run'
 `clearCompacting` (the compaction held and settled). Same rule as the derivation: it is over when
 the work is over, never when someone remembers to clear it.
 
+### A sub-agent stopped after its launch turn had ended
+
+A background child outlives the turn that launched it: the launch answers in milliseconds and the
+child keeps working, so the subscriptions registered inside that turn are gone by the time it
+settles. Two consequences, both of them a state that never resolved on the child's own thread:
+
+- the end that says the run is over was announced from that turn's closure, so it never reached
+the app once the parent had ended;
+- the journal the end travels through was opened by the same turn and closed by its own end, so
+the `chat.run.stopping` frame a fresh Stop claimed had nowhere to be recorded.
+
+Measured 2026-11-16: stopping a sub-agent from its own chat left the composer reading
+`Stopping…` for good, while leaving the thread -- which refetches its page -- showed the run
+stopped. Where it lives now:
+
+- `subagent:complete|error|aborted|killed|reset` end the child's run at boot level (`src/index.ts`,
+  beside the roster push), resolved through the same `ownerOfAppSession` + `subagentSessionToThread`
+  pair, so a thread whose launcher is long gone still gets its `chat.run.end`;
+- `claimStop` opens the journal for a stopped run that has none (`live-turn.ts` `isOpen`), so the
+  abort it names is replayed to a window that reloads and closed by the end that reports it.
+
+A child of a sub-agent (a browser task inside one) keeps the older path: its thread belongs to the
+app conversation its grandparent turn carries, which is still alive while it runs.
+
 ### A stopped compaction leaves a trace
 
 Before this, a compaction the owner aborted left nothing behind: a boundary (`compaction`) is

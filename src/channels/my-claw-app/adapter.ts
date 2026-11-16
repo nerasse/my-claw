@@ -1120,6 +1120,12 @@ export class MyClawAppAdapter implements ChannelAdapter {
     const outcome = this.stopRun ? this.stopRun(sessionId) : "idle";
     if (outcome !== "stopped") return outcome;
     const run = this.live.currentRun(owner, threadId);
+    // A stopped run with no journal here: a background sub-agent outlives the turn that launched
+    // it, and that turn's end closed the journal it opened. The abort is still travelling and the
+    // end that reports it is journalled, so without this the frame goes nowhere, the window that
+    // pressed Stop keeps reading "Stopping…" for good, and only leaving the thread -- which
+    // refetches its page -- showed the run had stopped (owner, 2026-11-16).
+    if (!this.live.isOpen(owner, threadId)) this.live.open(owner, threadId, run);
     const frame: MyClawAppRunStopping = {
       type: "chat.run.stopping",
       threadId,

@@ -5310,6 +5310,48 @@ describe("command frames", () => {
     }
   });
 
+  /**
+   * A background sub-agent outlives the turn that launched it, and so does the journal that turn
+   * opened for its thread: the parent's own end closes it. A Stop pressed on the child afterwards
+   * therefore claimed a cycle whose end had nowhere to travel, and the window that pressed it read
+   * "Stopping…" for good -- leaving the thread and coming back, which refetches the page, was the
+   * only thing that showed the run had stopped (owner, 2026-11-16). The claim registers the cycle
+   * now, so the end reports it here, to the window that asked and to one that reloads.
+   */
+  test("a stop on a child whose parent turn is over still ends somewhere", async () => {
+    adapter.onStop((sessionId) => (sessionId.endsWith("/sub-child-1") ? "stopped" : runRegistry.stop(sessionId)));
+    const childThread = "sub-child-1";
+    try {
+      // The turn that launched the child opened its journal and its end closed it: no open run
+      // here, which is exactly the state a background child is in when the owner opens its chat.
+      client.ws.send(JSON.stringify({ type: "chat.stop", threadId: childThread }));
+      const stopping = await nextFrame(client);
+      assert.equal(stopping["type"], "chat.run.stopping");
+      assert.equal(stopping["threadId"], childThread);
+      const answer = await nextFrame(client);
+      assert.equal(answer["type"], "chat.command.result");
+      assert.equal(answer["text"], "Stopped.");
+
+      // A window that reloads mid-abort is told, which is what a registered cycle buys.
+      const reloaded = await connectClient(adapter.port);
+      reloaded.ws.send(JSON.stringify({ type: "session.sync", threadId: childThread }));
+      assert.equal((await nextFrame(reloaded))["type"], "session.sync.result");
+      assert.equal((await nextFrame(reloaded))["type"], "chat.run.stopping");
+
+      // The abort lands: the end is reported, and the state goes with it.
+      adapter.notifyRun(DEVICE_ID, childThread, false, "aborted");
+      assert.equal((await nextFrame(client))["type"], "chat.run.end");
+      const after = await connectClient(adapter.port);
+      after.ws.send(JSON.stringify({ type: "session.sync", threadId: childThread }));
+      assert.equal((await nextFrame(after))["type"], "session.sync.result");
+      await assert.rejects(() => nextFrame(after, 300));
+      after.ws.close();
+      reloaded.ws.close();
+    } finally {
+      runRegistry.clear();
+    }
+  });
+
   test("session.clear is gone: emptying a conversation is not offered anymore", async () => {
     client.ws.send(JSON.stringify({ type: "session.clear", threadId: "t5" }));
     // Unknown frames are ignored, so prove it by getting an answer to the next one instead.
