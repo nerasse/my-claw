@@ -10,10 +10,10 @@ import { agentTypeOf } from "../sessions/store.ts";
 import { sessionLogOf } from "../sessions/log-access.ts";
 import { promptOf } from "../sessions/projection.ts";
 import {
-  getDelegatedModelUsage,
   getSessionModelUsage,
   getLastContextTokens,
   getSessionUsage,
+  getTreeModelUsage,
   usageHorizon,
   type SessionModelRow,
 } from "../analytics/usage-db.ts";
@@ -156,39 +156,64 @@ function describeRequestTimeout(
  * conversation's behalf. A sub-agent's own sub-agents are billed to it, so the walk continues
  * under each one: the total the page leads with has to cover the grandchildren too, or a research
  * agent that spawned a coder would report a fraction of what the conversation caused.
+ *
+ * One recursive query answers the whole tree (`getTreeModelUsage`); this used to ask the ledger
+ * once per node, which on a conversation with 190 sub-agents meant 190 statements per report, and
+ * the status page is rebuilt on every change while it is open.
  */
 async function delegatedAgents(p: StatusParams): Promise<MyClawAppUsageAgent[]> {
-  const agents: MyClawAppUsageAgent[] = [];
-  const seen = new Set<string>([p.sessionId]);
-  const labelOf = providerLabels(p.config);
-  const walk = async (parent: string, depth: number): Promise<void> => {
-    if (depth > MAX_DELEGATION_DEPTH) return;
-    const bySession = new Map<string, PricedRow[]>();
-    for (const row of priceRows(getDelegatedModelUsage(parent), p.pricing)) {
-      const rows = bySession.get(row.sessionId);
-      if (rows) rows.push(row);
-      else bySession.set(row.sessionId, [row]);
+  const priced = priceRows(getTreeModelUsage(p.sessionId), p.pricing);
+  if (priced.length === 0) return [];
+
+  const bySession = new Map<string, PricedRow[]>();
+  const parentOf = new Map<string, string | null>();
+  for (const row of priced) {
+    const rows = bySession.get(row.sessionId);
+    if (rows) rows.push(row);
+    else bySession.set(row.sessionId, [row]);
+    const parent = row.parentSessionId ?? null;
+    if (!parentOf.has(row.sessionId) && parent !== null) parentOf.set(row.sessionId, parent);
+  }
+
+  // Depth is the length of the chain back to the conversation. The query has no depth limit of its
+  // own (the cron report wants the whole tree), so the one the page draws is applied here.
+  const depthOf = (sessionId: string): number => {
+    let depth = 1;
+    let at = parentOf.get(sessionId) ?? null;
+    const guard = new Set<string>([sessionId]);
+    while (at !== null && at !== p.sessionId && depth <= MAX_DELEGATION_DEPTH) {
+      if (guard.has(at)) return Number.POSITIVE_INFINITY;
+      guard.add(at);
+      depth++;
+      at = parentOf.get(at) ?? null;
     }
-    for (const [sessionId, rows] of bySession) {
-      if (seen.has(sessionId)) continue;
-      seen.add(sessionId);
-      const meta = (await p.subAgentOf?.(sessionId)) ?? null;
-      const displayName = meta?.displayName ?? sessionId.slice(sessionId.lastIndexOf("/") + 1);
-      agents.push({
-        sessionId,
-        displayName,
-        ...(meta ? { type: meta.type } : {}),
-        depth,
-        alive: meta !== null,
-        running: meta !== null && p.liveRuns.some((r) => r.depth > 0 && r.label === meta.displayName),
-        ...totalsOf(rows),
-        rows: rows.map((row) => modelRow(row, labelOf)),
-      });
-      await walk(sessionId, depth + 1);
-    }
+    return depth;
   };
-  await walk(p.sessionId, 1);
-  return agents;
+
+  const drawn = [...bySession].flatMap(([sessionId, rows]) => {
+    const depth = depthOf(sessionId);
+    return depth > MAX_DELEGATION_DEPTH ? [] : [{ sessionId, rows, depth }];
+  });
+  // Depth first, newest first inside a level: the order the per-level walk produced, which is how
+  // the page has always listed them.
+  drawn.sort((a, b) => a.depth - b.depth || (b.rows[0]!.lastUsedAt > a.rows[0]!.lastUsedAt ? 1 : -1));
+
+  const labelOf = providerLabels(p.config);
+  const metas = await Promise.all(drawn.map(({ sessionId }) => p.subAgentOf?.(sessionId) ?? Promise.resolve(null)));
+  return drawn.map(({ sessionId, rows, depth }, index) => {
+    const meta = metas[index] ?? null;
+    const displayName = meta?.displayName ?? sessionId.slice(sessionId.lastIndexOf("/") + 1);
+    return {
+      sessionId,
+      displayName,
+      ...(meta ? { type: meta.type } : {}),
+      depth,
+      alive: meta !== null,
+      running: meta !== null && p.liveRuns.some((r) => r.depth > 0 && r.label === meta.displayName),
+      ...totalsOf(rows),
+      rows: rows.map((row) => modelRow(row, labelOf)),
+    };
+  });
 }
 
 async function collectStatus(p: StatusParams): Promise<MyClawAppStatusPayload> {

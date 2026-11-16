@@ -468,6 +468,10 @@ export function getSessionModelUsage(sessionId: string, scope: "own" | "delegate
 /** One model as one delegated session used it, on the paying conversation's behalf. */
 export interface DelegatedModelRow extends SessionModelRow {
   sessionId: string;
+  /** The session that paid for these calls: the walk's edge back to the root. */
+  parentSessionId?: string | null;
+  /** Kept only to order siblings the way the per-level query did. */
+  totalTokens?: number;
 }
 
 /**
@@ -532,6 +536,8 @@ export function getTreeModelUsage(rootSessionId: string): DelegatedModelRow[] {
          )
          SELECT
            session_id                      AS sessionId,
+           MAX(parent_session_id)          AS parentSessionId,
+           SUM(total_tokens)               AS totalTokens,
            model,
            base_url                        AS baseUrl,
            provider_key                    AS providerKey,
@@ -557,8 +563,15 @@ export function getTreeModelUsage(rootSessionId: string): DelegatedModelRow[] {
          GROUP BY session_id, model, base_url, provider_key
          ORDER BY MAX(timestamp) DESC, SUM(total_tokens) DESC`,
       )
-      .all(rootSessionId) as Array<AggregatedModelRow & { sessionId: string }>;
-    return rows.map((row) => ({ ...withPinnedCost(row), sessionId: row.sessionId }));
+      .all(rootSessionId) as Array<AggregatedModelRow & { sessionId: string; parentSessionId: string | null; totalTokens: number }>;
+    // `withPinnedCost` rebuilds the row, so the two navigation columns are carried back in: the
+    // status page rebuilds the tree's shape (parent, depth) from them, in one query.
+    return rows.map((row) => ({
+      ...withPinnedCost(row),
+      sessionId: row.sessionId,
+      parentSessionId: row.parentSessionId,
+      totalTokens: row.totalTokens,
+    }));
   } catch (err) {
     void log("warn", "analytics getTreeModelUsage failed", { error: String(err) });
     return [];

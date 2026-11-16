@@ -51,13 +51,19 @@ conversation cost in tokens, whatever contract paid for them, and the split (`bi
 $b`) is a sub-line when both exist. A row keeps its markers (`*` not a charge, `~` neighbouring
 model id).
 
-**Sub-agents are rows, and the walk goes two deep.** `getDelegatedModelUsage(parent)` groups the
-rows billed to a session by the session that ran them and by model; the report names each one from
-its session (`SessionManager.read`, never `peek`: a page walking every agent a conversation ever
-drove must not churn the LRU) and falls back to the id's tail once the session is gone (a killed
-one-shot). A sub-agent's own sub-agents bill to the sub-agent, not to the conversation, so the walk
-continues under each row (`MAX_DELEGATION_DEPTH`, a visited set): a total that stopped at depth one
-would report a fraction of what a research agent that spawned a coder actually caused.
+**Sub-agents are rows, and the tree is one query.** `getTreeModelUsage(root)` is a recursive CTE:
+every session under the conversation, at every depth, grouped by session and model, with the
+`parent_session_id` that put it there. The report names each one from its session
+(`SessionManager.read`, never `peek`: a page walking every agent a conversation ever drove must not
+churn the LRU) and falls back to the id's tail once the session is gone (a killed one-shot). A
+sub-agent's own sub-agents bill to the sub-agent, not to the conversation, so the total has to
+reach them (`MAX_DELEGATION_DEPTH`): a total that stopped at depth one would report a fraction of
+what a research agent that spawned a coder actually caused.
+
+It used to ask the ledger once per node, which on a conversation with 190 sub-agents meant 190
+statements per report -- and this page is rebuilt on every change while it is open
+(`status-watch`). One query, the parent column, and the depth rebuilt here from that chain: 1.2-1.8 s
+per report became 50-300 ms on the install's own data (the same three conversations, warm).
 
 **90 days, said when it matters.** Analytics keep 90 days (`RETENTION_DAYS`). A conversation older
 than that carries `usage.since`, the horizon its figures start at, and nothing otherwise: dating
