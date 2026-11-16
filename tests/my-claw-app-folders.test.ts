@@ -67,12 +67,15 @@ describe("FolderStore", () => {
     assert.deepEqual(await names(), []);
   });
 
+  // 200 folders means 200 awaited atomic writes, each one a write plus a rename: on a busy disk that
+  // is past the default five seconds, and a timed-out test leaves its loop writing into the next
+  // test's store. The timeout is the thing to raise, not the number of folders.
   test("the store refuses more folders than a person can read", async () => {
     for (let index = 0; index < MAX_FOLDERS; index += 1) await store.create(OWNER, `folder ${index}`);
 
     await assert.rejects(() => store.create(OWNER, "one too many"), /at most/);
     assert.equal((await store.list(OWNER)).length, MAX_FOLDERS);
-  });
+  }, 60_000);
 
   test("the folders of one owner are not the folders of another", async () => {
     await store.create(OWNER, "CubeFlow");
