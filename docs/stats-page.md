@@ -312,8 +312,9 @@ on screen. A list built from the current answer would keep the one choice alread
 every alternative, which is a filter nobody can undo.
 
 With nothing narrowed the lists come from the rows the report is already made of, at no extra cost.
-With something narrowed they come from `usageFacets` -- four `DISTINCT`s, measured below -- plus the
-same label lookup the ranking uses, which `labelsOf` now shares with it.
+With something narrowed they come from `usageFacets` -- one `DISTINCT` per dimension, measured
+below -- plus the same label lookup the ranking uses, which `labelsOf` shares with it. Unfiltered,
+they are folded off the grain the report is already made of.
 
 ### A filter that is not one is refused
 
@@ -359,51 +360,66 @@ and there are three hundred of them.
 
 ## What it costs
 
-Measured on a copy of the live database (47 186 rows, 24 MB), median of five runs after a warm-up:
+Measured on a copy of the live database (224 799 `api_calls` rows, 208 MB, 234 848 `tool_calls`
+rows), median of three runs, warm.
 
-| View | 7d | 30d | 90d | all |
+### One scan, four folds
+
+Every aggregate the page prints is the same rows grouped by different columns: the model ranking,
+the per-caller split, the day chart and the per-session ranking. Asked one at a time that was four
+scans of `api_calls` plus six `DISTINCT`s for the filter sheet -- 1.6 s of pure SQLite on a 30-day
+window and 3.4 s over the whole table, which is why the page took 2.2 s and 3.6 s to open.
+
+`usageGrain()` reads the finest grouping the page can need, once:
+
+```
+GROUP BY substr(timestamp,1,10), session_id, caller, workspace, folder_id, model, base_url, provider_key
+```
+
+and every view is a `Map` fold of those rows (`usageByModel`, `usageByCaller`, `usageBySession`,
+`usageByDay` all take the grain as an optional last argument, so a caller that already read it pays
+nothing for the grouping). The grain also carries `workspace` and `folder_id`, the two dimensions a
+`UsageGroup` does not have, so the filter sheet of an unfiltered page costs no query at all.
+
+| | 7d | 30d | 90d | all |
 | --- | --- | --- | --- | --- |
-| `usageByModel` | 19 ms | 54 ms | 62 ms | 53 ms |
-| `usageByCaller` | 11 ms | 65 ms | 72 ms | 66 ms |
-| `usageBySession` | 13 ms | 76 ms | 82 ms | 76 ms |
-| `usageByDay` | 10 ms | 63 ms | 66 ms | 63 ms |
-| `usageHorizon` | < 1 ms | < 1 ms | < 1 ms | < 1 ms |
+| one grain read | 90 ms (360 rows) | 430 ms (1 893) | 710 ms (6 778) | 790 ms (6 996) |
+| the four folds over it | 10 ms | 35 ms | 30 ms | 50 ms |
+| `toolStats` | 70 ms | 265 ms | 350 ms | 260 ms |
+| whole `statsReport` | 190 ms | 680-830 ms | 1.4-1.8 s | 1.15-1.4 s |
 
-`firstUserTextBySession` over all 315 ids: 22 ms. The session store lookups (315 ids, 126 found on
-disk): 21 ms. Whole `statsReport`, end to end: **64 ms (7d), 297 ms (30d), 332 ms (90d), 314 ms
-(all)**.
+The ranges are the page cache moving between runs; the ratios are what the change bought.
 
-`all` is not the slowest, because the rollup is empty on this install and the live table is the same
-table a 90-day window scans.
+Before the grain, the same four views were 990 ms (30d) and 3 400 ms (`all`) of SQL alone.
+
+### `toolStats` no longer uses a window function
+
+`LEAD(tool) OVER (PARTITION BY session_id ORDER BY timestamp, id)` answered "what did this session
+call next", and cost 470 ms over 235k rows: SQLite walks the whole session index and sorts it. The
+same walk reads three columns back and decides in TypeScript -- a failure is *retried* when its
+session's next call is the same tool, *switched* when it is another one -- which is 200 ms.
+
+### The session labels are read twelve at a time
+
+`statsReport` names every conversation that spent something, which is 5 285 session reads over
+`all`. Awaited one at a time that was 650 ms of round trips on files already in the page cache;
+twelve in flight (`LABEL_READS`) is about 220 ms.
 
 ### What a filter costs
 
-Same database, median of five runs. The unfiltered column is the row above; the other three are the
-same query with one dimension narrowed:
+`usageFacets` -- one `DISTINCT` per dimension over the window -- is only paid when the page is
+narrowed, because a narrowed page's option list must still offer the values the filter excludes.
+Unfiltered, the lists come from the grain. On a 30-day window the six `DISTINCT`s are 573 ms, which
+is why they are not run for a page nobody filtered.
 
-| Query | 30d, no filter | `model` | `provider` | `errorsOnly` |
-| --- | --- | --- | --- | --- |
-| `usageByModel` | 47 ms | 0.7 ms | 17 ms | 11 ms |
-| `usageByCaller` | 56 ms | 0.6 ms | -- | -- |
-| `usageBySession` | 66 ms | 0.6 ms | -- | -- |
-| `usageByDay` | 55 ms | -- | -- | -- |
-| `usageFacets` (four `DISTINCT`s) | -- | 43 ms | 43 ms | 43 ms |
-
-A model filter is nearly free: `idx_api_calls_model` turns the window scan into a lookup of one
-value's rows. A host filter cannot be -- there is no index on `base_url`, and none is worth adding
-(see below) -- so it scans the window with the predicate and drops most of it, which is still three
-times cheaper than the aggregate it replaces.
-
-`usageFacets` is four `DISTINCT`s at 10-12 ms each: the model, caller and session columns are
-indexed, so each is a walk of the index that never touches a row. It replaces the three unfiltered
-aggregates (~170 ms) that an earlier version ran for the same lists, and it removed the need to
-price rows nothing was going to show.
+A model filter is not the same kind of query: `idx_api_calls_model` turns the window scan into a
+lookup of one value's rows, and the grain for `30d` with a model filter is 30 ms against 382 ms.
 
 ### There is no index on `base_url`, and there should not be
 
 Every view here is a full aggregate over a window, which SQLite answers by scanning that window and
 building a temp B-tree for the `GROUP BY`. An index on a column that appears only in `GROUP BY`
-never enters the plan. Measured:
+never enters the plan. Measured on the earlier, smaller copy:
 
 | | `byModel all` | `byModel 90d` | `byModel 7d` | `bySession 90d` |
 | --- | --- | --- | --- | --- |
@@ -416,6 +432,10 @@ never enters the plan. Measured:
 GROUP BY`. The 4 ms is noise, and the covering index makes the session view 25 % worse. **No index
 is added**: it would cost write latency on every recorded call and a megabyte of the file, for
 nothing the planner would use.
+
+The remaining cost of the `all` window is the scan itself: 225k rows summed over twenty columns,
+and `all` is the only period with no bound to walk the `timestamp` index on. It is the price of the
+question "what has this install ever cost", not something an index can remove.
 
 ## The wire
 

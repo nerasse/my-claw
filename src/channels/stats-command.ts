@@ -10,9 +10,12 @@ import {
   usageByModel,
   usageBySession,
   usageFacets,
+  usageGrain,
+  facetsOfGrain,
   NO_FOLDER,
   UNKNOWN_PROVIDER,
   type StatsFilter,
+  type UsageGrainRow,
   type UsageGroup,
 } from "../analytics/usage-stats.ts";
 import { firstUserTextBySession } from "../conversations/store.ts";
@@ -272,6 +275,9 @@ function labelFromMessage(raw: string): string {
   return stripLocationBlock(splitAttachmentBlock(raw).text).trim().replace(/\s+/g, " ").slice(0, MAX_TITLE_LENGTH);
 }
 
+/** How many session reads the ranking keeps in flight: see `labelsOf`. */
+const LABEL_READS = 12;
+
 /** One conversation's name, and where it came from. */
 interface SessionLabel {
   label: string;
@@ -288,7 +294,14 @@ interface SessionLabel {
  */
 async function labelsOf(sessionIds: string[], infoOf: StatsParams["sessionInfo"]): Promise<Map<string, SessionLabel>> {
   const info = new Map<string, { title?: string } | undefined>();
-  for (const sessionId of sessionIds) info.set(sessionId, await infoOf(sessionId));
+  // One read per session, and there are thousands of them over `all`: awaited one at a time that
+  // was 650 ms of round trips on files that are already in the page cache. Twelve at a time keeps
+  // the syscalls overlapped without opening a thousand descriptors.
+  for (let i = 0; i < sessionIds.length; i += LABEL_READS) {
+    const slice = sessionIds.slice(i, i + LABEL_READS);
+    const held = await Promise.all(slice.map((sessionId) => infoOf(sessionId)));
+    slice.forEach((sessionId, index) => info.set(sessionId, held[index]));
+  }
   const unnamed = [...info].filter(([, held]) => !held?.title).map(([sessionId]) => sessionId);
   const archived = firstUserTextBySession(unnamed);
 
@@ -314,7 +327,7 @@ async function labelsOf(sessionIds: string[], infoOf: StatsParams["sessionInfo"]
  * and a cross-database query would tie the analytics to an archive that can be absent. An archive
  * that has nothing leaves the id standing -- an invented title is worse than an ugly one.
  */
-async function sessionRows(rows: Array<Priced<UsageGroup & { sessionId: string; parentSessionId: string; firstAt: string; lastAt: string }>>, infoOf: StatsParams["sessionInfo"]): Promise<MyClawAppStatsSessionRow[]> {
+async function sessionRows(rows: Array<Priced<UsageGroup & { sessionId: string; parentSessionId: string | null; firstAt: string; lastAt: string }>>, infoOf: StatsParams["sessionInfo"]): Promise<MyClawAppStatsSessionRow[]> {
   const folded = new Map<string, { totals: MyClawAppStatsTotals; firstAt: string; lastAt: string; delegated: boolean }>();
   for (const row of rows) {
     const held = folded.get(row.group.sessionId);
@@ -389,14 +402,15 @@ function reconciliationRows(config: MyClawConfig, rows: Array<Priced<UsageGroup>
 export async function statsReport(p: StatsParams): Promise<MyClawAppStatsPayload> {
   const filter: MyClawAppStatsFilter = p.filter ?? {};
   const labelOf = providerLabels(p.config);
-  const models = price(usageByModel(p.period, filter), p.pricing);
+  const grain = usageGrain(p.period, filter);
+  const models = price(usageByModel(p.period, filter, grain), p.pricing);
   const totals = emptyTotals();
   for (const row of models) add(totals, row.totals);
 
-  const sessions = await sessionRows(price(usageBySession(p.period, filter), p.pricing), p.sessionInfo);
-  const callers = callerRows(price(usageByCaller(p.period, filter), p.pricing));
+  const sessions = await sessionRows(price(usageBySession(p.period, filter, grain), p.pricing), p.sessionInfo);
+  const callers = callerRows(price(usageByCaller(p.period, filter, grain), p.pricing));
   const horizon = usageHorizon();
-  const facets = await facetsOf(p, filter, models, sessions, callers);
+  const facets = await facetsOf(p, filter, grain, models, sessions, callers);
 
   return {
     period: p.period,
@@ -410,7 +424,7 @@ export async function statsReport(p: StatsParams): Promise<MyClawAppStatsPayload
     providerKeys: providerKeyRows(models, labelOf),
     providers: providerRows(models),
     sessions,
-    daily: dayRows(price(usageByDay(p.period, filter), p.pricing)),
+    daily: dayRows(price(usageByDay(p.period, filter, grain), p.pricing)),
     reliability: reliabilityRows(models),
     cache: cacheOf(totals),
     callers,
@@ -439,22 +453,23 @@ function facetSession(row: MyClawAppStatsSessionRow): MyClawAppStatsFacetSession
  * The values the filter sheet offers, taken from a pass that ignores the filter on screen.
  *
  * With nothing narrowed they come from the rows the report is already made of, at no extra cost.
- * With something narrowed they come from `usageFacets`, four `DISTINCT`s over the window: an option
- * list that had shrunk to the one value already chosen would leave no way back to the others, and
- * that is the price of a filter that can be undone -- about a fifth of one unfiltered aggregate.
+ * With something narrowed they come from `usageFacets`, one `DISTINCT` per dimension over the
+ * window: an option list that had shrunk to the one value already chosen would leave no way back to
+ * the others, and that is the price of a filter that can be undone.
  */
 async function facetsOf(
   p: StatsParams,
   filter: StatsFilter,
+  grain: readonly UsageGrainRow[],
   models: Array<Priced<UsageGroup>>,
   sessions: MyClawAppStatsSessionRow[],
   callers: MyClawAppStatsCallerRow[],
 ): Promise<MyClawAppStatsFacets> {
-  // The two new dimensions are never folded from the rows above: a UsageGroup carries no workspace
-  // and no folder, and adding one to every aggregate would weigh down queries that never ask for
-  // them. The two DISTINCTs are indexed and cost about a fifth of one aggregate (see the note on
-  // `usageFacets`), and they are needed whatever the filter, so they are read unconditionally.
-  const all = usageFacets(p.period);
+  // The two dimensions a `UsageGroup` does not carry (workspace, folder) ride on the grain of the
+  // report itself, so an unfiltered page answers its filter sheet from rows it already has. A
+  // narrowed page cannot: the option list must still offer the values the filter on screen
+  // excludes, or there is no way back to them. That is the one case that pays the six `DISTINCT`s.
+  const all = filterNarrows(filter) ? usageFacets(p.period) : facetsOfGrain(grain);
   const folderLabel = new Map(p.folders.map((folder) => [folder.id, folder.name]));
   const folders: MyClawAppStatsFacetFolder[] = all.folderIds
     .map((folderId) => ({ folderId, label: folderId === NO_FOLDER ? NO_FOLDER : folderLabel.get(folderId) ?? "(deleted)" }))

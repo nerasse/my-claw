@@ -74,8 +74,11 @@ export interface UsageGroup {
 
 export interface UsageSessionGroup extends UsageGroup {
   sessionId: string;
-  /** Who paid for these calls: the session itself for a conversation, its driver for a worker. */
-  parentSessionId: string;
+  /**
+   * Who paid for these calls: the session itself for a conversation, its driver for a worker.
+   * Null on the calls recorded before the column existed, which no row can place.
+   */
+  parentSessionId: string | null;
   firstAt: string;
   lastAt: string;
 }
@@ -100,12 +103,12 @@ export interface UsageFacets {
 }
 
 /**
- * The distinct values a filter can be set to over the window: the option list of the filter sheet.
+ * The distinct values a filter can be set to over the window: the option list of the filter sheet,
+ * for the one case that cannot answer it from the grain it already has (`facetsOfGrain`).
  *
- * Four `DISTINCT`s rather than the aggregates the report is made of, because this answers what
- * exists and not what it cost. The model, caller and session columns are indexed, so each of them
- * is a walk of the index that never touches a row, and the whole list costs about a fifth of one
- * unfiltered aggregate (measured in docs/stats-page.md).
+ * One `DISTINCT` per dimension, six of them, rather than the aggregates the report is made of:
+ * this answers what exists, not what it cost. Measured on a 30-day window: 573 ms, which is why a
+ * page nobody narrowed never runs it -- the report's own grain carries every one of these columns.
  *
  * Deliberately unfiltered by whatever the caller is narrowing: an option list that shrank to the
  * choice already made would leave no way back to the others.
@@ -201,31 +204,6 @@ export function filterReachesRollup(filter: StatsFilter): boolean {
     filter.unpricedOnly !== true
   );
 }
-
-/**
- * The live columns, in the order every query below needs them.
- *
- * `unpricedCalls` is what lets the caller decide whether the frozen money covers the whole group:
- * a group half-written before the cost columns shipped reports a sum covering part of its tokens,
- * which reads as a cheap model rather than as a partial sum. Same rule as the per-conversation
- * report, for the same reason.
- */
-const LIVE_COLUMNS = `
-  model,
-  base_url                                              AS baseUrl,
-  provider_key                                          AS providerKey,
-  MAX(upstream_api_base)                                AS upstreamApiBase,
-  COUNT(*)                                              AS calls,
-  SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END)    AS errors,
-  COALESCE(SUM(prompt_tokens), 0)                       AS promptTokens,
-  COALESCE(SUM(completion_tokens), 0)                   AS completionTokens,
-  COALESCE(SUM(cache_read_tokens), 0)                   AS cacheReadTokens,
-  COALESCE(SUM(cache_write_tokens), 0)                  AS cacheWriteTokens,
-  COALESCE(SUM(duration_ms), 0)                         AS durationMs,
-  COALESCE(SUM(CASE WHEN cost_usd IS NOT NULL AND cost_billed = 1 THEN cost_usd ELSE 0 END), 0)  AS billedUsd,
-  COALESCE(SUM(CASE WHEN cost_usd IS NOT NULL AND cost_billed <> 1 THEN cost_usd ELSE 0 END), 0) AS referenceUsd,
-  SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END)     AS unpricedCalls
-`;
 
 /** The same shape read off the rollup: one month already folded, money frozen when it was swept. */
 const ROLLUP_COLUMNS = `
@@ -350,24 +328,147 @@ function rolledPredicate(filter: StatsFilter): { sql: string; params: Record<str
 }
 
 /**
- * Every model on every endpoint over the period: the one query the totals, the per-provider
- * ranking, the reliability table, the cache shares and the reconciliation are all folded from.
+ * The grain every aggregate on the page is folded from: one scan of the window.
  *
- * There is no index on `base_url` and none would help: this is a full aggregate over the window,
- * which SQLite answers by scanning it whatever indexes exist. Measured in docs/stats-page.md.
+ * Totals, the model ranking, the per-caller split, the day chart and the per-session ranking are
+ * the same rows grouped by different columns. Asked one at a time that is four scans of
+ * `api_calls`, plus six `DISTINCT`s for the filter sheet when the page is not narrowed: 1.6 s of
+ * SQLite on a 107k-row window and 3.4 s over the whole table, measured on the install's own file
+ * (docs/stats-page.md). Asked once at the finest grain they share, it is one scan and a few
+ * thousand rows folded here: 380 ms and 740 ms.
+ *
+ * The grain carries the two dimensions no aggregate keeps (workspace, folder), so the filter sheet
+ * of an unfiltered page costs no query at all.
  */
-export function usageByModel(period: UsagePeriod, filter: StatsFilter): UsageGroup[] {
+const GRAIN_COLUMNS = `
+  substr(timestamp, 1, 10)                              AS date,
+  session_id                                            AS sessionId,
+  MAX(parent_session_id)                                AS parentSessionId,
+  caller,
+  workspace,
+  folder_id                                             AS folderId,
+  model,
+  base_url                                              AS baseUrl,
+  provider_key                                          AS providerKey,
+  MAX(upstream_api_base)                                AS upstreamApiBase,
+  MIN(timestamp)                                        AS firstAt,
+  MAX(timestamp)                                        AS lastAt,
+  COUNT(*)                                              AS calls,
+  SUM(CASE WHEN error IS NOT NULL THEN 1 ELSE 0 END)    AS errors,
+  COALESCE(SUM(prompt_tokens), 0)                       AS promptTokens,
+  COALESCE(SUM(completion_tokens), 0)                   AS completionTokens,
+  COALESCE(SUM(cache_read_tokens), 0)                   AS cacheReadTokens,
+  COALESCE(SUM(cache_write_tokens), 0)                  AS cacheWriteTokens,
+  COALESCE(SUM(duration_ms), 0)                         AS durationMs,
+  COALESCE(SUM(CASE WHEN cost_usd IS NOT NULL AND cost_billed = 1 THEN cost_usd ELSE 0 END), 0)  AS billedUsd,
+  COALESCE(SUM(CASE WHEN cost_usd IS NOT NULL AND cost_billed <> 1 THEN cost_usd ELSE 0 END), 0) AS referenceUsd,
+  SUM(CASE WHEN cost_usd IS NULL THEN 1 ELSE 0 END)     AS unpricedCalls
+`;
+
+/** One row of the shared scan: the calls that agree on every dimension the page can group by. */
+export interface UsageGrainRow extends UsageGroup {
+  origin: "live";
+  /** `YYYY-MM-DD`, as SQLite reads it off the ISO timestamp. */
+  date: string;
+  sessionId: string;
+  /** The session that paid for these calls: this one for a conversation, its driver for a worker. */
+  parentSessionId: string | null;
+  caller: string;
+  workspace: string | null;
+  folderId: string | null;
+  firstAt: string;
+  lastAt: string;
+}
+
+export function usageGrain(period: UsagePeriod, filter: StatsFilter): UsageGrainRow[] {
   try {
     const cutoff = periodCutoff(period);
-    const live = db()
-      .prepare(`SELECT ${LIVE_COLUMNS} FROM api_calls ${where(cutoff, filter)} GROUP BY model, base_url, provider_key`)
-      .all(bind(cutoff, filter)) as RawGroup[];
-    if (!reachesRollup(period) || !filterReachesRollup(filter)) return tag(live, "live");
+    const rows = db()
+      .prepare(
+        `SELECT ${GRAIN_COLUMNS} FROM api_calls ${where(cutoff, filter)}
+         GROUP BY substr(timestamp, 1, 10), session_id, caller, workspace, folder_id, model, base_url, provider_key`,
+      )
+      .all(bind(cutoff, filter)) as Array<Omit<UsageGrainRow, "origin">>;
+    return rows.map((row) => ({ ...row, origin: "live" as const }));
+  } catch (err) {
+    void log("warn", "analytics usageGrain failed", { error: String(err) });
+    return [];
+  }
+}
+
+/** A group being accumulated across grain rows. */
+type GrainAcc = UsageGroup & { origin: "live" };
+
+function accOf(row: UsageGrainRow): GrainAcc {
+  return {
+    origin: "live",
+    model: row.model,
+    baseUrl: row.baseUrl,
+    providerKey: row.providerKey,
+    upstreamApiBase: row.upstreamApiBase,
+    calls: row.calls,
+    errors: row.errors,
+    promptTokens: row.promptTokens,
+    completionTokens: row.completionTokens,
+    cacheReadTokens: row.cacheReadTokens,
+    cacheWriteTokens: row.cacheWriteTokens,
+    durationMs: row.durationMs,
+    billedUsd: row.billedUsd,
+    referenceUsd: row.referenceUsd,
+    unpricedCalls: row.unpricedCalls,
+  };
+}
+
+function mergeAcc(into: GrainAcc, row: UsageGrainRow): void {
+  into.calls += row.calls;
+  into.errors += row.errors;
+  into.promptTokens += row.promptTokens;
+  into.completionTokens += row.completionTokens;
+  into.cacheReadTokens += row.cacheReadTokens;
+  into.cacheWriteTokens += row.cacheWriteTokens;
+  into.durationMs += row.durationMs;
+  into.billedUsd += row.billedUsd;
+  into.referenceUsd += row.referenceUsd;
+  into.unpricedCalls += row.unpricedCalls;
+  // MAX(upstream_api_base) ignores NULLs, so a group with one placed call carries its address.
+  if (row.upstreamApiBase !== null && (into.upstreamApiBase === null || row.upstreamApiBase > into.upstreamApiBase)) {
+    into.upstreamApiBase = row.upstreamApiBase;
+  }
+}
+
+/** A fold key. JSON, so a NULL dimension can never collide with the empty string. */
+function keyOf(...parts: Array<string | null>): string {
+  return JSON.stringify(parts);
+}
+
+/** A fold's groups, each with the first grain row that started it -- where a label comes from. */
+function fold(rows: readonly UsageGrainRow[], key: (row: UsageGrainRow) => string): Map<string, { group: GrainAcc; first: UsageGrainRow }> {
+  const groups = new Map<string, { group: GrainAcc; first: UsageGrainRow }>();
+  for (const row of rows) {
+    const k = key(row);
+    const held = groups.get(k);
+    if (held) mergeAcc(held.group, row);
+    else groups.set(k, { group: accOf(row), first: row });
+  }
+  return groups;
+}
+
+/**
+ * Every model on every endpoint over the period: the one grouping the totals, the per-provider
+ * ranking, the reliability table, the cache shares and the reconciliation are all built from.
+ *
+ * `grain` is passed by the caller that already read it: the page folds four groupings out of one
+ * scan, and a function that re-read the table per grouping would put the four scans back.
+ */
+export function usageByModel(period: UsagePeriod, filter: StatsFilter, grain = usageGrain(period, filter)): UsageGroup[] {
+  try {
+    const live = [...fold(grain, (row) => keyOf(row.model, row.baseUrl, row.providerKey)).values()].map((held) => held.group);
+    if (!reachesRollup(period) || !filterReachesRollup(filter)) return live;
     const months = rolledPredicate(filter);
     const rolled = db()
       .prepare(`SELECT ${ROLLUP_COLUMNS} FROM usage_monthly ${months.sql} GROUP BY model, base_url`)
       .all(months.params) as RawGroup[];
-    return [...tag(live, "live"), ...tag(rolled, "rollup")];
+    return [...live, ...tag(rolled, "rollup")];
   } catch (err) {
     void log("warn", "analytics usageByModel failed", { error: String(err) });
     return [];
@@ -378,13 +479,11 @@ export function usageByModel(period: UsagePeriod, filter: StatsFilter): UsageGro
  * Every caller over the period, split by model so each slice can be priced: the orchestrator, the
  * sub-agents it spawned, the browser, the compactions.
  */
-export function usageByCaller(period: UsagePeriod, filter: StatsFilter): UsageCallerGroup[] {
+export function usageByCaller(period: UsagePeriod, filter: StatsFilter, grain = usageGrain(period, filter)): UsageCallerGroup[] {
   try {
-    const cutoff = periodCutoff(period);
-    const live = db()
-      .prepare(`SELECT caller, ${LIVE_COLUMNS} FROM api_calls ${where(cutoff, filter)} GROUP BY caller, model, base_url, provider_key`)
-      .all(bind(cutoff, filter)) as Array<RawGroup & { caller: string }>;
-    const out: UsageCallerGroup[] = live.map((row) => ({ ...row, origin: "live" as const }));
+    const out: UsageCallerGroup[] = [...fold(grain, (row) => keyOf(row.caller, row.model, row.baseUrl, row.providerKey)).values()].map(
+      ({ group, first }) => ({ ...group, caller: first.caller }),
+    );
     if (!reachesRollup(period) || !filterReachesRollup(filter)) return out;
     const months = rolledPredicate(filter);
     const rolled = db()
@@ -405,17 +504,30 @@ export function usageByCaller(period: UsagePeriod, filter: StatsFilter): UsageCa
  * Live rows only, whatever the period. The rollup key has no session on it, so the ranking stops
  * where the per-call detail stops -- `usageHorizon().detailSince` is the date to say that with.
  */
-export function usageBySession(period: UsagePeriod, filter: StatsFilter): UsageSessionGroup[] {
+export function usageBySession(period: UsagePeriod, filter: StatsFilter, grain = usageGrain(period, filter)): UsageSessionGroup[] {
   try {
-    const cutoff = periodCutoff(period);
-    const rows = db()
-      .prepare(
-        `SELECT session_id AS sessionId, MIN(timestamp) AS firstAt, MAX(timestamp) AS lastAt, MAX(parent_session_id) AS parentSessionId, ${LIVE_COLUMNS}
-         FROM api_calls ${where(cutoff, filter)}
-         GROUP BY session_id, model, base_url, provider_key`,
-      )
-      .all(bind(cutoff, filter)) as Array<RawGroup & { sessionId: string; parentSessionId: string; firstAt: string; lastAt: string }>;
-    return rows.map((row) => ({ ...row, origin: "live" as const }));
+    const held = new Map<string, UsageSessionGroup & { origin: "live" }>();
+    for (const row of grain) {
+      const key = keyOf(row.sessionId, row.model, row.baseUrl, row.providerKey);
+      const group = held.get(key);
+      if (!group) {
+        held.set(key, {
+          ...accOf(row),
+          sessionId: row.sessionId,
+          parentSessionId: row.parentSessionId,
+          firstAt: row.firstAt,
+          lastAt: row.lastAt,
+        });
+        continue;
+      }
+      mergeAcc(group, row);
+      if (row.parentSessionId !== null && (group.parentSessionId === null || row.parentSessionId > group.parentSessionId)) {
+        group.parentSessionId = row.parentSessionId;
+      }
+      if (row.firstAt < group.firstAt) group.firstAt = row.firstAt;
+      if (row.lastAt > group.lastAt) group.lastAt = row.lastAt;
+    }
+    return [...held.values()];
   } catch (err) {
     void log("warn", "analytics usageBySession failed", { error: String(err) });
     return [];
@@ -428,19 +540,30 @@ export function usageBySession(period: UsagePeriod, filter: StatsFilter): UsageS
  * Live rows only, like the sessions and for the same reason: the rollup is monthly, so a daily
  * chart cannot reach behind the retention wall and must not pretend to.
  */
-export function usageByDay(period: UsagePeriod, filter: StatsFilter): UsageDayGroup[] {
+export function usageByDay(period: UsagePeriod, filter: StatsFilter, grain = usageGrain(period, filter)): UsageDayGroup[] {
   try {
-    const cutoff = periodCutoff(period);
-    const rows = db()
-      .prepare(
-        `SELECT substr(timestamp, 1, 10) AS date, ${LIVE_COLUMNS}
-         FROM api_calls ${where(cutoff, filter)}
-         GROUP BY substr(timestamp, 1, 10), model, base_url, provider_key`,
-      )
-      .all(bind(cutoff, filter)) as Array<RawGroup & { date: string }>;
-    return rows.map((row) => ({ ...row, origin: "live" as const }));
+    return [...fold(grain, (row) => keyOf(row.date, row.model, row.baseUrl, row.providerKey)).values()].map(({ group, first }) => ({
+      ...group,
+      date: first.date,
+    }));
   } catch (err) {
     void log("warn", "analytics usageByDay failed", { error: String(err) });
     return [];
   }
+}
+
+/**
+ * What the filter sheet offers, folded off the same grain: the option list of a page that is not
+ * narrowed costs no second scan.
+ */
+export function facetsOfGrain(rows: readonly UsageGrainRow[]): UsageFacets {
+  const distinct = (values: Iterable<string>): string[] => [...new Set(values)].sort((a, b) => a.localeCompare(b));
+  return {
+    models: distinct(rows.map((row) => row.model)),
+    providers: distinct(rows.map((row) => row.providerKey ?? UNKNOWN_PROVIDER)),
+    callers: distinct(rows.map((row) => row.caller)),
+    sessionIds: distinct(rows.map((row) => row.sessionId)),
+    workspaces: distinct(rows.map((row) => row.workspace ?? UNKNOWN_WORKSPACE)),
+    folderIds: distinct(rows.map((row) => row.folderId ?? NO_FOLDER)),
+  };
 }
