@@ -43,14 +43,27 @@ function stream(chunks: unknown[]): Response {
 }
 
 
-/** A stream that delivers one chunk per `gapMs`, so a span measured at arrival is not zero. */
+/**
+ * A stream that delivers one chunk per `gapMs`, so a span measured at arrival is not zero.
+ *
+ * Pull-based, not push-based: `start` on a ReadableStream begins filling the queue at
+ * construction, so a `setTimeout` there can spend its whole delay before the consumer reads a
+ * single byte -- and then every chunk arrives in one tick and the measured span is the price of a
+ * scheduler tick, not the gap. This test read `16` instead of `150` about one run in six, on CI
+ * as well as locally. `pull` enqueues only when the reader asks, so the gap lands between two
+ * reads and the figure is real whatever the setup cost.
+ */
 function delayedStream(chunks: unknown[], gapMs: number): Response {
   const encoder = new TextEncoder();
+  let index = 0;
   const body = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      for (const chunk of chunks) {
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n`));
-        await new Promise((resolve) => setTimeout(resolve, gapMs));
+    async pull(controller) {
+      // Nothing waits before the first chunk: the gap is what a thought costs, and the thought
+      // starts at the first byte.
+      if (index > 0) await new Promise((resolve) => setTimeout(resolve, gapMs));
+      if (index < chunks.length) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunks[index++])}\n`));
+        return;
       }
       controller.enqueue(encoder.encode("data: [DONE]\n"));
       controller.close();
