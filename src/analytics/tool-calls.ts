@@ -143,22 +143,49 @@ export function toolStats(period: UsagePeriod, filter: ToolStatsFilter = {}): To
   if (filter.caller) { where.push("caller = ?"); params.push(filter.caller); }
   const clause = where.length > 0 ? `WHERE ${where.join(" AND ")}` : "";
 
-  const totals = d
-    .query(`
-      WITH seq AS (
-        SELECT tool, ok, duration_ms,
-               LEAD(tool) OVER (PARTITION BY session_id ORDER BY timestamp, id) AS next_tool
-        FROM tool_calls ${clause}
-      )
-      SELECT tool,
-             COUNT(*)                                                  AS calls,
-             SUM(ok = 0)                                               AS failures,
-             AVG(duration_ms)                                          AS avg_ms,
-             SUM(ok = 0 AND next_tool = tool)                          AS retried,
-             SUM(ok = 0 AND next_tool IS NOT NULL AND next_tool <> tool) AS switched
-      FROM seq GROUP BY tool ORDER BY calls DESC
-    `)
-    .all(...params) as Array<{ tool: string; calls: number; failures: number; avg_ms: number; retried: number; switched: number }>;
+  // The per-tool totals and the two retry figures, in one pass over the calls in the order a
+  // session made them.
+  //
+  // "Followed by another call" is a window function's job, and `LEAD(tool) OVER (PARTITION BY
+  // session_id ...)` cost 470 ms over 235k rows because SQLite walks the whole session index and
+  // sorts it. The rows themselves are 60 MB of index entries either way; reading the three columns
+  // back and deciding in TypeScript is 200 ms, and the walk is the same one the window does.
+  const calls = d
+    .query(`SELECT session_id, tool, ok, duration_ms FROM tool_calls ${clause} ORDER BY session_id, timestamp, id`)
+    .all(...params) as Array<{ session_id: string; tool: string; ok: number; duration_ms: number }>;
+
+  const folded = new Map<string, ToolStatsRow>();
+  const rowOf = (tool: string): ToolStatsRow => {
+    const held = folded.get(tool);
+    if (held) return held;
+    const fresh: ToolStatsRow = { tool, calls: 0, failures: 0, avgDurationMs: 0, retried: 0, switched: 0, outcomes: {}, topErrors: [] };
+    folded.set(tool, fresh);
+    return fresh;
+  };
+  const durations = new Map<string, number>();
+  // A failure is "retried" when the very next call of its session is the same tool, and "switched"
+  // when it is a different one. The last call of a session has no next, and counts as neither.
+  let pending: { tool: string; session: string } | null = null;
+  for (const call of calls) {
+    if (pending !== null) {
+      if (call.session_id === pending.session) {
+        const row = rowOf(pending.tool);
+        if (call.tool === pending.tool) row.retried += 1;
+        else row.switched += 1;
+      }
+      pending = null;
+    }
+    const row = rowOf(call.tool);
+    row.calls += 1;
+    durations.set(call.tool, (durations.get(call.tool) ?? 0) + call.duration_ms);
+    if (call.ok === 0) {
+      row.failures += 1;
+      pending = { tool: call.tool, session: call.session_id };
+    }
+  }
+  const totals = [...folded.values()];
+  for (const row of totals) row.avgDurationMs = row.calls > 0 ? Math.round((durations.get(row.tool) ?? 0) / row.calls) : 0;
+  totals.sort((a, b) => b.calls - a.calls);
 
   const outcomes = d
     .query(`SELECT tool, outcome, COUNT(*) AS n FROM tool_calls ${clause ? `${clause} AND` : "WHERE"} outcome IS NOT NULL GROUP BY tool, outcome`)
@@ -169,12 +196,7 @@ export function toolStats(period: UsagePeriod, filter: ToolStatsFilter = {}): To
     .all(...params) as Array<{ tool: string; error: string; n: number }>;
 
   const rows = totals.map((t): ToolStatsRow => ({
-    tool: t.tool,
-    calls: t.calls,
-    failures: t.failures,
-    avgDurationMs: Math.round(t.avg_ms ?? 0),
-    retried: t.retried,
-    switched: t.switched,
+    ...t,
     outcomes: Object.fromEntries(outcomes.filter((o) => o.tool === t.tool).map((o) => [o.outcome, o.n])),
     topErrors: errors.filter((e) => e.tool === t.tool).slice(0, TOP_ERRORS).map((e) => ({ kind: e.error, count: e.n })),
   }));
