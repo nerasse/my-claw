@@ -113,6 +113,33 @@ A pick is refused, never stored, when the model is unknown or not `ready` -- and
 only offers `ready` models, a refusal here means the state changed between the two, not a UI that
 let you choose the impossible.
 
+## A pick applies to the run that is going
+
+The chain is resolved once, when a run starts, and again at every turn boundary from the pins on
+the session the run holds. The owner's pick is a setting, not a command queued for the next run: it
+landed on the session object, so a run in flight can read it -- and until 2026-11-17 it did not.
+A sub-agent an hour into its work kept calling the model it started on, and the only way to make a
+pick apply was to kill it, which throws its history away (owner, 2026-11-17).
+
+The switch is driven by a fingerprint of the three things the owner controls -- the siphon pin, the
+model pick, the effort rung -- and never by re-resolving on every turn:
+
+- **an unchanged fingerprint is left alone.** A run that re-resolved anyway would undo the model a
+  fallback adopted on a spent bar, which is a decision the run already made and the picker never
+  expressed.
+- **a moved one re-resolves, and the run adopts it**: the prompt is rebuilt (it names the view's
+  model), the tool block and `lastFixedTokens` are re-measured, the live run node moves
+  (`setModel`), and `agent:model:changed` is emitted with `reason: "owner"` -- the same event a
+  fallback emits, so the header, the status page and a roster row follow it without knowing which
+  kind of change it was.
+- **the models the run already walked are cleared** from its attempted set: a wall recorded against
+  the previous model must not steer a pick that has never been tried.
+- **a pick that no longer resolves does not end the run.** It is logged, and the model already
+  answering keeps answering.
+
+Siphon still outranks a pick, and it is read from the *root* at every run: a pick made on a
+sub-agent's thread mid-run is adopted by that run, and the next run re-reads the root's pin.
+
 ## What a surface may claim
 
 Any screen that names the model of a chat renders `resolveRunModel(...)`, and says the source

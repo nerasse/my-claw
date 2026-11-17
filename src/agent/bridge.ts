@@ -711,14 +711,15 @@ export class AgentBridge implements AgentBackend {
     const pin = pinModelOf(session);
     // The same resolution the dispatcher used to pick this engine: calling a different chain
     // here is how a run ended up on an engine chosen for another model.
-    // Resolved into its own binding so the run's chain keeps its type: an override from the
-    // caller carries no chain to announce.
-    const runModel = this.llmOverride ? undefined : resolveRunModel(
+    // Read at every turn boundary as well as here: the owner's pick lands on the session object
+    // this run holds, so a model changed mid-run is a setting this run can read, not a command for
+    // the next one (see the switch in the loop).
+    const resolveNow = (): RunModel => resolveRunModel(
       this.config,
       {
         agent: agentToolType,
         ...(agent.fileModel ? { fileModel: agent.fileModel } : {}),
-        ...(pin ?? modelId ? { forcedModel: pin ?? modelId } : {}),
+        ...(pinModelOf(session) ?? modelId ? { forcedModel: pinModelOf(session) ?? modelId } : {}),
         ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}),
         ...((session.effortOverride ?? modelOverride?.effort) ? { sessionEffort: session.effortOverride ?? modelOverride?.effort } : {}),
         ...(session.scopeEffort ? { sessionScopeEffort: session.scopeEffort } : {}),
@@ -726,6 +727,17 @@ export class AgentBridge implements AgentBackend {
       },
       availabilityWorld(),
     );
+    /**
+     * What the owner controls about this conversation's model, as one string.
+     *
+     * Compared, never resolved: an unchanged fingerprint is the normal case on every turn, and a
+     * run that re-resolved anyway would undo the model a fallback adopted on a spent bar.
+     */
+    const pinsKey = (): string => JSON.stringify([pinModelOf(session) ?? null, session.modelOverride ?? null, session.effortOverride ?? null]);
+    let pinsSeen = pinsKey();
+    // Resolved into its own binding so the run's chain keeps its type: an override from the
+    // caller carries no chain to announce.
+    const runModel = this.llmOverride ? undefined : resolveNow();
     const resolvedModel = this.llmOverride ?? (modelOverride?.contextCap !== undefined
       ? { ...runModel!, contextCapOverride: modelOverride.contextCap }
       : runModel!);
@@ -847,22 +859,27 @@ export class AgentBridge implements AgentBackend {
         embeddingFor(this.config.memory, "skills"),
         this.config.skills?.suggest,
       );
-      let systemPrompt = await buildSystemPrompt({
-        platform: message.platform,
-        model: llmConfig.model,
-        sessionId: session.id,
-        skills,
-        workspaceDir: runWorkspace.workspaceDir,
-        defaultWorkspaceDir: runWorkspace.defaultWorkspaceDir,
-        workspaceKey: session.workspace,
-        workspaces: this.config.workspaces,
-        workspacePrompts: this.config.workspacePrompts,
-        ...(agent.prompt ? { agentPrompt: agent.prompt } : {}),
-        instructions: agent.instructions,
-        layersOff: session.promptLayersOff,
-      });
-      hooks.emit("agent:prompt:built", { sessionId: session.id, model: llmConfig.model, systemPromptLength: systemPrompt.length });
-      systemPrompt = (await hooks.transform("transform:system:prompt", { prompt: systemPrompt, sessionId: session.id, model: llmConfig.model })).prompt;
+      // A function, not a constant: the prompt names the model it was built for, and a model
+      // switched mid-run has to be named by the prompt the rest of that run carries.
+      const buildPrompt = async (model: string): Promise<string> => {
+        const built = await buildSystemPrompt({
+          platform: message.platform,
+          model,
+          sessionId: session.id,
+          skills,
+          workspaceDir: runWorkspace.workspaceDir,
+          defaultWorkspaceDir: runWorkspace.defaultWorkspaceDir,
+          workspaceKey: session.workspace,
+          workspaces: this.config.workspaces,
+          workspacePrompts: this.config.workspacePrompts,
+          ...(agent.prompt ? { agentPrompt: agent.prompt } : {}),
+          instructions: agent.instructions,
+          layersOff: session.promptLayersOff,
+        });
+        hooks.emit("agent:prompt:built", { sessionId: session.id, model, systemPromptLength: built.length });
+        return (await hooks.transform("transform:system:prompt", { prompt: built, sessionId: session.id, model })).prompt;
+      };
+      let systemPrompt = await buildPrompt(llmConfig.model);
 
       // Every agent, not only the orchestrator: a research sub-agent reading documents is exactly
       // the profile that fills a window, and it used to have nothing but the hard trim. The prefix
@@ -1078,6 +1095,60 @@ export class AgentBridge implements AgentBackend {
           for (const injected of runRegistry.drainInjections(session.id)) {
             budget.grant(injectionBonus);
             await this.injectUserTurn(injected, chatMessages, session, Boolean(llmConfig.vision), recorder, entries, onTurnSwitch);
+          }
+        }
+        // The owner picked another model, effort or tag for this conversation while it runs. That
+        // is a setting on the session this run holds, not a command queued for the next run: a
+        // switch used to wait for the run to end, and with a sub-agent in the middle of an hour's
+        // work the only way to make it apply was to kill it, which throws its history away
+        // (owner, 2026-11-17). Read at every turn boundary, applied when the fingerprint moves --
+        // a fallback adopted on a spent bar leaves it unchanged, so it is left alone.
+        if (pinsKey() !== pinsSeen) {
+          pinsSeen = pinsKey();
+          let picked: RunModel | undefined;
+          try {
+            picked = resolveNow();
+          } catch (err) {
+            // A pick that no longer resolves (a model removed from the config mid-run) must not
+            // end the run: the one already answering is still there.
+            void log("warn", "model picked mid-run does not resolve, keeping the running one", {
+              sessionId: session.id,
+              error: String(err),
+            });
+          }
+          if (picked) {
+            const previous = llmConfig.model;
+            llmConfig = {
+              ...picked,
+              ...(modelOverride?.contextCap !== undefined ? { contextCapOverride: modelOverride.contextCap } : {}),
+              cacheKey: picked.cacheKey ?? session.id,
+            };
+            // The models this run already walked are the spent bar's: the owner's new pick has
+            // not been tried, and a wall recorded against the old one must not steer it.
+            attemptedModels.clear();
+            attemptedModels.add(llmConfig.model);
+            // The prompt names its model, and the window, the tool schemas and the cache prefix
+            // all moved with it: rebuilt once, on a human's gesture, never on a turn.
+            systemPrompt = await buildPrompt(llmConfig.model);
+            await rebuildPrompt();
+            runNode?.setModel(llmConfig.model, llmConfig.effort);
+            toolSchemaTokens = estimateTokens(JSON.stringify(openaiTools));
+            session.lastFixedTokens = toolSchemaTokens + estimateTokens(systemPrompt);
+            hooks.emit("agent:model:changed", {
+              sessionId: session.id,
+              parentSessionId: attributionParent(session),
+              model: llmConfig.model,
+              previous,
+              reason: "owner",
+              ...(llmConfig.effort ? { effort: llmConfig.effort } : {}),
+            });
+            void log("info", "run model switched mid-run", {
+              sessionId: session.id,
+              from: previous,
+              to: llmConfig.model,
+              effort: llmConfig.effort,
+              iteration,
+            });
           }
         }
         iteration++;

@@ -83,7 +83,8 @@ export interface HookEventMap {
     systemPromptLength: number;
   };
   /**
-   * The run adopted another model mid-flight -- a route walked on a wall, a provider that fell.
+   * The run adopted another model mid-flight -- a route walked on a wall, a provider that fell, or
+   * the owner picking another one for this conversation while it runs.
    *
    * Emitted only on a real change, and never for the run's first model (agent:run:start names that
    * one): what a surface shows is the model that answers, not the one the run was resolved to.
@@ -94,7 +95,7 @@ export interface HookEventMap {
     parentSessionId: string;
     model: string;
     previous: string;
-    reason: "provider" | "capability";
+    reason: "provider" | "capability" | "owner";
     /** The rung the new target is asked for, when it takes one. Candidates on a route differ. */
     effort?: string;
   };
