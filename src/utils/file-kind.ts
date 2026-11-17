@@ -202,7 +202,13 @@ function magicVerdict(sample: Uint8Array, filename: string): FileKindVerdict | u
     return { kind: "video", mimeType: brand === "qt" ? "video/quicktime" : "video/mp4" };
   }
   if (startsWithBytes(sample, [0x1a, 0x45, 0xdf, 0xa3])) {
-    return { kind: "video", mimeType: mimeTypeForName(filename) === "video/x-matroska" ? "video/x-matroska" : "video/webm" };
+    const byName = mimeTypeForName(filename);
+    // EBML says "Matroska family" and nothing else: a browser records a voice note as
+    // `audio/webm` under a `.weba` name, and the magic alone typed it video. A voice note that
+    // arrives as a video is a voice note the transcription pass never sees, drawn as a file
+    // (owner, 2026-11-17: "ça passe pas par le stt et ça envoie l'audio en pièce normal").
+    if (byName === "audio/webm") return { kind: "audio", mimeType: "audio/webm" };
+    return { kind: "video", mimeType: byName === "video/x-matroska" ? "video/x-matroska" : "video/webm" };
   }
   if (at(sample, 0, 4) === "RIFF" && at(sample, 8, 4) === "AVI ") return { kind: "video", mimeType: "video/x-msvideo" };
 

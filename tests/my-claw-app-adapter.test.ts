@@ -2248,6 +2248,24 @@ describe("MyClawAppAdapter", () => {
     assert.equal(att.durationMs, 4200);
   });
 
+  test("an upload that claims a MIME is typed by what the file is, and answers a kind", async () => {
+    // The Android bridge sends the MIME it is uploading in `x-type`, and the browser sent nothing
+    // at all: the first travelled back to the app as `type: "audio/mp4"`, the second as `"file"`.
+    // Neither is one of the four kinds a client can match on (2026-11-17).
+    for (const headers of [
+      { "x-filename": "voice.m4a", "x-type": "audio/mp4", "x-thread-id": "kind" },
+      { "x-filename": "voice-2.m4a", "x-thread-id": "kind" },
+    ]) {
+      const upload = await fetch(`http://127.0.0.1:${adapter.port}/media?device=${DEVICE_ID}&token=${TOKEN}`, {
+        method: "POST",
+        headers,
+        body: new Uint8Array([1, 2, 3]),
+      });
+      const meta = (await upload.json()) as { type: string };
+      assert.equal(meta.type, "audio");
+    }
+  });
+
   test("an .opus upload is stored as audio, not as a generic file", async () => {
     const upload = await fetch(`http://127.0.0.1:${adapter.port}/media?device=${DEVICE_ID}&token=${TOKEN}`, {
       method: "POST",

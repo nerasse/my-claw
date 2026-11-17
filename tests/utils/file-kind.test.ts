@@ -46,6 +46,9 @@ describe("sniffKind, what the bytes prove", () => {
     expect(sniffKind(FLAC, "song")).toEqual({ kind: "audio", mimeType: "audio/flac" });
     expect(sniffKind(WAV, "recording")).toEqual({ kind: "audio", mimeType: "audio/wav" });
     expect(sniffKind(WEBM, "screen.webm")).toEqual({ kind: "video", mimeType: "video/webm" });
+    // EBML is the Matroska family, and a browser records a voice note as audio/webm under `.weba`.
+    // Typed video, that recording never reached the transcription pass and drew as a file.
+    expect(sniffKind(WEBM, "voice-2026-11-17T12-30-00.weba")).toEqual({ kind: "audio", mimeType: "audio/webm" });
   });
 
   test("a PDF, a ZIP and a tarball are named by their bytes too", () => {

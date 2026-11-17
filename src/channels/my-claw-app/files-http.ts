@@ -244,11 +244,23 @@ function decodeUploadName(raw: string | null): string {
   }
 }
 
+/** The upload's `x-type`, when it names one of the four media types; a MIME is not one. */
+function mediaClaimOf(raw: string | null): MyClawAppAttachmentRef["type"] | undefined {
+  const head = (raw ?? "").trim().split("/")[0];
+  return head === "image" || head === "audio" || head === "video" || head === "file"
+    ? (head as MyClawAppAttachmentRef["type"])
+    : undefined;
+}
+
 export async function handleUpload(d: MyClawAppFilesDeps, owner: string, req: Request): Promise<Response> {
   const threadId = req.headers.get("x-thread-id")?.trim() || "default";
   const safeThread = sanitizeThreadId(threadId);
   const filename = decodeUploadName(req.headers.get("x-filename"));
-  const type = (req.headers.get("x-type") ?? "file").trim() as MyClawAppAttachmentRef["type"];
+  // The claim is a hint, and only a media type is a usable one: the Android bridge sends the MIME
+  // it is uploading (`audio/mp4`), which is not one of the four values and used to travel back to
+  // the client as `type: "audio/mp4"` -- a value nothing downstream can match. What the file is
+  // is decided by the store, from the name and the bytes; a usable claim only spares it the look.
+  const type = mediaClaimOf(req.headers.get("x-type"));
   if (!safeThread) {
     await myClawAppLog("warn", "upload rejected: bad threadId", { owner, threadId });
     return new Response("Bad threadId", { status: 400 });
@@ -262,7 +274,7 @@ export async function handleUpload(d: MyClawAppFilesDeps, owner: string, req: Re
   try {
     const file = await d.files.saveStream(owner, safeThread, filename, req.body);
     await myClawAppLog("info", "file uploaded", { owner, threadId: safeThread, id: file.id, size: file.sizeBytes, type });
-    return Response.json({ id: file.id, kind: file.kind, type: type || file.type, filename: file.filename, mimeType: file.mimeType, sizeBytes: file.sizeBytes });
+    return Response.json({ id: file.id, kind: file.kind, type: type ?? file.type, filename: file.filename, mimeType: file.mimeType, sizeBytes: file.sizeBytes });
   } catch (err) {
     const reason = err instanceof Error ? err.message : "Upload failed";
     await myClawAppLog("warn", "upload failed", { owner, threadId: safeThread, filename, reason });
