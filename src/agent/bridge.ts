@@ -703,30 +703,35 @@ export class AgentBridge implements AgentBackend {
       nodeRemoteNames = new Set(remote.map((tool) => tool.name));
     }
     let openaiTools = toOpenAiToolDefinitions(tools);
-    // Siphon: a conversation pinned to one model runs it, whatever any other step would have picked
-    // -- docs/siphon.md. The pin takes `forcedModel`, the one step that skips the chain, so it also
-    // outranks a model the caller passed (a dispatcher's forced id). It is read here rather than
-    // copied onto sub-agents: only the root carries it, and a child that reaches this code is its
-    // own run, already resolved by the runner against the same root.
-    const pin = pinModelOf(session);
-    // The same resolution the dispatcher used to pick this engine: calling a different chain
-    // here is how a run ended up on an engine chosen for another model.
-    // Read at every turn boundary as well as here: the owner's pick lands on the session object
-    // this run holds, so a model changed mid-run is a setting this run can read, not a command for
-    // the next one (see the switch in the loop).
-    const resolveNow = (): RunModel => resolveRunModel(
-      this.config,
-      {
-        agent: agentToolType,
-        ...(agent.fileModel ? { fileModel: agent.fileModel } : {}),
-        ...(pinModelOf(session) ?? modelId ? { forcedModel: pinModelOf(session) ?? modelId } : {}),
-        ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}),
-        ...((session.effortOverride ?? modelOverride?.effort) ? { sessionEffort: session.effortOverride ?? modelOverride?.effort } : {}),
-        ...(session.scopeEffort ? { sessionScopeEffort: session.scopeEffort } : {}),
-        hasImages: message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
-      },
-      availabilityWorld(),
-    );
+    /**
+     * The chain this run resolves, read now.
+     *
+     * Called once for the run and again at every turn boundary: the owner's pick lands on the
+     * session object this run holds, so a model changed mid-run is a setting this run can read,
+     * not a command for the next run (see the switch in the loop). Same chain the dispatcher used
+     * to pick this engine -- calling a different one here is how a run ended up on an engine
+     * chosen for another model.
+     */
+    const resolveNow = (): RunModel => {
+      // Siphon: a conversation pinned to one model runs it, whatever any other step would have
+      // picked -- docs/siphon.md. The pin takes `forcedModel`, the step that skips the chain, so it
+      // outranks a model the caller passed. Re-read here rather than copied onto sub-agents: only
+      // the root carries it, and a child that reaches this code is its own run.
+      const pin = pinModelOf(session);
+      return resolveRunModel(
+        this.config,
+        {
+          agent: agentToolType,
+          ...(agent.fileModel ? { fileModel: agent.fileModel } : {}),
+          ...(pin ?? modelId ? { forcedModel: pin ?? modelId } : {}),
+          ...(session.modelOverride ? { sessionModel: session.modelOverride } : {}),
+          ...((session.effortOverride ?? modelOverride?.effort) ? { sessionEffort: session.effortOverride ?? modelOverride?.effort } : {}),
+          ...(session.scopeEffort ? { sessionScopeEffort: session.scopeEffort } : {}),
+          hasImages: message.attachments.some((a) => a.type === "image" && Boolean(a.path)),
+        },
+        availabilityWorld(),
+      );
+    };
     /**
      * What the owner controls about this conversation's model, as one string.
      *
@@ -1087,16 +1092,6 @@ export class AgentBridge implements AgentBackend {
       let overflowRecovered = false;
       while (budget.consume()) {
         if (signal?.aborted) throw new AbortedError();
-        // Mid-run steering: pick up any message that arrived during the previous tool round and
-        // append it as a user turn before the next LLM call. Sub-agents have their own mailbox
-        // now (opened by the runner), which is what lets the app steer one mid-run; the channels
-        // cannot reach a subagent/* session, so there is nothing else that could arrive.
-        {
-          for (const injected of runRegistry.drainInjections(session.id)) {
-            budget.grant(injectionBonus);
-            await this.injectUserTurn(injected, chatMessages, session, Boolean(llmConfig.vision), recorder, entries, onTurnSwitch);
-          }
-        }
         // The owner picked another model, effort or tag for this conversation while it runs. That
         // is a setting on the session this run holds, not a command queued for the next run: a
         // switch used to wait for the run to end, and with a sub-agent in the middle of an hour's
@@ -1150,6 +1145,15 @@ export class AgentBridge implements AgentBackend {
               iteration,
             });
           }
+        }
+        // Mid-run steering: pick up any message that arrived during the previous tool round and
+        // append it as a user turn before the next LLM call. Sub-agents have their own mailbox
+        // now (opened by the runner), which is what lets the app steer one mid-run; the channels
+        // cannot reach a subagent/* session, so there is nothing else that could arrive. Folded in
+        // after the switch above, so a turn injected now is drawn for the model about to answer it.
+        for (const injected of runRegistry.drainInjections(session.id)) {
+          budget.grant(injectionBonus);
+          await this.injectUserTurn(injected, chatMessages, session, Boolean(llmConfig.vision), recorder, entries, onTurnSwitch);
         }
         iteration++;
         // A node's manifest and the record's switches belong to the owner, who may change them
