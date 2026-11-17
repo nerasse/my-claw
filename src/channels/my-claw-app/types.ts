@@ -1676,6 +1676,8 @@ export type MyClawAppHistoryEntry =
         status?: string;
         /** A cron delivery's schedule, as the job declares it: the card's second fact. */
         cadence?: string;
+        /** A cron delivery's run, as a thread id the card can open. */
+        runId?: string;
       };
       /** The run this entry belongs to, when it sits inside one. */
       run?: MyClawAppRunMeta;
@@ -1786,6 +1788,26 @@ export interface MyClawAppSubAgentReturn {
   subagentId: string;
   label: string;
   status: "complete" | "error" | "stopped";
+}
+
+/**
+ * A scheduled job's report, delivered into a conversation.
+ *
+ * Its own frame rather than `chat.message` for the reason a sub-agent's return has one: the owner
+ * did not write it, and the live thread has to draw the delivery card the log will replay -- a
+ * cron report read as a message the owner sent to himself until the thread was reloaded
+ * (owner, 2026-11-17). `runId` is the run's own thread, which the card opens.
+ */
+export interface MyClawAppCronDelivery {
+  type: "chat.cron.delivery";
+  threadId: string;
+  id: string;
+  text: string;
+  ts: string;
+  job: string;
+  cadence: string;
+  status?: "ok" | "error";
+  runId?: string;
 }
 
 /**
@@ -4750,6 +4772,7 @@ export type MyClawAppServerFrame =
   | MyClawAppChatMessage
   | MyClawAppChatUser
   | MyClawAppSubAgentReturn
+  | MyClawAppCronDelivery
   | MyClawAppChatCompaction
   | MyClawAppChatCompacting
   | MyClawAppChatCompactingDelta

@@ -44,12 +44,20 @@ agent to have read the report -- and it was *drawn* as one: a full-width bubble 
 the same place and shape as something the owner typed, so a cron report read as the owner talking
 to himself (owner, 2026-11-15).
 
-The entry carries `cron: { job, cadence, status? }`, and the display turns it into
-`from: { kind: 'cron', label, cadence, status }` -- the same marker a sub-agent's return wears
-(`kind: 'return'`), which is what every reader that asks "is this the owner speaking?" already
-consults. The app draws `components/CronDelivery.tsx`: the job's name, its cadence, the word for
-what happened at the right, one line of preview, and the report one tap away. Folded by default,
-because a morning job would otherwise push a screenful between two turns of the conversation.
+The entry carries `cron: { job, cadence, status?, runId? }`, and the display turns it into
+`from: { kind: 'cron', label, cadence, status, runId }` -- the same marker a sub-agent's return
+wears (`kind: 'return'`), which is what every reader that asks "is this the owner speaking?"
+already consults. The app draws `components/CronDelivery.tsx`: the job's name, its cadence, the
+word for what happened at the right, one line of preview, and the report one tap away. Folded by
+default, because a morning job would otherwise push a screenful between two turns of the
+conversation.
+
+`runId` is the run's own thread (`cronSessionToThread`, so `cron-<job>-<startedAt>`), and it is the
+card's door: one blue icon right after the job's name opens that run's conversation, the way a
+launch card opens the agent it started (owner, 2026-11-17: "pour même rentrer dans la conversation
+du cron"). The live frame carries the same three facts -- a delivery goes out as
+`chat.cron.delivery`, never as a `chat.message` -- because a frame without the marker drew a plain
+bubble until the thread was reloaded.
 
 A field on the existing `command` entry rather than an entry type of its own: the index encodes
 types as bytes in a fixed order, so a new one is a file-format bump, and a server rolled back to

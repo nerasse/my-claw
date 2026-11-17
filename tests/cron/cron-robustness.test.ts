@@ -470,12 +470,12 @@ describe("follow-up: the conversation handles the report", () => {
   function harness() {
     const order: string[] = [];
     const turns: Array<{ target: CronDeliveryTarget; text: string }> = [];
-    const frames: Array<{ text?: string; attachments?: unknown[] }> = [];
+    const frames: Array<{ text?: string; attachments?: unknown[]; cron?: { job: string; cadence: string; runId?: string } }> = [];
     const ctl = controllableRouter();
     const scheduler = new CronScheduler(ctl.router, sessions(), config(), () => ({}));
     scheduler.adapters.set("my-claw-app", {
       ...adapter,
-      send: async (_chat: string, message: { text?: string; attachments?: unknown[] }) => {
+      send: async (_chat: string, message: { text?: string; attachments?: unknown[]; cron?: { job: string; cadence: string; runId?: string } }) => {
         order.push("frame");
         frames.push(message);
       },
@@ -538,6 +538,9 @@ describe("follow-up: the conversation handles the report", () => {
     expect(h.frames).toHaveLength(1);
     expect(h.frames[0]).toMatchObject({ text: journaled[0], attachments: undefined });
     expect(h.frames[0]).not.toHaveProperty("command");
+    // The frame says what the log entry says: a delivery, not a message the owner typed, and the
+    // run it came from, so the card can open it (owner, 2026-11-17).
+    expect(h.frames[0]!.cron).toEqual({ job: "veille", cadence: "every 1h", runId: h.ctl.started[0]!.replace(/^(\w+)\//, "cron-").replace(/\//, "-") });
   });
 
   test("a turn the channel refuses falls back to the note: the report is never lost", async () => {

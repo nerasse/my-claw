@@ -12,6 +12,7 @@ import {
   recoverInterruptedRuns,
   cleanupOrphanJobTemps,
 } from "./store.ts";
+import { cronSessionToThread } from "../sessions/store.ts";
 import type { CronJob, CronDeliveryTarget, CronRunStatus } from "./types.ts";
 import { withRunContext } from "../utils/run-context.ts";
 import { log } from "../utils/logger.ts";
@@ -462,7 +463,7 @@ export class CronScheduler {
 
       let delivered: CronDeliveryTarget | null = null;
       try {
-        delivered = await this.deliverResult(job, responseText, attachments);
+        delivered = await this.deliverResult(job, sessionId, responseText, attachments);
       } finally {
         // Generated files (TTS/screenshots) are only cleaned by the channel send path on the
         // user-facing flow; the cron path owns its own cleanup regardless of delivery outcome.
@@ -612,6 +613,7 @@ export class CronScheduler {
 
   private async deliverResult(
     job: CronJob,
+    sessionId: string,
     result: string,
     attachments: NonNullable<import("../channels/types.ts").OutgoingMessage["attachments"]> = [],
   ): Promise<CronDeliveryTarget | null> {
@@ -641,7 +643,16 @@ export class CronScheduler {
     }
 
     const text = `[Cron: ${job.name}]\n\n${result}`;
-    const delivery = { job: job.name, cadence: job.schedule.display, ...(job.lastError ? { status: "error" as const } : {}) };
+    // `runId` is the run's own thread: the card is a door to it, the same way a launch card opens
+    // the agent it started. It rides the log entry too, so the door is still there after a reload.
+    // A run whose id the channel has no thread for (another platform's cron) carries no door.
+    const runThread = target.platform === "my-claw-app" ? cronSessionToThread(sessionId) : null;
+    const delivery = {
+      job: job.name,
+      cadence: job.schedule.display,
+      ...(runThread ? { runId: runThread } : {}),
+      ...(job.lastError ? { status: "error" as const } : {}),
+    };
     // Written first: the frame only reaches the devices connected right now, the history is what
     // a phone that was asleep reads when it wakes.
     if (this.journal) {
@@ -649,7 +660,14 @@ export class CronScheduler {
         void log("warn", "cron delivery could not be written to the conversation", { jobId: job.id, error: String(err) });
       });
     }
-    await adapter.send(target.chatId, { text, threadId: target.threadId, attachments: attachments.length > 0 ? attachments : undefined });
+    // The frame carries the same marker the entry does: without it a delivery read as a message
+    // the owner wrote until the thread was reloaded (owner, 2026-11-17).
+    await adapter.send(target.chatId, {
+      text,
+      threadId: target.threadId,
+      attachments: attachments.length > 0 ? attachments : undefined,
+      cron: delivery,
+    });
     return target;
   }
 

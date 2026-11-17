@@ -949,6 +949,21 @@ describe("MyClawAppAdapter", () => {
     assert.deepEqual(frame.attachments, []);
   });
 
+  test("a scheduled job's report goes out as a delivery, not as a message the owner typed", async () => {
+    await adapter.send(DEVICE_ID, {
+      text: "[Cron: veille]\n\n3 offres",
+      threadId: "default",
+      cron: { job: "veille", cadence: "every 1h", runId: "cron-0123456789ab-1794938597013" },
+    });
+    const frame = await nextFrame(client);
+    // Its own frame: the app draws the delivery card live, exactly the one the log replays.
+    assert.equal(frame.type, "chat.cron.delivery");
+    assert.equal(frame.job, "veille");
+    assert.equal(frame.cadence, "every 1h");
+    assert.equal(frame.runId, "cron-0123456789ab-1794938597013");
+    assert.equal(frame.text, "[Cron: veille]\n\n3 offres");
+  });
+
   test("send with a local attachment copies it into the session store and serves it", async () => {
     const tmpDir = join(MY_CLAW_DIR, "tmp");
     await mkdir(tmpDir, { recursive: true });

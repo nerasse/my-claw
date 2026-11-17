@@ -434,6 +434,17 @@ describe("displayOf: what is shown and never sent", () => {
     expect(drawn[0]).not.toHaveProperty("command");
   });
 
+  test("a delivery remembers the run it came from, so its card keeps its door on reload", () => {
+    const entry = chain([{
+      type: "command", prompt: true, input: "cron delivery", output: "[Cron: daily report]\n\nok", quiet: true,
+      cron: { job: "daily report", cadence: "0 8 * * *", status: "ok", runId: "cron-0123456789ab-1794938597013" },
+    }])[0]!;
+    const drawn = show([entry]);
+    expect(drawn[0]).toMatchObject({
+      from: { label: "daily report", kind: "cron", cadence: "0 8 * * *", status: "ok", runId: "cron-0123456789ab-1794938597013" },
+    });
+  });
+
   test("the cron label alone does not restyle an ordinary command", () => {
     const drawn = show(chain([{ type: "command", prompt: false, input: "cron delivery", output: "ok" }]));
     expect(drawn).toHaveLength(2);

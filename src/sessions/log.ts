@@ -289,6 +289,11 @@ export interface CronDelivery {
   cadence: string;
   /** How the run ended, in the job's own vocabulary. Absent reads as a plain delivery. */
   status?: "ok" | "error";
+  /**
+   * The run's own session id: the card opens it, like a launch card opens the agent it started.
+   * Absent on a delivery written before the field existed, which keeps its doorless card.
+   */
+  runId?: string;
 }
 
 /**

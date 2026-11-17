@@ -712,9 +712,27 @@ export class MyClawAppAdapter implements ChannelAdapter {
       }
     }
 
+    // A scheduled job's report is not the owner speaking: it goes out as the delivery frame the
+    // reload will draw from the log, so the live thread and a reopened one agree (2026-11-17).
+    const id = crypto.randomUUID();
+    if (message.cron) {
+      const delivery = {
+        type: "chat.cron.delivery" as const,
+        id,
+        text,
+        threadId,
+        ts: new Date().toISOString(),
+        job: message.cron.job,
+        cadence: message.cron.cadence,
+        ...(message.cron.status ? { status: message.cron.status } : {}),
+        ...(message.cron.runId ? { runId: message.cron.runId } : {}),
+      };
+      this.broadcast(owner, delivery);
+      return;
+    }
     const frame: MyClawAppChatMessage = {
       type: "chat.message",
-      id: crypto.randomUUID(),
+      id,
       text,
       threadId,
       attachments,

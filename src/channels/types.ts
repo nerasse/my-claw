@@ -129,6 +129,12 @@ export interface OutgoingMessage {
   replyToId?: string;
   threadId?: string;
   notice?: boolean;
+  /**
+   * A scheduled job's delivery rather than a message: the frame names the job, its cadence and the
+   * run it came from, and the app draws the delivery card it draws on reload. Set by the cron
+   * scheduler, read by the app channel only.
+   */
+  cron?: { job: string; cadence: string; status?: "ok" | "error"; runId?: string };
   buttons?: ConfirmationButton[];
   stateKey?: string;
 }

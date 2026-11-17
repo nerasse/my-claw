@@ -899,7 +899,15 @@ export function displayOf(
         // opens on. Every reader that asks "is this the owner speaking?" consults `from`, and
         // `kind: 'cron'` is the one value that turns it into a delivery rather than a message.
         ...(entry.cron
-          ? { from: { label: entry.cron.job, kind: "cron" as const, cadence: entry.cron.cadence, ...(entry.cron.status ? { status: entry.cron.status } : {}) } }
+          ? {
+              from: {
+                label: entry.cron.job,
+                kind: "cron" as const,
+                cadence: entry.cron.cadence,
+                ...(entry.cron.status ? { status: entry.cron.status } : {}),
+                ...(entry.cron.runId ? { runId: entry.cron.runId } : {}),
+              },
+            }
           : {}),
         // Cron reports are filed as commands for context, but read like the normal live message.
         // A delivery written before `cron` existed carries only this quiet input, and is left as
