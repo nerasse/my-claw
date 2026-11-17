@@ -721,6 +721,10 @@ export class MyClawAppAdapter implements ChannelAdapter {
         id,
         text,
         threadId,
+        // The pictures a run produced ride the card exactly as they ride a message: the files are
+        // already in the store by now, and dropping them here would show a report full of broken
+        // references until the thread was reloaded.
+        attachments,
         ts: new Date().toISOString(),
         job: message.cron.job,
         cadence: message.cron.cadence,

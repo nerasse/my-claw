@@ -962,6 +962,8 @@ describe("MyClawAppAdapter", () => {
     assert.equal(frame.cadence, "every 1h");
     assert.equal(frame.runId, "cron-0123456789ab-1794938597013");
     assert.equal(frame.text, "[Cron: veille]\n\n3 offres");
+    // Nothing attached, and the field is still there: the app reads it as the list the card draws.
+    assert.deepEqual(frame.attachments, []);
   });
 
   test("send with a local attachment copies it into the session store and serves it", async () => {

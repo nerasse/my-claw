@@ -1803,6 +1803,8 @@ export interface MyClawAppCronDelivery {
   threadId: string;
   id: string;
   text: string;
+  /** What the run attached: the same shapes a `chat.message` carries. */
+  attachments: MyClawAppAttachmentMeta[];
   ts: string;
   job: string;
   cadence: string;
