@@ -2252,10 +2252,11 @@ describe("MyClawAppAdapter", () => {
     // The Android bridge sends the MIME it is uploading in `x-type`, and the browser sent nothing
     // at all: the first travelled back to the app as `type: "audio/mp4"`, the second as `"file"`.
     // Neither is one of the four kinds a client can match on (2026-11-17).
-    for (const headers of [
+    const claims: Array<Record<string, string>> = [
       { "x-filename": "voice.m4a", "x-type": "audio/mp4", "x-thread-id": "kind" },
       { "x-filename": "voice-2.m4a", "x-thread-id": "kind" },
-    ]) {
+    ];
+    for (const headers of claims) {
       const upload = await fetch(`http://127.0.0.1:${adapter.port}/media?device=${DEVICE_ID}&token=${TOKEN}`, {
         method: "POST",
         headers,
