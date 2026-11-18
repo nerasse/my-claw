@@ -187,10 +187,21 @@ test("a message sent while a stopped run winds down runs on its own", async () =
  *  it was part of the work the owner ended -- only what was never read is rerouted. */
 test("a message the run drained dies with the stop", async () => {
   runRegistry.clear();
+  // The premise is the *read*, not the queue: a message parked and never looked at is rerouted to
+  // the next run instead (2026-11-12), which is a different outcome. Waiting for the queue event
+  // and then stopping raced the drain -- on a loaded runner the stop won, the message was still
+  // pending, and the run was answered `injection rerouted to a new run`. The drain is done here,
+  // on the queue event, and the test waits for it before stopping.
+  let drained = false;
+  const drainOnQueue = ({ sessionId }: { sessionId: string }): void => {
+    if (sessionId !== SESSION_ID) return;
+    runRegistry.drainInjections(SESSION_ID);
+    drained = true;
+  };
+  hooks.on("message:injection:queued", drainOnQueue);
+
   const router = new MessageRouter(new SessionManager(), {
     async handleMessage(_m: UnifiedMessage, s: SessionData, signal?: AbortSignal) {
-      // Drain: this is the point where the message is read into the run's prompt.
-      runRegistry.drainInjections(s.id);
       await new Promise<void>((resolve) => {
         if (signal?.aborted) return resolve();
         signal?.addEventListener("abort", () => resolve(), { once: true });
@@ -202,17 +213,19 @@ test("a message the run drained dies with the stop", async () => {
     getResponseAttachments() { return []; },
   } as never, config);
 
-  const injected = injectionSignal();
-  const p1 = router.route(message("m1"));
-  await waitUntil(() => runRegistry.isRunning(SESSION_ID), "run #1 to start");
-  const p2 = router.route(message("m2"));
-  await waitUntil(injected.seen, "m2 to be parked in run #1");
-  injected.dispose();
+  try {
+    const p1 = router.route(message("m1"));
+    await waitUntil(() => runRegistry.isRunning(SESSION_ID), "run #1 to start");
+    const p2 = router.route(message("m2"));
+    await waitUntil(() => drained, "m2 to be read into run #1");
 
-  router.stop(SESSION_ID);
-  await p1;
-  await assert.rejects(p2, (e: unknown) => e instanceof AbortedError);
-  runRegistry.clear();
+    router.stop(SESSION_ID);
+    await p1;
+    await assert.rejects(p2, (e: unknown) => e instanceof AbortedError);
+  } finally {
+    hooks.off("message:injection:queued", drainOnQueue);
+    runRegistry.clear();
+  }
 });
 
 /** The session is not burns after a stop: the run that follows is steerable like any other. */
