@@ -27,7 +27,8 @@
  * branch on disk, reachable, which is what makes `/retry` a sibling rather than an overwrite.
  */
 
-import { currentRunId, newRunId, takeRunBubbles } from "../utils/run-context.ts";
+import { currentRunId, newRunId, takeRunBubbles, watchingRunBubbles } from "../utils/run-context.ts";
+import { log } from "../utils/logger.ts";
 import { spillToolOutput } from "../sessions/tool-output.ts";
 import type { SessionLog, Entry, PhaseEntry, ToolEntry, UserEntry } from "../sessions/log.ts";
 import type { SessionAttachment } from "../sessions/store.ts";
@@ -123,6 +124,26 @@ let turnCounter = 0;
 export function newTurnId(): string {
   turnCounter += 1;
   return `run-${Date.now().toString(36)}-${turnCounter.toString(36)}`;
+}
+
+/**
+ * Whether this call wrote words on screen that no bubble on screen carries.
+ *
+ * A phase and the bubble it was streamed into are one identity (`docs/bubble-identity.md`), and
+ * when the pairing is lost the turn keeps two: the app holds a bubble the page does not carry and
+ * draws the reasoning and its message twice until a reload (owner, 2026-11-18, CubeFlow Desk 2).
+ *
+ * An empty take is normal in two very different situations -- nobody paints the run (cron, an
+ * unwatched sub-agent), or a channel paints it and handed nothing over -- and only the second is a
+ * fault. A call that only produced a tool call carries no words either, so it has nothing to pair.
+ */
+export function lostBubblePairing(
+  phases: readonly RecordedPhase[],
+  bubbles: readonly string[],
+  watching: boolean,
+): boolean {
+  if (!watching || bubbles.length > 0) return false;
+  return phases.some(phase => phase.content.trim() !== '' || Boolean(phase.reasoning?.trim()));
 }
 
 /**
@@ -247,6 +268,17 @@ export class RunRecorder {
     // the one it was streamed into whatever the count says, so the tail pairs and only the head
     // keeps minted ids.
     const bubbles = takeRunBubbles(this.entries.sessionId);
+    // Words on screen with no bubble to pair them with: the turn keeps two identities, so the app
+    // holds a bubble the page does not carry and draws the reasoning and the message twice until a
+    // reload (owner, 2026-11-18, CubeFlow Desk 2). The pairing cannot answer for it on its own --
+    // docs/bubble-identity.md -- so the one case worth hearing about is reported.
+    if (lostBubblePairing(phases, bubbles, watchingRunBubbles(this.entries.sessionId))) {
+      void log("warn", "phase recorded with no bubble to pair it with", {
+        sessionId: this.entries.sessionId,
+        runId: currentRunId(),
+        phases: phases.length,
+      });
+    }
     const paired = Math.min(bubbles.length, phases.length);
     const ids: Array<string | undefined> = new Array(phases.length).fill(undefined);
     for (let k = 0; k < paired; k++) {

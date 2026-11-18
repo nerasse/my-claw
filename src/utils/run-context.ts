@@ -123,6 +123,16 @@ export function setRunBubbles(sessionId: string, sink: BubbleSink): void {
 }
 
 /**
+ * Whether a channel is painting this session's run: the sink exists, so the phases of this call
+ * have bubbles on screen to be appended under. `takeRunBubbles` cannot say that on its own -- it
+ * answers "none" both when nothing paints the session and when the sink had nothing to hand over,
+ * and the second is the fault worth hearing about.
+ */
+export function watchingRunBubbles(sessionId: string): boolean {
+  return storage.getStore()?.bubbles?.has(sessionId) ?? false;
+}
+
+/**
  * The ids of the bubbles opened for this session since the last call, oldest first. Empty when no
  * channel is painting this run (cron, a sub-agent nobody is watching), and the phases then keep
  * the ids the log mints for them.

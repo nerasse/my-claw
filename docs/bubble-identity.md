@@ -84,6 +84,19 @@ bubble is the one it was streamed into, so the tail lines up and only the head k
 log mints. Three bubbles for one phase: the phase takes the answer's bubble, and the two thoughts
 keep theirs (the client drops the ones the page carries in its own words, `thread-sync.md`).
 
+## When the pairing is lost anyway
+
+An empty take means two different things: nothing paints the run (cron, an unwatched sub-agent),
+or a channel paints it and the sink handed nothing over. Only the second is a fault, and it is the
+one the log cannot show -- the turn keeps two identities and the app draws the reasoning and its
+message twice until a reload (owner, 2026-11-18, CubeFlow Desk 2).
+
+The recorder reports it, once per call, when a sink exists for the session and a phase carries
+words no bubble was claimed for (`lostBubblePairing`, level `warn`, message "phase recorded with no
+bubble to pair it with"). Nothing else could: an empty take is not observable from the entries.
+The path that loses the ids is not known yet; this line is what will name it, and the app's rule
+matched on the words is what keeps the screen right until then.
+
 ## A failure is a bubble too
 
 A run that dies is shown in a bubble like anything else: the streamer aborts, and the app either

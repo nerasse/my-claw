@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { mkdir, rm } from "node:fs/promises";
-import { RunRecorder, newTurnId } from "../../src/agent/run-recorder.ts";
+import { RunRecorder, newTurnId, lostBubblePairing } from "../../src/agent/run-recorder.ts";
 import { openSessionLog, sessionDir, type SessionLog, type PhaseEntry, type ToolEntry } from "../../src/sessions/log.ts";
 import { promptOf } from "../../src/sessions/projection.ts";
 import { readToolOutput } from "../../src/sessions/tool-output.ts";
@@ -434,6 +434,16 @@ describe("a phase keeps the id of the bubble it was streamed into", () => {
     await log.flush();
     expect(phases[0]!.id).toBeTruthy();
     expect(promptOf((await log.path()), phases[0]!.id).map((m) => m.content)).toContain("sans fenetre");
+  });
+
+  test("a watched run whose sink handed nothing over is the pairing lost", () => {
+    // The fault behind a double in live: words reached the screen, and no bubble carries them. It
+    // is reported so the path that loses the ids gets named (2026-11-18).
+    expect(lostBubblePairing([{ content: "la reponse", reasoning: "et le raisonnement" }], [], true)).toBe(true);
+    expect(lostBubblePairing([{ content: "la reponse" }], [], true)).toBe(true);
+    expect(lostBubblePairing([{ content: "" }], [], true)).toBe(false);
+    expect(lostBubblePairing([{ content: "la reponse" }], ["bubble-1"], true)).toBe(false);
+    expect(lostBubblePairing([{ content: "la reponse" }], [], false)).toBe(false);
   });
 });
 
