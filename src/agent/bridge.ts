@@ -24,7 +24,8 @@ import { selectRelevantSkills } from "../skills/retrieval.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ProviderMeta } from "../llm/provider.ts";
 import { llmComplete, llmCompleteStream } from "../llm/transport.ts";
 import { resolveRunModel, type RunModel, type RunModelOverride } from "../llm/run-model.ts";
-import { classifyProviderFailure, isCapabilityRefusal, isProviderOutage, isQuotaSpent } from "../llm/outage.ts";
+import { TemplateLeakError, classifyProviderFailure, isCapabilityRefusal, isProviderOutage, isQuotaSpent, isTemplateLeak } from "../llm/outage.ts";
+import { protocolLeakIn } from "./protocol-leak.ts";
 import { needsQuotaOracle, spentWindowOf, kindOfWindow, labelOfKind } from "../llm/quota/retry.ts";
 import { quotaFor, quotaSourceOf } from "../llm/quota/index.ts";
 import { wallConfig } from "../llm/quota/wall.ts";
@@ -215,12 +216,14 @@ const EMPTY_TOOL_OUTPUT = "[tool returned an empty response]";
  */
 function whyLeft(
   failed: { model: string; provider?: string },
-  cause: { reason: string; capability?: string; wall?: { label: string; usedPercent: number; id: string; windowSeconds?: number } },
+  cause: { reason: string; capability?: string; leak?: string; wall?: { label: string; usedPercent: number; id: string; windowSeconds?: number } },
 ): string {
   if (cause.wall) {
     return `${failed.model} is out of its ${labelOfKind(kindOfWindow(cause.wall))} allowance (${cause.wall.label} at ${Math.round(cause.wall.usedPercent)}%).`;
   }
   if (cause.capability) return `${failed.model} cannot do this (${cause.capability}: ${cause.reason}).`;
+  // Not a provider that came back: a model whose template is missing will do this again.
+  if (cause.leak) return `${failed.model} answered with its own chat template instead of an answer (${cause.leak}).`;
   return `${failed.model} via ${failed.provider ?? "provider"} is unavailable (${cause.reason}).`;
 }
 
@@ -235,7 +238,9 @@ function answeredInstead(
   next: { model: string; label: string },
   failed: { model: string },
   wall: boolean,
+  leak = false,
 ): string {
+  if (leak) return `This run used ${next.model} instead (${next.label}); ${failed.model} keeps that reply until its template is fixed.`;
   return wall
     ? `This run used ${next.model} instead (${next.label}) rather than wait out a bar that does not move.`
     : `This run used ${next.model} instead (${next.label}); it returns to ${failed.model} once the provider recovers.`;
@@ -402,6 +407,11 @@ export class AgentBridge implements AgentBackend {
     onToken?: TokenCallback;
     /** The run named its model on purpose: no other one may answer for it. */
     forbidFallback?: boolean;
+    /**
+     * Takes back what the call painted, for a reply that is thrown away: the channel replaces the
+     * open bubble on a `replay` delta, and the run's own readiness gate forgets it emitted.
+     */
+    discard?: () => Promise<void>;
   }): Promise<{ response: LlmResponse; config: ResolvedLlmConfig }> {
     let config = params.config;
     let targets: ReturnType<typeof providerFallbackTargets> | undefined;
@@ -426,22 +436,34 @@ export class AgentBridge implements AgentBackend {
       if (config.provider && !params.tried.includes(config.provider)) params.tried.push(config.provider);
       try {
         const response = await params.call(this.walledConfig(config));
+        // Markup where prose belongs: the endpoint did not apply the model's chat template, so the
+        // model wrote the format itself -- tool calls, tool results, and the prompt it was given
+        // (`protocol-leak.ts`). It never answered, and letting the text through would keep it in the
+        // log, where every later request replays it and the next model copies the pattern. Taken
+        // back and handed to the next target like any other refusal.
+        const leak = protocolLeakIn(response.content);
+        if (leak) {
+          await params.discard?.();
+          throw new TemplateLeakError(config.model, leak);
+        }
         return { response, config };
       } catch (err) {
         rethrowIfAborted(err, params.signal);
-        if (isOverflowError(err) || params.emitted() || !(isProviderOutage(err) || isCapabilityRefusal(err))) throw withFailureContext(err, config, route);
+        const leaky = isTemplateLeak(err);
+        if (isOverflowError(err) || params.emitted() || !(isProviderOutage(err) || isCapabilityRefusal(err) || leaky)) throw withFailureContext(err, config, route);
 
         const reason = noticeReason(err);
         const failed = { model: config.model, provider: config.provider };
         // A capability the model does not have is not a wait: the next target is the only cure.
         const capability = (err as { capability?: string }).capability;
+        const leak = (err as { what?: string }).what;
         // A wall, decided by the oracle when the sentence cannot say so on its own. The bare
         // `rate_limit_error` twice -- Anthropic sends it for a full five-hour window, word for
         // word like a per-minute burst -- and treating it as a burst costs three transport retries
         // plus 30 s, 60 s and 120 s on a bar that does not move (measured 2026-10-31).
-        const wall = capability ? undefined : await this.quotaWallOf(err, config.provider);
+        const wall = capability || leaky ? undefined : await this.quotaWallOf(err, config.provider);
         // A spent quota is never waited for: nothing refills it within the run.
-        const wait = capability || wall || isQuotaSpent(err) ? undefined : params.waits.shift();
+        const wait = capability || leaky || wall || isQuotaSpent(err) ? undefined : params.waits.shift();
         if (wait !== undefined) {
           this.recordFailedCall({ ...params, config, durationMs: Date.now() - startedAt, error: err });
           this.noteFallback(
@@ -500,7 +522,7 @@ export class AgentBridge implements AgentBackend {
           ...(next.config.effort ? { effort: next.config.effort } : {}),
         });
         this.noteFallback(
-          `[fallback] ${whyLeft(failed, { reason, capability, wall })} ${answeredInstead(next, failed, Boolean(wall))}`,
+          `[fallback] ${whyLeft(failed, { reason, capability, leak, wall })} ${answeredInstead(next, failed, Boolean(wall), Boolean(leak))}`,
           params,
         );
       }
@@ -1297,6 +1319,12 @@ export class AgentBridge implements AgentBackend {
                     signal,
                   ),
             emitted: () => callEmitted,
+            // The same take-back a transport replay uses: the words and the thinking leave the
+            // bubble, and the gate stops believing the call said anything.
+            discard: async () => {
+              callEmitted = false;
+              await reasoningSink?.onRestart?.();
+            },
             waits: providerWaits,
             attempted: attemptedModels,
             tried: triedProviders,

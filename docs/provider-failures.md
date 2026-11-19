@@ -364,3 +364,22 @@ error text — so an outage is countable and its cost is visible.
 - `tests/my-claw-app-adapter.test.ts` — the frame and the controller.
 - App: `__tests__/AgentsSettings.test.tsx` — the switch sends `agents.retry.set`, the row reads the
   schedule the server resolved, and an older server draws no row.
+
+## A model that prints its chat template instead of answering
+
+Measured 2026-11-19, thread `4d5775e7`: the endpoint serving `synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash-1017`
+does not format tools for that model, so the model wrote the format itself -- `assistant to=functions.bash`
+followed by the arguments, `<function_results>` followed by the tool's output -- and continued the
+transcript instead of answering: the injected `<context>` and `<memory-context>` blocks came back at
+the head of its reply, with the owner's own question behind them.
+
+No frame of either repository writes those strings, so it is the model, and the cost is not the one
+reply. The text is journalled as a phase, and every later request replays it: the next model copies
+the pattern, and a thread fills with it.
+
+`protocolLeakIn` (`src/agent/protocol-leak.ts`) recognises the shapes at the head of a reply, and
+`callModel` treats one as a provider refusal: the words it painted are taken back (the channel
+replaces the open bubble on a `replay` delta, and the readiness gate forgets the call emitted),
+the leaked text never reaches the log, and the run moves to the next target of its route with a note
+naming what happened. If the route has no other candidate, the run fails with that sentence rather
+than answering with markup.

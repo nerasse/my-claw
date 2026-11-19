@@ -856,3 +856,43 @@ test("a run that adopts another model moves its live node and says so", async ()
     mock.restore();
   }
 });
+
+/**
+ * A model whose chat template was never applied answers in its own markup: tool calls, tool
+ * results, and the prompt it was handed (`protocol-leak.ts`). That is not an answer, and letting
+ * it through into the log is what makes it stick -- every later request replays it, and the next
+ * model copies the pattern (seen on this install 2026-11-19, Synthetic's DeepSeek lane).
+ */
+test("a model that prints its chat template is not an answer: the run moves on and the log is clean", async () => {
+  const models: string[] = [];
+  const mock = mockFetch(async (_input, init) => {
+    const model = modelOf(init);
+    models.push(model);
+    if (model === "alpha-1") {
+      return jsonAnswer('assistant to=functions.bash {"cmd": "echo hi"}\n<function_results>{"output":"hi"}</function_results>');
+    }
+    return jsonAnswer("la vraie reponse");
+  });
+  const bridge = new AgentBridge(config(), new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+
+  try {
+    const text = await run(bridge, createSession("alpha-1"), signal);
+    assert.equal(text, "la vraie reponse");
+    assert.deepEqual(models.slice(-1), ["beta-1"]);
+    assert.match(notices.join("\n"), /answered with its own chat template/, notices.join("\n"));
+
+    // Nothing of the leaked markup reached the conversation: a phase carrying it would be replayed
+    // to every model the thread ever uses again.
+    const log = await sessionLogOf(SESSION_ID);
+    const written = await log.all();
+    assert.equal(
+      written.some((entry) => entry.type === "phase" && /function_results|assistant to=/.test(entry.text)),
+      false,
+      "the leak must not be journalled",
+    );
+  } finally {
+    end();
+    mock.restore();
+  }
+});

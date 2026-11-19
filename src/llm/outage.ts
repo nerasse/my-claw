@@ -203,3 +203,23 @@ export function isCapabilityRefusal(err: unknown): boolean {
   const capability = (err as { capability?: string } | undefined)?.capability;
   return typeof capability === "string" && capability.length > 0;
 }
+
+/**
+ * The model answered with its own chat template instead of an answer: markup where prose belongs.
+ *
+ * Worth another provider for the same reason a capability refusal is -- the model or the endpoint
+ * serving it cannot do what the request needs, and nothing about the request is wrong. Raised by the
+ * bridge after the call returns, once the words it painted have been taken back (`protocol-leak.ts`
+ * says what it saw), so the run moves on with the log untouched.
+ */
+export class TemplateLeakError extends Error {
+  readonly templateLeak = true;
+  constructor(model: string, readonly what: string) {
+    super(`${model} answered with its own chat template instead of an answer (${what})`);
+    this.name = "TemplateLeakError";
+  }
+}
+
+export function isTemplateLeak(err: unknown): boolean {
+  return (err as { templateLeak?: boolean } | undefined)?.templateLeak === true;
+}
