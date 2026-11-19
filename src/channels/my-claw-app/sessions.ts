@@ -213,7 +213,11 @@ const MAX_RUN_SCAN = 20_000;
 
 /** Where a fold that must cover `position` starts: the `run_start` that opened its run. */
 function runSliceStart(path: readonly LogRecord[], position: number): number {
-  for (let i = Math.max(position, 0); i >= 0 && i >= position - MAX_RUN_SCAN; i--) {
+  // Clamped to a record that exists: a thread whose first message is still being written has an
+  // empty branch, and a reload of it asks for the fold of a page that holds nothing. Reading
+  // `path[0]` there was a crash rather than an empty page (owner, 2026-11-19: a reload of an empty
+  // chat that still had a draft).
+  for (let i = Math.min(Math.max(position, 0), path.length - 1); i >= 0 && i >= position - MAX_RUN_SCAN; i--) {
     if (path[i]!.type === "run_start") return Math.max(i - 1, 0);
   }
   return Math.max(0, position - MAX_RUN_SCAN);

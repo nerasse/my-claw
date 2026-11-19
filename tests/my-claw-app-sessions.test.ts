@@ -1290,6 +1290,30 @@ describe("MyClawAppSessionStoreImpl.history", () => {
   });
 });
 
+describe("MyClawAppSessionStoreImpl.sync on a thread nothing was said in", () => {
+  /**
+   * The owner's report (2026-11-19): reloading a page whose chat was empty but whose composer held
+   * a draft threw `undefined is not an object (evaluating 'path[i].type')`. The branch has no
+   * records at all, and the run fold of the page walked it anyway. A page of nothing is a page,
+   * and the draft is the only thing it carries.
+   */
+  test("answers an empty page and the draft, without reading a branch that has no entry", async () => {
+    const store = new MyClawAppSessionStoreImpl(new SessionManager(), new SessionFileStore());
+    const sessionId = store.resolveSessionId(DEVICE, THREAD);
+    await deleteSession(sessionId);
+    await store.setDraft(DEVICE, THREAD, "un brouillon sans message");
+    await writeLegacySessionFile(sessionId, session(sessionId, []));
+
+    const page = await store.sync(DEVICE, THREAD, null);
+    assert.deepEqual(page.entries, []);
+    assert.equal(page.draft, "un brouillon sans message");
+
+    // The same reload through the other door, for the same reason.
+    const older = await store.history(DEVICE, THREAD);
+    assert.deepEqual(older.entries, []);
+  });
+});
+
 describe("SessionFileStore naming", () => {
   test("keeps the uploaded name on disk and still lists pre-naming entries", async () => {
     const files = new SessionFileStore();
