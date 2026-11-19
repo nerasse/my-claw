@@ -214,17 +214,24 @@ const EMPTY_TOOL_OUTPUT = "[tool returned an empty response]";
  * instant (owner, 2026-11-14: "un item quota et un autre fallback ... ils ont la même utilité").
  * One clause, one row, and the reader has to read one sentence to know both.
  */
+/**
+ * Why the run left its model, in as few words as the owner needs to act on it.
+ *
+ * It used to be a sentence of its own, followed by a second sentence saying where the run went:
+ * "X is out of its 5h allowance (5h at 99%). This run used Y instead (Quota route candidate 2)
+ * rather than wait out a bar that does not move." A chain of four fallbacks filled the thread with
+ * four of those (owner, 2026-11-19: "les model changes qui se suivent peuvent être regroupés"), and
+ * neither sentence said the two things that identify the model now answering.
+ */
 function whyLeft(
   failed: { model: string; provider?: string },
   cause: { reason: string; capability?: string; leak?: string; wall?: { label: string; usedPercent: number; id: string; windowSeconds?: number } },
 ): string {
-  if (cause.wall) {
-    return `${failed.model} is out of its ${labelOfKind(kindOfWindow(cause.wall))} allowance (${cause.wall.label} at ${Math.round(cause.wall.usedPercent)}%).`;
-  }
-  if (cause.capability) return `${failed.model} cannot do this (${cause.capability}: ${cause.reason}).`;
+  if (cause.wall) return `${failed.model} is out of its ${labelOfKind(kindOfWindow(cause.wall))} allowance (${Math.round(cause.wall.usedPercent)}%)`;
+  if (cause.capability) return `${failed.model} cannot do this (${cause.capability})`;
   // Not a provider that came back: a model whose template is missing will do this again.
-  if (cause.leak) return `${failed.model} answered with its own chat template instead of an answer (${cause.leak}).`;
-  return `${failed.model} via ${failed.provider ?? "provider"} is unavailable (${cause.reason}).`;
+  if (cause.leak) return `${failed.model} printed its own chat template`;
+  return `${failed.model} via ${failed.provider ?? "provider"} is unavailable`;
 }
 
 /**
@@ -234,16 +241,15 @@ function whyLeft(
  * run goes back on its own the next time it is resolved. Saying which is the difference between a
  * note the owner acts on and one he learns to ignore.
  */
-function answeredInstead(
-  next: { model: string; label: string },
-  failed: { model: string },
-  wall: boolean,
-  leak = false,
-): string {
-  if (leak) return `This run used ${next.model} instead (${next.label}); ${failed.model} keeps that reply until its template is fixed.`;
-  return wall
-    ? `This run used ${next.model} instead (${next.label}) rather than wait out a bar that does not move.`
-    : `This run used ${next.model} instead (${next.label}); it returns to ${failed.model} once the provider recovers.`;
+/**
+ * What is answering now, named the way the owner reads a model everywhere else: provider, model,
+ * the rung it was asked for, and the window it was given.
+ */
+function answeredInstead(next: { model: string; config: ResolvedLlmConfig }): string {
+  const effort = next.config.effort ? ` · effort ${next.config.effort}` : "";
+  const window = next.config.contextCapOverride ?? next.config.limit?.context;
+  const context = window ? ` · ${Math.round(window / 1000)}k context` : "";
+  return `switched to ${next.config.provider ?? "provider"}/${next.model}${effort}${context}`;
 }
 
 export class AgentBridge implements AgentBackend {
@@ -522,7 +528,7 @@ export class AgentBridge implements AgentBackend {
           ...(next.config.effort ? { effort: next.config.effort } : {}),
         });
         this.noteFallback(
-          `[fallback] ${whyLeft(failed, { reason, capability, leak, wall })} ${answeredInstead(next, failed, Boolean(wall), Boolean(leak))}`,
+          `[fallback] ${whyLeft(failed, { reason, capability, leak, wall })} → ${answeredInstead(next)}`,
           params,
         );
       }

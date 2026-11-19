@@ -169,7 +169,7 @@ test("a run on a failing provider waits, then finishes on the configured default
     assert.match(notices.join("\n"), /\[retry\] alpha-1/, notices.join("\n"));
     assert.match(notices.join("\n"), /trying again in 0s/, notices.join("\n"));
     assert.match(notices.join("\n"), /\[fallback\] alpha-1/, notices.join("\n"));
-    assert.match(notices.join("\n"), /This run used beta-1 instead \(configured default\)/, notices.join("\n"));
+    assert.match(notices.join("\n"), /switched to beta\/beta-1/, notices.join("\n"));
     assert.match(text, /fini sur le defaut/, text);
     // The same model once more after the wait, then the default: the schedule first, the target
     // second, and never the other way round.
@@ -317,8 +317,8 @@ test("a route walks what is left of it, then the tag's global default", async ()
     const text = await run(bridge, session, signal);
     assert.match(text, /le defaut global/, text);
     // Which candidate answered is a provider note now, not the answer's own line.
-    assert.match(notices.join("\n"), /\(Cheap route candidate 2\)/, notices.join("\n"));
-    assert.match(notices.join("\n"), /\(Cheap global default\)/, notices.join("\n"));
+    assert.match(notices.join("\n"), /switched to alpha\/alpha-2/, notices.join("\n"));
+    assert.match(notices.join("\n"), /switched to beta\/beta-1/, notices.join("\n"));
     assert.deepEqual(models, ["alpha-1", "alpha-1", "alpha-2", "beta-1"]);
     assert.equal(session.modelOverride, "tag:Cheap", "the tag stays the session's choice");
   } finally {
@@ -453,7 +453,7 @@ test("a run forced onto its tag's first candidate still walks that tag", async (
     // Exactly what the dispatcher does: the concrete candidate, plus the session's own tag pick.
     const text = await bridge.handleMessage(createMessage(), createSession("tag:TwoAccounts"), signal, "alpha-1");
     assert.match(text, /le deuxieme compte/, text);
-    assert.match(notices.join("\n"), /\(TwoAccounts route candidate 2\)/, notices.join("\n"));
+    assert.match(notices.join("\n"), /switched to alpha\/alpha-2/, notices.join("\n"));
     assert.deepEqual(models, ["alpha-1", "alpha-2"], "the tag's second account, never the default");
     assert.doesNotMatch(text, /beta-1/, "the agent default is not the answer to an exhausted route");
   } finally {
@@ -562,10 +562,10 @@ test("a bare rate_limit_error on a full bar skips the waits, the retries, and na
     // The bar is named, not the provider's misleading sentence: the note reads the oracle. One
     // note, not two: the wall is the *reason* the run moved, and it rides the sentence that says
     // where it moved to (owner, 2026-11-14).
-    assert.match(notices.join("\n"), /quenched-1 is out of its week allowance \(Week at 100%\)/, notices.join("\n"));
+    assert.match(notices.join("\n"), /quenched-1 is out of its week allowance \(100%\)/, notices.join("\n"));
     assert.equal(notices.length, 1, notices.join("\n"));
     assert.match(notices[0]!, /^\[fallback\]/, notices[0]!);
-    assert.match(notices[0]!, /This run used beta-1 instead/, notices[0]!);
+    assert.match(notices[0]!, /switched to beta\/beta-1/, notices[0]!);
     // One request to the refusing model: the transport's three attempts are gone with the waits.
     assert.deepEqual(models, ["quenched-1", "beta-1"]);
   } finally {
@@ -605,7 +605,7 @@ test("a conversation set to wait still walks its own route before it waits", asy
   try {
     const text = await bridge.handleMessage(createMessage(), session, signal, "quenched-1");
     assert.match(text, /le deuxieme compte repond/, text);
-    assert.match(notices.join("\n"), /\(Quenched route candidate 2\)/, notices.join("\n"));
+    assert.match(notices.join("\n"), /switched to beta\/beta-1/, notices.join("\n"));
     assert.match(notices.join("\n"), /quenched-1 is out of its week allowance/, notices.join("\n"));
     // Both facts in the one row: what the bar said, and who answered.
     assert.equal(notices.length, 1, notices.join("\n"));
@@ -646,7 +646,7 @@ test("a spent route falls to the tag's own global default, and only then waits",
   try {
     const text = await bridge.handleMessage(createMessage(), session, signal, "quenched-1");
     assert.match(text, /le defaut global du tag/, text);
-    assert.match(notices.join("\n"), /\(Quenched global default\)/, notices.join("\n"));
+    assert.match(notices.join("\n"), /switched to beta\/beta-1/, notices.join("\n"));
     assert.deepEqual(models, ["quenched-1", "beta-1"]);
   } finally {
     delete process.env["SYNTHETIC_KEY_FOR_TEST"];
@@ -751,7 +751,7 @@ for (const [name, body] of [
       const text = await bridge.handleMessage(createMessage(), createSession("tag:Quenched"), signal, "quenched-1");
       // The run still moves on (the switch is off here), but the note proves the oracle answered:
       // it is the only thing that knows the bar, and the adapter arms off the same read.
-      assert.match(notices.join("\n"), /quenched-1 is out of its week allowance \(Week at 100%\)/, notices.join("\n"));
+      assert.match(notices.join("\n"), /quenched-1 is out of its week allowance \(100%\)/, notices.join("\n"));
       assert.doesNotMatch(notices.join("\n"), /\[retry\]/, "no wait on a spent plan");
     } finally {
       delete process.env["SYNTHETIC_KEY_FOR_TEST"];
@@ -880,7 +880,7 @@ test("a model that prints its chat template is not an answer: the run moves on a
     const text = await run(bridge, createSession("alpha-1"), signal);
     assert.equal(text, "la vraie reponse");
     assert.deepEqual(models.slice(-1), ["beta-1"]);
-    assert.match(notices.join("\n"), /answered with its own chat template/, notices.join("\n"));
+    assert.match(notices.join("\n"), /printed its own chat template/, notices.join("\n"));
 
     // Nothing of the leaked markup reached the conversation: a phase carrying it would be replayed
     // to every model the thread ever uses again.
