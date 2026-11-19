@@ -21,8 +21,12 @@ const LEAKS: ReadonlyArray<{ what: string; pattern: RegExp }> = [
   // Our own per-turn scaffolding, echoed. It is only ever injected into a prompt we build.
   { what: "the turn context, echoed", pattern: /^\s*<context>[\s\S]{0,2000}?<\/context>/i },
   { what: "the memory block, echoed", pattern: /^\s*<memory-context>[\s\S]{0,4000}?<\/memory-context>/i },
-  // Tool results rendered by a template that my-claw never sends as text.
+  // Tool results rendered by a template that my-claw never sends as text. Three dialects seen on
+  // the same lane: Harmony's `<function_results>`, and the XML-shaped `<result><name>…</name>
+  // <output>…</output></result>` / `<tool_call>` blocks other templates emit.
   { what: "its tool results, as markup", pattern: /(?:^|\n)[ \t]*<?function_results>/i },
+  { what: "its tool results, as markup", pattern: /(?:^|\n)[ \t]*<result>[ \t]*\n?[ \t]*<name>/i },
+  { what: "its tool calls, as markup", pattern: /(?:^|\n)[ \t]*<tool_(?:call|response|result)>/i },
   // A tool call spelled out in the model's own format, at the head of a line.
   { what: "a tool call, as markup", pattern: /(?:^|\n)\s*(?:assistant\s+to=|to=functions\.)/i },
   // Raw control tokens of a chat template, which no answer of ours ever contains.

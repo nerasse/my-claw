@@ -16,6 +16,9 @@ test("the tool markup a template would have emitted is a leak", () => {
   expect(protocolLeakIn('Voici.\nassistant to=functions.read {"path": "a.ts"}')).toBe("a tool call, as markup");
   expect(protocolLeakIn('<function_results>{"output":"hi","exit_code":0}</function_results>')).toBe("its tool results, as markup");
   expect(protocolLeakIn('<|im_start|>assistant')).toBe("raw template tokens");
+  // The other dialects the same lane emitted: XML-shaped results and tool blocks.
+  expect(protocolLeakIn('<result>\n<name>bash</name>\n<output>echo ok</output>\n</result>')).toBe("its tool results, as markup");
+  expect(protocolLeakIn('<tool_call>{"name":"bash"}</tool_call>')).toBe("its tool calls, as markup");
 });
 
 test("our own scaffolding, echoed, is a leak", () => {
