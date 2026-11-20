@@ -225,14 +225,7 @@ export function isStreamCut(err: unknown): boolean {
   return (err as { streamCut?: boolean } | undefined)?.streamCut === true;
 }
 
-/**
- * A reply the provider itself says is not an answer.
- *
- * Worth another try for the same reason a capability refusal is worth another model: nothing about
- * the request is wrong. Raised by the transport, which is the only layer that sees the protocol's
- * own evidence (`answer-accounting.ts`), and caught by the bridge, which takes back the words the
- * call painted before it asks again -- so the log never holds the reply.
- */
+/** A completed reply flagged by a provider-specific check, safe to discard and retry. */
 export class MalformedReplyError extends Error {
   readonly malformedReply = true;
   constructor(model: string, readonly what: string) {

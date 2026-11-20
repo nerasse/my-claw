@@ -857,19 +857,18 @@ test("a run that adopts another model moves its live node and says so", async ()
   }
 });
 
-/**
- * A reply the provider bills as reasoning is the model's thinking in the answer channel (seen on
- * this install 2026-11-19/20, Synthetic's DeepSeek lane). It is asked once more on the same model --
- * the sampling, not the model -- then the run moves on, and nothing of it reaches the log: a phase
- * carrying it would be replayed to every later request, and the next model copies the pattern.
- */
-test("a reply billed as reasoning is not an answer: asked again once, then the run moves on, log clean", async () => {
+test("a Synthetic reply with inconsistent reasoning usage is retried once, then the run moves on", async () => {
+  const synthetic = "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017";
+  const cfg = config();
+  cfg.llm.providers!.alpha!.baseUrl = "https://api.synthetic.new/openai/v1";
+  cfg.llm.models!.find((model) => model.id === "alpha-1")!.apiId = synthetic;
+
   const models: string[] = [];
   const draft = "<context>\nCurrent time: now\n</context>\n".repeat(40);
   const mock = mockFetch(async (_input, init) => {
     const model = modelOf(init);
     models.push(model);
-    if (model === "alpha-1") {
+    if (model === synthetic) {
       return new Response(
         JSON.stringify({
           choices: [{ message: { content: draft }, finish_reason: "stop" }],
@@ -880,15 +879,15 @@ test("a reply billed as reasoning is not an answer: asked again once, then the r
     }
     return jsonAnswer("la vraie reponse");
   });
-  const bridge = new AgentBridge(config(), new ToolRegistry(), new SkillRegistry());
+  const bridge = new AgentBridge(cfg, new ToolRegistry(), new SkillRegistry());
   const { signal, end } = runRegistry.startRoot(SESSION_ID);
 
   try {
     const text = await run(bridge, createSession("alpha-1"), signal);
     assert.equal(text, "la vraie reponse");
-    assert.deepEqual(models, ["alpha-1", "alpha-1", "beta-1"]);
-    assert.match(notices.join("\n"), /alpha-1 sent its reasoning as the answer; asking again/, notices.join("\n"));
-    assert.match(notices.join("\n"), /sent its reasoning as the answer again → switched to beta\/beta-1/, notices.join("\n"));
+    assert.deepEqual(models, [synthetic, synthetic, "beta-1"]);
+    assert.match(notices.join("\n"), /alpha-1 reported inconsistent reasoning usage; asking again/, notices.join("\n"));
+    assert.match(notices.join("\n"), /reported inconsistent reasoning usage again → switched to beta\/beta-1/, notices.join("\n"));
 
     const log = await sessionLogOf(SESSION_ID);
     const written = await log.all();

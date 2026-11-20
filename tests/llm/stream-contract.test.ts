@@ -1,26 +1,17 @@
-/**
- * What a chat-completions reply has to be before it is an answer.
- *
- * The transport used to take whatever arrived: a stream cut mid-sentence, an error frame sent after
- * the status line, a reply whose usage billed its content as reasoning. Each became a phase of the
- * log and was replayed to every later request. These are the contracts opencode and pi-ai enforce
- * on the same protocol, plus the one the provider's own accounting makes possible.
- */
-
 import { test, expect } from "bun:test";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 import { chatCompletion, chatCompletionStream, applyPromptCache, type ChatMessage } from "../../src/llm/provider.ts";
 import { isMalformedReply, isProviderOutage } from "../../src/llm/outage.ts";
-import { reasoningSentAsAnswer } from "../../src/llm/answer-accounting.ts";
+import { syntheticReasoningMismatch } from "../../src/llm/answer-accounting.ts";
 import type { ResolvedLlmConfig } from "../../src/core/config.ts";
 
-const llm = {
-  model: "synthetic/deep-1",
-  apiModel: "deep-1",
-  baseUrl: "https://provider.example/v1",
-  apiKey: "k",
+const llm: ResolvedLlmConfig = {
+  model: "synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash-1017",
+  apiModel: "hf:deepseek-ai/DeepSeek-V4.1-Flash-1017",
+  baseUrl: "https://api.synthetic.new/openai/v1",
+  apiKey: "fixture",
   backend: "openai",
-} as unknown as ResolvedLlmConfig;
+};
 
 const frame = (data: unknown): string => `data: ${JSON.stringify(data)}\n\n`;
 
@@ -28,10 +19,10 @@ function stream(frames: string[]): Response {
   return new Response(frames.join(""), { status: 200, headers: { "Content-Type": "text/event-stream" } });
 }
 
-async function streamed(frames: string[]) {
-  const mock = mockFetch(async () => stream(frames) as never);
+async function streamed(frames: string[], config = llm) {
+  const mock = mockFetch(async () => stream(frames));
   try {
-    return await chatCompletionStream(llm, [{ role: "user", content: "hi" }], () => {});
+    return await chatCompletionStream(config, [{ role: "user", content: "hi" }], () => {});
   } finally {
     mock.restore();
   }
@@ -57,13 +48,44 @@ test("a stream cut before the provider said it was done is a fault, not an answe
 
 test("either end marker is enough: [DONE] alone, or a finish reason alone", async () => {
   expect((await streamed([text("Done."), "data: [DONE]\n\n"])).content).toBe("Done.");
+  expect((await streamed([text("Done."), "data:[DONE]"])).content).toBe("Done.");
   expect((await streamed([text("Done."), stop()])).content).toBe("Done.");
 });
+
+test("DONE settles an open stream, preserving late usage but ignoring anything after DONE", async () => {
+  const encoder = new TextEncoder();
+  const usage = frame({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 2 } });
+  const closed = Promise.withResolvers<void>();
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(text("Done.") + stop() + usage + "data: [DO"));
+      controller.enqueue(encoder.encode("NE]\r\n\r\n" + text("Not part of the answer.")));
+    },
+    cancel() {
+      cancelled = true;
+      return closed.promise;
+    },
+  });
+  const mock = mockFetch(async () => new Response(body, { headers: { "Content-Type": "text/event-stream" } }));
+  try {
+    const reply = await chatCompletionStream(llm, [], () => {});
+    expect(reply.content).toBe("Done.");
+    expect(reply.usage?.completionTokens).toBe(2);
+    expect(cancelled).toBe(true);
+    expect(body.locked).toBe(false);
+  } finally {
+    closed.resolve();
+    mock.restore();
+  }
+}, 2000);
 
 test("an error frame after the status line fails the call, and keeps the status it names", async () => {
   const err = await failureOf(streamed([text("partial"), frame({ error: { message: "Too many concurrent requests", code: 429 } })]));
   expect(err.status).toBe(429);
   expect(err.message).toContain("Too many concurrent requests");
+  const withStatus = await failureOf(streamed([frame({ error: { message: "Go usage limit exceeded", code: "usage_limit_reached", status: 429 } })]));
+  expect(withStatus.status).toBe(429);
   const unnamed = await failureOf(streamed([text("partial"), frame({ error: { message: "upstream died" } })]));
   expect(unnamed.status).toBe(502);
   expect(isProviderOutage(unnamed)).toBe(true);
@@ -77,25 +99,57 @@ test("a generation that died says so in its finish reason", async () => {
   }
 });
 
-test("content the usage bills as reasoning is the model's thinking, not its answer", async () => {
-  // The shape measured on Synthetic's DeepSeek lane: 613 of 615 completion tokens billed as
-  // reasoning, no reasoning text, and two thousand characters of `content`.
+test("a large accounting mismatch on Synthetic makes the response retryable", async () => {
   const draft = "Electric\n=== user message ===\ngo\n\n".repeat(60);
   const err = await failureOf(streamed([
     text(draft),
     stop({ prompt_tokens: 300_000, completion_tokens: 615, completion_tokens_details: { reasoning_tokens: 613 } }),
   ]));
   expect(isMalformedReply(err)).toBe(true);
-  expect(err.message).toBe("synthetic/deep-1 sent its reasoning as the answer");
+  expect(err.message).toBe(`${llm.model} reported inconsistent reasoning usage`);
 });
 
-test("a model whose reasoning stays hidden answers within what it billed", async () => {
+test("a Synthetic answer consistent with hidden reasoning usage is accepted", async () => {
   const reply = await streamed([
     text("Yes, the check passed and nothing else is needed."),
     stop({ prompt_tokens: 10, completion_tokens: 420, completion_tokens_details: { reasoning_tokens: 400 } }),
   ]);
   expect(reply.content).toBe("Yes, the check passed and nothing else is needed.");
   expect(reply.usage?.reasoningTokens).toBe(400);
+});
+
+test("another provider's usage and technical examples cannot trigger the Synthetic guard", async () => {
+  const prose = "Here is the literal marker `<ds_safety>` in a technical example. ".repeat(12);
+  const reply = await streamed([
+    text(prose),
+    stop({ prompt_tokens: 10, completion_tokens: 420, completion_tokens_details: { reasoning_tokens: 419 } }),
+  ], { ...llm, baseUrl: "https://other-provider.example/v1" });
+  expect(reply.content).toBe(prose);
+});
+
+test("a Synthetic accounting mismatch does not open the circuit for its endpoint", async () => {
+  const responses = [
+    ...Array.from({ length: 5 }, () => stream([
+      text("x".repeat(2000)),
+      stop({ prompt_tokens: 10, completion_tokens: 615, completion_tokens_details: { reasoning_tokens: 613 } }),
+    ])),
+    stream([text("Healthy model."), stop()]),
+  ];
+  const mock = mockFetch(async () => {
+    const response = responses.shift();
+    if (!response) throw new Error("unexpected call");
+    return response;
+  });
+  try {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const err = await failureOf(chatCompletionStream(llm, [], () => {}));
+      expect(isMalformedReply(err)).toBe(true);
+    }
+    const other = { ...llm, model: "synthetic/another-model", apiModel: "another-model" };
+    expect((await chatCompletionStream(other, [], () => {})).content).toBe("Healthy model.");
+  } finally {
+    mock.restore();
+  }
 });
 
 test("reasoning that arrived on its own channel is never second-guessed", async () => {
@@ -107,18 +161,20 @@ test("reasoning that arrived on its own channel is never second-guessed", async 
   expect(reply.reasoning).toBe("thinking it through");
 });
 
-test("the accounting rule, on its own", () => {
-  const usage = (completionTokens: number, reasoningTokens: number) => ({ promptTokens: 1, completionTokens, totalTokens: 1, reasoningTokens });
-  expect(reasoningSentAsAnswer("x".repeat(2000), "", usage(615, 613))).toBe(true);
-  expect(reasoningSentAsAnswer("x".repeat(2000), "", usage(1200, 700))).toBe(false);
-  expect(reasoningSentAsAnswer("x".repeat(2000), "seen", usage(615, 613))).toBe(false);
-  expect(reasoningSentAsAnswer("x".repeat(2000), "", undefined)).toBe(false);
-  expect(reasoningSentAsAnswer("Ok.", "", usage(14, 13))).toBe(false);
+test("the Synthetic guard requires comparable usage and a large mismatch", () => {
+  const usage = (completionTokens: number, reasoningTokens: number) => ({ promptTokens: 1, completionTokens, totalTokens: 1 + completionTokens, reasoningTokens });
+  const content = "x".repeat(2000);
+  expect(syntheticReasoningMismatch(llm, content, "", usage(615, 613))).toBe(true);
+  expect(syntheticReasoningMismatch(llm, content, "", usage(1200, 700))).toBe(false);
+  expect(syntheticReasoningMismatch(llm, content, "", usage(10, 100))).toBe(false);
+  expect(syntheticReasoningMismatch(llm, content, "", undefined)).toBe(false);
+  expect(syntheticReasoningMismatch(llm, "Ok.", "", usage(14, 13))).toBe(false);
+  expect(syntheticReasoningMismatch({ ...llm, apiModel: "another-model" }, content, "", usage(615, 613))).toBe(false);
 });
 
 test("the buffered path holds the same contract", async () => {
   const body = (data: unknown) => new Response(JSON.stringify(data), { status: 200, headers: { "Content-Type": "application/json" } });
-  let mock = mockFetch(async () => body({ error: { message: "Provider returned error", code: 503 } }) as never);
+  let mock = mockFetch(async () => body({ error: { message: "Provider returned error", code: 503 } }));
   try {
     const err = await failureOf(chatCompletion(llm, [{ role: "user", content: "hi" }]));
     expect(err.status).toBe(503);
@@ -128,7 +184,7 @@ test("the buffered path holds the same contract", async () => {
   mock = mockFetch(async () => body({
     choices: [{ message: { content: "y".repeat(3000) }, finish_reason: "stop" }],
     usage: { prompt_tokens: 1, completion_tokens: 700, completion_tokens_details: { reasoning_tokens: 699 } },
-  }) as never);
+  }));
   try {
     expect(isMalformedReply(await failureOf(chatCompletion(llm, [{ role: "user", content: "hi" }])))).toBe(true);
   } finally {

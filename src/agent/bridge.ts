@@ -438,8 +438,7 @@ export class AgentBridge implements AgentBackend {
       ]),
     ];
 
-    // A malformed reply is the sampling, not the model: the same call asked again answered every
-    // time it was measured (104 replays of the prompts that failed, 2026-11-20). Once per model.
+    // Retry an intermittent response failure once before moving to another model.
     const askedAgain = new Set<string>();
     for (;;) {
       const startedAt = Date.now();

@@ -378,51 +378,52 @@ the bubble, nothing of it is journalled, and the run asks again.
 | no finish reason **and** no `[DONE]` | cut on the wire, whatever it carried | `StreamCutError`, a 502 stream fault |
 | `data: {"error": ...}` after the status line | the generation failed | a fault carrying the status it names (429 stays a quota) |
 | `finish_reason` `error` or `network_error` | the generation died | a 502 stream fault |
-| `content` the usage bills as reasoning | the model's thinking in the answer channel | `MalformedReplyError` |
+| text size conflicts with comparable reasoning usage on Synthetic DeepSeek V4.1 Flash | response suspect on this route | `MalformedReplyError` |
 
-Either end marker is enough: an endpoint may omit one, never both.
+Either end marker is enough. `[DONE]` ends the read even if the connection is still open; usage
+frames between the finish reason and `[DONE]` are still consumed.
 
-### Thinking in the answer channel
+### When the protocol cannot tell
 
-Measured 2026-11-19 and 20, thread `4d5775e7`, `synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash-1017`:
-replies that replayed the prompt's scaffolding (`=== user message ===`, `<context>`, DSML tool
-markup, the model's own `<ds_safety>` verdict) or a draft of the answer. Every one of them had the
-same accounting: 613 of 615 completion tokens billed as reasoning, no reasoning text streamed, and
-2 042 characters of `content`. The serving stack split the stream wrong, and said so in its usage.
+One affected Synthetic DeepSeek V4.1 Flash reply was stored as 2,042 characters of answer text,
+with no separate reasoning and 613 out of 615 tokens reported as reasoning. The original SSE is not
+available, so those numbers do not establish how the reply was produced. `answer-accounting.ts`
+keeps a best-effort check specific to that provider and model: with no reasoning text, only compare
+valid counts, and retry when estimated text tokens exceed twice `completion - reasoning` plus 16.
+This is not a protocol rule or evidence that all malformed replies look like this. The check does
+not apply to OpenCode Go or other Synthetic models. A mismatch does not count toward the circuit
+breaker shared by all models at the endpoint.
 
-`answer-accounting.ts` reads that evidence and nothing else: the answer the provider billed is
-`completion - reasoning` tokens, and a `content` estimated at more than twice that (plus 16) is not
-it. Only when no reasoning text came through at all. Over the November logs, replies of models whose
-reasoning stays hidden land at 1.3x at most (63 of them); every malformed one sits at 2.7x or more.
-
-It replaced a set of regular expressions over the text (`protocol-leak.ts`, 0.7.187 to 0.7.190).
-Those read words, so they missed every malformed reply that did not quote markup, and refused an
-answer that did: `anthropic/claude-opus-5-5` explaining this very bug quoted `<ds_safety>`, and the
-run was thrown off Opus onto three exhausted accounts (2026-11-20 11:23).
+The earlier text filter also rejected valid answers that quoted its markers. In one Opus run
+(2026-11-20), our detector classified a reply containing `<ds_safety>` as a template leak.
+The rejection was ours, not an error reported by Anthropic. A local comparison with pi-ai 1.6.0
+confirms the limit: both clients reject a cut or an error frame and accept a valid Markdown quote,
+but both also accept garbled prose delivered in `content` with a valid end and ordinary usage.
 
 ### What the run does with one
 
 - **The words leave the bubble.** `callModel` calls the call's `discard` (the channel replaces the
   open bubble on a `replay` delta, the readiness gate forgets the call emitted) before it asks
   again. A failed call used to end the run as soon as it had painted anything.
-- **A malformed reply is asked again once, on the same model.** It is the sampling, not the model:
-  104 replays of the prompts that failed, against the same endpoint, all answered. A second one moves
-  the run to the next target of its route, with a note.
+- **A malformed reply is retried once on the same model.** A second one moves the run to the next
+  permitted target, with a note. Successful replays do not rule out an intermittent failure.
 - **A cut or an error frame is a provider fault**, and takes the path of any other: the transport's
   own retry while nothing was painted, then the waits, then the route.
 
 ### The wire DeepSeek reads
 
 A model that reads `reasoning_content` (models.dev `interleaved.field`) gets the field on every
-assistant turn: its own reasoning on the turns it produced, an empty string on the turns another
-model wrote. pi-ai (`requiresReasoningContentOnAssistantMessages`) and opencode (`requireReasoning`)
-send DeepSeek the same. Both lanes accept it (`tests-e2e/llm/openai-compatible.e2e.test.ts`, a whole
-tool loop over a history another model wrote).
+assistant turn: its own reasoning on the turns it produced, an empty string when there is none to
+replay. pi-ai (`requiresReasoningContentOnAssistantMessages`) and OpenCode (`requireReasoning`)
+send this shape on routes configured to expect it. Both DeepSeek endpoints accepted it over a tool
+loop (`tests-e2e/llm/openai-compatible.e2e.test.ts`). This establishes request compatibility, not
+that the missing field caused the bad responses.
 
 ### Tests
 
-- `tests/llm/stream-contract.test.ts` -- each row of the table, both paths, and the wire.
-- `tests/agent/bridge-provider-fallback.test.ts` -- a malformed reply asked again then rerouted, a
-  stream cut after it painted words taken back, the log clean in both.
-- `tests-e2e/llm/openai-compatible.e2e.test.ts` (`LLM_E2E=1`, keys from the environment) -- the
-  real Synthetic and OpenCode Go lanes.
+- `tests/llm/stream-contract.test.ts`: stream and buffered responses, cancellation after `[DONE]`,
+  and the replay request shape.
+- Agent tests cover a retry and route change after a suspect reply, and removal of a cut reply.
+  Neither failed attempt is written to the journal.
+- `tests-e2e/llm/openai-compatible.e2e.test.ts` (`LLM_E2E=1`, keys from the environment): the real
+  Synthetic and OpenCode Go endpoints.

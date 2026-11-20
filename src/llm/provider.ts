@@ -2,8 +2,8 @@ import type { ReasoningField, ResolvedLlmConfig } from "../core/config.ts";
 import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError, sleep } from "../core/aborted.ts";
 import { isRetryableStatus, retryDelayMs, parseRetryAfterMs, wallAhead } from "./retry.ts";
-import { MalformedReplyError, StreamCutError, isQuotaSpent, isStreamFault } from "./outage.ts";
-import { reasoningSentAsAnswer } from "./answer-accounting.ts";
+import { MalformedReplyError, StreamCutError, isMalformedReply, isQuotaSpent, isStreamFault } from "./outage.ts";
+import { syntheticReasoningMismatch } from "./answer-accounting.ts";
 import {
   repairFor,
   repairOptionsFor,
@@ -89,6 +89,8 @@ export function resetCircuitBreaker(): void {
 // `chatgpt-3` answered perfectly at 22:46:36. The plan is out of money; the endpoint is fine.
 export function countsTowardBreaker(err: unknown): boolean {
   if (isQuotaSpent(err)) return false;
+  // A suspect reply is scoped to one model, not every model sharing this base URL.
+  if (isMalformedReply(err)) return false;
   // A stream that died is a connection, not an endpoint that is down. The breaker is keyed on the
   // base URL, and every ChatGPT subscription in this install shares one: five stream failures on
   // `chatgpt-2` would darken `chatgpt-3` and `chatgpt-4` for a minute. The transport already
@@ -113,15 +115,28 @@ function timeoutBudget(config: ResolvedLlmConfig): number {
   return requestTimeoutMs(config, OPENAI_TIMEOUT_MS);
 }
 
-async function* readStream(body: ReadableStream<Uint8Array>): AsyncIterable<Uint8Array> {
+async function* readChatData(body: ReadableStream<Uint8Array>): AsyncIterable<string> {
   const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      if (value) yield value;
+      buffer += decoder.decode(value, { stream: true });
+
+      let newline: number;
+      while ((newline = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        if (line.startsWith("data:")) yield line.slice(5).trim();
+      }
     }
+    buffer += decoder.decode();
+    if (buffer.startsWith("data:")) yield buffer.slice(5).trim();
   } finally {
+    // A terminal frame settles the reply even if the provider is slow to close the socket.
+    void reader.cancel().catch(() => {});
     reader.releaseLock();
   }
 }
@@ -325,6 +340,7 @@ interface RawUsage {
 }
 
 interface ChatCompletionResponse {
+  error?: unknown;
   choices: Array<{
     finish_reason?: string | null;
     message?: {
@@ -339,6 +355,7 @@ interface ChatCompletionResponse {
 }
 
 interface ChatCompletionStreamChunk {
+  error?: unknown;
   choices?: Array<{
     finish_reason?: string | null;
     delta?: {
@@ -383,31 +400,17 @@ function providerFault(message: string, status = 502): Error & { status: number 
   return Object.assign(new Error(message), { status });
 }
 
-/**
- * The error an endpoint put inside a successful response, or nothing.
- *
- * The status line was already 200 when the generation failed, so the failure arrives as a frame
- * (`data: {"error": {...}}`) or as the body. Read as a chunk without choices, it used to be skipped,
- * and whatever came before it became the answer. A code that is an HTTP status is kept, so a quota
- * said this way is still read as a quota.
- */
-function streamFailureOf(payload: ChatCompletionStreamChunk): Error | undefined {
-  const raw = (payload as { error?: unknown }).error;
+function streamFailureOf(raw: unknown): Error | undefined {
   if (raw === undefined || raw === null) return undefined;
   const error = typeof raw === "object" ? (raw as { message?: unknown; code?: unknown; status?: unknown }) : { message: raw };
   const message = typeof error.message === "string" && error.message ? error.message : JSON.stringify(raw);
-  const code = Number(error.code ?? error.status);
-  const status = Number.isInteger(code) && code >= 400 && code < 600 ? code : 502;
+  // The HTTP line was 200. A symbolic API code must not mask a numeric status in the body.
+  const status = [error.code, error.status]
+    .map((value) => typeof value === "number" || typeof value === "string" ? Number(value) : NaN)
+    .find((code) => Number.isInteger(code) && code >= 400 && code < 600) ?? 502;
   return providerFault(`LLM stream failed: HTTP ${status} — ${message}`, status);
 }
 
-/**
- * The two ways a reply that ended can still not be an answer, both said by the provider itself.
- *
- * `error` and `network_error` are finish reasons for a generation that died after the status line
- * (OpenRouter and the upstreams it relays); opencode and pi-ai fail on both. And a reply whose usage
- * bills its content as reasoning is thinking that reached the answer channel (`answer-accounting.ts`).
- */
 function assertAnswered(
   config: ResolvedLlmConfig,
   finishReason: string | undefined,
@@ -418,8 +421,8 @@ function assertAnswered(
   if (finishReason === "error" || finishReason === "network_error") {
     throw providerFault(`LLM stream closed with finish_reason ${finishReason}`);
   }
-  if (reasoningSentAsAnswer(content, reasoning, usage)) {
-    throw new MalformedReplyError(config.model, "sent its reasoning as the answer");
+  if (syntheticReasoningMismatch(config, content, reasoning, usage)) {
+    throw new MalformedReplyError(config.model, "reported inconsistent reasoning usage");
   }
 }
 
@@ -1034,21 +1037,24 @@ export async function chatCompletion(
         }
 
       const data = (await response.json()) as ChatCompletionResponse;
-      const failure = streamFailureOf(data as ChatCompletionStreamChunk);
+      const failure = streamFailureOf(data.error);
       if (failure) throw failure;
       const choice = data.choices?.[0];
       if (!choice?.message) throw new Error("No response from LLM");
 
+      const content = choice.message.content ?? "";
+      const finishReason = choice.finish_reason ?? undefined;
       const reasoning = readReasoning(choice.message as Record<string, unknown>);
-      assertAnswered(config, choice.finish_reason ?? undefined, choice.message.content ?? "", reasoning, normalizeUsage(data.usage));
+      const usage = normalizeUsage(data.usage);
+      assertAnswered(config, finishReason, content, reasoning, usage);
       recordCircuitSuccess(config.baseUrl);
       const providerMeta = chatProviderMeta(config, choice.message as Record<string, unknown>, reasoning);
       return {
-        content: choice.message.content ?? "",
+        content,
         toolCalls: parseToolCalls(choice.message.tool_calls),
-        finishReason: choice.finish_reason ?? undefined,
-        incomplete: !choice.message.content && !choice.message.tool_calls?.length && choice.finish_reason !== "stop",
-        usage: normalizeUsage(data.usage),
+        finishReason,
+        incomplete: !content && !choice.message.tool_calls?.length && finishReason !== "stop",
+        usage,
         ...(reasoning ? { reasoning } : {}),
         ...(providerMeta ? { providerMeta } : {}),
         ...readDeclaredCost(response, data.usage),
@@ -1187,8 +1193,6 @@ export async function chatCompletionStream(
         throw new Error("LLM stream response has no body");
       }
 
-      const decoder = new TextDecoder();
-      let buffer = "";
       let content = "";
       let reasoning = "";
       /**
@@ -1209,7 +1213,7 @@ export async function chatCompletionStream(
       const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
 
       const handleChunk = async (payload: ChatCompletionStreamChunk): Promise<void> => {
-        const failure = streamFailureOf(payload);
+        const failure = streamFailureOf(payload.error);
         if (failure) throw failure;
         if (payload.usage) {
           streamUsage = normalizeUsage(payload.usage);
@@ -1257,48 +1261,16 @@ export async function chatCompletionStream(
         }
       };
 
-      for await (const chunk of readStream(response.body)) {
-        buffer += decoder.decode(chunk, { stream: true });
-
-        let newlineIndex = buffer.indexOf("\n");
-        while (newlineIndex >= 0) {
-          const rawLine = buffer.slice(0, newlineIndex).replace(/\r$/, "");
-          buffer = buffer.slice(newlineIndex + 1);
-
-          if (rawLine.startsWith("data: ")) {
-            const data = rawLine.slice(6);
-            if (data === "[DONE]") {
-              sawDone = true;
-              buffer = "";
-              break;
-            }
-            if (data) {
-              const parsed = safeJsonParse(data, "SSE chunk");
-              if (Object.keys(parsed).length > 0) {
-                // Here, and not once per chunk read: the budget measures how long the provider has
-                // produced nothing, so only a frame that parses counts. A `: keep-alive` comment
-                // keeps a socket warm and says nothing about the model -- opencode zen sends one
-                // every twelve seconds behind a dead model, which re-armed a 120 s wall five times
-                // a minute and hung a run until the gateway gave up (docs/llm-timeout.md).
-                keepAlive();
-                await handleChunk(parsed as ChatCompletionStreamChunk);
-              }
-            }
-          }
-
-          newlineIndex = buffer.indexOf("\n");
+      for await (const data of readChatData(response.body)) {
+        if (data === "[DONE]") {
+          sawDone = true;
+          break;
         }
-      }
-
-      if (buffer.trim().startsWith("data: ")) {
-        const remaining = buffer.trim().slice(6);
-        if (remaining === "[DONE]") sawDone = true;
-        else if (remaining) {
-          const parsed = safeJsonParse(remaining, "SSE tail");
-          if (Object.keys(parsed).length > 0) {
-            await handleChunk(parsed as ChatCompletionStreamChunk);
-          }
-        }
+        const payload = safeJsonParse(data, "SSE chunk");
+        if (!payload || typeof payload !== "object" || Object.keys(payload).length === 0) continue;
+        // Heartbeats keep the socket alive, not the model (docs/llm-timeout.md).
+        keepAlive();
+        await handleChunk(payload as ChatCompletionStreamChunk);
       }
 
       const streamedToolCalls = [...toolCalls.entries()]
