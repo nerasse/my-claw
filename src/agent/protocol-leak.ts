@@ -31,6 +31,10 @@ const LEAKS: ReadonlyArray<{ what: string; pattern: RegExp }> = [
   { what: "a tool call, as markup", pattern: /(?:^|\n)\s*(?:assistant\s+to=|to=functions\.)/i },
   // Raw control tokens of a chat template, which no answer of ours ever contains.
   { what: "raw template tokens", pattern: /(?:^|\n)[ \t]*<\|(?:im_start|im_end|endoftext)\|>|<\|tool[^|\n]{0,20}\|>/i },
+  // The safety classifier of the same model family, printed into the answer: `«<ds_safety>[…]</ds_safety>Safe`,
+  // seen on the Synthetic DeepSeek lane the day it also printed its tool markup (2026-11-20). Its own
+  // verdict, in its own language, in the reply box.
+  { what: "its safety classifier, printed", pattern: /<\/?ds_safety>|^\s*«\s*<ds_safety>/i },
 ];
 
 /** What the answer leaks, or `undefined` when it is a plain answer. */

@@ -19,6 +19,8 @@ test("the tool markup a template would have emitted is a leak", () => {
   // The other dialects the same lane emitted: XML-shaped results and tool blocks.
   expect(protocolLeakIn('<result>\n<name>bash</name>\n<output>echo ok</output>\n</result>')).toBe("its tool results, as markup");
   expect(protocolLeakIn('<tool_call>{"name":"bash"}</tool_call>')).toBe("its tool calls, as markup");
+  // Its safety classifier, printed into the answer, in its own language.
+  expect(protocolLeakIn('«<ds_safety>[用户未成年]否</ds_safety>Safe')).toBe("its safety classifier, printed");
 });
 
 test("our own scaffolding, echoed, is a leak", () => {
