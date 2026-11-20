@@ -400,6 +400,38 @@ The rejection was ours, not an error reported by Anthropic. A local comparison w
 confirms the limit: both clients reject a cut or an error frame and accept a valid Markdown quote,
 but both also accept garbled prose delivered in `content` with a valid end and ordinary usage.
 
+### A well-formed stream carrying the prompt
+
+Protocol checks cannot see a reply that echoes the prompt. Measured 2026-11-20 on the Synthetic
+DeepSeek lane, 19:12 UTC: a reply ended with a valid finish reason and ordinary usage, and its text
+was the owner's previous turn -- `<context>`, the clock, the `[Audio]: "…"` line -- behind a stray
+`maggiore`. Nothing in the wire distinguished it from an answer, and it went to the log, where every
+later request replays it and the next model copies the shape.
+
+The check on that text is back, and it is written so it cannot repeat the false positive above
+(`src/llm/prompt-echo.ts`). Every pattern asks for what a *template* emits and prose does not:
+
+| shape | what makes it structural |
+|---|---|
+| `<context>` block | the `Current time:` / `Current date:` line we injected behind it |
+| `<memory-context>` block | the closing tag, which a sentence about the block does not write |
+| `<budget:…>N</budget:…>` | the figure between the tags |
+| tool markup | start of a line: `function_results`, `<result><name>`, `<tool_call>`, `assistant to=` |
+| template tokens | start of a line: `<\|im_start\|>`, `<\|endoftext\|>`, `<\|tool…\|>` |
+| `ds_safety` | start of a line, allowing the stray punctuation the model puts before it |
+
+Two rules keep it quiet on legitimate answers. A fenced block is removed before the match, because
+quoting the markup is how every report of it is written, this conversation included. And nothing
+matches mid-sentence, so the Opus answer that named `<ds_safety>` while explaining it passes.
+
+The instruction is in the prompt as well, at the end of the block itself: `HARNESS_LINE` in
+`turn-context.ts` tells the model the blocks are harness data and not to repeat them, which is the
+sentence OpenCode writes in its system prompt (`runner/prompt/system.txt`). The detector is the net
+under that instruction, not a substitute for it.
+
+A reply that carries one is a `MalformedReplyError`: taken back, asked again once on the same
+model, then routed, exactly like the usage mismatch above (`callModel`, `src/agent/bridge.ts`).
+
 ### What the run does with one
 
 - **The words leave the bubble.** `callModel` calls the call's `discard` (the channel replaces the
@@ -418,6 +450,32 @@ replay. pi-ai (`requiresReasoningContentOnAssistantMessages`) and OpenCode (`req
 send this shape on routes configured to expect it. Both DeepSeek endpoints accepted it over a tool
 loop (`tests-e2e/llm/openai-compatible.e2e.test.ts`). This establishes request compatibility, not
 that the missing field caused the bad responses.
+
+### Local one-shot SSE capture
+
+The Chat Completions reader can record one response before parsing it. Nothing is written unless
+an operator arms an exact `provider/apiModel` pair, not a tag or a picker label. To arm Synthetic
+DeepSeek V4.1 Flash, run this on the server as the service user:
+
+```sh
+route='synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash-1017'
+dir="${MY_CLAW_DIR:-$HOME/.my-claw}/secrets/llm-sse"
+(
+  umask 077
+  mkdir -p -- "$dir" || exit 1
+  key=$(printf '%s' "$route" | sha256sum) || exit 1
+  set -C
+  : > "$dir/${key%% *}.pending"
+)
+```
+
+Within ten minutes, the first matching response with a body that reaches the streaming reader
+consumes the arm. Two concurrent requests cannot consume it twice. An expired arm is ignored and
+removed on the next matching call. No restart is needed. Only the received body bytes are saved,
+not the request or HTTP headers. The private directory must be `0700` and the capture is `0600`.
+Writing stops at 4 MiB; `.partial.sse` means the capture reached its size limit and omitted bytes.
+An interrupted response may also be incomplete without hitting that limit. The capture can contain
+private generated text; inspect it locally and do not attach it to diagnostics or bug reports.
 
 ### Tests
 

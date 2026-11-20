@@ -123,7 +123,7 @@ test("e2e: relevant memory is recalled and injected into the LLM user message", 
     baseConfig({}),
     "what language should you answer in for this user",
   );
-  expect(userContent).toContain("<memory-context>");
+  expect(userContent).toContain("<memory-context>\nRelevant long-term memory");
   expect(userContent).toContain("responses in French");
   // Original message text is preserved after the memory block.
   expect(userContent).toContain("what language should you answer");
@@ -132,7 +132,7 @@ test("e2e: relevant memory is recalled and injected into the LLM user message", 
 test("e2e: no injection when nothing relevant is stored", async () => {
   await remember("The database uses WAL mode", "environment");
   const userContent = await runAndCaptureUser(baseConfig({}), "tell me a joke about cats");
-  expect(userContent).not.toContain("<memory-context>");
+  expect(userContent).not.toContain("<memory-context>\nRelevant long-term memory");
 });
 
 test("e2e: no injection when memory is disabled", async () => {
@@ -141,13 +141,13 @@ test("e2e: no injection when memory is disabled", async () => {
     baseConfig({ enabled: false }),
     "what language should you answer in",
   );
-  expect(userContent).not.toContain("<memory-context>");
+  expect(userContent).not.toContain("<memory-context>\nRelevant long-term memory");
 });
 
 test("e2e: trivial queries skip recall (no injection)", async () => {
   await remember("User prefers responses in French", "user");
   const userContent = await runAndCaptureUser(baseConfig({}), "/start");
-  expect(userContent).not.toContain("<memory-context>");
+  expect(userContent).not.toContain("<memory-context>\nRelevant long-term memory");
 });
 
 test("e2e: injected memory is ephemeral (not persisted to session history)", async () => {

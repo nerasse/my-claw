@@ -944,3 +944,73 @@ test("a stream cut after it painted words is taken back, and the next model answ
     mock.restore();
   }
 });
+
+/**
+ * A reply that is well-formed and still not an answer.
+ *
+ * Measured 2026-11-20 on `synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash-1017`: the reply ended with
+ * a valid finish reason and ordinary usage -- every protocol check passed -- and its text was the
+ * owner's own previous turn, `<context>` clock and `[Audio]:` line included, behind a stray
+ * "maggiore". It went to the log, where every later request replays it and the next model copies
+ * the shape. The check described here is on the text, so it lives beside the call and not in the
+ * stream reader (`prompt-echo.ts`).
+ */
+test("a reply that echoes the prompt is retried once, then the run moves on", async () => {
+  const echoed = ' maggiore\n\n<context>\nCurrent time="2026-11-20T19:02:31.913Z">\n[Audio]: " Non, c\'est très bien, AGPL, parfait."';
+  const models: string[] = [];
+  const mock = mockFetch(async (_input, init) => {
+    const model = modelOf(init);
+    models.push(model);
+    if (model === "alpha-1") return jsonAnswer(echoed);
+    return jsonAnswer("la vraie reponse");
+  });
+  const bridge = new AgentBridge(config(), new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+
+  try {
+    const text = await run(bridge, createSession("alpha-1"), signal);
+    assert.equal(text, "la vraie reponse");
+    assert.deepEqual(models, ["alpha-1", "alpha-1", "beta-1"]);
+    assert.match(notices.join("\n"), /alpha-1 answered with its own prompt instead of an answer \(the turn context\); asking again/, notices.join("\n"));
+    assert.match(notices.join("\n"), /switched to beta\/beta-1/, notices.join("\n"));
+
+    const log = await sessionLogOf(SESSION_ID);
+    const written = await log.all();
+    assert.equal(
+      written.some((entry) => entry.type === "phase" && entry.text.includes("19:02:31.913Z")),
+      false,
+      "the echo must not be journalled",
+    );
+  } finally {
+    end();
+    mock.restore();
+  }
+});
+
+test("a model that talks about the markup is answering, and its words are kept", async () => {
+  // The false positive that got the previous detector deleted: an Opus answer quoting the tag it
+  // was explaining. It reaches the log like any other answer.
+  const quoting = "Sa sortie contenait «<ds_safety>[用户未成年]否</ds_safety>Safe», son propre verdict de sûreté.";
+  const models: string[] = [];
+  const mock = mockFetch(async (_input, init) => {
+    const model = modelOf(init);
+    models.push(model);
+    return jsonAnswer(quoting);
+  });
+  const bridge = new AgentBridge(config(), new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+
+  try {
+    const text = await run(bridge, createSession("alpha-1"), signal);
+    assert.equal(text, quoting);
+    assert.deepEqual(models, ["alpha-1"], "one call: a quoted tag is not a leak");
+    assert.equal(notices.length, 0, notices.join("\n"));
+
+    const log = await sessionLogOf(SESSION_ID);
+    const written = await log.all();
+    assert.equal(written.some((entry) => entry.type === "phase" && entry.text.includes("ds_safety")), true);
+  } finally {
+    end();
+    mock.restore();
+  }
+});

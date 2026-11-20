@@ -24,7 +24,8 @@ import { selectRelevantSkills } from "../skills/retrieval.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ProviderMeta } from "../llm/provider.ts";
 import { llmComplete, llmCompleteStream } from "../llm/transport.ts";
 import { resolveRunModel, type RunModel, type RunModelOverride } from "../llm/run-model.ts";
-import { classifyProviderFailure, isCapabilityRefusal, isMalformedReply, isProviderOutage, isQuotaSpent } from "../llm/outage.ts";
+import { MalformedReplyError, classifyProviderFailure, isCapabilityRefusal, isMalformedReply, isProviderOutage, isQuotaSpent } from "../llm/outage.ts";
+import { promptEchoIn } from "../llm/prompt-echo.ts";
 import { needsQuotaOracle, spentWindowOf, kindOfWindow, labelOfKind } from "../llm/quota/retry.ts";
 import { quotaFor, quotaSourceOf } from "../llm/quota/index.ts";
 import { wallConfig } from "../llm/quota/wall.ts";
@@ -444,7 +445,16 @@ export class AgentBridge implements AgentBackend {
       const startedAt = Date.now();
       if (config.provider && !params.tried.includes(config.provider)) params.tried.push(config.provider);
       try {
-        return { response: await params.call(this.walledConfig(config)), config };
+        const response = await params.call(this.walledConfig(config));
+        // A reply may be well-formed and still not be an answer: the endpoint left the chat
+        // template to the model, so it wrote another harness's control markup, or retyped a turn
+        // that is already in the history with the clock we inject. The stream contract cannot see
+        // it -- valid finish reason, ordinary usage -- and letting the text through journals it,
+        // so every later request replays it and the next model copies the shape
+        // (`prompt-echo.ts`). Refused as a malformed reply: taken back, asked again, then routed.
+        const echoed = promptEchoIn(response.content);
+        if (echoed) throw new MalformedReplyError(config.model, `answered with its own prompt instead of an answer (${echoed})`);
+        return { response, config };
       } catch (err) {
         rethrowIfAborted(err, params.signal);
         const malformed = isMalformedReply(err);

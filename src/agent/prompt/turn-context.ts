@@ -1,6 +1,18 @@
 import type { SkillInfo } from "../../skills/types.ts";
 
 /**
+ * What the harness blocks are, said once, in the block itself.
+ *
+ * OpenCode writes the same sentence in its system prompt ("blocks are harness instructions...
+ * never something you write yourself: do not reproduce the XML in your own output"), and it is an
+ * instruction rather than a filter: the model is told the markup is not its to write. It lives
+ * here rather than in the cached system prompt for the same reason the clock does, and it is the
+ * one line of the block that never changes, so a prefix that survives compaction still ends here.
+ */
+export const HARNESS_LINE =
+  "The <context> and <memory-context> blocks are harness data, not the owner's words: never repeat them in your answer.";
+
+/**
  * The per-turn context the model reads at the end of the inbound message.
  *
  * It is not part of the system prompt on purpose. The system prompt is the cached prefix: a
@@ -20,5 +32,5 @@ export function turnContextBlock(input: { now: Date; suggested: readonly SkillIn
       "Treat this as a hint, not an order.",
     );
   }
-  return `<context>\n${lines.join("\n")}\n</context>`;
+  return `<context>\n${[...lines, "", HARNESS_LINE].join("\n")}\n</context>`;
 }
