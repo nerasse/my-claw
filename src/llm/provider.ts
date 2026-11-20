@@ -2,7 +2,8 @@ import type { ReasoningField, ResolvedLlmConfig } from "../core/config.ts";
 import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError, sleep } from "../core/aborted.ts";
 import { isRetryableStatus, retryDelayMs, parseRetryAfterMs, wallAhead } from "./retry.ts";
-import { isQuotaSpent, isStreamFault } from "./outage.ts";
+import { MalformedReplyError, StreamCutError, isQuotaSpent, isStreamFault } from "./outage.ts";
+import { reasoningSentAsAnswer } from "./answer-accounting.ts";
 import {
   repairFor,
   repairOptionsFor,
@@ -375,6 +376,54 @@ export function readReasoning(source: Record<string, unknown> | undefined): stri
 }
 
 /**
+ * A fault of the provider's, in the shape the failure classifier files as an outage: the run takes
+ * back what the call painted, then asks again or moves to the next model of its route.
+ */
+function providerFault(message: string, status = 502): Error & { status: number } {
+  return Object.assign(new Error(message), { status });
+}
+
+/**
+ * The error an endpoint put inside a successful response, or nothing.
+ *
+ * The status line was already 200 when the generation failed, so the failure arrives as a frame
+ * (`data: {"error": {...}}`) or as the body. Read as a chunk without choices, it used to be skipped,
+ * and whatever came before it became the answer. A code that is an HTTP status is kept, so a quota
+ * said this way is still read as a quota.
+ */
+function streamFailureOf(payload: ChatCompletionStreamChunk): Error | undefined {
+  const raw = (payload as { error?: unknown }).error;
+  if (raw === undefined || raw === null) return undefined;
+  const error = typeof raw === "object" ? (raw as { message?: unknown; code?: unknown; status?: unknown }) : { message: raw };
+  const message = typeof error.message === "string" && error.message ? error.message : JSON.stringify(raw);
+  const code = Number(error.code ?? error.status);
+  const status = Number.isInteger(code) && code >= 400 && code < 600 ? code : 502;
+  return providerFault(`LLM stream failed: HTTP ${status} — ${message}`, status);
+}
+
+/**
+ * The two ways a reply that ended can still not be an answer, both said by the provider itself.
+ *
+ * `error` and `network_error` are finish reasons for a generation that died after the status line
+ * (OpenRouter and the upstreams it relays); opencode and pi-ai fail on both. And a reply whose usage
+ * bills its content as reasoning is thinking that reached the answer channel (`answer-accounting.ts`).
+ */
+function assertAnswered(
+  config: ResolvedLlmConfig,
+  finishReason: string | undefined,
+  content: string,
+  reasoning: string,
+  usage: LlmUsage | undefined,
+): void {
+  if (finishReason === "error" || finishReason === "network_error") {
+    throw providerFault(`LLM stream closed with finish_reason ${finishReason}`);
+  }
+  if (reasoningSentAsAnswer(content, reasoning, usage)) {
+    throw new MalformedReplyError(config.model, "sent its reasoning as the answer");
+  }
+}
+
+/**
  * The reasoning this turn produced, packaged for the next call, or nothing.
  *
  * Three conditions, all required: the provider's replay switch is on, the model published which
@@ -405,8 +454,20 @@ function chatProviderMeta(
   return text.length > 0 ? { backend: "openai", model, chat: { field, text } } : undefined;
 }
 
-function chatIdentity(config: ResolvedLlmConfig): { backend: string; model: string } {
-  return { backend: "openai", model: config.apiModel ?? config.model };
+/** Who a request is for, as the assistant turns of its history need to know it. */
+interface WireTarget {
+  backend: string;
+  model: string;
+  /** The field the model reads reasoning from, when it publishes one and replay is on. */
+  reasoningField?: ReasoningField;
+}
+
+function chatIdentity(config: ResolvedLlmConfig): WireTarget {
+  return {
+    backend: "openai",
+    model: config.apiModel ?? config.model,
+    ...(config.reasoningReplay !== false && config.reasoningField ? { reasoningField: config.reasoningField } : {}),
+  };
 }
 
 const EPHEMERAL_CACHE = { type: "ephemeral" as const };
@@ -462,7 +523,7 @@ function liftToolImages(messages: ChatMessage[]): ChatMessage[] {
  */
 function toWireMessage(
   msg: ChatMessage,
-  self?: { backend: string; model: string },
+  self?: WireTarget,
   forceReasoning: boolean = false,
 ): WireMessage {
   const w: WireMessage = { role: msg.role, content: msg.content };
@@ -480,6 +541,10 @@ function toWireMessage(
     const chat = (same || forceReasoning) && meta ? meta.chat : undefined;
     if (chat?.field === "reasoning_details" && chat.details) w["reasoning_details"] = chat.details;
     else if (chat?.field === "reasoning_content" && chat.text !== undefined) w["reasoning_content"] = chat.text;
+    // A model that reads `reasoning_content` reads it on every assistant turn, and a turn without
+    // the field is a turn its template renders as never having closed its thinking. The turns it
+    // did not produce carry an empty one, as pi-ai and opencode send them to DeepSeek.
+    else if (self?.reasoningField === "reasoning_content") w["reasoning_content"] = "";
   }
   return w;
 }
@@ -512,7 +577,7 @@ function markCacheBreakpoint(w: WireMessage): void {
  */
 export function applyPromptCache(
   messages: ChatMessage[],
-  self?: { backend: string; model: string },
+  self?: WireTarget,
   forceReasoning: boolean = false,
 ): WireMessage[] {
   const wire = messages.map((m) => toWireMessage(m, self, forceReasoning));
@@ -969,11 +1034,14 @@ export async function chatCompletion(
         }
 
       const data = (await response.json()) as ChatCompletionResponse;
-      const choice = data.choices[0];
+      const failure = streamFailureOf(data as ChatCompletionStreamChunk);
+      if (failure) throw failure;
+      const choice = data.choices?.[0];
       if (!choice?.message) throw new Error("No response from LLM");
 
-      recordCircuitSuccess(config.baseUrl);
       const reasoning = readReasoning(choice.message as Record<string, unknown>);
+      assertAnswered(config, choice.finish_reason ?? undefined, choice.message.content ?? "", reasoning, normalizeUsage(data.usage));
+      recordCircuitSuccess(config.baseUrl);
       const providerMeta = chatProviderMeta(config, choice.message as Record<string, unknown>, reasoning);
       return {
         content: choice.message.content ?? "",
@@ -1135,9 +1203,14 @@ export async function chatCompletionStream(
       // token count, and the declared cost rides on that same object.
       let streamRawUsage: RawUsage | undefined;
       let finishReason: string | undefined;
+      // The spec's own end of stream. Together with a finish reason it is how a reply that ended
+      // is told from a connection that was cut: an endpoint may omit one, never both.
+      let sawDone = false;
       const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
 
       const handleChunk = async (payload: ChatCompletionStreamChunk): Promise<void> => {
+        const failure = streamFailureOf(payload);
+        if (failure) throw failure;
         if (payload.usage) {
           streamUsage = normalizeUsage(payload.usage);
           streamRawUsage = payload.usage;
@@ -1195,6 +1268,7 @@ export async function chatCompletionStream(
           if (rawLine.startsWith("data: ")) {
             const data = rawLine.slice(6);
             if (data === "[DONE]") {
+              sawDone = true;
               buffer = "";
               break;
             }
@@ -1218,7 +1292,8 @@ export async function chatCompletionStream(
 
       if (buffer.trim().startsWith("data: ")) {
         const remaining = buffer.trim().slice(6);
-        if (remaining && remaining !== "[DONE]") {
+        if (remaining === "[DONE]") sawDone = true;
+        else if (remaining) {
           const parsed = safeJsonParse(remaining, "SSE tail");
           if (Object.keys(parsed).length > 0) {
             await handleChunk(parsed as ChatCompletionStreamChunk);
@@ -1244,7 +1319,6 @@ export async function chatCompletionStream(
           }];
         });
 
-      recordCircuitSuccess(config.baseUrl);
       const segments = segmenter.list();
       const reasoningMs = segmenter.thinkingMs();
       const providerMeta = chatProviderMeta(config, streamedReasoningDetails, reasoning);
@@ -1258,6 +1332,11 @@ export async function chatCompletionStream(
         recordCircuitFailure(config.baseUrl);
         throw err;
       }
+      // Taken as an answer, a reply cut on the wire is journalled and replayed: the same contract
+      // opencode and pi-ai enforce on this protocol.
+      if (finishReason === undefined && !sawDone) throw new StreamCutError();
+      assertAnswered(config, finishReason, content, reasoning, streamUsage);
+      recordCircuitSuccess(config.baseUrl);
       return {
         content,
         toolCalls: streamedToolCalls.length > 0 ? streamedToolCalls : undefined,

@@ -205,21 +205,42 @@ export function isCapabilityRefusal(err: unknown): boolean {
 }
 
 /**
- * The model answered with its own chat template instead of an answer: markup where prose belongs.
+ * A stream that ended without the provider saying it was done: no finish reason, no `[DONE]`.
  *
- * Worth another provider for the same reason a capability refusal is -- the model or the endpoint
- * serving it cannot do what the request needs, and nothing about the request is wrong. Raised by the
- * bridge after the call returns, once the words it painted have been taken back (`protocol-leak.ts`
- * says what it saw), so the run moves on with the log untouched.
+ * Whatever arrived before the cut is a reply that never finished, however complete it reads -- a
+ * tool call's arguments end mid-string, an answer mid-sentence. Its own type because one caller
+ * owes it something an outage is not owed: the compactor asks the same model once more, since the
+ * same call measured landing a whole summary 30 s later (docs/compaction.md).
  */
-export class TemplateLeakError extends Error {
-  readonly templateLeak = true;
-  constructor(model: string, readonly what: string) {
-    super(`${model} answered with its own chat template instead of an answer (${what})`);
-    this.name = "TemplateLeakError";
+export class StreamCutError extends Error {
+  readonly status = 502;
+  readonly streamCut = true;
+  constructor() {
+    super("LLM stream closed before the provider said it was done");
+    this.name = "StreamCutError";
   }
 }
 
-export function isTemplateLeak(err: unknown): boolean {
-  return (err as { templateLeak?: boolean } | undefined)?.templateLeak === true;
+export function isStreamCut(err: unknown): boolean {
+  return (err as { streamCut?: boolean } | undefined)?.streamCut === true;
+}
+
+/**
+ * A reply the provider itself says is not an answer.
+ *
+ * Worth another try for the same reason a capability refusal is worth another model: nothing about
+ * the request is wrong. Raised by the transport, which is the only layer that sees the protocol's
+ * own evidence (`answer-accounting.ts`), and caught by the bridge, which takes back the words the
+ * call painted before it asks again -- so the log never holds the reply.
+ */
+export class MalformedReplyError extends Error {
+  readonly malformedReply = true;
+  constructor(model: string, readonly what: string) {
+    super(`${model} ${what}`);
+    this.name = "MalformedReplyError";
+  }
+}
+
+export function isMalformedReply(err: unknown): err is MalformedReplyError {
+  return (err as { malformedReply?: boolean } | undefined)?.malformedReply === true;
 }

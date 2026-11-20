@@ -365,21 +365,64 @@ error text — so an outage is countable and its cost is visible.
 - App: `__tests__/AgentsSettings.test.tsx` — the switch sends `agents.retry.set`, the row reads the
   schedule the server resolved, and an older server draws no row.
 
-## A model that prints its chat template instead of answering
+## A reply that is not an answer
 
-Measured 2026-11-19, thread `4d5775e7`: the endpoint serving `synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash-1017`
-does not format tools for that model, so the model wrote the format itself -- `assistant to=functions.bash`
-followed by the arguments, `<function_results>` followed by the tool's output -- and continued the
-transcript instead of answering: the injected `<context>` and `<memory-context>` blocks came back at
-the head of its reply, with the owner's own question behind them.
+A call that returned is not yet an answer. The chat-completions transport (`src/llm/provider.ts`)
+holds a reply to the same contract opencode (`packages/ai/src/protocols/openai-chat.ts`) and pi-ai
+(`packages/ai/src/api/openai-completions.ts`) enforce on this protocol, and the bridge abandons an
+attempt that fails it the way DeepSeek Harness settles one (`assistant-stream.ts`): its words leave
+the bubble, nothing of it is journalled, and the run asks again.
 
-No frame of either repository writes those strings, so it is the model, and the cost is not the one
-reply. The text is journalled as a phase, and every later request replays it: the next model copies
-the pattern, and a thread fills with it.
+| What came back | Verdict | Raised as |
+|---|---|---|
+| no finish reason **and** no `[DONE]` | cut on the wire, whatever it carried | `StreamCutError`, a 502 stream fault |
+| `data: {"error": ...}` after the status line | the generation failed | a fault carrying the status it names (429 stays a quota) |
+| `finish_reason` `error` or `network_error` | the generation died | a 502 stream fault |
+| `content` the usage bills as reasoning | the model's thinking in the answer channel | `MalformedReplyError` |
 
-`protocolLeakIn` (`src/agent/protocol-leak.ts`) recognises the shapes at the head of a reply, and
-`callModel` treats one as a provider refusal: the words it painted are taken back (the channel
-replaces the open bubble on a `replay` delta, and the readiness gate forgets the call emitted),
-the leaked text never reaches the log, and the run moves to the next target of its route with a note
-naming what happened. If the route has no other candidate, the run fails with that sentence rather
-than answering with markup.
+Either end marker is enough: an endpoint may omit one, never both.
+
+### Thinking in the answer channel
+
+Measured 2026-11-19 and 20, thread `4d5775e7`, `synthetic/hf:deepseek-ai/DeepSeek-V4.1-Flash-1017`:
+replies that replayed the prompt's scaffolding (`=== user message ===`, `<context>`, DSML tool
+markup, the model's own `<ds_safety>` verdict) or a draft of the answer. Every one of them had the
+same accounting: 613 of 615 completion tokens billed as reasoning, no reasoning text streamed, and
+2 042 characters of `content`. The serving stack split the stream wrong, and said so in its usage.
+
+`answer-accounting.ts` reads that evidence and nothing else: the answer the provider billed is
+`completion - reasoning` tokens, and a `content` estimated at more than twice that (plus 16) is not
+it. Only when no reasoning text came through at all. Over the November logs, replies of models whose
+reasoning stays hidden land at 1.3x at most (63 of them); every malformed one sits at 2.7x or more.
+
+It replaced a set of regular expressions over the text (`protocol-leak.ts`, 0.7.187 to 0.7.190).
+Those read words, so they missed every malformed reply that did not quote markup, and refused an
+answer that did: `anthropic/claude-opus-5-5` explaining this very bug quoted `<ds_safety>`, and the
+run was thrown off Opus onto three exhausted accounts (2026-11-20 11:23).
+
+### What the run does with one
+
+- **The words leave the bubble.** `callModel` calls the call's `discard` (the channel replaces the
+  open bubble on a `replay` delta, the readiness gate forgets the call emitted) before it asks
+  again. A failed call used to end the run as soon as it had painted anything.
+- **A malformed reply is asked again once, on the same model.** It is the sampling, not the model:
+  104 replays of the prompts that failed, against the same endpoint, all answered. A second one moves
+  the run to the next target of its route, with a note.
+- **A cut or an error frame is a provider fault**, and takes the path of any other: the transport's
+  own retry while nothing was painted, then the waits, then the route.
+
+### The wire DeepSeek reads
+
+A model that reads `reasoning_content` (models.dev `interleaved.field`) gets the field on every
+assistant turn: its own reasoning on the turns it produced, an empty string on the turns another
+model wrote. pi-ai (`requiresReasoningContentOnAssistantMessages`) and opencode (`requireReasoning`)
+send DeepSeek the same. Both lanes accept it (`tests-e2e/llm/openai-compatible.e2e.test.ts`, a whole
+tool loop over a history another model wrote).
+
+### Tests
+
+- `tests/llm/stream-contract.test.ts` -- each row of the table, both paths, and the wire.
+- `tests/agent/bridge-provider-fallback.test.ts` -- a malformed reply asked again then rerouted, a
+  stream cut after it painted words taken back, the log clean in both.
+- `tests-e2e/llm/openai-compatible.e2e.test.ts` (`LLM_E2E=1`, keys from the environment) -- the
+  real Synthetic and OpenCode Go lanes.

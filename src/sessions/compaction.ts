@@ -3,7 +3,7 @@ import { DEFAULT_COMPACTION_TAIL_TOKENS, resolveAutoCompactThreshold, resolveCom
 import { resolveFullContextWindow } from "../llm/context-window.ts";
 import { resolveUtilityLlmConfig } from "../llm/utility-model.ts";
 import { providerFallbackTargets } from "../llm/provider-fallback.ts";
-import { isCapabilityRefusal, isProviderOutage, isQuotaSpent } from "../llm/outage.ts";
+import { isCapabilityRefusal, isProviderOutage, isQuotaSpent, isStreamCut } from "../llm/outage.ts";
 import { isQuotaFailure } from "../llm/quota/retry.ts";
 import { waitsForQuotaOf } from "./siphon.ts";
 import { llmCompleteStream } from "../llm/transport.ts";
@@ -410,6 +410,18 @@ type SummaryAttempt =
  */
 const MAX_CONTINUATIONS = 3;
 
+const STREAM_CUT: SummaryAttempt = {
+  ok: false,
+  reason: "The provider closed the stream before the summary was written (no finish_reason).",
+  retryable: true,
+};
+
+/** A summary call the transport refused as cut on the wire is the same aléa as one that came back cut. */
+function cutAttempt(err: unknown): SummaryAttempt {
+  if (isStreamCut(err)) return STREAM_CUT;
+  throw err;
+}
+
 /**
  * What one call actually came back with, and what to call it.
  *
@@ -456,13 +468,7 @@ function classifySummaryResponse(
    * stored, so the conversation's floor became a summary missing its end -- the exact thing the
    * ceiling guard refuses when the provider says why it stopped.
    */
-  if (response.finishReason === undefined) {
-    return {
-      ok: false,
-      reason: "The provider closed the stream before the summary was written (no finish_reason).",
-      retryable: true,
-    };
-  }
+  if (response.finishReason === undefined) return STREAM_CUT;
 
   if (!summary) {
     // A clean `stop` with no text is the model's own answer. A non-stop reason with no fragment, no
@@ -676,8 +682,9 @@ export async function summarizeForCompaction(
   // streams in 18 deepseek-flash compactions behind opencode zen, the same call answering 6 689
   // tokens 30 s later, and two more cut mid-reasoning on 2026-09-20, one of which the retry landed.
   const attemptOn = async (llmConfig: ResolvedLlmConfig): Promise<SummaryAttempt> => {
-    const first = await attemptOnce(llmConfig);
-    if (!first.ok && first.retryable) return await attemptOnce(llmConfig);
+    const once = (): Promise<SummaryAttempt> => attemptOnce(llmConfig).catch(cutAttempt);
+    const first = await once();
+    if (!first.ok && first.retryable) return await once();
     return first;
   };
 

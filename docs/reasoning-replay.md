@@ -131,8 +131,11 @@ takes the structured array verbatim, because that form exists precisely to carry
 summarized blocks that a string cannot represent. A model asking for `reasoning_details` on a turn
 where only text was captured gets nothing rather than a downgrade.
 
-One deliberate asymmetry: an **empty** captured `reasoning_content` is still sent. DeepSeek returns
-an empty string on turns it did not think through, and that empty string still has to go back.
+A model that reads `reasoning_content` gets the field on **every** assistant turn: its own text on the
+turns it produced, an empty string on the turns it did not -- another model's, or its own where it did
+not think. A turn without the field is one its template renders as never having closed its thinking.
+pi-ai and opencode send DeepSeek the same, and both lanes of this install accept it
+(docs/provider-failures.md, "The wire DeepSeek reads").
 
 ## Configuration
 

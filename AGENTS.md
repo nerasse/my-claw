@@ -186,6 +186,7 @@ src/
 │       └── types.ts       # Wire protocol types -- docs/my-claw-app-channel.md
 ├── llm/
 │   ├── provider.ts        # OpenAI-compatible API client (retry, timeout, safe parsing)
+│   ├── answer-accounting.ts # A reply the usage bills as reasoning is not an answer -- docs/provider-failures.md
 │   ├── tokens.ts          # Token estimation + context window trimming
 │   ├── resolver.ts        # Multi-provider model resolution -- docs/model-identity.md
 │   ├── model-ref.ts       # Model reference grammar: provider/apiId@endpoint -- docs/model-identity.md

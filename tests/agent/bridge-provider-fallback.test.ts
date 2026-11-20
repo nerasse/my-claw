@@ -858,18 +858,25 @@ test("a run that adopts another model moves its live node and says so", async ()
 });
 
 /**
- * A model whose chat template was never applied answers in its own markup: tool calls, tool
- * results, and the prompt it was handed (`protocol-leak.ts`). That is not an answer, and letting
- * it through into the log is what makes it stick -- every later request replays it, and the next
- * model copies the pattern (seen on this install 2026-11-19, Synthetic's DeepSeek lane).
+ * A reply the provider bills as reasoning is the model's thinking in the answer channel (seen on
+ * this install 2026-11-19/20, Synthetic's DeepSeek lane). It is asked once more on the same model --
+ * the sampling, not the model -- then the run moves on, and nothing of it reaches the log: a phase
+ * carrying it would be replayed to every later request, and the next model copies the pattern.
  */
-test("a model that prints its chat template is not an answer: the run moves on and the log is clean", async () => {
+test("a reply billed as reasoning is not an answer: asked again once, then the run moves on, log clean", async () => {
   const models: string[] = [];
+  const draft = "<context>\nCurrent time: now\n</context>\n".repeat(40);
   const mock = mockFetch(async (_input, init) => {
     const model = modelOf(init);
     models.push(model);
     if (model === "alpha-1") {
-      return jsonAnswer('assistant to=functions.bash {"cmd": "echo hi"}\n<function_results>{"output":"hi"}</function_results>');
+      return new Response(
+        JSON.stringify({
+          choices: [{ message: { content: draft }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 1, completion_tokens: 400, total_tokens: 401, completion_tokens_details: { reasoning_tokens: 399 } },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
     }
     return jsonAnswer("la vraie reponse");
   });
@@ -879,18 +886,60 @@ test("a model that prints its chat template is not an answer: the run moves on a
   try {
     const text = await run(bridge, createSession("alpha-1"), signal);
     assert.equal(text, "la vraie reponse");
-    assert.deepEqual(models.slice(-1), ["beta-1"]);
-    assert.match(notices.join("\n"), /printed its own chat template/, notices.join("\n"));
+    assert.deepEqual(models, ["alpha-1", "alpha-1", "beta-1"]);
+    assert.match(notices.join("\n"), /alpha-1 sent its reasoning as the answer; asking again/, notices.join("\n"));
+    assert.match(notices.join("\n"), /sent its reasoning as the answer again → switched to beta\/beta-1/, notices.join("\n"));
 
-    // Nothing of the leaked markup reached the conversation: a phase carrying it would be replayed
-    // to every model the thread ever uses again.
     const log = await sessionLogOf(SESSION_ID);
     const written = await log.all();
     assert.equal(
-      written.some((entry) => entry.type === "phase" && /function_results|assistant to=/.test(entry.text)),
+      written.some((entry) => entry.type === "phase" && entry.text.includes("Current time: now")),
       false,
-      "the leak must not be journalled",
+      "the draft must not be journalled",
     );
+  } finally {
+    end();
+    mock.restore();
+  }
+});
+
+/**
+ * A call that dies after it painted words never answered. The words leave the bubble and the run
+ * asks the next model, instead of keeping half an answer as the only one it can give.
+ */
+test("a stream cut after it painted words is taken back, and the next model answers", async () => {
+  const models: string[] = [];
+  const mock = mockFetch(async (_input, init) => {
+    const model = modelOf(init);
+    models.push(model);
+    if (model === "alpha-1") {
+      return new Response(`data: ${JSON.stringify({ choices: [{ delta: { content: "half an ans" } }] })}\n\n`, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream" },
+      });
+    }
+    return answer("la reponse entiere");
+  });
+  const bridge = new AgentBridge(config(), new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+  // A channel that can erase, as the app does: a take-back empties the bubble.
+  let bubble = "";
+  let erased = 0;
+  const sink = { onText: async () => {}, onRestart: async () => { bubble = ""; erased++; } };
+
+  try {
+    const text = await bridge.handleMessageStreaming(
+      createMessage(), createSession("alpha-1"), async (token) => { bubble += token; },
+      undefined, signal, undefined, undefined, sink,
+    );
+    assert.equal(text, "la reponse entiere");
+    // The cut is a provider fault: the configured wait, the same model again, then the route.
+    assert.deepEqual(models, ["alpha-1", "alpha-1", "beta-1"]);
+    assert.equal(erased, 2, "each cut call's words were taken back");
+    assert.equal(bubble, "la reponse entiere");
+    const log = await sessionLogOf(SESSION_ID);
+    const written = await log.all();
+    assert.equal(written.some((entry) => entry.type === "phase" && entry.text.includes("half an ans")), false);
   } finally {
     end();
     mock.restore();

@@ -24,8 +24,7 @@ import { selectRelevantSkills } from "../skills/retrieval.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ProviderMeta } from "../llm/provider.ts";
 import { llmComplete, llmCompleteStream } from "../llm/transport.ts";
 import { resolveRunModel, type RunModel, type RunModelOverride } from "../llm/run-model.ts";
-import { TemplateLeakError, classifyProviderFailure, isCapabilityRefusal, isProviderOutage, isQuotaSpent, isTemplateLeak } from "../llm/outage.ts";
-import { protocolLeakIn } from "./protocol-leak.ts";
+import { classifyProviderFailure, isCapabilityRefusal, isMalformedReply, isProviderOutage, isQuotaSpent } from "../llm/outage.ts";
 import { needsQuotaOracle, spentWindowOf, kindOfWindow, labelOfKind } from "../llm/quota/retry.ts";
 import { quotaFor, quotaSourceOf } from "../llm/quota/index.ts";
 import { wallConfig } from "../llm/quota/wall.ts";
@@ -225,12 +224,11 @@ const EMPTY_TOOL_OUTPUT = "[tool returned an empty response]";
  */
 function whyLeft(
   failed: { model: string; provider?: string },
-  cause: { reason: string; capability?: string; leak?: string; wall?: { label: string; usedPercent: number; id: string; windowSeconds?: number } },
+  cause: { reason: string; capability?: string; malformed?: string; wall?: { label: string; usedPercent: number; id: string; windowSeconds?: number } },
 ): string {
   if (cause.wall) return `${failed.model} is out of its ${labelOfKind(kindOfWindow(cause.wall))} allowance (${Math.round(cause.wall.usedPercent)}%)`;
   if (cause.capability) return `${failed.model} cannot do this (${cause.capability})`;
-  // Not a provider that came back: a model whose template is missing will do this again.
-  if (cause.leak) return `${failed.model} printed its own chat template`;
+  if (cause.malformed) return `${failed.model} ${cause.malformed} again`;
   return `${failed.model} via ${failed.provider ?? "provider"} is unavailable`;
 }
 
@@ -249,7 +247,10 @@ function answeredInstead(next: { model: string; config: ResolvedLlmConfig }): st
   const effort = next.config.effort ? ` · effort ${next.config.effort}` : "";
   const window = next.config.contextCapOverride ?? next.config.limit?.context;
   const context = window ? ` · ${Math.round(window / 1000)}k context` : "";
-  return `switched to ${next.config.provider ?? "provider"}/${next.model}${effort}${context}`;
+  // A route names its candidates whole (`chatgpt-2/gpt-6.2-sol`); a bare id gets its provider.
+  const provider = next.config.provider;
+  const model = provider && !next.model.startsWith(`${provider}/`) ? `${provider}/${next.model}` : next.model;
+  return `switched to ${model}${effort}${context}`;
 }
 
 export class AgentBridge implements AgentBackend {
@@ -437,39 +438,44 @@ export class AgentBridge implements AgentBackend {
       ]),
     ];
 
+    // A malformed reply is the sampling, not the model: the same call asked again answered every
+    // time it was measured (104 replays of the prompts that failed, 2026-11-20). Once per model.
+    const askedAgain = new Set<string>();
     for (;;) {
       const startedAt = Date.now();
       if (config.provider && !params.tried.includes(config.provider)) params.tried.push(config.provider);
       try {
-        const response = await params.call(this.walledConfig(config));
-        // Markup where prose belongs: the endpoint did not apply the model's chat template, so the
-        // model wrote the format itself -- tool calls, tool results, and the prompt it was given
-        // (`protocol-leak.ts`). It never answered, and letting the text through would keep it in the
-        // log, where every later request replays it and the next model copies the pattern. Taken
-        // back and handed to the next target like any other refusal.
-        const leak = protocolLeakIn(response.content);
-        if (leak) {
-          await params.discard?.();
-          throw new TemplateLeakError(config.model, leak);
-        }
-        return { response, config };
+        return { response: await params.call(this.walledConfig(config)), config };
       } catch (err) {
         rethrowIfAborted(err, params.signal);
-        const leaky = isTemplateLeak(err);
-        if (isOverflowError(err) || params.emitted() || !(isProviderOutage(err) || isCapabilityRefusal(err) || leaky)) throw withFailureContext(err, config, route);
+        const malformed = isMalformedReply(err);
+        if (isOverflowError(err) || !(isProviderOutage(err) || isCapabilityRefusal(err) || malformed)) throw withFailureContext(err, config, route);
+        // A call that failed never answered, whatever it painted on the way: its words were never
+        // journalled, and they leave the bubble before the run asks again -- the attempt is
+        // abandoned, the way DeepSeek Harness settles one. Without a way to take them back, what
+        // the reader saw is the only answer the run can give.
+        if (params.emitted()) {
+          if (!params.discard) throw withFailureContext(err, config, route);
+          await params.discard();
+        }
+        if (malformed && !askedAgain.has(config.model)) {
+          askedAgain.add(config.model);
+          this.recordFailedCall({ ...params, config, durationMs: Date.now() - startedAt, error: err });
+          this.noteFallback(`[retry] ${err.message}; asking again.`, params);
+          continue;
+        }
 
         const reason = noticeReason(err);
         const failed = { model: config.model, provider: config.provider };
         // A capability the model does not have is not a wait: the next target is the only cure.
         const capability = (err as { capability?: string }).capability;
-        const leak = (err as { what?: string }).what;
         // A wall, decided by the oracle when the sentence cannot say so on its own. The bare
         // `rate_limit_error` twice -- Anthropic sends it for a full five-hour window, word for
         // word like a per-minute burst -- and treating it as a burst costs three transport retries
         // plus 30 s, 60 s and 120 s on a bar that does not move (measured 2026-10-31).
-        const wall = capability || leaky ? undefined : await this.quotaWallOf(err, config.provider);
+        const wall = capability || malformed ? undefined : await this.quotaWallOf(err, config.provider);
         // A spent quota is never waited for: nothing refills it within the run.
-        const wait = capability || leaky || wall || isQuotaSpent(err) ? undefined : params.waits.shift();
+        const wait = capability || malformed || wall || isQuotaSpent(err) ? undefined : params.waits.shift();
         if (wait !== undefined) {
           this.recordFailedCall({ ...params, config, durationMs: Date.now() - startedAt, error: err });
           this.noteFallback(
@@ -528,7 +534,7 @@ export class AgentBridge implements AgentBackend {
           ...(next.config.effort ? { effort: next.config.effort } : {}),
         });
         this.noteFallback(
-          `[fallback] ${whyLeft(failed, { reason, capability, leak, wall })} → ${answeredInstead(next)}`,
+          `[fallback] ${whyLeft(failed, { reason, capability, malformed: malformed ? err.what : undefined, wall })} → ${answeredInstead(next)}`,
           params,
         );
       }
@@ -1326,11 +1332,16 @@ export class AgentBridge implements AgentBackend {
                   ),
             emitted: () => callEmitted,
             // The same take-back a transport replay uses: the words and the thinking leave the
-            // bubble, and the gate stops believing the call said anything.
-            discard: async () => {
-              callEmitted = false;
-              await reasoningSink?.onRestart?.();
-            },
+            // bubble, and the gate stops believing the call said anything. Only a channel that can
+            // erase offers it; without one, what is on screen stays the only answer.
+            ...(reasoningSink?.onRestart
+              ? {
+                  discard: async () => {
+                    callEmitted = false;
+                    await reasoningSink.onRestart?.();
+                  },
+                }
+              : {}),
             waits: providerWaits,
             attempted: attemptedModels,
             tried: triedProviders,

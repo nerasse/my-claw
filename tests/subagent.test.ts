@@ -299,8 +299,7 @@ test("spawn tool with attachments", async () => {
     const body = JSON.parse(String((init as { body?: string }).body ?? "{}")) as { messages?: Array<{ role: string; content: string }> };
     const userMsgs = body.messages?.filter((m) => m.role === "user") ?? [];
     const userMsg = userMsgs[userMsgs.length - 1];
-    // The prompt's per-turn block is scaffolding, not words: a model that echoes it back is the
-    // failure the bridge now refuses (`protocol-leak.ts`), so this mock answers the body alone.
+    // The prompt's per-turn block is scaffolding, not words: this mock answers the body alone.
     const answer = String(userMsg?.content ?? "ok").replace(/^<context>[\s\S]*?<\/context>\s*/, "");
     return new Response(
       JSON.stringify({ choices: [{ message: { content: answer } }] }),

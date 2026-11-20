@@ -94,11 +94,11 @@ describe("chat-completions reasoning replay", () => {
     expect(assistant["reasoning_content"]).toBeUndefined();
   });
 
-  test("state from another model is not replayed, cache on or off", async () => {
+  test("state from another model is not replayed, cache on or off: the turn carries an empty field", async () => {
     const foreign: ProviderMeta = { backend: "openai", model: "some-other-model", chat: { field: "reasoning_content", text: "weighing it" } };
     for (const promptCache of [false, true]) {
       const { body } = await call({ reasoningField: "reasoning_content", promptCache }, assistantWith(foreign));
-      expect(body.messages.find((m) => m["role"] === "assistant")!["reasoning_content"]).toBeUndefined();
+      expect(body.messages.find((m) => m["role"] === "assistant")!["reasoning_content"]).toBe("");
     }
   });
 

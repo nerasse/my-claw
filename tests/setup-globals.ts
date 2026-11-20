@@ -143,7 +143,7 @@ setBashLimits(undefined);
 // A unit test never reaches the network: what it calls is mocked (tests/helpers/mock-fetch.ts) or
 // served on loopback. One that slipped out used to pass or fail on whatever answered, `example.com`
 // included (CI, 2026-09-14). Off for the gated suites, which exist to reach it.
-const NETWORK_SUITES = ["BROWSER_E2E", "CONTINUE_E2E", "INSTALL_E2E", "VOICE_E2E", "BASH_CGROUP_E2E", "LIVE_E2E", "MODELS_DEV_E2E"];
+const NETWORK_SUITES = ["BROWSER_E2E", "CONTINUE_E2E", "INSTALL_E2E", "VOICE_E2E", "BASH_CGROUP_E2E", "LIVE_E2E", "MODELS_DEV_E2E", "LLM_E2E"];
 if (!NETWORK_SUITES.some((name) => process.env[name] === "1")) {
   const loopback = new Set(["localhost", "127.0.0.1", "[::1]", "::1", "0.0.0.0"]);
   const real = globalThis.fetch;

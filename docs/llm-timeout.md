@@ -261,9 +261,9 @@ The test is deliberately narrower than "the answer was empty", and three cases s
 
 | What came back | Verdict | Why |
 |---|---|---|
-| reasoning, then cut | valid turn, `incomplete` | something arrived; the answer was cut, the provider answered |
+| anything, then cut (no finish reason, no `[DONE]`) | **throws** `StreamCutError` | a reply that never finished is not one (docs/provider-failures.md) |
 | `finish_reason: stop`, no text | valid turn | the model chose to say nothing, and said so |
-| usage only | valid turn | a turn billed for its tokens was served |
+| usage, then `[DONE]` | valid turn | a turn billed for its tokens was served |
 | nothing | **throws** | no answer, and no claim of one |
 
 ## Refused
