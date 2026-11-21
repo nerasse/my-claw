@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 import { chatCompletion, chatCompletionStream, applyPromptCache, type ChatMessage } from "../../src/llm/provider.ts";
 import { isMalformedReply, isProviderOutage } from "../../src/llm/outage.ts";
-import { syntheticReasoningMismatch } from "../../src/llm/answer-accounting.ts";
+import { replyAccountingMismatch } from "../../src/llm/answer-accounting.ts";
 import type { ResolvedLlmConfig } from "../../src/core/config.ts";
 
 const llm: ResolvedLlmConfig = {
@@ -118,11 +118,11 @@ test("a Synthetic answer consistent with hidden reasoning usage is accepted", as
   expect(reply.usage?.reasoningTokens).toBe(400);
 });
 
-test("another provider's usage and technical examples cannot trigger the Synthetic guard", async () => {
+test("a reply consistent with hidden reasoning usage is accepted on any endpoint", async () => {
   const prose = "Here is the literal marker `<ds_safety>` in a technical example. ".repeat(12);
   const reply = await streamed([
     text(prose),
-    stop({ prompt_tokens: 10, completion_tokens: 420, completion_tokens_details: { reasoning_tokens: 419 } }),
+    stop({ prompt_tokens: 10, completion_tokens: 420, completion_tokens_details: { reasoning_tokens: 200 } }),
   ], { ...llm, baseUrl: "https://other-provider.example/v1" });
   expect(reply.content).toBe(prose);
 });
@@ -161,15 +161,33 @@ test("reasoning that arrived on its own channel is never second-guessed", async 
   expect(reply.reasoning).toBe("thinking it through");
 });
 
-test("the Synthetic guard requires comparable usage and a large mismatch", () => {
+test("a fragment its own billing does not support is a malformed reply, not an answer", async () => {
+  // Measured 2026-11-21, thread 4d5775e7 seq 55060: 21 characters, 8 completion tokens, 7 of them
+  // reasoning, and not one character of reasoning text. The wide margin below is 16 tokens, larger
+  // than the whole reply, so this shape used to pass as an answer.
+  const err = await failureOf(streamed([
+    text("docs/oss-pipeline.md>"),
+    stop({ prompt_tokens: 371_561, completion_tokens: 8, completion_tokens_details: { reasoning_tokens: 7 } }),
+  ]));
+  expect(isMalformedReply(err)).toBe(true);
+  expect(err.message).toBe(`${llm.model} answered with a fragment its own usage does not support`);
+});
+
+test("an ordinary short answer is never mistaken for a fragment", () => {
   const usage = (completionTokens: number, reasoningTokens: number) => ({ promptTokens: 1, completionTokens, totalTokens: 1 + completionTokens, reasoningTokens });
-  const content = "x".repeat(2000);
-  expect(syntheticReasoningMismatch(llm, content, "", usage(615, 613))).toBe(true);
-  expect(syntheticReasoningMismatch(llm, content, "", usage(1200, 700))).toBe(false);
-  expect(syntheticReasoningMismatch(llm, content, "", usage(10, 100))).toBe(false);
-  expect(syntheticReasoningMismatch(llm, content, "", undefined)).toBe(false);
-  expect(syntheticReasoningMismatch(llm, "Ok.", "", usage(14, 13))).toBe(false);
-  expect(syntheticReasoningMismatch({ ...llm, apiModel: "another-model" }, content, "", usage(615, 613))).toBe(false);
+  expect(replyAccountingMismatch("Oui.", "", usage(5, 3))).toBeUndefined();
+  expect(replyAccountingMismatch("C'est fait, rien d'autre à signaler.", "", usage(20, 12))).toBeUndefined();
+  // No split published, no reasoning streamed: the rule has nothing to compare and stays out.
+  expect(replyAccountingMismatch("docs/oss-pipeline.md>", "", usage(8, 0))).toBeUndefined();
+  expect(replyAccountingMismatch("docs/oss-pipeline.md>", "", undefined)).toBeUndefined();
+  // Reasoning that arrived on its own channel was split correctly.
+  expect(replyAccountingMismatch("ok", "thinking", usage(8, 7))).toBeUndefined();
+});
+
+test("the same accounting rule holds on any endpoint, not just Synthetic", () => {
+  const usage = (completionTokens: number, reasoningTokens: number) => ({ promptTokens: 1, completionTokens, totalTokens: 1 + completionTokens, reasoningTokens });
+  expect(replyAccountingMismatch("x".repeat(2000), "", usage(615, 613))).toBe("draft");
+  expect(replyAccountingMismatch("docs/oss-pipeline.md>", "", usage(8, 7))).toBe("stub");
 });
 
 test("the buffered path holds the same contract", async () => {

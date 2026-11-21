@@ -378,7 +378,7 @@ the bubble, nothing of it is journalled, and the run asks again.
 | no finish reason **and** no `[DONE]` | cut on the wire, whatever it carried | `StreamCutError`, a 502 stream fault |
 | `data: {"error": ...}` after the status line | the generation failed | a fault carrying the status it names (429 stays a quota) |
 | `finish_reason` `error` or `network_error` | the generation died | a 502 stream fault |
-| text size conflicts with comparable reasoning usage on Synthetic DeepSeek V4.1 Flash | response suspect on this route | `MalformedReplyError` |
+| text size conflicts with the answer the usage bills | response suspect on this route | `MalformedReplyError` |
 
 Either end marker is enough. `[DONE]` ends the read even if the connection is still open; usage
 frames between the finish reason and `[DONE]` are still consumed.
@@ -388,11 +388,25 @@ frames between the finish reason and `[DONE]` are still consumed.
 One affected Synthetic DeepSeek V4.1 Flash reply was stored as 2,042 characters of answer text,
 with no separate reasoning and 613 out of 615 tokens reported as reasoning. The original SSE is not
 available, so those numbers do not establish how the reply was produced. `answer-accounting.ts`
-keeps a best-effort check specific to that provider and model: with no reasoning text, only compare
-valid counts, and retry when estimated text tokens exceed twice `completion - reasoning` plus 16.
-This is not a protocol rule or evidence that all malformed replies look like this. The check does
-not apply to OpenCode Go or other Synthetic models. A mismatch does not count toward the circuit
-breaker shared by all models at the endpoint.
+keeps a best-effort check on that arithmetic: with no reasoning text, and only comparable counts, it
+compares the answer's estimated size to what the usage billed as answer (`completion - reasoning`).
+The rule is the wire's own arithmetic, so it is scoped to no provider and no model.
+
+Two shapes, two thresholds, and the second exists because the first could not see it:
+
+| shape | what came back | what it turned out to be |
+|---|---|---|
+| `draft` | text over **2x + 16 tokens** of answer budget | the prompt's scaffolding, replayed |
+| `stub` | **16 tokens or fewer**, over **2x + 2** its answer budget | a fragment with no sentence in it |
+
+The measured stub is thread `4d5775e7`, seq 55060 (2026-11-21): `docs/oss-pipeline.md>`, 21
+characters, 8 completion tokens of which 7 were reasoning. One token was billed as answer and the
+reply carried six, so the draft rule's 16-token cushion -- wider than the whole reply -- read it as
+an ordinary terse answer and let it through. A reply that short cannot spend a cushion at all, which
+is why it is judged on the ratio alone. An ordinary short answer is billed at least what it wrote
+and stays out: `Oui.` at 2 answer tokens, `C'est fait, rien d'autre à signaler.` at 8.
+
+A mismatch does not count toward the circuit breaker shared by all models at the endpoint.
 
 The earlier text filter also rejected valid answers that quoted its markers. In one Opus run
 (2026-11-20), our detector classified a reply containing `<ds_safety>` as a template leak.

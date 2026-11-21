@@ -3,7 +3,7 @@ import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError, sleep } from "../core/aborted.ts";
 import { isRetryableStatus, retryDelayMs, parseRetryAfterMs, wallAhead } from "./retry.ts";
 import { MalformedReplyError, StreamCutError, isMalformedReply, isQuotaSpent, isStreamFault } from "./outage.ts";
-import { syntheticReasoningMismatch } from "./answer-accounting.ts";
+import { replyAccountingMismatch } from "./answer-accounting.ts";
 import { claimSseCapture } from "./sse-capture.ts";
 import {
   repairFor,
@@ -425,8 +425,14 @@ function assertAnswered(
   if (finishReason === "error" || finishReason === "network_error") {
     throw providerFault(`LLM stream closed with finish_reason ${finishReason}`);
   }
-  if (syntheticReasoningMismatch(config, content, reasoning, usage)) {
-    throw new MalformedReplyError(config.model, "reported inconsistent reasoning usage");
+  const mismatch = replyAccountingMismatch(content, reasoning, usage);
+  if (mismatch) {
+    throw new MalformedReplyError(
+      config.model,
+      mismatch === "stub"
+        ? "answered with a fragment its own usage does not support"
+        : "reported inconsistent reasoning usage",
+    );
   }
 }
 
