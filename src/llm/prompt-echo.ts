@@ -24,6 +24,16 @@
  * emits and prose does not: the clock behind our block, a figure inside a gauge, a delimiter at the
  * start of a line. Nothing matches inside a fence, which is how an answer quotes the thing it is
  * explaining.
+ *
+ * One shape is not a marker at all, because the leak does not always carry one: the reply simply
+ * **continues a text that was already begun**. A chat template ends on the assistant header, so the
+ * first character a model generates is the first character of its answer -- a space in front of it
+ * means the model is mid-way through somebody else's sentence. Measured over the whole corpus on
+ * 2026-11-21 (48 587 phases of every thread): nine replies open on whitespace, and all nine are
+ * fragments -- ` reward\n2 / 2`, ` adipiscing\nLet me give him a straight answer`, ` growing the
+ * team and expanding into new areas.` behind another answer's tail. Not one legitimate answer opens
+ * on a space. Newlines are left alone: a reply that begins with a blank line is ordinary
+ * formatting, a reply that begins *inside a line* is not.
  */
 const FENCE = /^[ \t]*(```|~~~)[\s\S]*?^[ \t]*\1.*$/gm;
 
@@ -76,5 +86,11 @@ const ECHOES: ReadonlyArray<{ what: string; pattern: RegExp }> = [
 export function promptEchoIn(text: string): string | undefined {
   if (!text.trim()) return undefined;
   const bare = text.replace(FENCE, "");
-  return ECHOES.find((echo) => echo.pattern.test(bare))?.what;
+  // The named shapes first: one that says *what* was retyped is a better diagnosis than the
+  // generic one, and every fixture that carries both is a named leak that happens to open on a
+  // space (` maggiore\n\n<context>`). The continuation rule is the net for the ones with no marker.
+  const named = ECHOES.find((echo) => echo.pattern.test(bare))?.what;
+  if (named) return named;
+  // Never inside a fence: this is about where the reply starts.
+  return /^[ \t]+\S/.test(text) ? "a continuation of a text it had already begun" : undefined;
 }

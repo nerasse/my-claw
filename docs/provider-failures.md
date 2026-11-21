@@ -379,6 +379,7 @@ the bubble, nothing of it is journalled, and the run asks again.
 | `data: {"error": ...}` after the status line | the generation failed | a fault carrying the status it names (429 stays a quota) |
 | `finish_reason` `error` or `network_error` | the generation died | a 502 stream fault |
 | text size conflicts with the answer the usage bills | response suspect on this route | `MalformedReplyError` |
+| the reply opens on a space: it continues a text rather than answering | the split was lost | `MalformedReplyError` |
 
 Either end marker is enough. `[DONE]` ends the read even if the connection is still open; usage
 frames between the finish reason and `[DONE]` are still consumed.
@@ -407,6 +408,33 @@ is why it is judged on the ratio alone. An ordinary short answer is billed at le
 and stays out: `Oui.` at 2 answer tokens, `C'est fait, rien d'autre à signaler.` at 8.
 
 A mismatch does not count toward the circuit breaker shared by all models at the endpoint.
+
+### When the split is lost the other way
+
+The accounting above compares sizes, so it only sees a reply that is too *big* for its budget. The
+same broken split produces the opposite shape, measured on 2026-11-21 (thread `4d5775e7`, two turns
+the owner saw as plain messages while the app reported their thought as "not shared"):
+
+```
+content = " reward\n2 / 2\n"                    8 completion tokens, 7 billed as reasoning
+content = " adipiscing\nLet me give him a straight answer, but first check one thing: ..."
+```
+
+That is the model's thinking, handed over in the answer channel. The usage is consistent -- it did
+bill those tokens as reasoning -- so no size comparison can tell it from a short answer, and the
+wider the reply, the less the ratio says. What gives it away is structural, not arithmetic: **the
+reply opens on a space**. A chat template ends on the assistant header, so the first character a
+model generates is the first character of its answer; a space in front of it means the model is
+picking up mid-sentence in a text that was already under way.
+
+Swept over the whole corpus the same day -- 48 587 phases across every thread -- exactly nine replies
+open on whitespace, and all nine are fragments (` reward`, ` adipiscing`, ` growing the team and
+expanding into new areas.` behind another answer's tail, ` maggiore` behind a retyped `<context>`).
+No legitimate answer opens on a space. Newlines are excluded on purpose: a reply that starts with a
+blank line is ordinary formatting, a reply that starts *inside a line* is not.
+
+The rule lives in `prompt-echo.ts` beside the others, after them: a fragment that also names what it
+retyped (`[Audio]: "…"`, a `<context>` block) is reported as that, which is the better diagnosis.
 
 The earlier text filter also rejected valid answers that quoted its markers. In one Opus run
 (2026-11-20), our detector classified a reply containing `<ds_safety>` as a template leak.

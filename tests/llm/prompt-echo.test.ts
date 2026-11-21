@@ -2,6 +2,9 @@
  * The fixtures are the real replies, taken from `entries.jsonl` of the threads that produced them:
  * 4d5775e7 seq 54912 and 54949 (2026-11-20, Synthetic DeepSeek V4.1 Flash), fbe927c6 seq 53276
  * and 53334 (2026-11-19, same lane), and 52568 (2026-11-17).
+ *
+ * The continuations in the last block come from a sweep of the whole corpus the same day: 48 587
+ * phases of every thread, of which exactly nine open on whitespace -- all nine fragments.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -60,6 +63,31 @@ describe("a reply that carries another harness's control markup", () => {
       "its tool results as markup",
     );
     expect(promptEchoIn('<tool_call>{"name":"bash"}</tool_call>')).toBe("its tool calls as markup");
+  });
+});
+
+describe("a reply that continues a text it had already begun", () => {
+  test("the thinking delivered as an answer, twice in one run", () => {
+    // Measured 2026-11-21, thread 4d5775e7, the two turns the owner saw as plain messages while
+    // the app reported their reasoning as "not shared": the endpoint billed the thinking as
+    // reasoning and handed the words over in `content` anyway.
+    expect(promptEchoIn(" reward\n2 / 2\n")).toBe("a continuation of a text it had already begun");
+    expect(
+      promptEchoIn(" adipiscing\nLet me give him a straight answer, but first check one thing: whether he can"),
+    ).toBe("a continuation of a text it had already begun");
+  });
+
+  test("another answer's tail, with the transcript envelope behind it", () => {
+    // Named rather than generic, and that is the better diagnosis: the envelope inside the fragment
+    // says what the model thought it was continuing.
+    expect(promptEchoIn(" growing the team and expanding into new areas.\n[Audio]: \" Attends, attends, on va")).toBe(
+      "the transcript line of a turn",
+    );
+  });
+
+  test("a reply that opens on a blank line is ordinary formatting, not a continuation", () => {
+    expect(promptEchoIn("\n\nVoici le resultat.")).toBeUndefined();
+    expect(promptEchoIn("\n# Titre\n\ntexte")).toBeUndefined();
   });
 });
 
