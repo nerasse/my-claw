@@ -1,6 +1,6 @@
 # my-claw
 
-Personal AI agent orchestrator built on top of pi-mono.
+Self-hosted AI agent orchestrator: one agent, real tools, your own machine.
 
 ## What It Does
 
@@ -158,4 +158,10 @@ bun run dev        # Watch mode
 
 ## License
 
-PolyForm-Small-Business-1.0.0
+MIT. Read it in [LICENSE](LICENSE).
+
+Use it, change it, sell it, ship it closed. The only thing MIT asks is that the copyright notice
+travels with the copy.
+
+Contributions land under the same license.
+

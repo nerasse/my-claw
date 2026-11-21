@@ -1,10 +1,10 @@
 {
   "name": "my-claw",
   "version": "0.7.199",
-  "description": "Personal AI agent orchestrator built on top of pi-mono",
+  "description": "Self-hosted AI agent orchestrator: one agent, real tools, your own machine",
   "module": "src/index.ts",
   "type": "module",
-  "license": "PolyForm-Small-Business-1.0.0",
+  "license": "MIT",
   "private": true,
   "scripts": {
     "dev": "bash scripts/dev.sh",
@@ -49,5 +49,20 @@
     "hono": "^4.13.7",
     "sharp": "^0.35.5",
     "proxy-addr": "^2.0.8"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nerasse/my-claw.git"
+  },
+  "author": "Yassir EL KSSIMI",
+  "keywords": [
+    "ai",
+    "agent",
+    "orchestrator",
+    "llm",
+    "self-hosted",
+    "bun",
+    "typescript"
+  ],
+  "homepage": "https://github.com/nerasse/my-claw#readme"
 }

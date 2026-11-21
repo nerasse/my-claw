@@ -1,83 +1,18 @@
-# PolyForm Small Business License 1.0.0
+MIT License
 
-<https://polyformproject.org/licenses/small-business/1.0.0>
+Copyright (c) 2026 Yassir EL KSSIMI
 
-## Acceptance
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and
+associated documentation files (the "Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the
+following conditions:
 
-In order to get any license under these terms, you must agree to them as both strict obligations and conditions to all your licenses.
+The above copyright notice and this permission notice shall be included in all copies or substantial
+portions of the Software.
 
-## Copyright License
-
-The licensor grants you a copyright license for the software to do everything you might do with the software that would otherwise infringe the licensor's copyright in it for any permitted purpose. However, you may only distribute the software according to [Distribution License](#distribution-license) and make changes or new works based on the software according to [Changes and New Works License](#changes-and-new-works-license).
-
-## Distribution License
-
-The licensor grants you an additional copyright license to distribute copies of the software. However, you may only distribute unchanged copies of the software, and you must ensure that anyone who gets a copy of the software from you also gets a copy of these terms. Your license to distribute covers distributing the software as you received it, in any medium, as well as any of your work that contributes to the software.
-
-## Changes and New Works License
-
-The licensor grants you an additional copyright license to make changes and new works based on the software. However, you may only share your changes and new works under the same terms, and you must ensure that anyone who gets a copy of your changes or new works also gets a copy of the software and these terms. Your license to make changes and new works covers making changes and new works that are part of or derived from the software, as well as any of your work that contributes to the software.
-
-## Notices
-
-You must ensure that anyone who gets a copy of any part of the software from you also gets a copy of these terms.
-
-If you modified the software, you must ensure that anyone who gets a copy of any part of the software, or any derivative work based on it, from you also gets a copy of your changes and new works. If you received a modified version of the software, you must ensure that anyone who gets a copy of any part of the software, or any derivative work based on it, from you also gets a copy of the changes and new works you received.
-
-You must ensure that each copy of the software and any derivative work based on it that you distribute includes the following or an equivalent notice, preserving all the hyperlinks it contains:
-
-> This software is available under the PolyForm Small Business License 1.0.0. See the LICENSE file in the source distribution for details.
-
-## Patent License
-
-The licensor grants you a patent license for the software that covers patent claims the licensor can license, or becomes able to license, that you would infringe by using the software. However, you may only use the patent license according to [Small Business and Noncommercial Use](#small-business-and-noncommercial-use), and you lose your patent license if you do anything described in [Patent Defense](#patent-defense).
-
-## Small Business and Noncommercial Use
-
-You may use the software only if you meet one of these conditions:
-
-### Noncommercial Use
-
-Your use is noncommercial. A use is noncommercial if it does not generate revenue or financial benefit, directly or indirectly, for you or for anyone else.
-
-### Small Business Use
-
-Your use is small business use. A use is small business use if:
-
-1. You are a natural person and use the software only for personal purposes.
-
-2. You are an organization and meet all these conditions:
-
-   a. Your organization has fewer than 50 total individuals working as employees and independent contractors, or fewer than $5,000,000 in total gross receipts for the 12-month period preceding the most recent quarterly tax filing due date, whichever is greater.
-
-   b. The individuals making the use are doing so only on behalf of your organization.
-
-   c. You do not combine the software with, or use it to provide, any product or service to any large business, which is any business that does not meet the conditions in (a) above.
-
-If your use ceases to meet these conditions, it ceases to qualify as small business use. If your use begins to qualify again within 30 days, it resumes qualifying as small business use.
-
-If you are an organization that does not meet the conditions in (2)(a) above, but have a subsidiary that does, and the subsidiary meets all the conditions in (2) above, the subsidiary's use qualifies as small business use.
-
-## Patent Defense
-
-If you make any written claim that the software infringes or contributes to infringement of any patent, your patent license for the software granted under these terms ends immediately. If your company makes such a claim, your patent license ends immediately for work on behalf of your company.
-
-## No Liability
-
-***As far as the law allows, the software comes as is, without any warranty or condition, and the licensor will not be liable to you for any damages arising out of these terms or the use or nature of the software, under any kind of legal claim.***
-
-## Definitions
-
-**The licensor** is the individual or entity offering these terms.
-
-**The software** is the software the licensor makes available under these terms.
-
-**You** refers to the individual or entity agreeing to these terms.
-
-**Your company** is any legal entity, sole proprietorship, or other kind of organization that you work for, plus all organizations that have control over, are under the control of, or are under common control with that organization. **Control** means ownership of substantially all the assets of an entity, or the power to direct its management and policies by vote, contract, or otherwise. Control can be direct or indirect.
-
-**Your licenses** are all the licenses granted to you for the software under these terms.
-
-**Use** means anything you do with the software requiring one of your licenses.
-
-**Trademark** means trademarks, service marks, and similar rights.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT
+LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO
+EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE
+USE OR OTHER DEALINGS IN THE SOFTWARE.
