@@ -52,6 +52,12 @@ const ECHOES: ReadonlyArray<{ what: string; pattern: RegExp }> = [
   // bracket notices (no STT configured, an unavailable file, a failed transcription, a failed
   // frame extraction). A label followed by anything else is prose.
   { what: "the transcript line of a turn", pattern: /(?:^|\n)[ \t]*\[(?:Audio(?: \d+)?|Video)\]:[ \t]*(?:["«]|\[(?:voice\/STT|unavailable|Transcription|Frame extraction))/i },
+  // The same line as the app writes it down: `audio: "the words heard"`, with no brackets, on the
+  // clipboard and on a message recalled into the field. It became a turn of its own once (2026-11-21,
+  // 4d5775e7 seq 55377), so a reply can hand it back the same way a `[Audio]:` line comes back. Only
+  // the quoted form: a label followed by anything else is prose, and a fenced example is stripped
+  // by the caller above.
+  { what: "the transcript line of a turn", pattern: /(?:^|\n)[ \t]*(?:audio|video):[ \t]*["«]/i },
   // The other half of that envelope: the block the same writer appends, recognised by the media
   // file its first line names. Narrowed to recordings on purpose. `[Audio]`/`[Video]` is the
   // transcript envelope and no answer writes it; an `- image: /path.png` bullet is something an

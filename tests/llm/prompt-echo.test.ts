@@ -195,6 +195,15 @@ Je vois : les mails sont ici, donc traiter ici est plus simple.`;
     expect(promptEchoIn('[Audio 2]: " Deuxième prise."')).toBe("the transcript line of a turn");
   });
 
+  test("the app's own spelling of that line, without brackets", () => {
+    // The clipboard and the composer's history wrote it this way, and one such line reached a
+    // thread as a message of its own (2026-11-21, 4d5775e7 seq 55377).
+    expect(promptEchoIn('audio: " Sur GitHub, j\'ai fait le 1. Le 2, c\'était déjà fait par défaut."')).toBe(
+      "the transcript line of a turn",
+    );
+    expect(promptEchoIn('Une réponse.\naudio: " Vérifie le dépôt."')).toBe("the transcript line of a turn");
+  });
+
   test("its bracket notices, which the preprocessor writes too", () => {
     expect(promptEchoIn('[Audio]: [voice/STT not configured]')).toBe("the transcript line of a turn");
     expect(promptEchoIn('[Audio]: [Transcription failed: boom]')).toBe("the transcript line of a turn");
@@ -231,6 +240,7 @@ describe("an answer that names the envelope is an answer", () => {
 
   test("a label followed by prose, not by a transcript", () => {
     expect(promptEchoIn("[Audio]: le préprocesseur ajoute la transcription ici.")).toBeUndefined();
+    expect(promptEchoIn('Le champ affiche audio: "salut" après un rappel.')).toBeUndefined();
   });
 
   test("the whole envelope quoted in a fence", () => {
