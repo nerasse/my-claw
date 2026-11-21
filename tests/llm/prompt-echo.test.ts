@@ -91,6 +91,40 @@ describe("a reply that continues a text it had already begun", () => {
   });
 });
 
+describe("a reply that carries DeepSeek's own tool-call dialect", () => {
+  // U+FF5C, the fullwidth bar the template puts around every DSML token.
+  const bar = "\uFF5C";
+
+  test("the call the serving stack failed to parse, handed over as the answer", () => {
+    // 2026-11-21 18:30, thread fbe927c6: the owner said "release oui" and got this, 34 completion
+    // tokens of which 33 were billed as reasoning.
+    const leaked = `\n</${bar}DSML${bar} parameter>\n<${bar}DSML${bar} parameter name="path" string="true">/tmp/nothing.txt</${bar}DSML${bar} parameter>\n</${bar}DSML${bar} invoke>\n</${bar}DSML${bar} calls>`;
+    expect(promptEchoIn(leaked)).toBe("its tool-call markup");
+  });
+
+  test("the whole reply is one call, with no prose in front of it", () => {
+    // 2026-11-06: the same dialect at the head, and the name field carried a shell command. This
+    // spelling wraps the token in two bars per side, the other in one; both are in the corpus.
+    const leaked = `<${bar}${bar}DSML${bar}${bar} calls>\n<${bar}${bar}DSML${bar}${bar} invoke name="read">\n<${bar}${bar}DSML${bar}${bar} parameter name="path">a.txt`;
+    expect(promptEchoIn(leaked)).toBe("its tool-call markup");
+  });
+
+  test("an answer that explains the dialect is still an answer", () => {
+    // Both are real replies, 2026-11-02 and 2026-11-21: they quote the markup in a fence.
+    const explaining = [
+      "Oui, il y avait un vrai souci, et il n'etait pas dans ta config.",
+      "",
+      "```json",
+      `"name": "docker 2>/dev/null; true</${bar}DSML${bar} parameter>\n</${bar}DSML${bar} invoke>"`,
+      "```",
+      "",
+      "Un modele a emis un tool-call malforme.",
+    ].join("\n");
+    expect(promptEchoIn(explaining)).toBeUndefined();
+    expect(promptEchoIn(`Le texte exact de la reponse contenait ${bar}DSML${bar}.`)).toBeUndefined();
+  });
+});
+
 /**
  * The false positives that got the previous detector deleted (70f65cd): it matched a tag wherever
  * it appeared, so an Opus answer that quoted one was refused as if the model had printed its

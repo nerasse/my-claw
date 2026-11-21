@@ -380,6 +380,7 @@ the bubble, nothing of it is journalled, and the run asks again.
 | `finish_reason` `error` or `network_error` | the generation died | a 502 stream fault |
 | text size conflicts with the answer the usage bills | response suspect on this route | `MalformedReplyError` |
 | the reply opens on a space: it continues a text rather than answering | the split was lost | `MalformedReplyError` |
+| the reply is a tool call in the model's own dialect | the stack did not parse it into `tool_calls` | `MalformedReplyError` |
 
 Either end marker is enough. `[DONE]` ends the read even if the connection is still open; usage
 frames between the finish reason and `[DONE]` are still consumed.
@@ -435,6 +436,35 @@ blank line is ordinary formatting, a reply that starts *inside a line* is not.
 
 The rule lives in `prompt-echo.ts` beside the others, after them: a fragment that also names what it
 retyped (`[Audio]: "…"`, a `<context>` block) is reported as that, which is the better diagnosis.
+
+### When the tool call never became a tool call
+
+An OpenAI-compatible endpoint is supposed to take the model's own tool-call dialect out of the stream
+and hand it back in the `tool_calls` field. When a serving stack does not, the markup arrives as
+`content`, and nothing distinguishes it from an answer: valid end, ordinary usage, tokens billed.
+
+Measured on 2026-11-21 18:30 UTC, thread `fbe927c6`: the owner said "release oui", the first attempt
+ended with an empty turn, and the retry answered with this -- 133 characters, 34 completion tokens of
+which 33 were billed as reasoning:
+
+```
+
+</｜DSML｜ parameter>
+<｜DSML｜ parameter name="path">/tmp/nothing.txt</｜DSML｜ parameter>
+</｜DSML｜ invoke>
+</｜DSML｜ calls>
+```
+
+The dialect is a token name between fullwidth bars, and the corpus holds both spellings, one bar per
+side and two. `prompt-echo.ts` recognises it at the head of the reply, or opening a line as a tag
+(`tool_calls`, `invoke`, `calls`). An answer that *explains* the dialect quotes it in a fence, which
+the caller has already stripped, so it stays an answer -- and that is not hypothetical: two of the
+four replies in the corpus that carry the token are exactly that.
+
+The accounting rule above also catches this one, since 1 token was billed as answer and 34 written,
+but only because the reply is short. A long dump of markup behind a generous reasoning budget passes
+the ratio, which is why the structural rule is the one that has to exist.
+
 
 The earlier text filter also rejected valid answers that quoted its markers. In one Opus run
 (2026-11-20), our detector classified a reply containing `<ds_safety>` as a template leak.

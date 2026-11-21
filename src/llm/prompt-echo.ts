@@ -69,6 +69,14 @@ const ECHOES: ReadonlyArray<{ what: string; pattern: RegExp }> = [
   { what: "its tool calls as markup", pattern: /(?:^|\n)[ \t]*<tool_(?:call|response|result)>/i },
   // A tool call spelled out in the model's own format, at the head of a line.
   { what: "a tool call as markup", pattern: /(?:^|\n)[ \t]*(?:assistant\s+to=|to=functions\.)/i },
+  // DeepSeek's own tool-call dialect, which only a template writes: a token name wrapped in
+  // fullwidth bars, with one bar per side or two -- both spellings are in the corpus. Measured
+  // twice: 2026-11-06, a reply that was nothing but a call, and 2026-11-21 18:30, a fragment
+  // starting with the closing form, handed to the reader as the answer to "release oui". The
+  // serving stack is supposed to parse that into `tool_calls`; when it does not, the markup
+  // arrives as content. Head of the reply, or opening a line as a tag: an answer that talks
+  // about it quotes it in a fence, which the caller has already stripped.
+  { what: "its tool-call markup", pattern: /^\s*<\/?[\uFF5C|]+DSML[\uFF5C|]+|(?:^|\n)[ \t]*<\/?[\uFF5C|]+DSML[\uFF5C|]+[ \t]*(?:tool_calls|invoke|calls)\b/i },
   // Raw control tokens of a chat template. A template delimiter at the edge of a line, never prose.
   { what: "raw chat-template tokens", pattern: /(?:^|\n)[ \t]*<\|(?:im_start|im_end|endoftext|eot_id|start_header_id|end_header_id)\|>|<\|tool[^|\n]{0,20}\|>/i },
   // The safety classifier of the same model family, printed as its own verdict in the reply box:
