@@ -102,16 +102,14 @@ Aucune autre clé n'est **strictement obligatoire** à l'installation :
 
 ### 6.1 One-liner (recommandé)
 
-Avec une clé de release (une par machine, créée sur https://dl.kssimi.fr/key ou donnée par le
-propriétaire) :
+Le dépôt est public, aucune clé n'est nécessaire :
 
 ```bash
-curl -fsSL -H "Authorization: Bearer <clé>" https://dl.kssimi.fr/my-claw/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/nerasse/my-claw/main/packaging/install-remote.sh | sudo bash
 ```
 
-Le hub inscrit la clé dans le script servi : rien d'autre à taper. `sudo bash -s -- --version 0.7.102`
-épingle une version, `--url` désigne une autre source de release. La clé est
-écrite dans `~/.my-claw/.env` : les mises à jour passent par la même source
+`sudo bash -s -- --version 0.7.201` épingle une version, `--url` désigne une autre source de
+release. L'URL est écrite dans `~/.my-claw/.env` : les mises à jour passent par la même source
 (`docs/release-source.md`).
 
 ### 6.2 Ce que fait l'installer
@@ -158,9 +156,8 @@ Valeurs minimales pour démarrer + rester à jour :
 ```dotenv
 # LLM : la clé du provider que vous allez utiliser (voir §7.2). Exemple :
 LITELLM_API_KEY=...          # OU OPENROUTER_API_KEY / GROQ_API_KEY / COMMANDCODE_KEY / OPENCODE_GO_KEY
-# Updates (écrit par l'installeur, ou par `myclaw release-key <clé>`) :
-MY_CLAW_RELEASE_URL=https://dl.kssimi.fr/my-claw
-MY_CLAW_RELEASE_KEY=dlh_...
+# Updates (écrit par l'installeur, ou par `myclaw release-key`) :
+MY_CLAW_RELEASE_URL=https://github.com/nerasse/my-claw
 ```
 
 Optionnel : `GROQ_API_KEY` (STT cloud), `GEOAPIFY_API_KEY` (localisation),

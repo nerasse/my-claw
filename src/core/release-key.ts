@@ -1,19 +1,23 @@
-import { setEnvValue } from "./env-edit.ts";
+import { removeEnvKey, setEnvValue } from "./env-edit.ts";
+import { DEFAULT_RELEASE_URL, githubLatestVersion, isGithubSource, normalizeReleaseUrl } from "./release-source.ts";
 
 /**
  * `myclaw release-key`: points this install at its release source, docs/release-source.md.
  *
- * The key is tried before anything is written: a mistyped key would otherwise only show up as an
- * auto-update that silently never finds a release. The running server picks the two lines up on
- * its own (.env is hot-reloaded), and the shell updaters read them on their next run.
+ * The source is checked before anything is written: a mistyped URL or key would otherwise only
+ * show up as an auto-update that silently never finds a release. The running server picks the
+ * lines up on its own (.env is hot-reloaded), and the shell updaters read them on their next run.
  */
 
-export const DEFAULT_RELEASE_URL = "https://dl.kssimi.fr/my-claw";
+export { DEFAULT_RELEASE_URL };
 
 const USAGE = `usage: myclaw release-key [<key>] [--url <release url>]
 
-  Sets the release source updates come from, after checking that the key works.
-  Without <key>, the key is read from standard input (nothing is echoed to the terminal).
+  Sets the release source updates come from, after checking that it answers.
+  A GitHub repository needs no key:
+    myclaw release-key --url https://github.com/<owner>/my-claw
+  Any other source keeps the neutral layout and its key, read from standard input when the
+  key is not on the command line (nothing is echoed).
   --url defaults to ${DEFAULT_RELEASE_URL}
 `;
 
@@ -30,7 +34,7 @@ async function readStdin(): Promise<string> {
 
 export type CheckResult = { ok: true; version: string } | { ok: false; error: string };
 
-export async function checkReleaseKey(url: string, key: string): Promise<CheckResult> {
+async function checkLayout(url: string, key: string): Promise<CheckResult> {
   let response: Response;
   try {
     response = await fetch(`${url}/server/latest.json`, {
@@ -48,6 +52,17 @@ export async function checkReleaseKey(url: string, key: string): Promise<CheckRe
   const body = (await response.json().catch(() => undefined)) as { version?: unknown } | undefined;
   if (typeof body?.version !== "string") return { ok: false, error: `${url} does not look like a release source` };
   return { ok: true, version: body.version };
+}
+
+export async function checkReleaseSource(url: string, key?: string): Promise<CheckResult> {
+  const normalized = normalizeReleaseUrl(url);
+  if (isGithubSource(normalized)) {
+    const version = await githubLatestVersion(normalized);
+    return version
+      ? { ok: true, version }
+      : { ok: false, error: `${normalized} has no published release` };
+  }
+  return checkLayout(normalized, key ?? "");
 }
 
 export async function runReleaseKeyCli(args: string[], read: () => Promise<string> = readStdin): Promise<number> {
@@ -72,34 +87,51 @@ export async function runReleaseKeyCli(args: string[], read: () => Promise<strin
       key = arg;
     }
   }
-  url = url.replace(/\/+$/, "");
+  url = normalizeReleaseUrl(url);
   if (!/^https?:\/\//.test(url)) {
     console.error(`not a URL: ${url}`);
     return 1;
   }
-  key = (key ?? (await read())).trim();
-  if (!key) {
-    console.error("no key given");
-    return 1;
-  }
-  if (/\s/.test(key)) {
-    console.error("a key has no spaces: copy it again");
-    return 1;
+
+  const github = isGithubSource(url);
+  if (!github) {
+    key = (key ?? (await read())).trim();
+    if (!key) {
+      console.error("no key given");
+      return 1;
+    }
+    if (/\s/.test(key)) {
+      console.error("a key has no spaces: copy it again");
+      return 1;
+    }
   }
 
-  const check = await checkReleaseKey(url, key);
+  const check = await checkReleaseSource(url, key);
   if (!check.ok) {
     console.error(`Nothing changed: ${check.error}`);
     return 1;
   }
-  for (const [name, value] of [["MY_CLAW_RELEASE_URL", url], ["MY_CLAW_RELEASE_KEY", key]] as const) {
-    const written = await setEnvValue(name, value);
-    if (!written.ok) {
-      console.error(`could not write ${name}: ${written.error}`);
+
+  const written = await setEnvValue("MY_CLAW_RELEASE_URL", url);
+  if (!written.ok) {
+    console.error(`could not write MY_CLAW_RELEASE_URL: ${written.error}`);
+    return 1;
+  }
+  if (github) {
+    const removed = await removeEnvKey("MY_CLAW_RELEASE_KEY");
+    if (!removed.ok) {
+      console.error(`could not remove MY_CLAW_RELEASE_KEY: ${removed.error}`);
+      return 1;
+    }
+  } else {
+    const writtenKey = await setEnvValue("MY_CLAW_RELEASE_KEY", key!);
+    if (!writtenKey.ok) {
+      console.error(`could not write MY_CLAW_RELEASE_KEY: ${writtenKey.error}`);
       return 1;
     }
   }
-  console.log(`Release source set: ${url} (latest server release ${check.version}).`);
+
+  console.log(`Release source set: ${url} (latest release ${check.version}).`);
   console.log("Updates come from there from now on: myclaw update, the 15-minute timer, the app and the web client.");
   return 0;
 }

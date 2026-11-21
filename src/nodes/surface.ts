@@ -1,7 +1,7 @@
 import type { Server, ServerWebSocket } from "bun";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { authHeaders, releaseSource } from "../channels/my-claw-app/release-source.ts";
+import { authHeaders, latestNodeVersion, nodeAssetUrl, releaseSource } from "../core/release-source.ts";
 import type { NodesConfig } from "../core/config.ts";
 import { log } from "../utils/logger.ts";
 import { removeNodeAgent, writeNodeAgent } from "./agent.ts";
@@ -161,20 +161,15 @@ export function createNodeSurface(deps: NodeSurfaceDeps): NodeSurface {
     let version = url.searchParams.get("version") ?? "";
     if (version && !/^\d+\.\d+\.\d+$/.test(version)) return json({ error: "invalid version" }, 400);
     if (!version) {
-      const latestUrl = `${source.base}/node/latest.json`;
-      const latest = await fetch(latestUrl, { headers: { Accept: "application/json", ...authHeaders(latestUrl, source) } });
-      if (!latest.ok) {
-        await latest.body?.cancel();
-        void log("warn", "node download: release source refused", { status: latest.status });
-        return json({ error: `release source answered HTTP ${latest.status}` }, 502);
+      version = (await latestNodeVersion(source)) ?? "";
+      if (!version) {
+        void log("warn", "node download: no server release", {});
+        return json({ error: "no server release found" }, 502);
       }
-      const body = (await latest.json().catch(() => undefined)) as { version?: unknown } | undefined;
-      version = typeof body?.version === "string" ? body.version : "";
-      if (!version) return json({ error: "no node release found" }, 502);
     }
 
     const name = nodeFileName(version, target as NodeTarget);
-    const fileUrl = `${source.base}/node/${version}/${name}`;
+    const fileUrl = nodeAssetUrl(version, name, source)!;
     const file = await fetch(fileUrl, { headers: authHeaders(fileUrl, source) });
     if (!file.ok || !file.body) {
       await file.body?.cancel();

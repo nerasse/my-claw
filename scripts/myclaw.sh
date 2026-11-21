@@ -123,7 +123,7 @@ usage() {
   echo "  node      Remote nodes: give my-claw hands on another machine (add, ls, rm)"
   echo "  setup     Pair the first device of a fresh install (a code, a link, a QR)"
   echo "  web       Install and switch the web client bundle (install, ls, use, rm)"
-  echo "  release-key  Set the key (and source) updates come from: myclaw release-key <key>"
+  echo "  release-key  Set the release source: myclaw release-key --url <url>"
   echo "  update    Update to the latest release, web client bundle included (or myclaw update <version>); the browser keeps running (--with-browser)"
   echo "  codex     ChatGPT/Codex auth: myclaw codex <login|status|logout>"
   echo "  claude    Claude subscription auth: myclaw claude <login|set-token <token>|status|logout>"

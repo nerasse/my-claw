@@ -92,7 +92,7 @@ describe("latestAppUpdate", () => {
     process.env["FORGEJO_TOKEN"] = "forge-secret";
     const fetchMock = record(() => Response.json([]));
     try {
-      expect(await latestAppUpdate()).toEqual({ ok: false, error: "no release source on the server: run `myclaw release-key <key>`" });
+      expect(await latestAppUpdate()).toEqual({ ok: false, error: "no release source on the server: run `myclaw release-key --url https://github.com/<owner>/my-claw`" });
     } finally {
       fetchMock.restore();
     }
