@@ -604,6 +604,32 @@ async function endsOnNewline(file: string): Promise<boolean> {
 }
 
 /**
+ * The array a `context()` read hands out, keeping the one a live run already holds.
+ *
+ * `contextCache` is not a cache of the whole log: it is the branch a run reads for its whole
+ * duration, and an append that chains onto it must land in that same array (`extendContext`). A
+ * session with a compaction boundary rebuilds it on every read, so two readers of one handle used
+ * to take turns swapping it: the run took its branch, a status report read the same log a moment
+ * later, and the run's own user turn -- appended after both -- landed on the second array. The
+ * prompt the run built was its own branch without the question, while the thread showed it: the
+ * owner sent a message the model never saw (4d5775e7, 2026-11-21 21:24, message ff4ca8dd, four
+ * calls that all answered the previous turn).
+ *
+ * Extending the array in place is what makes the two one branch. A branch that diverges or
+ * shrinks still gets a new array, untouched: a run keeps the branch it started from, which is why
+ * `leafOf` reads the array's own tail rather than the log's live leaf.
+ */
+function adoptBranch(current: Entry[] | null, next: readonly Entry[]): Entry[] {
+  if (!current) return next as Entry[];
+  if (next.length < current.length) return next as Entry[];
+  for (let i = 0; i < current.length; i++) {
+    if (current[i]!.id !== next[i]!.id) return next as Entry[];
+  }
+  if (next.length > current.length) current.push(...next.slice(current.length));
+  return current;
+}
+
+/**
  * One session's log: the index of every entry, and the file behind it.
  *
  * Opening no longer reads the conversation. It reads `entries.idx` -- 56 bytes per entry, 2.6 MB
@@ -1034,7 +1060,7 @@ export class SessionLog {
     }
     if (boundary < 0) {
       const whole = await this.all();
-      this.contextCache = whole === this.list ? (this.list as Entry[]) : [...whole];
+      this.contextCache = adoptBranch(this.contextCache, whole === this.list ? (this.list as Entry[]) : whole);
       this.contextCovers = this.index.count;
       return this.contextCache;
     }
@@ -1046,9 +1072,9 @@ export class SessionLog {
       if (keptAt >= 0) start = Math.min(start, keptAt);
     }
     const entries = await this.entriesIn(path.slice(start));
-    this.contextCache = entries;
+    this.contextCache = adoptBranch(this.contextCache, entries);
     this.contextCovers = this.index.count;
-    return entries;
+    return this.contextCache;
   }
 
   /**
@@ -1069,7 +1095,9 @@ export class SessionLog {
     this.bytes = size;
     this.positions = null;
     this.facts = null;
-    this.contextCache = null;
+    // Not the branch itself: a run holds that array, and the read that follows adopts it (see
+    // `adoptBranch`) rather than handing out a copy the run will never see. Only what the array
+    // was measured against is dropped.
     this.contextCovers = -1;
     // The whole log in hand is just as stale as the index it was parsed against.
     this.list = null;
