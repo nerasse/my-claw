@@ -4,6 +4,7 @@ import { AbortedError, sleep } from "../core/aborted.ts";
 import { isRetryableStatus, retryDelayMs, parseRetryAfterMs, wallAhead } from "./retry.ts";
 import { MalformedReplyError, StreamCutError, isMalformedReply, isQuotaSpent, isStreamFault } from "./outage.ts";
 import { syntheticReasoningMismatch } from "./answer-accounting.ts";
+import { claimSseCapture } from "./sse-capture.ts";
 import {
   repairFor,
   repairOptionsFor,
@@ -115,7 +116,8 @@ function timeoutBudget(config: ResolvedLlmConfig): number {
   return requestTimeoutMs(config, OPENAI_TIMEOUT_MS);
 }
 
-async function* readChatData(body: ReadableStream<Uint8Array>): AsyncIterable<string> {
+async function* readChatData(body: ReadableStream<Uint8Array>, config: ResolvedLlmConfig): AsyncIterable<string> {
+  const capture = await claimSseCapture(config);
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -123,6 +125,7 @@ async function* readChatData(body: ReadableStream<Uint8Array>): AsyncIterable<st
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      capture?.append(value);
       buffer += decoder.decode(value, { stream: true });
 
       let newline: number;
@@ -138,6 +141,7 @@ async function* readChatData(body: ReadableStream<Uint8Array>): AsyncIterable<st
     // A terminal frame settles the reply even if the provider is slow to close the socket.
     void reader.cancel().catch(() => {});
     reader.releaseLock();
+    if (capture) await capture.save();
   }
 }
 
@@ -1261,7 +1265,7 @@ export async function chatCompletionStream(
         }
       };
 
-      for await (const data of readChatData(response.body)) {
+      for await (const data of readChatData(response.body, config)) {
         if (data === "[DONE]") {
           sawDone = true;
           break;
