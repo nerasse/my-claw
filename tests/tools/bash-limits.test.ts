@@ -55,14 +55,21 @@ test("the memory ceiling is named the way the config names it", () => {
 
 describe("what a killed call says", () => {
   test("a SIGKILL says so, and blames the ceiling only when there is one", async () => {
-    // `kill -9` is what an OOM kill and an external killifier both look like from here.
-    const result = await bashTool.execute({ command: "kill -9 $$" });
-    expect(result.success).toBe(false);
-    expect(result.error).toContain("Killed (SIGKILL)");
-    expect(result.error).toContain("killed externally");
-    expect(result.error).toContain("tools.bash.memoryMaxBytes");
-    // The wall is named, not blamed on memory: they all end in SIGKILL.
-    expect(result.error).not.toContain("timed out");
+    // `kill -9` is what an OOM kill and an external killifier both look like from here. A host
+    // with a user bus would put this call in a systemd scope, and a scope that refuses to start
+    // reports its own failure instead of the signal. The message under test is a bare call's.
+    setBashLimits({ cgroup: false });
+    try {
+      const result = await bashTool.execute({ command: "kill -9 $$" });
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Killed (SIGKILL)");
+      expect(result.error).toContain("killed externally");
+      expect(result.error).toContain("tools.bash.memoryMaxBytes");
+      // The wall is named, not blamed on memory: they all end in SIGKILL.
+      expect(result.error).not.toContain("timed out");
+    } finally {
+      setBashLimits(undefined);
+    }
   });
 
   test("the wall says timeout, never memory", async () => {

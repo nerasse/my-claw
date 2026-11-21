@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach } from "bun:test";
+import { describe, test, expect, beforeEach, setSystemTime } from "bun:test";
 import { readFile, rm } from "node:fs/promises";
 import {
   findNodeByToken,
@@ -91,16 +91,24 @@ describe("node store", () => {
   });
 
   test("facts from a hello replace the stored ones and move lastSeenAt", async () => {
-    const minted = await mintNode({ name: "web01", facts: FACTS });
-    if (!minted.ok) throw new Error("mint failed");
-    const before = nodeRecord(minted.minted.record.nodeId)!.lastSeenAt;
+    // A millisecond clock makes this a race on a fast runner: the mint and the hello land in the
+    // same millisecond, and the timestamp legitimately does not move. Pin the clock here.
+    setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    try {
+      const minted = await mintNode({ name: "web01", facts: FACTS });
+      if (!minted.ok) throw new Error("mint failed");
+      const before = nodeRecord(minted.minted.record.nodeId)!.lastSeenAt;
 
-    const updated: NodeFacts = { ...FACTS, hostname: "web01b", tools: [] };
-    await setNodeFacts(minted.minted.record.nodeId, updated);
-    const record = nodeRecord(minted.minted.record.nodeId)!;
-    expect(record.facts?.hostname).toBe("web01b");
-    expect(record.lastSeenAt).toBeString();
-    expect(record.lastSeenAt).not.toBe(before);
+      setSystemTime(new Date("2026-01-01T00:00:01.000Z"));
+      const updated: NodeFacts = { ...FACTS, hostname: "web01b", tools: [] };
+      await setNodeFacts(minted.minted.record.nodeId, updated);
+      const record = nodeRecord(minted.minted.record.nodeId)!;
+      expect(record.facts?.hostname).toBe("web01b");
+      expect(record.lastSeenAt).toBeString();
+      expect(record.lastSeenAt).not.toBe(before);
+    } finally {
+      setSystemTime();
+    }
   });
 
   test("a touch inside the window does not rewrite the file", async () => {
