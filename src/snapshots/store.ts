@@ -77,6 +77,34 @@ export async function recordRunStart(sessionId: string, workspace: string, runId
 }
 
 /**
+ * Warms the shadow of every workspace the config declares, one after the other, off the boot path.
+ *
+ * A capture is a `git add --all` per depot: warm, it is 300 ms; on a shadow that has never seen the
+ * tree, the same work is 73 s measured on `~/dev` (31 depots, 11 GB). That cold pass used to land
+ * in the middle of the first run of the day, since the run only awaits its capture before the first
+ * tool. Warming here means the first run finds the index hot.
+ *
+ * Sequential on purpose: eight workspaces at four depots each, launched together at boot, saturate
+ * the disk the first run needs. Each one is a no-op once its shadow is warm.
+ */
+export function warmShadows(workspaces: readonly string[]): void {
+  void (async () => {
+    for (const workspace of new Set(workspaces)) {
+      const started = Date.now();
+      try {
+        const snapshot = await captureWorkspace(workspace, shadowRoot());
+        void log("info", "workspace shadows warmed", {
+          root: snapshot.root,
+          depots: snapshot.depots.length,
+          ms: Date.now() - started,
+        });
+      } catch (err) {
+        void log("warn", "workspace shadow warm-up failed", { root: workspace, error: String(err) });
+      }
+    }
+  })();
+}
+
 /**
  * Drops what `/undo` can no longer reach for: a snapshot older than the retention, and anything
  * past the most recent runs of a session.

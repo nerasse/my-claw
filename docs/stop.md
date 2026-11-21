@@ -45,10 +45,24 @@ taken for `/undo`, and the one at the end had no reader at all (`changesSince` r
 workspace when the owner asks), so it was removed outright rather than merely moved off the path.
 
 The start capture does not block the wind-down either, and since 2026-11-21 it does not block the
-run's *start*: it is launched with the run and awaited before the first tool. Measured on `~/dev`
-(31 depots, 11 GB): 0.6 s on an idle tree, 18.1 s after a build, 73 s with cold shadows, and 197.8 s
+run's *start*: it is launched with the run and awaited before the first tool executes, with the
+tool's card already on screen so the wait reads as a card that spins. Measured on `~/dev` (31
+depots, 11 GB): 0.6 s on an idle tree, 18.1 s after a build, 73 s with cold shadows, and 197.8 s
 under disk pressure -- all of it used to sit between the router taking the message and the first
-token. A run that calls no tool still records it, in the background.
+token.
+
+Four things keep that capture off every path it does not have to be on:
+
+- **Four depots at a time**, each on its own shadow and its own lock: the loop used to be strictly
+  sequential over 31 repos. Warm, the whole capture is 270-350 ms.
+- **Warmed at boot**, one workspace after another (`warmShadows`), so the first run of the day does
+  not meet a cold shadow at its first tool.
+- **A Continue records nothing.** Its undo point is the earliest snapshot the turn's runs recorded,
+  and `snapshotOfRuns` already reads only that one: the second capture was written and never read.
+- **A sub-agent in its parent's tree records nothing.** The parent turn's snapshot is what
+  `/undo hard` restores, and it already holds those files.
+
+A run that calls no tool still records it, in the background.
 
 `captureWorkspace` itself was the cost: a `readdir` + `stat` walk of every file to find untracked
 ones past the size cap, 3.7 s on a 33k-file tree and 12 s on an 88k-file one, run once per depot.

@@ -5,7 +5,7 @@ import { backfillToolCalls } from "./analytics/tool-calls.ts";
 import { pruneOldSessions, cronSessionToThread, subagentSessionToThread, subagentThreadToSession, loadSession, loadLegacySession } from "./sessions/store.ts";
 import { sessionLogOf } from "./sessions/log-access.ts";
 import { promptOf } from "./sessions/projection.ts";
-import { gcShadows } from "./snapshots/store.ts";
+import { gcShadows, warmShadows } from "./snapshots/store.ts";
 import { migrateSessions } from "./sessions/migrate.ts";
 import { migrateRunMarkers } from "./sessions/migrate-run-markers.ts";
 import { migrateMediaIds } from "./sessions/migrate-media-ids.ts";
@@ -317,6 +317,8 @@ async function main() {
   const workspacePath = config.workspace!;
   process.env["MY_CLAW_WORKSPACE"] = workspacePath;
   await snapshotProtected(workspacePath, { origin: "boot" });
+  // Off the boot path: the first run of the day must not find a cold shadow. docs/stop.md.
+  warmShadows([workspacePath, ...Object.values(config.workspaces ?? {})]);
 
   // A/B confirmation. Channels are tracked live rather than from a one-shot list, because a
   // recreate that fails mid-life has to count as "down" too.

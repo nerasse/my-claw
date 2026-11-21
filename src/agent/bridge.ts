@@ -67,7 +67,7 @@ import { recall } from "../memory/index.ts";
 import { hooks } from "../hooks/index.ts";
 import { AbortedError, isAbort, rethrowIfAborted, sleep } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
-import { recordRunStart } from "../snapshots/store.ts";
+import { recordRunStart, snapshotOfRuns } from "../snapshots/store.ts";
 import { currentRunId, newRunId } from "../utils/run-context.ts";
 import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback, MediaStoreHook } from "./backend.ts";
 import { storeRunMedia, type StoredRunMedia } from "./media-store.ts";
@@ -163,6 +163,23 @@ function accumulateUsage(
   session.tokenUsage.apiCalls += 1;
   if (usage.cacheReadTokens) session.tokenUsage.cacheReadTokens = (session.tokenUsage.cacheReadTokens ?? 0) + usage.cacheReadTokens;
   if (usage.cacheWriteTokens) session.tokenUsage.cacheWriteTokens = (session.tokenUsage.cacheWriteTokens ?? 0) + usage.cacheWriteTokens;
+}
+
+/**
+ * The run markers of the turn this run continues, newest first; empty on a fresh turn.
+ *
+ * A Continue appends a second run to a turn that already has one, and the log is where that shows:
+ * the run markers sit after the turn's `user` entry. Reading them is what lets the next run reuse
+ * the undo point instead of capturing the same workspace again.
+ */
+function runIdsOfOpenTurn(context: readonly Entry[]): string[] {
+  const ids: string[] = [];
+  for (let i = context.length - 1; i >= 0; i -= 1) {
+    const entry = context[i]!;
+    if (entry.type === "user") break;
+    if (entry.type === "run_start" && entry.runId) ids.push(entry.runId);
+  }
+  return ids;
 }
 
 function runLogData(message: UnifiedMessage, session: SessionData): Record<string, unknown> {
@@ -277,6 +294,9 @@ export class AgentBridge implements AgentBackend {
     // File-defined agents. Optional and last: absent resolves to the same baselines this had
     // before agents could come from a file, which keeps every existing caller honest.
     private agentRegistry?: AgentRegistry,
+    // The workspace the run that spawned this one used. A child writing in its parent's tree has
+    // no undo point of its own to record: the parent turn's snapshot already covers those writes.
+    private parentWorkspaceDir?: string,
   ) {
     this.approvalManager = new ToolApprovalManager(config.blacklist, undefined, () => this.config.tools?.alwaysAllow ?? []);
     this.preprocessor = sharedPreprocessor ?? new MessagePreprocessor(this.voiceManager, this.sttPipeline);
@@ -868,18 +888,36 @@ export class AgentBridge implements AgentBackend {
     // One id for the run's marker and its snapshot: `/undo` reads the markers after the turn it
     // takes back and finds that turn's snapshots by it.
     const runId = currentRunId() ?? newRunId();
-    const snapshotStartedAt = Date.now();
-    const snapshotAtStart = recordRunStart(session.id, workspaceDir, runId)
-      .then((snapshot) => {
-        void log("info", "workspace snapshot recorded", {
+    const snapshotAtStart = (async () => {
+      const startedAt = Date.now();
+      // A Continue picks a turn back up: its undo point is the earliest snapshot the turn's runs
+      // recorded (`snapshotOfRuns`), so a second capture would be written and never read.
+      const earlier = runIdsOfOpenTurn(context);
+      const existing = earlier.length > 0 ? await snapshotOfRuns(session.id, earlier) : null;
+      if (existing && existing.before.root === workspaceDir) {
+        void log("info", "workspace snapshot reused from the turn", {
           sessionId: session.id,
-          depots: snapshot.before.depots.length,
-          ms: Date.now() - snapshotStartedAt,
+          runId: existing.runId,
+          ms: Date.now() - startedAt,
         });
-      })
-      .catch((err: unknown) => {
-        void log("warn", "snapshot capture failed at run start", { sessionId: session.id, error: String(err) });
+        return;
+      }
+      // A child writing in its parent's tree: the parent turn's snapshot is what `/undo hard`
+      // restores, and it already holds these files. Its own capture would be a second `git add
+      // --all` of the same depots, for a file nothing reads.
+      if (this.depth > 0 && this.parentWorkspaceDir !== undefined && this.parentWorkspaceDir === workspaceDir) {
+        void log("info", "workspace snapshot covered by the caller's turn", { sessionId: session.id });
+        return;
+      }
+      const snapshot = await recordRunStart(session.id, workspaceDir, runId);
+      void log("info", "workspace snapshot recorded", {
+        sessionId: session.id,
+        depots: snapshot.before.depots.length,
+        ms: Date.now() - startedAt,
       });
+    })().catch((err: unknown) => {
+      void log("warn", "snapshot capture failed at run start", { sessionId: session.id, error: String(err) });
+    });
 
     void log("info", "agent run started", {
       ...runLogData(message, session),
@@ -1018,12 +1056,14 @@ export class AgentBridge implements AgentBackend {
         recorder.nextTurn();
         recorder.turn({ content: "" });
         const calls = resumable.map((r) => ({ id: `resume_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`, name: "send", arguments: { id: r.subagentId } as Record<string, unknown> }));
-        await snapshotAtStart;
         const resumed = await Promise.allSettled(calls.map(async (tc) => {
           if (onToolStart) {
             try { await onToolStart(tc); }
             catch { /* a tool-start frame must never abort the run */ }
           }
+          // The card is up before the wait: a capture that takes seconds reads as a card that
+          // spins, not as a silent hole between the answer and the first tool.
+          await snapshotAtStart;
           const callStartedAt = Date.now();
           const result = await this.executeTool({
             name: tc.name, args: tc.arguments, message, session, toolCallId: tc.id, signal, agentType: agentToolType, available: tools,
@@ -1694,7 +1734,6 @@ export class AgentBridge implements AgentBackend {
             return await settle(tc, { content: `Error: tool blocked by gate: ${toolGate.reason ?? "no reason"}`, success: false }, 0);
           }
 
-          const toolStartedAt = Date.now();
           hooks.emit("tool:execute:start", {
             toolName: tc.name,
             toolCallId: tc.id,
@@ -1709,6 +1748,11 @@ export class AgentBridge implements AgentBackend {
             try { await onToolStart({ id: tc.id, name: tc.name, arguments: tc.arguments }); }
             catch { /* a tool-start frame must never abort the run */ }
           }
+          // The card is up before the wait, and the tool's own span starts once it can run: a
+          // capture that takes seconds reads as a card that spins, not as a silent hole between
+          // the answer and the first tool, and the `12 ms` the row ends on is the tool's.
+          await snapshotAtStart;
+          const toolStartedAt = Date.now();
           void log("info", "tool execution started", {
             ...runLogData(message, session),
             model: llmConfig.model,
@@ -1781,7 +1825,6 @@ export class AgentBridge implements AgentBackend {
         // 2026-09-21, two sub-agents ran 5 and 9 minutes past their parent's end and wrote into
         // its log *after* `run_end`, which then needed a dead-branch repair. Waiting in full also
         // means a run that ends here has no work of its own still in flight, whatever ends it.
-        await snapshotAtStart;
         const outcomes = await Promise.allSettled(response.toolCalls.map((tc) => executeOne(tc)));
         const failed = outcomes.find((outcome) => outcome.status === "rejected");
         // Every call is written before the run ends, the interrupted ones included. The whole batch

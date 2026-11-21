@@ -1406,6 +1406,21 @@ export class SubAgentRunner {
     }
   }
 
+  /**
+   * The workspace the run that spawned this session used, or undefined when it cannot be known.
+   *
+   * Read from the parent session rather than threaded through every spawn: a `send` and a resume
+   * reach a run without the arguments of the spawn that created it, and the parent's own record is
+   * the only thing that survives them. Undefined means "capture anyway", which is the safe side.
+   */
+  private async callerWorkspaceDir(session: SessionData): Promise<string | undefined> {
+    const parentId = session.meta?.parentSessionId;
+    if (!parentId) return undefined;
+    const parent = await loadSession(parentId).catch(() => null);
+    if (!parent) return undefined;
+    return parent.meta?.workspaceDir ?? resolveWorkspaceKey(this.config, parent.workspace);
+  }
+
   private async executeRunWithSession(
     session: SessionData,
     type: SubAgentType,
@@ -1492,6 +1507,9 @@ export class SubAgentRunner {
       resolved,
       undefined,
       this.agentRegistry,
+      // A child in its parent's tree has no undo point of its own to record: the parent turn's
+      // snapshot already holds those files (src/agent/bridge.ts, `snapshotAtStart`).
+      await this.callerWorkspaceDir(session),
     );
     // A sub-agent's pictures belong to the conversation that asked for it, and the hook is how it
     // stores them before its own end marker names them (2026-09-15).

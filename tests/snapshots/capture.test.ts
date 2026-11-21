@@ -44,6 +44,31 @@ describe("snapshots: capture", () => {
     expect(repoDepot!.treeId.length).toBe(40);
   });
 
+  test("captures every depot of a batch, whatever order the workers finish in", async () => {
+    // The depots are captured four at a time, so completion order is not the list order; the
+    // snapshot is the list, and a depot dropped by the race would be a file `/undo` cannot restore.
+    const wide = await mkdtemp(join(tmpdir(), "snap-wide-"));
+    const wideShadows = await mkdtemp(join(tmpdir(), "snap-widesh-"));
+    try {
+      const names = ["a", "b", "c", "d", "e", "f"];
+      for (const name of names) {
+        const repo = join(wide, name);
+        await mkdir(repo, { recursive: true });
+        await execGit(repo, ["init", "-q"]);
+        await writeFile(join(repo, "file.txt"), `${name}\n`);
+      }
+      const snap = await captureWorkspace(wide, wideShadows);
+      expect(snap.depots.length).toBe(names.length + 1);
+      // The root is always first; the nested ones are in discovery order, which the filesystem owns.
+      expect(snap.depots[0]!.root).toBe(wide);
+      expect(snap.depots.slice(1).map((depot) => depot.root).sort()).toEqual(names.map((name) => join(wide, name)).sort());
+      for (const depot of snap.depots) expect(depot.treeId.length).toBe(40);
+    } finally {
+      await rm(wide, { recursive: true, force: true });
+      await rm(wideShadows, { recursive: true, force: true });
+    }
+  });
+
   test("diff detects the changed file and restore reverts it", async () => {
     const repo = join(ws, "repo");
     const before = await captureWorkspace(ws, shadows);

@@ -209,6 +209,29 @@ async function writeShadowExcludes(shadowDir: string, workTree: string, nested: 
   await writeFile(file, body, "utf8").catch(() => {});
 }
 
+/** How many depots are captured at once. Each has its own shadow and its own lock, so the work is
+ *  independent; past a handful the disk seeks cost more than the parallelism buys.
+ */
+const CAPTURE_CONCURRENCY = 4;
+
+/**
+ * Runs `work` over `items` with at most `limit` in flight, results in the order of `items`.
+ * Written out rather than pulled from a library: it is ten lines and the order has to be kept.
+ */
+async function mapLimited<T, R>(items: readonly T[], limit: number, work: (item: T) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await work(items[index]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+  return results;
+}
+
 /**
  * Captures the current state of every depot under `workspace` into its own shadow repository.
  *
@@ -224,43 +247,39 @@ export async function captureWorkspace(workspace: string, shadowsRoot: string): 
   const nested = await discoverNestedDepots(root);
   const rootIsRepo = await isGitRepo(root);
 
-  const depots: DepotSnapshot[] = [];
   // The workspace root is always a depot: a plain folder gets its own shadow so files the agent
   // creates directly under it are still restorable.
-  depots.push({ root, treeId: "" });
-  for (const nestedRoot of nested) {
-    depots.push({ root: nestedRoot, treeId: "" });
-  }
-
-  // Collected rather than spliced out of the list being walked: removing a failed depot from it
-  // skipped the next one, which stayed in the snapshot with an empty tree no restore can read.
-  const captured: DepotSnapshot[] = [];
-  for (const depot of depots) {
-    const shadowDir = join(shadowsRoot, "shadow", hash(depot.root));
+  const roots = [root, ...nested];
+  const captured = await mapLimited(roots, CAPTURE_CONCURRENCY, async (depotRoot) => {
+    const shadowDir = join(shadowsRoot, "shadow", hash(depotRoot));
     // One writer per shadow: the exclude rewrite, the index and `write-tree` are one transaction
     // on one repository, and a second capture entering halfway corrupts all three.
     const treeId = await withShadowLock(shadowDir, async () => {
-      await ensureShadow(shadowDir, depot.root);
+      await ensureShadow(shadowDir, depotRoot);
       // A non-repo workspace root holding repos: `git add --all` would warn and record gitlinks.
       // Excluding them keeps the root shadow to its own files, the nested trees go to their shadows.
-      await writeShadowExcludes(shadowDir, depot.root, depot.root === root && !rootIsRepo ? nested : []);
+      await writeShadowExcludes(shadowDir, depotRoot, depotRoot === root && !rootIsRepo ? nested : []);
       try {
-        await shadowGit(shadowDir, depot.root, [
+        await shadowGit(shadowDir, depotRoot, [
           "-c", "core.autocrlf=false",
           "-c", "safe.directory=*",
           "add", "--all",
         ]);
-        return await shadowGit(shadowDir, depot.root, ["write-tree"]);
+        return await shadowGit(shadowDir, depotRoot, ["write-tree"]);
       } catch {
         // A depot that cannot be captured is left out of the snapshot, not fatal: the workspace
         // may contain a repo the shadow cannot read. The undo still covers the rest.
         return undefined;
       }
     });
-    if (treeId !== undefined) captured.push({ root: depot.root, treeId });
-  }
+    // Collected rather than spliced out of the list being walked: removing a failed depot from it
+    // skipped the next one, which stayed in the snapshot with an empty tree no restore can read.
+    return treeId === undefined ? undefined : { root: depotRoot, treeId };
+  });
 
-  return { root, depots: captured, ts: Date.now() };
+  const depots = captured.filter((depot): depot is DepotSnapshot => depot !== undefined);
+
+  return { root, depots, ts: Date.now() };
 }
 
 /**
