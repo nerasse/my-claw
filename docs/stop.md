@@ -39,10 +39,16 @@ as terminal: no retry, no circuit-breaker trip.
 
 The abort is instant; the report is not. Between `agent run aborted` and the router's `run stopped
 by user` the run walks its `finally`, and that block used to take a second full snapshot of the
-workspace. Measured 2026-11-12: 12.0 s for `recordRunStart` + 9.3 s for `recordRunEnd` on a 34 GB
+workspace. Measured 2026-11-12: 12.0 s for the start capture + 9.3 s for the end one on a 34 GB
 workspace, 26.6 s between the abort and the stop being reported on a real session. The snapshot is
-taken at the *start* of a run for `/undo`; the one at the end had no reader at all (`changesSince`
-recaptures the workspace when the owner asks), so it is now written off the run's path.
+taken for `/undo`, and the one at the end had no reader at all (`changesSince` recaptures the
+workspace when the owner asks), so it was removed outright rather than merely moved off the path.
+
+The start capture does not block the wind-down either, and since 2026-11-21 it does not block the
+run's *start*: it is launched with the run and awaited before the first tool. Measured on `~/dev`
+(31 depots, 11 GB): 0.6 s on an idle tree, 18.1 s after a build, 73 s with cold shadows, and 197.8 s
+under disk pressure -- all of it used to sit between the router taking the message and the first
+token. A run that calls no tool still records it, in the background.
 
 `captureWorkspace` itself was the cost: a `readdir` + `stat` walk of every file to find untracked
 ones past the size cap, 3.7 s on a 33k-file tree and 12 s on an 88k-file one, run once per depot.

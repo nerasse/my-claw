@@ -67,7 +67,7 @@ import { recall } from "../memory/index.ts";
 import { hooks } from "../hooks/index.ts";
 import { AbortedError, isAbort, rethrowIfAborted, sleep } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
-import { recordRunStart, recordRunEnd } from "../snapshots/store.ts";
+import { recordRunStart } from "../snapshots/store.ts";
 import { currentRunId, newRunId } from "../utils/run-context.ts";
 import type { AgentBackend, ReasoningSink, TokenCallback, ToolStartCallback, ToolUseCallback, TurnSwitchCallback, MediaStoreHook } from "./backend.ts";
 import { storeRunMedia, type StoredRunMedia } from "./media-store.ts";
@@ -858,20 +858,28 @@ export class AgentBridge implements AgentBackend {
     const recorder = new RunRecorder(entries);
     const contextCount = contextEntries(context, leafOf()).length;
 
-    // The workspace state before this run starts writing. Keeping the snapshot is what makes
-    // `/undo hard` able to restore files; the recording is best-effort and must never take the
-    // run down with a capture failure (a non-git workspace with huge untracked files can be slow,
-    // a read-only one can throw).
+    // The workspace as it was before this run's first tool touched it. `/undo hard` restores it,
+    // and it is started here rather than awaited here: the capture is a `git add --all` of every
+    // depot in the workspace, which measured 0.6 s on an idle tree, 18 s after a build and 198 s
+    // under disk pressure -- paid before the first token, for nothing. Awaiting it before the
+    // first tool gives it the model's first call as head room and keeps the state exactly as
+    // early as it was: no tool of this run has run yet.
     const { workspaceDir } = this.workspaceFor(session);
     // One id for the run's marker and its snapshot: `/undo` reads the markers after the turn it
     // takes back and finds that turn's snapshots by it.
     const runId = currentRunId() ?? newRunId();
-    let runSnapshotId: string | undefined;
-    try {
-      runSnapshotId = (await recordRunStart(session.id, workspaceDir, runId)).runId;
-    } catch (err) {
-      void log("warn", "snapshot capture failed at run start", { sessionId: session.id, error: String(err) });
-    }
+    const snapshotStartedAt = Date.now();
+    const snapshotAtStart = recordRunStart(session.id, workspaceDir, runId)
+      .then((snapshot) => {
+        void log("info", "workspace snapshot recorded", {
+          sessionId: session.id,
+          depots: snapshot.before.depots.length,
+          ms: Date.now() - snapshotStartedAt,
+        });
+      })
+      .catch((err: unknown) => {
+        void log("warn", "snapshot capture failed at run start", { sessionId: session.id, error: String(err) });
+      });
 
     void log("info", "agent run started", {
       ...runLogData(message, session),
@@ -1010,6 +1018,7 @@ export class AgentBridge implements AgentBackend {
         recorder.nextTurn();
         recorder.turn({ content: "" });
         const calls = resumable.map((r) => ({ id: `resume_${crypto.randomUUID().replace(/-/g, "").slice(0, 16)}`, name: "send", arguments: { id: r.subagentId } as Record<string, unknown> }));
+        await snapshotAtStart;
         const resumed = await Promise.allSettled(calls.map(async (tc) => {
           if (onToolStart) {
             try { await onToolStart(tc); }
@@ -1772,6 +1781,7 @@ export class AgentBridge implements AgentBackend {
         // 2026-09-21, two sub-agents ran 5 and 9 minutes past their parent's end and wrote into
         // its log *after* `run_end`, which then needed a dead-branch repair. Waiting in full also
         // means a run that ends here has no work of its own still in flight, whatever ends it.
+        await snapshotAtStart;
         const outcomes = await Promise.allSettled(response.toolCalls.map((tc) => executeOne(tc)));
         const failed = outcomes.find((outcome) => outcome.status === "rejected");
         // Every call is written before the run ends, the interrupted ones included. The whole batch
@@ -1898,10 +1908,6 @@ export class AgentBridge implements AgentBackend {
           startSpeculation(this.config, session);
         }
       }
-      // Snapshot the after-state for the diff: only a snapshot that was taken is worth completing,
-      // and it is written off this path -- a second capture of a 34 GB workspace is not something a
-      // run's wind-down, and a Stop's report, may wait for.
-      if (runSnapshotId) recordRunEnd(session.id, runSnapshotId, workspaceDir);
       await this.preprocessor.cleanupTempFiles(message.id);
     }
   }

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile, readFile, readdir } from "node:fs/promis
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { captureWorkspace, diffSnapshots, restoreDepot } from "../../src/snapshots/capture.ts";
-import { recordRunStart, snapshotOfRuns, clearSessionSnapshots, pruneSessionSnapshots, gcShadows, snapshotsRoot } from "../../src/snapshots/store.ts";
+import { recordRunStart, snapshotOfRuns, clearSessionSnapshots, pruneSessionSnapshots, gcShadows, snapshotsRoot, MAX_SNAPSHOTS_PER_SESSION } from "../../src/snapshots/store.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
 
 describe("snapshots: capture", () => {
@@ -162,10 +162,10 @@ describe("snapshots: the untracked size cap", () => {
 
 describe("snapshots: two captures at once", () => {
   test("a concurrent capture never loses the other's work: one writer per shadow", async () => {
-    // `recordRunEnd` is fire-and-forget, so a run ending while the next one starts is two captures
-    // of the same shadow at once. Git's index is a file with a lock beside it, and the loser of
-    // that race drops its whole update instead of failing: measured 3 divergences in 20 before the
-    // per-shadow lock, with the diff then reporting no change for a file that did change.
+    // Two captures of one shadow happen whenever a run's own capture overlaps the recapture
+    // `/undo` makes to show its diff. Git's index is a file with a lock beside it, and the loser
+    // of that race drops its whole update instead of failing: measured 3 divergences in 20 before
+    // the per-shadow lock, with the diff then reporting no change for a file that did change.
     const ws = await mkdtemp(join(tmpdir(), "snap-ws7-"));
     const shadows = await mkdtemp(join(tmpdir(), "snap-sh7-"));
     try {
@@ -241,6 +241,28 @@ describe("snapshots: store", () => {
       expect(left).toContain("run-0.json");
       expect(left).not.toContain("run-20.json");
       expect(left).not.toContain("ancient.json");
+    } finally {
+      await clearSessionSnapshots(sessionId);
+      await rm(ws, { recursive: true, force: true });
+    }
+  });
+
+  test("the retention rides on the run start, and no run records an end state", async () => {
+    // The end-of-run capture had no reader and was half the file I/O of every run; the prune used
+    // to live inside it, so moving the retention here is what keeps these files bounded.
+    const sessionId = `test-snap-retain-${process.pid}-${Date.now()}`;
+    const ws = await mkdtemp(join(tmpdir(), "snap-ws5-"));
+    const dir = join(snapshotsRoot(), "session", sessionId);
+    try {
+      for (let i = 0; i < MAX_SNAPSHOTS_PER_SESSION + 3; i++) {
+        await writeFile(join(ws, "note.txt"), `v${i}\n`, "utf8");
+        await recordRunStart(sessionId, ws, `run-${i}`);
+      }
+      expect((await readdir(dir)).length).toBe(MAX_SNAPSHOTS_PER_SESSION);
+
+      const stored = JSON.parse(await readFile(join(dir, `run-${MAX_SNAPSHOTS_PER_SESSION + 2}.json`), "utf8"));
+      expect(stored.before.depots.length).toBeGreaterThan(0);
+      expect("after" in stored).toBe(false);
     } finally {
       await clearSessionSnapshots(sessionId);
       await rm(ws, { recursive: true, force: true });

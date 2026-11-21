@@ -26,7 +26,7 @@ import { readMeta, writeMeta, metaOf } from "../../src/sessions/meta.ts";
 import type { LegacySessionData, SessionAttachment } from "../../src/sessions/store.ts";
 import { SessionManager } from "../../src/sessions/manager.ts";
 import { MY_CLAW_DIR } from "../../src/core/config.ts";
-import { recordRunStart, recordRunEnd, clearSessionSnapshots } from "../../src/snapshots/store.ts";
+import { recordRunStart, clearSessionSnapshots } from "../../src/snapshots/store.ts";
 
 let counter = 0;
 function freshId(): string {
@@ -736,7 +736,6 @@ describe("branch-commands: /undo", () => {
     await writeFile(join(ws, "note.txt"), "v0\n");
     await recordRunStart(id, ws, "r1");
     await writeFile(join(ws, "note.txt"), "v1\n");
-    await recordRunEnd(id, "r1", ws);
     const log = await openSessionLog(id);
     log.append<UserEntry>({ type: "user", prompt: true, text: "Question" });
     log.append<RunStartEntry>({ type: "run_start", prompt: false, runId: "r1" });
@@ -951,7 +950,6 @@ describe("branch-commands: /undo and the files", () => {
     const ws = await workspace(id);
     await writeFile(join(ws, "note.txt"), "v0\n");
     await recordRunStart(id, ws, "r1");
-    await recordRunEnd(id, "r1", ws);
     const log = await turn(id, ["r1"]);
 
     const asked: unknown[] = [];
@@ -977,7 +975,6 @@ describe("branch-commands: /undo and the files", () => {
     await writeFile(join(ws, "logo.bin"), Buffer.from([0, 1, 2]));
     await recordRunStart(id, ws, "r1");
     await writeFile(join(ws, "logo.bin"), Buffer.from([0, 9, 9, 9]));
-    await recordRunEnd(id, "r1", ws);
     const log = await turn(id, ["r1"]);
 
     const asked: Array<Parameters<NonNullable<BranchCommandContext["undoPrompt"]>>[0]> = [];
@@ -1028,12 +1025,10 @@ describe("branch-commands: /undo and the files", () => {
     await writeFile(join(ws, "note.txt"), "v0\n");
     await recordRunStart(id, ws, "r1");
     await writeFile(join(ws, "note.txt"), "v1\n");
-    await recordRunEnd(id, "r1", ws);
     // The turn was picked back up with Continue: a second run, a second snapshot, newer.
     await recordRunStart(id, ws, "r2");
     await writeFile(join(ws, "note.txt"), "v2\n");
     await writeFile(join(ws, "added.txt"), "later\n");
-    await recordRunEnd(id, "r2", ws);
     const log = await turn(id, ["r1", "r2"]);
 
     const result = await handleUndoCommand(await createContext(id, log), "hard");
@@ -1049,7 +1044,6 @@ describe("branch-commands: /undo and the files", () => {
     await writeFile(join(ws, "note.txt"), "v0\n");
     // An earlier turn of the same conversation, whose run did record a snapshot.
     await recordRunStart(id, ws, "earlier");
-    await recordRunEnd(id, "earlier", ws);
     const log = await openSessionLog(id);
     log.append<UserEntry>({ type: "user", prompt: true, text: "Earlier" });
     log.append<RunStartEntry>({ type: "run_start", prompt: false, runId: "earlier" });
