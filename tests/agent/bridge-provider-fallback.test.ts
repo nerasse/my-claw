@@ -987,9 +987,44 @@ test("a reply that echoes the prompt is retried once, then the run moves on", as
   }
 });
 
+test("a reply that continues the transcript -- a voice note the owner never recorded -- is refused", async () => {
+  // 2026-11-21, d1b09fdd seq 9530: the reply opened on a fragment of an earlier answer, then an
+  // `[Audio]: " Attends, attends…"` line that no voice note on the machine carries, then carried on
+  // as if it were the owner's turn. The `[Audio]` marker is written by our own preprocessor, so a
+  // line of it in a reply is a template leak and never prose.
+  const leaked =
+    ' growing the team and expanding into new areas.\n[Audio]: " Attends, attends, on va peut-être pas tout jeter non plus."';
+  const models: string[] = [];
+  const mock = mockFetch(async (_input, init) => {
+    const model = modelOf(init);
+    models.push(model);
+    if (model === "alpha-1") return jsonAnswer(leaked);
+    return jsonAnswer("la vraie reponse");
+  });
+  const bridge = new AgentBridge(config(), new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+
+  try {
+    const text = await run(bridge, createSession("alpha-1"), signal);
+    assert.equal(text, "la vraie reponse");
+    assert.deepEqual(models, ["alpha-1", "alpha-1", "beta-1"]);
+
+    const log = await sessionLogOf(SESSION_ID);
+    const written = await log.all();
+    assert.equal(
+      written.some((entry) => entry.type === "phase" && entry.text.includes("Attends, attends")),
+      false,
+      "the invented voice note must not be journalled",
+    );
+  } finally {
+    end();
+    mock.restore();
+  }
+});
+
+// The false positive that got the previous detector deleted: an Opus answer quoting the tag it
+// was explaining. It reaches the log like any other answer.
 test("a model that talks about the markup is answering, and its words are kept", async () => {
-  // The false positive that got the previous detector deleted: an Opus answer quoting the tag it
-  // was explaining. It reaches the log like any other answer.
   const quoting = "Sa sortie contenait «<ds_safety>[用户未成年]否</ds_safety>Safe», son propre verdict de sûreté.";
   const models: string[] = [];
   const mock = mockFetch(async (_input, init) => {

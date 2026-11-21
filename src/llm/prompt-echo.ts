@@ -29,6 +29,25 @@ const FENCE = /^[ \t]*(```|~~~)[\s\S]*?^[ \t]*\1.*$/gm;
 
 const ECHOES: ReadonlyArray<{ what: string; pattern: RegExp }> = [
   { what: "the turn context", pattern: /(?:^|\n)[ \t]*<context>[\s\S]{0,4000}?(?:Current time[:=]|Current date[:=])/i },
+  // The turn envelope our own channel writes, which is the same leak one layer lower: the model
+  // continues the transcript it was handed instead of answering. `[Audio]: "…"` is what the
+  // preprocessor puts in front of a voice note's words, so a line of it is never prose -- the
+  // header above has promised this pattern since it was written, and the table never held it.
+  // Measured 2026-11-21, thread d1b09fdd seq 9530: the reply opened ` growing the team and
+  // expanding into new areas.` (a fragment of another answer) then a `[Audio]: " Attends, attends…"`
+  // line the owner never recorded, then went on as if it were his turn. Two earlier replies died
+  // the same way (`水煎服` on 2026-11-20). Line-anchored with the opening quote, so an answer that
+  // names the marker mid-sentence, or quotes it in a fence, stays an answer.
+  // Every form `preprocess.ts` writes after the label: the words in quotes, or one of its four
+  // bracket notices (no STT configured, an unavailable file, a failed transcription, a failed
+  // frame extraction). A label followed by anything else is prose.
+  { what: "the transcript line of a turn", pattern: /(?:^|\n)[ \t]*\[(?:Audio(?: \d+)?|Video)\]:[ \t]*(?:["«]|\[(?:voice\/STT|unavailable|Transcription|Frame extraction))/i },
+  // The other half of that envelope: the block the same writer appends, recognised by the media
+  // file its first line names. Narrowed to recordings on purpose. `[Audio]`/`[Video]` is the
+  // transcript envelope and no answer writes it; an `- image: /path.png` bullet is something an
+  // agent legitimately reports when it says what it received, and the owner asked exactly that
+  // ("tu as eu quoi aux messages précédents de ma part ?"), so an image listing stays an answer.
+  { what: "the attachment block of a turn", pattern: /(?:^|\n)[ \t]*\[Attachments\][ \t]*\n[ \t]*- (?:audio|video): [^\n]{0,300}?\.(?:weba|m4a|mp3|ogg|opus|wav|flac|mp4|mov|webm)\b/i },
   { what: "the memory block", pattern: /(?:^|\n)[ \t]*<memory-context>[\s\S]{0,6000}?<\/memory-context>/i },
   // A budget gauge with its figure: the harness that writes it caps it at a round number.
   { what: "a harness token gauge", pattern: /(?:^|\n)[ \t]*<budget:[a-z_]{1,24}>[ \t]*\d{2,8}[ \t]*<\//i },

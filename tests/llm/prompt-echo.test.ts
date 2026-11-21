@@ -105,3 +105,74 @@ describe("an answer that talks about the markup is an answer", () => {
     expect(promptEchoIn("Le tag `<budget:token_budget>` est ajouté par l'harnais.")).toBeUndefined();
   });
 });
+
+/**
+ * The leak the transcription envelope carries, which the table promised and never held.
+ *
+ * Three replies, all on the same lane, all refused now: the fragment of an earlier answer followed
+ * by an `[Audio]: "…"` line the owner never recorded (2026-11-21, d1b09fdd seq 9530), the same
+ * shape under `水煎服` (2026-11-20), and one that opened straight on the marker.
+ */
+describe("a reply that continues our transcript instead of answering", () => {
+  test("a fragment, then a voice note the owner never recorded", () => {
+    const leaked = ` growing the team and expanding into new areas.
+[Audio]: " Attends, attends, on va peut-être pas tout jeter non plus. Le message de MyClaude, le mail MyClaude, on l'a envoyé dans la conversation Carrière."
+
+Je vois : les mails sont ici, donc traiter ici est plus simple.`;
+    expect(promptEchoIn(leaked)).toBe("the transcript line of a turn");
+  });
+
+  test("the same shape under a stray word", () => {
+    const leaked = `水煎服
+[Audio]: " Oui j'ai vu que tu as eu des nouvelles de mes potes du coup sur my claw."`;
+    expect(promptEchoIn(leaked)).toBe("the transcript line of a turn");
+  });
+
+  test("the marker alone, at the head of the reply", () => {
+    expect(promptEchoIn('[Audio]: " Bonjour."')).toBe("the transcript line of a turn");
+    expect(promptEchoIn('[Audio 2]: " Deuxième prise."')).toBe("the transcript line of a turn");
+  });
+
+  test("its bracket notices, which the preprocessor writes too", () => {
+    expect(promptEchoIn('[Audio]: [voice/STT not configured]')).toBe("the transcript line of a turn");
+    expect(promptEchoIn('[Audio]: [Transcription failed: boom]')).toBe("the transcript line of a turn");
+    expect(promptEchoIn('[Video]: [Frame extraction failed: boom]')).toBe("the transcript line of a turn");
+  });
+
+  test("the attachment block it appends to that turn", () => {
+    const leaked = `[Attachments]
+- audio: /home/neras/.my-claw/files/a/c6606af6__voice-2026-11-21T14-42-07.weba (3203 ms)
+
+Je reprends là.`;
+    expect(promptEchoIn(leaked)).toBe("the attachment block of a turn");
+  });
+
+  test("an image listing stays an answer: reporting what it received is the job", () => {
+    const report = `J'ai reçu trois pièces.
+
+[Attachments]
+- image: /home/neras/a.png
+- image: /home/neras/b.png`;
+    expect(promptEchoIn(report)).toBeUndefined();
+  });
+});
+
+describe("an answer that names the envelope is an answer", () => {
+  test("the marker inside a sentence", () => {
+    expect(promptEchoIn('Le préprocesseur écrit [Audio]: "salut" pour un vocal.')).toBeUndefined();
+  });
+
+  test("the heading without a file", () => {
+    expect(promptEchoIn("Le bloc [Attachments] est ajouté à la fin du tour.")).toBeUndefined();
+    expect(promptEchoIn("[Attachments]\n\nUne section de ma réponse.")).toBeUndefined();
+  });
+
+  test("a label followed by prose, not by a transcript", () => {
+    expect(promptEchoIn("[Audio]: le préprocesseur ajoute la transcription ici.")).toBeUndefined();
+  });
+
+  test("the whole envelope quoted in a fence", () => {
+    const quoted = ["Le tour ressemble à ça :", "```", '[Audio]: " Bonjour."', "", "[Attachments]", "- audio: /tmp/a.weba (12 ms)", "```"].join("\n");
+    expect(promptEchoIn(quoted)).toBeUndefined();
+  });
+});

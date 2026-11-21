@@ -415,6 +415,8 @@ The check on that text is back, and it is written so it cannot repeat the false 
 |---|---|
 | `<context>` block | the `Current time:` / `Current date:` line we injected behind it |
 | `<memory-context>` block | the closing tag, which a sentence about the block does not write |
+| `[Audio]: "…"` / `[Video]: "…"` | start of a line, and the quote the preprocessor puts after the label |
+| `[Attachments]` block | start of a line, followed by a `- type: <path>.weba` line naming a file |
 | `<budget:…>N</budget:…>` | the figure between the tags |
 | tool markup | start of a line: `function_results`, `<result><name>`, `<tool_call>`, `assistant to=` |
 | template tokens | start of a line: `<\|im_start\|>`, `<\|endoftext\|>`, `<\|tool…\|>` |

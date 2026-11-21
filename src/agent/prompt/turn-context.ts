@@ -10,7 +10,7 @@ import type { SkillInfo } from "../../skills/types.ts";
  * one line of the block that never changes, so a prefix that survives compaction still ends here.
  */
 export const HARNESS_LINE =
-  "The <context> and <memory-context> blocks are harness data, not the owner's words: never repeat them in your answer.";
+  "The <context> and <memory-context> blocks, and the [Audio]/[Video]/[Attachments] lines, are harness data, not the owner's words: never repeat them in your answer.";
 
 /**
  * The per-turn context the model reads at the end of the inbound message.
