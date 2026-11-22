@@ -7,6 +7,7 @@ import { SkillRegistry } from "../../src/skills/registry.ts";
 import { VoiceManager, SttPipeline } from "../../src/voice/index.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 import { deleteSession, loadSession, type LegacySessionData, type SubAgentMeta } from "../../src/sessions/store.ts";
+import { SessionManager } from "../../src/sessions/manager.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import { writeLegacySessionFile } from "../helpers/session-log.ts";
 
@@ -248,4 +249,64 @@ test("a caller whose session cannot be read sees the default scope, not every sc
     (await runner().list(new SubAgentRegistry(), "chat/ghost")).map((a) => a.id),
     ["subagent/ws-default"],
   );
+});
+
+test("a caller still only in memory is placed in its workspace, not in the default one", async () => {
+  // A run's session is created in memory and reaches the disk on the autosave tick or at run end.
+  // Reading the file first made the first turn of a new conversation, and of every cron run, look
+  // like the default workspace.
+  const sessions = new SessionManager();
+  const r = runner();
+  r.setSessionManager(sessions);
+  await sessions.getOrCreateWithMeta("chat/fresh", "my-claw-app", "dm", "alpha");
+  assert.equal(await loadSession("chat/fresh"), null);
+
+  await subAgent("subagent/ws-alpha", { workspaceKey: "alpha", parentSessionId: "chat/alpha-1" });
+  assert.deepEqual(
+    (await r.list(new SubAgentRegistry(), "chat/fresh")).map((a) => a.id),
+    ["subagent/ws-alpha"],
+  );
+});
+
+test("a workspace agent spawned by a fresh run is scoped to that run\'s workspace", async () => {
+  const sessions = new SessionManager();
+  const r = runner();
+  r.setSessionManager(sessions);
+  await sessions.getOrCreateWithMeta("chat/fresh", "my-claw-app", "dm", "alpha");
+
+  const reg = new SubAgentRegistry();
+  const fetchMock = mockFetch(
+    async () => new Response(JSON.stringify({ choices: [{ message: { content: "ready" } }] }), { status: 200 }) as never,
+  );
+  let id: string;
+  try {
+    ({ id } = await r.spawn({
+      displayName: "fresh-scope",
+      type: "research",
+      mode: "session",
+      task: "init",
+      parentMessage: {
+        id: "m1",
+        platform: "my-claw-app",
+        userId: "owner",
+        chatId: "owner",
+        chatType: "dm",
+        text: "init",
+        attachments: [],
+        isForwarded: false,
+        raw: {},
+      },
+      existingIds: await reg.listExistingIds(),
+      generateId: (n, e) => reg.generateId(n, e),
+      parentSessionId: "chat/fresh",
+      visibility: "workspace",
+    }));
+  } finally {
+    fetchMock.restore();
+  }
+
+  const stored = await loadSession(id);
+  assert.equal(stored?.meta?.workspaceKey, "alpha");
+  assert.deepEqual((await r.list(reg, "chat/fresh")).map((a) => a.id), [id]);
+  await deleteSession(id);
 });

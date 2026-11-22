@@ -478,10 +478,17 @@ export class SubAgentRunner {
    *
    * An unreadable or unknown session yields no workspace, which matches the default workspace: a
    * caller that cannot be placed sees the default scope, never every scope.
+   *
+   * The live cache is asked first: a run's session is created in memory and reaches the disk on
+   * the autosave tick or at run end, so the first turn of a conversation or of a cron run used to
+   * be read as having no workspace at all. A workspace-scoped agent it spawned was then filed under
+   * the default workspace, invisible to the run that made it.
    */
   private async resolveCaller(callerSessionId: string): Promise<SubAgentCaller> {
     if (!callerSessionId) return { sessionId: "" };
-    const session = await loadSession(callerSessionId);
+    const session = this.sessionManager
+      ? await this.sessionManager.peek(callerSessionId)
+      : await loadSession(callerSessionId);
     return {
       sessionId: callerSessionId,
       ...(session?.workspace ? { workspaceKey: session.workspace } : {}),
