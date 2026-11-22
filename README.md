@@ -9,7 +9,7 @@ Self-hosted AI agent orchestrator: one agent, real tools, your own machine.
   <img src="https://img.shields.io/badge/runtime-Bun-f472b6?style=flat-square" alt="Runtime: Bun">
 </p>
 
-[![Watch the 20-second recording](docs/assets/readme/demo-poster.png)](docs/assets/readme/demo.mp4)
+https://github.com/user-attachments/assets/6f21ec84-b772-471f-8abe-5f1170681f86
 
 20 seconds, MP4, real speed, no montage: the prompt, the tools streaming, a reviewer spawned in the background, its `returned` card, the test run, then the browser panel.
 
