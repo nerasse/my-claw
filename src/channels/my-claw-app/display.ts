@@ -483,6 +483,24 @@ function isMessage(entry: Entry, mediaPhases: ReadonlySet<string>): boolean {
 }
 
 /**
+ * The tool calls that are a door rather than a line of work: `spawn`, `send`, and a delegated
+ * browser task. The app hoists them out of a run group (`isHoisted` in `runRows.ts`), so the
+ * server has to keep them out of the fold as well, or a reload puts the launch cards back under
+ * the header and the owner loses the sub-agents he started (2026-11-22).
+ *
+ * `delegate_browser_task` with `kept` set is not a launch: it is the call that announces a kept
+ * window, and the app does not draw a card for it either.
+ */
+function isSubAgentCard(entry: Entry): boolean {
+  if (entry.type !== "tool") return false;
+  const name = entry.name.split("__").pop() ?? entry.name;
+  if (name === "spawn" || name === "send") return true;
+  if (name !== "delegate_browser_task") return false;
+  const args = (entry as { args?: Record<string, unknown> }).args;
+  return args?.kept === undefined;
+}
+
+/**
  * Bubbles that never travel folded, mirroring `isHoisted` in the app's `runRows.ts`.
  *
  * The owner's own turns (an injection splits the group around it, so the answer to a question
@@ -496,6 +514,7 @@ function isMessage(entry: Entry, mediaPhases: ReadonlySet<string>): boolean {
  * list of questions with collapsed headers and no answers under them.
  */
 function isHoisted(entry: Entry): boolean {
+  if (isSubAgentCard(entry)) return true;
   return (
     entry.type === "user" ||
     entry.type === "command" ||

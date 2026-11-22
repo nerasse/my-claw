@@ -870,6 +870,29 @@ describe("runFoldPlan: a finished run travels as its header", () => {
     expect(foldedShow(path, window)[1]).toMatchObject({ role: "run", run: { status: "done" } });
   });
 
+  test("a sub-agent launch stays on screen and cuts the fold around it", () => {
+    // The app hoists spawn/send out of a run group: the launch is a door the owner waits on, not
+    // a line of the work. The fold has to agree, or a reload puts the card back under the header
+    // and the sub-agent disappears (owner, 2026-11-22).
+    const path = chain([
+      user("q"),
+      runStart(),
+      ...Array.from({ length: 4 }, (_, i) => tool(`c${i}`)),
+      tool("s1", { name: "mcp__myclaw__spawn", args: { task: "review the tests" } }),
+      ...Array.from({ length: 4 }, (_, i) => tool(`d${i}`)),
+      runEnd(),
+    ]);
+    const runs = runFold(path, true);
+    const plan = runFoldPlan(path, runs);
+    const spawn = path.find((e) => e.type === "tool" && e.callId === "s1")!;
+    expect(plan.folded.has(spawn.id)).toBe(false);
+    // One header before the door, one after: the launch is not swallowed by either.
+    expect(plan.summaries.size).toBe(2);
+    const shown = displayOf(path, resolvers, 1000, undefined, [], runs, plan);
+    expect(shown.map((e) => e.role)).toEqual(["user", "run", "tool", "run"]);
+    expect(shown[2]).toMatchObject({ role: "tool", id: "t-s1" });
+  });
+
   test("a state entry folded into its card does not unfold the run", () => {
     // `withSpawnCards` drops a `spawn_state` whose card is already in the delta, so the window
     // no longer holds every entry of the run. Requiring it would unfold every run that spawned.
