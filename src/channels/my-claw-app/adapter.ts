@@ -532,6 +532,15 @@ export class MyClawAppAdapter implements ChannelAdapter {
       this.live.recordQuestion(question.owner, question.threadId, question.id, frame);
       this.broadcast(question.owner, frame);
     });
+    // The `approval` tool's own door. It has no gate to open: the agent chose to wait for a person,
+    // so its sheet is raised whatever `approvals` says (that flag is about the blacklist gate).
+    // Installed before the server opens, and cleared on stop: a surface left behind would answer
+    // for an adapter whose sockets are gone.
+    setApprovalSurface({
+      ask: (request) => this.confirmTool(request, { explicit: true }),
+      pending: (owner) => this.pendingApprovalViews(owner),
+      reachable: (owner) => this.socketsFor(owner).length > 0,
+    });
     // The undo sheet: a `/undo` without an argument asks the owner which mode. Same shape as the
     // question flow (broadcast the prompt, await the owner's choose) but deliberately without the
     // live-journal treatment: the sheet is short-lived -- the command itself awaits the choice,
@@ -633,6 +642,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       });
     }
     questionManager.setHandler(undefined);
+    setApprovalSurface(undefined);
     this.server?.stop(true);
     this.server = undefined;
     // Before the exit and after the sockets are gone, so nothing can append behind the write. The
@@ -795,11 +805,13 @@ export class MyClawAppAdapter implements ChannelAdapter {
     return meta?.id;
   }
 
-  async confirmTool(request: ToolApprovalRequest): Promise<ApprovalDecision> {
+  async confirmTool(request: ToolApprovalRequest, options: { explicit?: boolean } = {}): Promise<ApprovalDecision> {
     // `approvals` is the opt-in for this machine's blacklisted tools. A node asks before every
     // call from its pairing on, so its prompt is raised either way: refusing it would leave every
     // machine unusable on an install that never turned the flag on (docs/remote-nodes.md).
-    if (this.config.approvals !== true && request.origin?.kind !== "node") return "deny";
+    // An explicit ask (`approval` tool) opens no gate: the agent decided to wait, so the sheet is
+    // its answer whatever the flag says.
+    if (!options.explicit && this.config.approvals !== true && request.origin?.kind !== "node") return "deny";
     if (this.socketsFor(request.chatId).length === 0) return "deny";
 
     const id = crypto.randomUUID();

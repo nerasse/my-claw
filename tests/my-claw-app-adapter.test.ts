@@ -22,6 +22,7 @@ import { mockFetch } from "./helpers/mock-fetch.ts";
 import { buildZip, part } from "./helpers/zip.ts";
 import { resetAppUpdateCache } from "../src/channels/my-claw-app/updates.ts";
 import { questionManager } from "../src/questions/manager.ts";
+import { createApprovalTool } from "../src/tools/approval.ts";
 import { sessionLogOf } from "../src/sessions/log-access.ts";
 import type { UserEntry } from "../src/sessions/log.ts";
 
@@ -1730,6 +1731,38 @@ describe("MyClawAppAdapter", () => {
     // bufferedAmount reported a healthy link forever while every frame fell in a hole.
     client.ws.send(JSON.stringify({ type: "ping" }));
     assert.equal((await nextFrame(client)).type, "pong");
+  });
+
+  test("the approval tool asks through this adapter even with approvals off", async () => {
+    // The tool has no gate to open: it exists so the agent can wait for a person. With the flag
+    // off it used to have no surface at all, and every explicit ask failed on the spot.
+    const tool = createApprovalTool();
+    const pending = tool.execute({
+      action: "request",
+      what: "restart the node",
+      command: "systemctl restart my-claw",
+      __message: {
+        id: "m-approval",
+        platform: "my-claw-app",
+        userId: DEVICE_ID,
+        chatId: DEVICE_ID,
+        chatType: "dm",
+        text: "go",
+        attachments: [],
+        isForwarded: false,
+        threadId: "default",
+        raw: {},
+      },
+      __sessionId: "s-approval",
+    });
+
+    const sheet = await nextFrame(client);
+    assert.equal(sheet.type, "approval.request");
+    assert.equal(sheet.headline, "restart the node");
+    client.ws.send(JSON.stringify({ type: "approval.response", id: sheet.id, decision: "allow-once" }));
+    const result = await pending;
+    assert.equal(result.success, true);
+    assert.match(String(result.output), /approved/);
   });
 
   test("a pending approval is asked again to a window that reloaded", async () => {

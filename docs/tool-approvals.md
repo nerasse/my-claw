@@ -99,5 +99,12 @@ Automatic gates keep their two-minute timeout: a run nobody answers must not hol
 forever. The tool is main-only (not a sub-agent, not cron) and never answers on the owner's
 behalf.
 
+The sheet itself comes from the app adapter: it installs the tool's surface when it starts and
+drops it when it stops, the same way it does for `question`. The channel's `approvals` flag is
+not consulted on this path. It governs the blacklist gate ("a listed tool is refused instead of
+asked"); an explicit ask opens no gate, the agent chose to wait, so the sheet is the answer.
+With no device connected the tool says so and returns an error -- nothing was asked, and that is
+not a refusal.
+
 The skill `approvals` teaches when to ask, what a grant covers, and that one yes per decision is
 enough.

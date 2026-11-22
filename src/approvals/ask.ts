@@ -25,6 +25,11 @@ export interface ApprovalSurface {
   ask(request: ToolApprovalRequest): Promise<ApprovalDecision>;
   /** Everything still waiting for this owner, across every conversation and machine. */
   pending(owner: string): PendingApprovalView[];
+  /**
+   * Whether the owner has a connected surface right now. An explicit ask has no timer, so asking
+   * with nobody reachable would park the run until he happens to open a window.
+   */
+  reachable(owner: string): boolean;
 }
 
 let surface: ApprovalSurface | undefined;
@@ -35,6 +40,11 @@ export function setApprovalSurface(next: ApprovalSurface | undefined): void {
 
 export function hasApprovalSurface(): boolean {
   return surface !== undefined;
+}
+
+/** False without a surface, and false when the owner has no device on it. */
+export function canAskOwner(owner: string): boolean {
+  return surface?.reachable(owner) ?? false;
 }
 
 /**

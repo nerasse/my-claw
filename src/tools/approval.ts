@@ -1,7 +1,7 @@
 import type { Tool, ToolResult } from "./types.ts";
 import { strOpt } from "./types.ts";
 import type { UnifiedMessage } from "../channels/types.ts";
-import { askOwner, hasApprovalSurface, pendingApprovals } from "../approvals/ask.ts";
+import { askOwner, canAskOwner, hasApprovalSurface, pendingApprovals } from "../approvals/ask.ts";
 import { rethrowIfAborted } from "../core/aborted.ts";
 import type { ApprovalGrantConfig, MyClawConfig } from "../core/config.ts";
 import { nodeAsksFirst, nodeRecords } from "../nodes/store.ts";
@@ -68,6 +68,11 @@ export function createApprovalTool(config?: MyClawConfig): Tool {
         return { success: false, output: "", error: `approval: unknown action "${action}"` };
       }
       if (!hasApprovalSurface()) return { success: false, output: "", error: "No channel surface to ask for approval on" };
+      // The ask has no timer: with no device connected it would wait for a window nobody promised
+      // to open. Refusing here is honest, and the run can decide to retry later.
+      if (!canAskOwner(owner)) {
+        return { success: false, output: "", error: "No device is connected to ask the owner on. Nothing was asked; this is not a refusal." };
+      }
 
       const what = (strOpt(args, "what") ?? "").trim();
       if (!what) return { success: false, output: "", error: "approval: what is required for a request" };

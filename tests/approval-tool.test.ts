@@ -52,6 +52,7 @@ describe("approval tool", () => {
         return "allow-once";
       },
       pending: () => [],
+      reachable: () => true,
     });
 
     const result = await run({ action: "request", what: "check the disks on archy", command: "df -h" });
@@ -68,7 +69,7 @@ describe("approval tool", () => {
 
   test("the three answers come back as the three outcomes the model can branch on", async () => {
     for (const [decision, expected] of [["allow-always", "approved-always"], ["deny", "denied"]] as const) {
-      setApprovalSurface({ ask: async () => decision, pending: () => [] });
+      setApprovalSurface({ ask: async () => decision, pending: () => [], reachable: () => true });
       const result = await run({ action: "request", what: "do it" });
       expect(result.output).toContain(expected);
     }
@@ -77,6 +78,7 @@ describe("approval tool", () => {
   test("list reports what is waiting, with the machine and the wait", async () => {
     setApprovalSurface({
       ask: async () => "deny",
+      reachable: () => true,
       pending: () => [
         {
           id: "ap_1",
@@ -99,10 +101,18 @@ describe("approval tool", () => {
     const noSurface = await run({ action: "request", what: "do it" });
     expect(noSurface.success).toBe(false);
 
-    setApprovalSurface({ ask: async () => "allow-once", pending: () => [] });
+    setApprovalSurface({ ask: async () => "allow-once", pending: () => [], reachable: () => true });
     const noWhat = await run({ action: "request" });
     expect(noWhat.success).toBe(false);
     expect(noWhat.error).toContain("what is required");
+  });
+
+  test("no connected device is reported as nothing asked, never as a refusal", async () => {
+    setApprovalSurface({ ask: async () => "deny", pending: () => [], reachable: () => false });
+    const result = await run({ action: "request", what: "restart the node" });
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("No device is connected");
+    expect(result.error).toContain("not a refusal");
   });
 });
 
