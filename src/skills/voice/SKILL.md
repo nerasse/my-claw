@@ -1,6 +1,7 @@
 ---
 name: voice
 description: Manage cloud/local voice mode for STT and TTS, integrated into the orchestrator.
+agents: main, general, cron
 ---
 
 # Voice Skill

@@ -1,6 +1,7 @@
 ---
 name: skill-builder
 description: Build high-quality reusable skills with progressive disclosure and multi-file references
+agents: main
 ---
 
 # Skill Builder

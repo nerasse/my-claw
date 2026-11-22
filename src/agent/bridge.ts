@@ -53,6 +53,7 @@ import { cacheAttributionOf } from "../llm/cache-policy.ts";
 import { ToolRegistry } from "../tools/registry.ts";
 import type { Tool } from "../tools/types.ts";
 import { SkillRegistry } from "../skills/registry.ts";
+import { skillAudienceOf } from "../skills/types.ts";
 import type { AgentRegistry } from "../agents/registry.ts";
 import { resolveAgent } from "../agents/resolve.ts";
 import { log } from "../utils/logger.ts";
@@ -940,7 +941,7 @@ export class AgentBridge implements AgentBackend {
     try {
       // Scoped, not the full store: layer 5 tells the agent it MUST load (`skills`) anything listed, so
       // a catalog wider than the scope would advertise skills the tool then refuses.
-      const allSkills = this.skillRegistry.list(agent.skills, session.workspace);
+      const allSkills = this.skillRegistry.list(agent.skills, session.workspace, skillAudienceOf(agent.base));
       const skillsOff = session.skillsOff ?? [];
       const skills = skillsOff.length > 0 ? allSkills.filter((s) => !skillsOff.includes(s.name)) : allSkills;
       const runWorkspace = this.workspaceFor(session);
@@ -1066,7 +1067,7 @@ export class AgentBridge implements AgentBackend {
           await snapshotAtStart;
           const callStartedAt = Date.now();
           const result = await this.executeTool({
-            name: tc.name, args: tc.arguments, message, session, toolCallId: tc.id, signal, agentType: agentToolType, available: tools,
+            name: tc.name, args: tc.arguments, message, session, toolCallId: tc.id, signal, agentType: agentToolType, agentBase: agent.base, available: tools,
           });
           const durationMs = Date.now() - callStartedAt;
           if (onToolUse) {
@@ -1770,6 +1771,7 @@ export class AgentBridge implements AgentBackend {
             toolCallId: tc.id,
             signal,
             agentType: agentToolType,
+            agentBase: agent.base,
             available: tools,
           });
 
@@ -2190,6 +2192,9 @@ export class AgentBridge implements AgentBackend {
     // Tool-axis class of the calling agent, so a tool can resolve its own scope. Derived once in
     // handle() rather than recomputed here, which would drift from the set the agent was offered.
     agentType: AgentToolType;
+    // The baseline the agent resolved to (`main`, `general`, `node`, ...). A file agent's name says
+    // nothing about what it can do; this is the vocabulary the skill audience gate speaks.
+    agentBase: AgentToolType;
     // The exact tool set offered to the model this run. Passed rather than recomputed so the set
     // that can be executed is the same object the prompt and the API payload were built from.
     available: Tool[];
@@ -2241,6 +2246,7 @@ export class AgentBridge implements AgentBackend {
         ...params.args,
         __depth: this.depth,
         __agentType: params.agentType,
+        __agentBase: params.agentBase,
         __message: params.message,
         __workspaceDir: this.workspaceFor(params.session).workspaceDir,
         __workspaceKey: params.session.workspace,

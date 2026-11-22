@@ -145,9 +145,9 @@ Five points, all of which must use the same resolvers:
 
 | # | Point | File | Effect |
 | --- | --- | --- | --- |
-| 1 | Prompt layer 5 (`# Available skills`) | `bridge.ts:253`, `backend.ts:350` | catalog filtered to the scope |
+| 1 | Prompt layer 5 (`# Available skills`) | `bridge.ts:253`, `backend.ts:350` | catalog filtered to the scope, then to the agent's audience (`agents:` in the skill) |
 | 2 | Prompt layer 9 (suggested skills) | same call sites | `selectRelevantSkills` receives the filtered list, never suggests out-of-scope |
-| 3 | `skills` tool (read) | `src/tools/skills.ts` | refuses an out-of-scope name with an explicit message, and names only the caller's scope |
+| 3 | `skills` tool (read) | `src/tools/skills.ts` | refuses an out-of-scope name with an explicit message, and names only the caller's scope; a skill outside the caller's audience is refused too |
 | 4 | MCP tools | `src/tools/registry.ts:39` | `dynamic` filtered by the `mcp__<server>__` prefix |
 
 ### How a tool learns who called it

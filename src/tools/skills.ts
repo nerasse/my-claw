@@ -7,6 +7,7 @@ import { formatError } from "../utils/errors.ts";
 import { hooks } from "../hooks/index.ts";
 import { reloadSkills } from "../skills/reload.ts";
 import { parsesAsSkill } from "../skills/loader.ts";
+import { skillAudienceOf, type SkillAudience } from "../skills/types.ts";
 import { normalizeUntrusted } from "../agent/prompt/normalize-untrusted.ts";
 import { writeFileAtomically } from "../utils/atomic-write.ts";
 import { snapshot } from "../core/config-store.ts";
@@ -28,6 +29,16 @@ function scopeFromArgs(config: MyClawConfig, args: Record<string, unknown>): Age
   const raw = args["__agentType"];
   const type: AgentToolType = raw === "general" || raw === "research" || raw === "cron" ? raw : "main";
   return resolveAgentSkills(config, type);
+}
+
+/**
+ * The base of the agent that called, for the skill audience gate. The backends inject the resolved
+ * base (`main`, `general`, a node agent's `node`), because `__agentType` is a name for file agents
+ * and a name tells nothing about what the agent can do.
+ */
+function audienceFromArgs(args: Record<string, unknown>): SkillAudience | undefined {
+  const raw = args["__agentBase"] ?? args["__agentType"];
+  return typeof raw === "string" ? skillAudienceOf(raw) : undefined;
 }
 
 /** Key of the workspace this run belongs to, from the dir the backends injected. Undefined for
@@ -85,7 +96,7 @@ async function readableSkills(
   args: Record<string, unknown>,
 ): Promise<string> {
   const off = await skillsOffFor(sessionManager, sessionIdFromArgs(args));
-  const names = registry.list(scopeFromArgs(config, args), workspaceKeyFromArgs(config, args))
+  const names = registry.list(scopeFromArgs(config, args), workspaceKeyFromArgs(config, args), audienceFromArgs(args))
     .map((s) => s.name)
     .filter((name) => !off.has(name))
     .sort();
@@ -112,6 +123,13 @@ async function readSkill(
   // would send the agent looking for a permission problem instead of a typo.
   if (!scopeAllows(scopeFromArgs(config, args), name)) {
     return { success: false, output: `Skill "${name}" is not in this agent's scope. ${await readableSkills(registry, config, sessionManager, args)}` };
+  }
+  const audience = audienceFromArgs(args);
+  if (audience && skill.meta.agents && !skill.meta.agents.includes(audience)) {
+    return {
+      success: false,
+      output: `Skill "${name}" is for ${skill.meta.agents.join(", ")}; this agent is ${audience}. ${await readableSkills(registry, config, sessionManager, args)}`,
+    };
   }
 
   const skillDir = dirname(skill.path);

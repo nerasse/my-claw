@@ -1,7 +1,22 @@
+export type SkillAudience = "main" | "general" | "research" | "browser" | "node" | "cron";
+
+export const SKILL_AUDIENCES: readonly SkillAudience[] = ["main", "general", "research", "browser", "node", "cron"];
+
+/** The gate vocabulary a resolved agent base speaks, or undefined for a name that is not a base. */
+export function skillAudienceOf(base: string | undefined): SkillAudience | undefined {
+  return base && (SKILL_AUDIENCES as readonly string[]).includes(base) ? base as SkillAudience : undefined;
+}
+
 export interface SkillMeta {
   name: string;
   description: string;
   version?: string;
+  /**
+   * The agents this skill is for. Absent means every agent, which is what every skill written
+   * before the gate existed relied on. A skill that teaches a tool only one base holds names that
+   * base here, so a sub-agent is not told to call what it cannot.
+   */
+  agents?: SkillAudience[];
   // Future gating support:
   // requires?: { bins?: string[]; env?: string[]; platform?: string[] };
 }
@@ -21,6 +36,8 @@ export interface SkillInfo {
   name: string;
   description: string;
   version?: string;
+  /** Agents this skill is for. Absent means every agent. */
+  agents?: SkillAudience[];
   source: Skill["source"];
   path: string;
   /** Key of the workspace this skill belongs to, when it is a secondary workspace's. */

@@ -20,6 +20,7 @@ import { OWNER_STEERING_NOTE, needsOwnerSteeringNote } from "../agent/owner-stee
 import { hooks } from "../hooks/index.ts";
 import type { McpServerStatus } from "../mcp/manager.ts";
 import type { SkillRegistry } from "../skills/registry.ts";
+import { skillAudienceOf } from "../skills/types.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
 import type { SubAgentInfo } from "../subagents/types.ts";
 import type { OutgoingMessage } from "./types.ts";
@@ -131,7 +132,7 @@ export async function handleSkillsCommand(p: IntrospectParams): Promise<string> 
   // The session's workspace first, the agent's pin only when it has none (a cron run): the listing
   // has to match the layer the next run loads, or it names skills this session can never load and
   // hides the ones it will.
-  const inScope = p.skillRegistry.list(scope, p.workspace ?? definition.workspace);
+  const inScope = p.skillRegistry.list(scope, p.workspace ?? definition.workspace, skillAudienceOf(definition.base));
   const total = p.skillRegistry.names().length;
 
   const lines = [`Skills de ${agent.label} — ${inScope.length} sur ${total}`, ""];

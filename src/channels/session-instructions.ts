@@ -10,6 +10,7 @@ import { tryResolveRunModel } from "../llm/run-model.ts";
 import { availabilityWorld } from "../llm/world.ts";
 import type { SessionData } from "../sessions/store.ts";
 import type { SkillRegistry } from "../skills/registry.ts";
+import { skillAudienceOf } from "../skills/types.ts";
 import type { ToolRegistry } from "../tools/registry.ts";
 
 /**
@@ -130,7 +131,7 @@ export async function sessionInstructionsReport(p: SessionInstructionsParams): P
 
   // The session's workspace, not the agent file's pin: that is the layer the next run loads
   // (bridge.ts asks for `session.workspace`), and this page answers what a run would load.
-  const skillsAll = p.skillRegistry.list(definition.skills, workspaceKey);
+  const skillsAll = p.skillRegistry.list(definition.skills, workspaceKey, skillAudienceOf(definition.base));
   const skillsOff = p.session?.skillsOff ?? [];
   const skillStates = skillsAll.map((s) => ({ name: s.name, description: s.description, off: skillsOff.includes(s.name) }));
   const promptSkills = skillsOff.length > 0 ? skillsAll.filter((s) => !skillsOff.includes(s.name)) : skillsAll;

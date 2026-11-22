@@ -1,6 +1,7 @@
 ---
 name: subagent-workflow
 description: When and how to use sub-agents effectively for parallel, isolated, or complex tasks
+agents: main, cron
 ---
 
 # Sub-Agent Workflow

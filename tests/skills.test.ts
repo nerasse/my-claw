@@ -919,3 +919,63 @@ test("scope: an empty list leaves an agent with no skills at all", async () => {
   assert.match(refused.output, /No skill is available to you/);
   await rm(dir, { recursive: true, force: true });
 });
+
+test("audience: a skill is listed only to the agents it names", async () => {
+  const dir = await setupDir();
+  await writeSkill(dir, "owner-only", "---\nname: owner-only\ndescription: For the orchestrator\nagents: main\n---\nOwner.");
+  await writeSkill(dir, "shared", "---\nname: shared\ndescription: Everyone\n---\nAll.");
+  const registry = new SkillRegistry(await loadAllSkills({ builtInDir: dir, customDir: dir }));
+
+  assert.deepEqual(registry.list("all", undefined, "main").map((s) => s.name).sort(), ["owner-only", "shared"]);
+  assert.deepEqual(registry.list("all", undefined, "general").map((s) => s.name), ["shared"]);
+  // No audience passed is a browse surface, not a run: nothing is hidden.
+  assert.equal(registry.list("all").length, 2);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("audience: an unknown agent is dropped, and never hides the skill from everyone", async () => {
+  const dir = await setupDir();
+  await writeSkill(dir, "typo", "---\nname: typo\ndescription: Bad audience\nagents: orhcestrator\n---\nBody.");
+  const registry = new SkillRegistry(await loadAllSkills({ builtInDir: dir, customDir: dir }));
+
+  assert.equal(registry.get("typo")?.meta.agents, undefined);
+  assert.equal(registry.list("all", undefined, "general").length, 1);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("audience: reading a skill outside it is refused and names the audiences", async () => {
+  const dir = await setupDir();
+  await writeSkill(dir, "owner-only", "---\nname: owner-only\ndescription: For the orchestrator\nagents: main\n---\nOwner.");
+  const registry = new SkillRegistry(await loadAllSkills({ builtInDir: dir, customDir: dir }));
+  const tool = readTool(registry, noScope);
+
+  const refused = await tool.execute({ name: "owner-only", __agentBase: "general" });
+  assert.equal(refused.success, false);
+  assert.match(refused.output, /is for main; this agent is general/);
+  assert.match(refused.output, /No skill is available to you/);
+
+  const ok = await tool.execute({ name: "owner-only", __agentBase: "main" });
+  assert.equal(ok.success, true);
+  assert.match(ok.output, /Owner\./);
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("built-in skills declare the audience their tools require", async () => {
+  const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  const skills = await loadAllSkills({ builtInDir: join(repoRoot, "src", "skills"), customDir: "/nonexistent/custom" });
+  const expected: Record<string, string[]> = {
+    agents: ["main"],
+    approvals: ["main"],
+    workspaces: ["main"],
+    "skill-builder": ["main"],
+    "subagent-workflow": ["cron", "main"],
+    voice: ["cron", "general", "main"],
+    "web-browsing": ["cron", "general", "main"],
+    "remote-nodes": ["main", "node"],
+  };
+  for (const [name, agents] of Object.entries(expected)) {
+    const skill = skills.get(name);
+    assert.ok(skill, `missing built-in skill ${name}`);
+    assert.deepEqual([...(skill.meta.agents ?? [])].sort(), agents);
+  }
+});

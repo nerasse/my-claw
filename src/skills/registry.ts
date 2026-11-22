@@ -1,4 +1,4 @@
-import type { Skill, SkillInfo } from "./types.ts";
+import type { Skill, SkillAudience, SkillInfo } from "./types.ts";
 import { scopeAllows, type AgentScope } from "../core/config.ts";
 
 function keyFor(name: string, workspace?: string): string {
@@ -10,6 +10,7 @@ function toInfo(skill: Skill): SkillInfo {
     name: skill.meta.name,
     description: skill.meta.description,
     ...(skill.meta.version ? { version: skill.meta.version } : {}),
+    ...(skill.meta.agents ? { agents: [...skill.meta.agents] } : {}),
     source: skill.source,
     path: skill.path,
     ...(skill.workspace ? { workspace: skill.workspace } : {}),
@@ -63,11 +64,12 @@ export class SkillRegistry {
    * same name twice in the prompt with two different descriptions, for a `skills` read that can
    * only ever return the workspace one.
    */
-  list(scope: AgentScope = "all", workspace?: string): SkillInfo[] {
+  list(scope: AgentScope = "all", workspace?: string, audience?: SkillAudience): SkillInfo[] {
     const effective = workspace ?? "default";
     const byName = new Map<string, Skill>();
     for (const skill of this.skills.values()) {
       if (!scopeAllows(scope, skill.meta.name)) continue;
+      if (audience && skill.meta.agents && !skill.meta.agents.includes(audience)) continue;
       if (skill.workspace !== undefined && skill.workspace !== effective) continue;
       // Insertion order already puts the workspace layer last, but a partial reload must not be
       // able to flip the priority, so the shadowing is stated rather than inherited.

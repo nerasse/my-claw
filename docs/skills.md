@@ -148,12 +148,30 @@ When `skills("my-skill")` is called, the returned content has `${SKILL_DIR}` rep
 
 ## Sub-Agent Sharing
 
-Skills are **global** and shared between the main agent and all sub-agents. A sub-agent spawned with `workspaceDir=/tmp/project` still has access to all skills. Only filesystem tools (`read`, `write`, `apply_patch`, `bash`, `ls`, `search`) are scoped to `workspaceDir`.
+Skills are shared between the main agent and all sub-agents **unless the skill names an audience**.
+`agents:` in the frontmatter (`main`, `general`, `research`, `browser`, `node`, `cron`) narrows who
+is shown the skill; absent means everyone. A sub-agent spawned with `workspaceDir=/tmp/project`
+still has access to every skill it is an audience of. Only filesystem tools (`read`, `write`,
+`apply_patch`, `bash`, `ls`, `search`) are scoped to `workspaceDir`.
 
 One base is special: a `node` agent's tool set is the remote machine's manifest, so the
 orchestrator's registry does not supply its tools at all. `skills` is added there explicitly, in
 its read-only form, because the prompt's layer 5 lists the catalog for every agent and tells it to
 call the tool (docs/remote-nodes.md). A node agent reads skills; it never writes them.
+
+### Who a built-in skill is for
+
+| Skill | Agents |
+|---|---|
+| `approvals`, `agents`, `workspaces`, `skill-builder` | `main` |
+| `subagent-workflow` | `main`, `cron` |
+| `web-browsing`, `voice` | `main`, `general`, `cron` |
+| `remote-nodes` | `main`, `node` |
+
+A skill outside its audience is not listed, and a `skills` read of it is refused with the audiences
+it does have. The set follows the tools a base holds: `approval`, `spawn` and `workspaces` are the
+orchestrator's, `delegate_browser_task` and `audio` reach `general` and `cron` too, and a node
+agent's rules are on its own side of `remote-nodes`.
 
 ## Future Extensibility
 

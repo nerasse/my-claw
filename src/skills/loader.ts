@@ -1,9 +1,24 @@
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
-import type { Skill, SkillMeta } from "./types.ts";
+import type { Skill, SkillAudience, SkillMeta } from "./types.ts";
+import { SKILL_AUDIENCES } from "./types.ts";
 import { snapshot } from "../core/config-store.ts";
 import { log } from "../utils/logger.ts";
 import { parseFrontmatter } from "../utils/frontmatter.ts";
+
+function parseAudiences(name: string, raw: string | undefined): SkillAudience[] | undefined {
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const known: SkillAudience[] = [];
+  for (const entry of raw.split(",")) {
+    const value = entry.trim().toLowerCase();
+    if (!value) continue;
+    if ((SKILL_AUDIENCES as readonly string[]).includes(value)) known.push(value as SkillAudience);
+    else void log("warn", "skill names an unknown agent, dropped from its audience", { skill: name, agent: value });
+  }
+  // An entirely unknown list reads as "no gate" rather than "nobody": a typo must not make a
+  // skill vanish from every prompt with nothing but a log line to explain it.
+  return known.length > 0 ? known : undefined;
+}
 
 function parseSkill(text: string): { meta: SkillMeta; content: string } | null {
   const parsed = parseFrontmatter(text);
@@ -13,11 +28,14 @@ function parseSkill(text: string): { meta: SkillMeta; content: string } | null {
   const description = parsed.fields["description"];
   if (name === undefined || description === undefined) return null;
 
+  const agents = parseAudiences(name, parsed.fields["agents"]);
+
   return {
     meta: {
       name,
       description,
       version: parsed.fields["version"],
+      ...(agents ? { agents } : {}),
     },
     content: parsed.body,
   };

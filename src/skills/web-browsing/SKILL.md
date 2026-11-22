@@ -1,6 +1,7 @@
 ---
 name: web-browsing
 description: Delegate web browsing tasks (forms, searches, accounts, booking) to a specialized subagent.
+agents: main, general, cron
 ---
 
 # Web Browsing

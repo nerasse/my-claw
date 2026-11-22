@@ -1,6 +1,7 @@
 ---
 name: remote-nodes
 description: Work with a paired machine from the orchestrator (spawn its agent, read its gate, hand it files), and know what the machine's own agent may and may not do
+agents: main, node
 ---
 
 # Remote nodes

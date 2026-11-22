@@ -1,6 +1,7 @@
 ---
 name: agents
 description: Create and edit file-defined sub-agents (agents/*.md) with the right frontmatter, after interviewing the owner about what the agent is for
+agents: main
 ---
 
 # File-Defined Agents

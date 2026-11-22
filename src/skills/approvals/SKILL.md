@@ -1,6 +1,7 @@
 ---
 name: approvals
 description: Ask the owner before something risky, read what is already waiting on him, and understand allow-once / allow-session / always-allow-this-call
+agents: main
 ---
 
 # Approvals: the owner in the loop

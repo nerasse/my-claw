@@ -1,6 +1,7 @@
 ---
 name: workspaces
 description: Create, configure, reorganize and switch my-claw workspaces with the workspaces tool, after interviewing the owner about what they want
+agents: main
 ---
 
 # Workspaces
