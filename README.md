@@ -2,166 +2,113 @@
 
 Self-hosted AI agent orchestrator: one agent, real tools, your own machine.
 
-## What It Does
+<p>
+  <a href="https://github.com/nerasse/my-claw/releases/latest"><img src="https://img.shields.io/github/v/release/nerasse/my-claw?style=flat-square" alt="Latest release"></a>
+  <a href="https://github.com/nerasse/my-claw-app/releases/latest"><img src="https://img.shields.io/github/v/release/nerasse/my-claw-app?label=android&style=flat-square" alt="Android release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-3f4d3a?style=flat-square" alt="License: MIT"></a>
+  <img src="https://img.shields.io/badge/runtime-Bun-f472b6?style=flat-square" alt="Runtime: Bun">
+</p>
 
-my-claw is a single-tenant personal agent reached from the my-claw app and its web client. It handles messages, runs tools, manages sessions, and understands multimodal input (voice, images, video).
+[Watch the 20-second recording](docs/assets/readme/demo.mp4) · MP4, 600 KB, real speed, no montage: the prompt, the tools streaming, a reviewer spawned in the background, its `returned` card, the test run, then the browser panel.
 
-**Core capabilities:**
-- App/web channel: WSS server with paired devices (`my-claw-app`)
-- Session memory: per-thread persistent sessions
-- Tool system: 8 base (bash, read, write, fetch, find, grep, ls, memory) + voice, browser, skill, subagent, search tools
-- Sub-agents: general and research agents with persistent sessions
-- Voice: STT auto (inbound audio transcribed), TTS manual (tool call only)
-- Vision: images and video converted to LLM-compatible format
-- Skills: built-in/custom/workspace skill system (SKILL.md format)
-- Blacklist + approval UI for sensitive actions (answered from the device)
-- Streaming responses
+## What it is
 
-## Architecture
+my-claw is a single-user agent that runs on a machine you own. You reach it from the web client or
+the Android app, and it works with the shell, the files, a browser and sub-agents on that machine.
+Every conversation is a log on disk, so a restart does not lose the thread.
 
-- TypeScript, Bun runtime
-- OpenAI-compatible LLM provider (Fireworks AI default)
-- Router + session manager orchestrate inbound messages
-- Agent bridge handles tool call loops (configurable: 90 orchestrator, 50 subagent), parallel execution
-- The channel adapter is self-contained (my-claw-app/)
+The model is configuration: an OpenAI-compatible endpoint, a ChatGPT or Claude subscription,
+Gemini, OpenRouter, or a local server. There is no hosted tier. Prompts go to the provider you
+declare, and everything else stays on your hardware.
 
-See `docs/architecture.md` for full details.
+## What you get
 
-## Dependencies
+- Shell, files, search, fetch, a real Chromium, cron jobs, skills, and sub-agents with their own
+  sessions. A blacklist decides which tools ask for approval before they run.
+- Workspaces: one agent, several codebases. Each keeps its own directory, prompt layers, skills and
+  agents; the session list says which one a thread belongs to and filters down to it.
+- One device list shared by the web client and the Android app: same threads, same memory, same
+  queue.
+- Providers and models declared in `config.json`, a model pin per agent, tags that carry several
+  routes in order, and a switch from the chat header.
+- Quota errors handled: the run parks, the app offers a retry, and a tag walks its routes until one
+  answers.
+- Sessions that survive restarts, with `/compact`, `/undo`, and continue after a stop.
+- Remote nodes: pair another machine and its shell, files and search become tools of the same agent.
+- Tool calls folded into one run in the transcript, reasoning folded under it, sub-agents reporting
+  in place.
+- Ten themes and a custom palette, with light, dark and AMOLED modes.
+- Tags that name a route once: a model, its fallbacks, an effort and a context cap. Point a
+  session, an agent or a job at the tag, then update the tag when a model changes and every caller
+  follows. Retry-on-quota and Siphon both take a tag.
 
-### Required
+## Install
 
-| Dependency | Installation | Why |
-|---|---|---|
-| [Bun](https://bun.sh/) | `curl -fsSL https://bun.sh/install \| bash` | Runtime + package manager |
-| `ffmpeg` | `apt install ffmpeg` (Debian/Ubuntu) or `brew install ffmpeg` (macOS) | Image resize, video frame extraction |
-
-### Voice / Multimedia (optional)
-
-| Dependency | Installation | Feature | Mode |
-|---|---|---|---|
-| `edge-tts` | `pip install edge-tts` | TTS (text-to-speech) | Cloud |
-| `piper-tts` | [Download binary + model](https://github.com/rhasspy/piper) | TTS | Local |
-| `faster-whisper` server | `pip install faster-whisper` then run server on `:18792` | STT (speech-to-text) | Local |
-| `GROQ_API_KEY` env var | Get from [groq.com](https://groq.com) | STT | Cloud |
-
-**STT local setup example:**
-```bash
-pip install faster-whisper
-python -c "from faster_whisper import WhisperModel; m = WhisperModel('large-v3', device='cpu', compute_type='int8')"
-# Run a simple HTTP server on port 18792 that accepts multipart/form-data with a "file" field
-# and returns {"text": "...", "language": "..."}
-```
-
-**Notes:**
-- Voice features work in **cloud**, **local**, or **auto** mode. No fallback — if the chosen mode fails, the error is explicit.
-- TTS is **manual only** (agent calls the `audio` tool when user asks). No automatic TTS post-response.
-- For unlimited token plans, video frame extraction uses up to 20 frames per video (1 every 3 seconds).
-
-### Skills (separate)
-
-Skills may have their own dependencies (Python packages, CLIs, etc.). See individual `src/skills/*/SKILL.md` files. They are **not required** for core operation.
-
-## Quick Start
+Linux x86_64, Debian or Ubuntu. The installer adds Bun, Chromium, ffmpeg and the systemd units; it
+needs sudo once.
 
 ```bash
-# Install deps
-bun install
-
-# Create config directory
-mkdir -p ~/.my-claw
-
-# Copy and edit the config template
-cp packaging/config.json ~/.my-claw/config.json
-# Edit ~/.my-claw/config.json with your API keys and tokens
-
-# Run
-bun run start
+V=$(curl -fsSL https://api.github.com/repos/nerasse/my-claw/releases/latest | grep -m1 '"tag_name"' | cut -d'"' -f4 | sed 's/^v//')
+curl -fsSLO "https://github.com/nerasse/my-claw/releases/download/v$V/my-claw-$V-linux-x64.tar.gz"
+tar xzf "my-claw-$V-linux-x64.tar.gz"
+sudo "my-claw-$V-linux-x64/packaging/install.sh"
 ```
 
-## Configuration
+The installer ends with a pairing code, a link and a QR code. Open the link: the client asks for the
+first model, voice and services. The web client is served by the server itself.
 
-Config lives in `~/.my-claw/config.json`. Key sections:
+Android app: [APK releases](https://github.com/nerasse/my-claw-app/releases/latest).
 
-```json
-{
-  "whitelist": ["neras"],
-  "blacklist": ["bash", "write"],
-  "llm": {
-    "defaultProvider": "fireworks",
-    "defaultModel": "accounts/fireworks/models/kimi-k2p6-turbo",
-    "vision": true,
-    "providers": {
-      "fireworks": {
-        "baseUrl": "https://api.fireworks.ai/inference/v1",
-        "apiKeyEnv": "FIREWORKS_API_KEY"
-      }
-    },
-    "limit": { "context": 128000, "output": 8192 }
-  },
-  "channels": {
-    "my-claw-app": {
-      "enabled": true,
-      "port": 8080,
-      "devices": { "phone": { "token": "SHARED_SECRET", "owner": "neras" } },
-      "streaming": { "enabled": true }
-    }
-  },
-  "voice": {
-    "mode": "auto",
-    "stt": { "mode": "cloud", "echoTranscript": true },
-    "tts": { "mode": "cloud" }
-  }
-}
-```
+Updates come from GitHub releases every 15 minutes, or from `myclaw update`.
 
-Secrets can also go in `~/.my-claw/.env`:
-```
-FIREWORKS_API_KEY=...
-GROQ_API_KEY=...
-GEOAPIFY_API_KEY=...
-```
+## Screenshots
 
-`GEOAPIFY_API_KEY` enables chat location sharing. Keep the file private
-(`chmod 600 ~/.my-claw/.env`); the key must never be shipped to a client app. See
-[`docs/location-sharing.md`](docs/location-sharing.md) for the integration plan and provider
-behavior.
+![A conversation, with a Python file open on the right](docs/assets/readme/desktop.png)
 
-## Project Structure
+![Two reviewers spawned as sub-agents, filed in a folder](docs/assets/readme/agents.png)
 
-```
-src/
-  core/           # Config, router
-  agent/          # Bridge, approvals, prompt builder
-  channels/       # my-claw-app adapter (app + web)
-  llm/            # OpenAI-compatible provider
-  sessions/       # Session manager + store
-  tools/          # Tool registry + all tools (base, voice, browser, skill, subagent, search)
-  analytics/      # SQLite usage tracking (per-API-call token analytics)
-  voice/          # VoiceManager, STT, TTS pipelines
-  media/          # Image resize + base64, video frame extraction
-  skills/         # Skill registry + built-in skills
-  subagents/      # Sub-agent runner + registry
-  utils/          # Logger, media helpers
+![The session list filtered by workspace, each row naming its own](docs/assets/readme/workspaces.png)
 
-docs/             # Architecture docs + plans
-tests/            # Test suite (bun:test)
-```
+![The model picker, every provider](docs/assets/readme/models.png)
+
+![Ten themes, light, dark and AMOLED](docs/assets/readme/themes.png)
+
+![A conversation on a phone](docs/assets/readme/mobile.png)
+
+The rest of the tour is in [docs/gallery.md](docs/gallery.md): a markdown file open beside the
+chat, images in a carousel, tags and the session sheet, workspaces, the browser and its VNC
+access, the status of a run, tools folded into steps, and voice notes.
+
+## Documentation
+
+The README is the product page; the details live in [`docs/`](docs/).
+
+| If you want to | Read |
+|---|---|
+| install on a VPS or a VM, step by step | [docs/setup-guide.md](docs/setup-guide.md) |
+| understand the code layout | [docs/architecture.md](docs/architecture.md) |
+| declare providers, models and tags | [docs/config.md](docs/config.md), [docs/model-identity.md](docs/model-identity.md) |
+| run sub-agents | [docs/subagents.md](docs/subagents.md) |
+| add another machine as a node | [docs/remote-nodes.md](docs/remote-nodes.md) |
+| resume a stopped run | [docs/continue.md](docs/continue.md) |
+| build and release | [docs/ci-cd.md](docs/ci-cd.md) |
 
 ## Development
 
 ```bash
-bun run check      # TypeScript check
-bun test           # Run tests
-bun run dev        # Watch mode
+bun install
+bun run check && bun test
+bun run dev
 ```
+
+Tests point `MY_CLAW_DIR` at a temporary directory, so a run never touches a real `~/.my-claw`.
 
 ## License
 
-MIT. Read it in [LICENSE](LICENSE).
-
-Use it, change it, sell it, ship it closed. The only thing MIT asks is that the copyright notice
+MIT. Copyright Yassir EL KSSIMI. Use it, change it, sell it, ship it closed; the copyright notice
 travels with the copy.
 
-Contributions land under the same license.
-
+Contributors: Yassir EL KSSIMI ([nerasse](https://github.com/nerasse)), Hicham Berrada
+([Nawroski](https://github.com/Nawroski)), Nabil El Abassi
+([LastryCoding](https://github.com/LastryCoding)), Anthony Von Bieler
+([Tony224x](https://github.com/Tony224x)).
