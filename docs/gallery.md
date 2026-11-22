@@ -3,7 +3,9 @@
 Real screenshots of the current UI, one screen per image, taken on a demo install with fake data.
 Every image keeps the conversation list on the left, so the folders and the thread stay in view.
 
-[Watch the recording](assets/readme/demo.mp4): 20 seconds, real speed, no montage. The prompt is
+[![Watch the recording](assets/readme/demo-poster.png)](assets/readme/demo.mp4)
+
+20 seconds, real speed, no montage. The prompt is
 sent, the tools stream in, a reviewer is spawned in the background, its `returned` card comes back
 with `OK`, the test run lands, then the session is pointed at the browser panel.
 

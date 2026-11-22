@@ -9,7 +9,9 @@ Orchestrateur d'agent IA auto-hébergé : un agent, de vrais outils, votre machi
   <img src="https://img.shields.io/badge/runtime-Bun-f472b6?style=flat-square" alt="Runtime : Bun">
 </p>
 
-[Voir l'enregistrement de 20 secondes](docs/assets/readme/demo.mp4) · MP4, 600 Ko, vitesse réelle, sans montage : le prompt, les outils en direct, un reviewer lancé en arrière-plan, sa carte `returned`, le test, puis le panneau navigateur.
+[![Voir l'enregistrement de 20 secondes](docs/assets/readme/demo-poster.png)](docs/assets/readme/demo.mp4)
+
+20 secondes, MP4, vitesse réelle, sans montage : le prompt, les outils en direct, un reviewer lancé en arrière-plan, sa carte `returned`, le test, puis le panneau navigateur.
 
 ## Ce que c'est
 
