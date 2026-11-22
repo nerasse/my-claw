@@ -381,3 +381,78 @@ test("a cron run is compacted mid-flight too", async () => {
 
   assert.ok(compactions >= 1, "the cron run was compacted");
 });
+
+/**
+ * A spent plan is the run's wall, not a compaction detail.
+ *
+ * With the quota switch on, the summarizer chain refuses to borrow another account and hands the
+ * wall back as `retryableQuota`. Nobody armed the wait and the pass was logged as skipped, so the
+ * run kept going past the window and every later pass hit the same wall. The run now ends on the
+ * provider's own error: the composition root arms the wait, and the resumed run compacts its start.
+ */
+test("a compaction wall ends the run when the conversation waits for quota", async () => {
+  const id = "test-mid-run-compaction-wall";
+  await deleteSession(id);
+  const sess = session(id);
+  sess.modelOverride = "tag:TwoAccounts";
+  sess.quotaRetry = { enabled: true };
+  await writeLegacySessionFile(id, sess);
+  const setup = await setupSessionLog(id);
+  const walledConfig = config();
+  walledConfig.llm = {
+    ...walledConfig.llm,
+    providers: {
+      alpha: { baseUrl: "https://alpha.local/v1" },
+      beta: { baseUrl: "https://beta.local/v1" },
+    },
+    models: [
+      { id: "alpha-1", label: "Alpha", provider: "alpha" },
+      { id: "beta-1", label: "Beta", provider: "beta" },
+    ],
+    defaultProvider: "alpha",
+    defaultModel: "alpha-1",
+    providerRetry: { delaysMs: [1] },
+  };
+  walledConfig.tags = { TwoAccounts: { route: [{ model: "alpha-1" }, { model: "beta-1" }] } };
+
+  const bridge = new AgentBridge(walledConfig, registry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(id);
+  const kinds: string[] = [];
+  let rounds = 0;
+  const spent = (): Response =>
+    new Response(
+      JSON.stringify({ error: { type: "usage_limit_reached", message: "The usage limit has been reached" } }),
+      { status: 429, headers: { "Content-Type": "application/json" } },
+    );
+  const mock = mockFetch(async (_url, init) => {
+    const body = JSON.parse(String(init?.body ?? "{}")) as { messages: Sent["messages"] };
+    const last = String(body.messages[body.messages.length - 1]?.content ?? "");
+    if (last.includes("You summarize a conversation")) {
+      kinds.push("compaction");
+      return spent();
+    }
+    kinds.push("run");
+    rounds += 1;
+    const promptTokens = Math.round(JSON.stringify(body.messages).length / 4);
+    return llmResponse({ content: "", tool_calls: [{ id: `c${rounds}`, type: "function", function: { name: "filler", arguments: "{}" } }] }, promptTokens);
+  });
+
+  let error: unknown;
+  try {
+    await bridge.handleMessage(message(), sess, signal);
+  } catch (err) {
+    error = err;
+  } finally {
+    mock.restore();
+    end();
+    runRegistry.clear();
+    setup.cleanup();
+    await deleteSession(id);
+  }
+
+  assert.ok(error, "the run ended on the wall instead of skipping the compaction");
+  assert.equal((error as { status?: number }).status, 429);
+  assert.match((error as Error).message, /usage limit/i);
+  assert.ok(kinds.includes("compaction"), "the summarizer was reached");
+  assert.equal(kinds[kinds.length - 1], "compaction", "no model call follows the failed compaction");
+});

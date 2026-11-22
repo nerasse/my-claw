@@ -512,8 +512,10 @@ suivant. Un tag dont le premier compte est épuisé fait donc écrire le résum�
 de rendre un HTTP 429 sur un compte qui a encore de la place (mesuré le 2026-11-02). Une réponse
 vide ou tronquée n'est pas un échec de fournisseur : la chaîne s'arrête au modèle qui l'a produite.
 Et quand la conversation a le switch « Retry when the quota returns » actif, le mur arrête la
-chaîne : la compaction se met en file sur l'attente quota et part au reset — `task: "compact"` dans
-l'attente, `docs/quota-retry.md`.
+chaîne : un `/compact` se met en file sur l'attente quota et part au reset (`task: "compact"`) ; une
+passe automatique termine le run sur le mur, et le run repris compacte à son démarrage. Sans ça, le
+passage était seulement « skipped » : le run continuait au-delà de la fenêtre et chaque passe
+suivante retrouvait le même mur (owner, 2026-11-22).
 
 **La fenêtre.** Le découpage d'une compaction -- automatique ou commande -- se calcule sur la
 fenêtre du modèle **déclarée, entière** (`resolveFullContextWindow`, `retainedBudgetFor`), et n'en

@@ -78,6 +78,18 @@ import { nodeRecord } from "../nodes/store.ts";
 import { normalizeUntrusted } from "./prompt/normalize-untrusted.ts";
 
 /**
+ * Internal marker for an automatic compaction that met a spent plan on a conversation that waits
+ * its walls out. It never leaves the run as itself: the catch rethrows the provider's own error so
+ * the composition root can read the provider that has to reopen.
+ */
+class CompactionQuotaWallError extends Error {
+  constructor(readonly wall: unknown) {
+    super("compaction is blocked by a spent quota");
+    this.name = "CompactionQuotaWallError";
+  }
+}
+
+/**
  * Names the model that actually failed on the error the run dies of.
  *
  * The provider's own text says what it refused; it does not say which configured provider it was,
@@ -2401,6 +2413,14 @@ export class AgentBridge implements AgentBackend {
       cancelSpeculation(session.id);
       const result = await compactSession(this.config, session, undefined, signal, undefined, prefix);
       if (!result.ok) {
+        // A plan wall is the run's wall too. The chain hands it back as `retryableQuota` when the
+        // conversation asked to wait its walls out; skipping here left the run growing past the
+        // window while every later pass hit the same wall (owner, 2026-11-22). Ending the run on
+        // the cause parks the conversation on the quota, and the resumed run compacts its own
+        // start. `waitsForQuota` reads the switch or a Siphon pin, like the run's own failure path.
+        if (result.retryableQuota === true && this.waitsForQuota(session)) {
+          throw new CompactionQuotaWallError(result.cause ?? new Error(result.reason ?? "compaction is blocked by a spent quota"));
+        }
         void log("warn", "auto-compaction skipped", { ...logData, reason: result.reason });
         return "skipped";
       }
@@ -2413,6 +2433,8 @@ export class AgentBridge implements AgentBackend {
       return "compacted";
     } catch (err) {
       rethrowIfAborted(err, signal);
+      // The wall travels as itself: the composition root reads its provider to arm the wait.
+      if (err instanceof CompactionQuotaWallError) throw err.wall;
       void log("error", "auto-compaction failed", { ...logData, error: errorLogData(err) });
       return "skipped";
     }
