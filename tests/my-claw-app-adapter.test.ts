@@ -311,7 +311,7 @@ class FakeSessionStore {
     this.failures.push({ threadId, error });
   }
 
-  quotaRetry: Map<string, { enabled: boolean; waiting?: { at: string; attempts: number; windows: string[] } }> = new Map();
+  quotaRetry: Map<string, { enabled: boolean; waiting?: { at: string; attempts: number; windows: string[]; provider?: string; probe?: true } }> = new Map();
 
   async quotaRetryOf(_deviceId: string, threadId: string) {
     const state = this.quotaRetry.get(threadId) ?? { enabled: false };
@@ -655,6 +655,61 @@ describe("MyClawAppAdapter", () => {
     assert.equal(store.quotaRetry.get("default")?.waiting, undefined, "the wait is spent once it fires");
   });
 
+  test("a compaction wall asks the whole route and waits for the earliest reset", async () => {
+    // Measured 2026-11-23: a compaction hit Anthropic's week and the wait was armed from that
+    // account alone, so the conversation parked until 02:01 while chatgpt-3's week reopened
+    // earlier. The compaction cause now carries its chain, and the arm reads all of it.
+    const now = Date.now();
+    const spent = (provider: string, resetAt: number) => ({
+      ok: true as const,
+      snapshot: {
+        provider,
+        source: "claude" as const,
+        windows: [{ id: "week", label: "Week", usedPercent: 100, resetAt: new Date(now + resetAt).toISOString() }],
+        balances: [],
+        extras: [],
+        fetchedAt: new Date().toISOString(),
+      },
+    });
+    const byProvider = new Map<string, ReturnType<typeof spent>>([
+      ["anthropic", spent("anthropic", 3 * 3_600_000)],
+      ["chatgpt-2", spent("chatgpt-2", 30 * 60_000)],
+      ["chatgpt-3", spent("chatgpt-3", 20 * 60_000)],
+      ["chatgpt-4", spent("chatgpt-4", 2 * 3_600_000)],
+    ]);
+    const asked: string[] = [];
+    adapter.onQuotaController({
+      get: async (provider: string) => {
+        asked.push(provider);
+        return byProvider.get(provider) ?? { ok: false as const, code: "no-source" as const, message: "none" };
+      },
+      redeem: async () => ({ ok: false, code: "unsupported" as const, message: "not under test" }),
+    });
+    store.quotaRetry.clear();
+    store.quotaRetry.set("default", { enabled: true });
+    try {
+      await adapter.settleQuotaRetry(
+        DEVICE_ID,
+        "default",
+        Object.assign(new Error("Anthropic request failed: HTTP 429 — rate_limit_error"), {
+          status: 429,
+          provider: "anthropic",
+          providers: ["anthropic", "chatgpt-2", "chatgpt-3", "chatgpt-4"],
+        }),
+      );
+      const waiting = store.quotaRetry.get("default")?.waiting;
+      assert.ok(waiting, "the wall arms a wait");
+      assert.equal(waiting.provider, "chatgpt-3", "the account that reopens first is the one named");
+      assert.ok(
+        Math.abs(Date.parse(waiting.at) - (now + 20 * 60_000 + 60_000)) < 2_000,
+        `the wait is chatgpt-3's reset plus the buffer, got ${waiting.at}`,
+      );
+      assert.deepEqual([...asked].sort(), ["anthropic", "chatgpt-2", "chatgpt-3", "chatgpt-4"]);
+    } finally {
+      store.quotaRetry.clear();
+    }
+  });
+
   test("a quota wait keeps its attempt count across the retry's own run, and a finished run ends the episode", async () => {
     // The retry's Continue starts a run, and that start must not read as the end of the episode:
     // the attempt count is what stops a provider that keeps refusing across resets.
@@ -752,6 +807,46 @@ describe("MyClawAppAdapter", () => {
       store.pins.delete("default");
       await adapter.siphonChanged(DEVICE_ID, "default");
       assert.equal(store.quotaRetry.get("default")?.waiting, undefined, "nothing holds the wait any more");
+    } finally {
+      store.pins.clear();
+    }
+  });
+
+  test("a Siphon pin with no published reset still probes, and unpinning clears the probe", async () => {
+    // A pin is "this model, whatever it takes". An account whose bar is full with no clock is
+    // still a wall the pin asked to wait out, and the probe is the only answer the oracle allows.
+    adapter.onQuotaController({
+      get: async () => ({
+        ok: true as const,
+        snapshot: {
+          provider: "claude-2",
+          source: "claude" as const,
+          windows: [{ id: "week", label: "Week", usedPercent: 100 }],
+          balances: [],
+          extras: [],
+          fetchedAt: new Date().toISOString(),
+        },
+      }),
+      redeem: async () => ({ ok: false, code: "unsupported" as const, message: "not under test" }),
+    });
+    store.quotaRetry.clear();
+    store.pins.add("default");
+    try {
+      const before = Date.now();
+      await adapter.settleQuotaRetry(
+        DEVICE_ID,
+        "default",
+        Object.assign(new Error("HTTP 429 — quota exhausted"), { status: 429, provider: "claude-2" }),
+      );
+      const waiting = store.quotaRetry.get("default")?.waiting;
+      assert.ok(waiting, "the pin's wall is waited on");
+      assert.equal(waiting.probe, true);
+      assert.notEqual(store.quotaRetry.get("default")?.enabled, true, "the switch stays the switch");
+      assert.ok(Date.parse(waiting.at) > before, "the probe is in the future");
+
+      store.pins.delete("default");
+      await adapter.siphonChanged(DEVICE_ID, "default");
+      assert.equal(store.quotaRetry.get("default")?.waiting, undefined, "the probe goes with the pin");
     } finally {
       store.pins.clear();
     }

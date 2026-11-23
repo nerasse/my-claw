@@ -453,6 +453,8 @@ test("a compaction wall ends the run when the conversation waits for quota", asy
   assert.ok(error, "the run ended on the wall instead of skipping the compaction");
   assert.equal((error as { status?: number }).status, 429);
   assert.match((error as Error).message, /usage limit/i);
+  // The wait is armed from the whole chain, not the account that refused.
+  assert.deepEqual((error as { providers?: string[] }).providers?.sort(), ["alpha", "beta"]);
   assert.ok(kinds.includes("compaction"), "the summarizer was reached");
   assert.equal(kinds[kinds.length - 1], "compaction", "no model call follows the failed compaction");
 });
