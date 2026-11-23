@@ -1,0 +1,94 @@
+site_name: my-claw
+site_description: "Orchestrateur d'agent IA auto-hébergé : un agent, de vrais outils, votre machine."
+site_url: https://nerasse.github.io/my-claw/
+repo_url: https://github.com/nerasse/my-claw
+repo_name: nerasse/my-claw
+edit_uri: edit/main/docs/
+docs_dir: docs
+strict: false
+
+theme:
+  name: material
+  language: fr
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+    - content.action.edit
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Passage en mode sombre
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Passage en mode clair
+
+extra_css: [assets/docs.css]
+
+plugins:
+  - search:
+      lang: fr
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+
+nav:
+  - Accueil: index.md
+  - Installation: setup-guide.md
+  - Configuration: config.md
+  - Modèles:
+      - Identité et résolution: model-identity.md
+      - Déclarations: model-declarations.md
+      - Découverte: model-discovery.md
+      - Tags et routes: tags.md
+      - Quotas: quota-retry.md
+  - Agents:
+      - Rôles: agent-roles.md
+      - Périmètre: agent-scoping.md
+      - Modèle par agent: agent-model.md
+      - Sous-agents: subagents.md
+      - Agents fichiers: file-agents.md
+  - Outils:
+      - Vue d'ensemble: tools.md
+      - Navigateur: browser.md
+      - Recherche web: search.md
+      - Mémoire: memory.md
+      - Cron: cron.md
+  - Sessions:
+      - Journal et durabilité: session-log.md
+      - Compaction: compaction.md
+      - Continuer un run: continue.md
+      - Reprise et injection: injection.md
+      - Stop: stop.md
+  - Nodes distants: remote-nodes.md
+  - Canal app et web: my-claw-app-channel.md
+  - Sécurité:
+      - Approbations: tool-approvals.md
+      - Contenu non fiable: untrusted-content.md
+      - Accès fichiers: filesystem-access.md
+  - Exploitation:
+      - Mises à jour: auto-update.md
+      - CI/CD: ci-cd.md
+      - Architecture: architecture.md
