@@ -116,20 +116,14 @@ export async function decideQuotaWait(input: {
       },
     };
   }
-  const outcome = readings.find((one) => one.provider === failure?.provider)?.outcome ?? readings[0]?.outcome;
-
   // The oracle could not name a reset. Two very different readings hide behind that:
   //
   // - Every bar has room. Then this failure is a burst limit wearing a quota's clothes and
-  //   nothing should be waited on: the run keeps its ordinary backoff.
+  //   nothing should be waited on: the run keeps its ordinary backoff. (Already answered above.)
   // - The plan is spent with no clock (no source, a balance, a read that failed), or spent on a
   //   bar that publishes no reset. That is a wall the owner asked to wait out, so it is checked
   //   again instead of being abandoned -- without this the switch did nothing at all for those
   //   accounts, and Continue just failed again at every press (2026-11-10).
-  // Every provider that answered has room: a burst limit, not a plan.
-  if (readings.length > 0 && readings.every((one) => one.outcome?.ok === true && one.spent === false)) {
-    return { skipped: "not-a-quota" };
-  }
   if (attempts > QUOTA_RETRY_MAX_PROBES) return { skipped: "gave-up" };
   return {
     wait: {

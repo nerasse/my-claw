@@ -142,6 +142,12 @@ had one hour left.
 The wait carries `provider` so the pill says where the quota is coming back instead of naming the
 model the run happened to die on.
 
+A compaction is the same question with a different error. `summarizeForCompaction` builds its own
+chain from the session's route, but its failure used to carry only the account that refused, so the
+wait asked one provider: a wall on Anthropic parked the thread behind its weekly while a ChatGPT
+week reopened first (2026-11-23). The chain now stamps `providers` on the cause it hands back, and
+the table above applies unchanged.
+
 ## The switch outranks the fallback, not the route
 
 A wall on a conversation with **Retry when the quota returns** on stops the run when its route is

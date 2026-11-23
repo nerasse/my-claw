@@ -122,6 +122,12 @@ test("with the quota switch on, a wall stops the chain instead of borrowing anot
     assert.equal(result.retryableQuota, true);
     assert.match(result.reason ?? "", /Compaction error/);
     assert.deepEqual(models, ["alpha-1"]);
+    // The wait asks the chain that could have written the summary, not only the account that
+    // refused: a compaction wall on one account parked the thread behind its own week while a
+    // ChatGPT week reopened first (2026-11-23).
+    const cause = result.cause as { provider?: string; providers?: string[] };
+    assert.equal(cause.provider, "alpha");
+    assert.deepEqual(cause.providers, ["alpha", "beta"]);
   } finally {
     mock.restore();
   }

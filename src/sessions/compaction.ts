@@ -707,10 +707,15 @@ export async function summarizeForCompaction(
           ok: false,
           reason: `Compaction error: ${err instanceof Error ? err.message : String(err)}`,
           retryableQuota: true,
-          cause: withProvider(err, llmConfig),
+          // The whole chain, not the model that happened to fail: the wait is armed by asking
+          // every account that could have written this summary (2026-11-23, a compaction wall on
+          // Anthropic parked the thread behind its weekly while a ChatGPT week reopened first).
+          cause: withRouteProviders(withProvider(err, llmConfig), candidates),
         };
       }
-      if (!next || !(isProviderOutage(err) || isQuotaSpent(err) || isCapabilityRefusal(err))) throw err;
+      if (!next || !(isProviderOutage(err) || isQuotaSpent(err) || isCapabilityRefusal(err))) {
+        throw withRouteProviders(withProvider(err, llmConfig), candidates);
+      }
       const reason = String((err as Error | undefined)?.message ?? err).slice(0, 200);
       void log("warn", "compaction provider fallback", {
         sessionId: session.id,
@@ -747,6 +752,22 @@ function cutAfterWriting(response: LlmResponse): boolean {
 function withProvider(err: unknown, from: ResolvedLlmConfig): unknown {
   if (typeof err !== "object" || err === null) return err;
   return Object.assign(err as object, { provider: from.provider, model: from.model });
+}
+
+/**
+ * The accounts a quota wait must ask, stamped on the failure the chain hands back.
+ *
+ * A run's error carries its route already (`withFailureContext`); a compaction's did not, so a
+ * wall on one account armed the wait from that account alone. The chain's own candidates are that
+ * route: every model that could have written the summary.
+ */
+function withRouteProviders(err: unknown, candidates: readonly ResolvedLlmConfig[]): unknown {
+  if (typeof err !== "object" || err === null) return err;
+  const providers = [...new Set(candidates.map((c) => c.provider).filter((one): one is string => typeof one === "string" && one.length > 0))];
+  if (providers.length < 2) return err;
+  const failure = err as { providers?: string[] };
+  failure.providers ??= providers;
+  return err;
 }
 
 /**
