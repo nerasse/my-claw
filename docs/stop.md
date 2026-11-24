@@ -247,6 +247,24 @@ wanted, and the model decides what to do about the failure on its next turn. Wai
 means a run that ends -- whatever ends it -- has none of its own calls still in flight, which is
 what makes an entry after `run_end` impossible rather than merely unlikely.
 
+### A tool that never settles
+
+Waiting in full is only safe while every tool answers. On 2026-11-24 one did not: a `bash` call
+whose detached child (`setsid -f`) kept the call's stdout open never returned, so the run never
+unwound, the registry kept its controller, and every Stop after it answered `stopping` for fourteen
+hours. Two things changed:
+
+- the tool that caused it now ends when its shell is gone (a bounded pipe grace, docs/bash-limits.md)
+  and its scope is killed as a cgroup rather than a process group;
+- the call is bounded against the run's signal (`untilSettledOrStopped`, `src/core/aborted.ts`): a
+  stopped run still waits for the tools in the batch -- that is the "nothing lands after `run_end`"
+  guarantee above -- but no longer than `STOP_GRACE_MS` (5 s). A call that ignores the signal is
+  abandoned after the grace, its own abort listener still registered, its own cleanup still running.
+  What it loses is the right to keep the run alive.
+
+The test that covers the shape (`tests/stop/bridge-abort.test.ts`, "a tool that never settles") is
+the one the older tests were missing: they all used tools that resolved on their own.
+
 ## Hooks
 
 `agent:run:aborted` (per run, main and sub-agents) and `subagent:aborted` fire on stop.

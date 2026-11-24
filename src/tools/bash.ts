@@ -15,6 +15,12 @@ function clampTimeout(value: number): number {
 }
 const MAX_OUTPUT_BYTES = 1_048_576;
 const KILL_GRACE_MS = 2_000;
+/**
+ * How long the output is still read after the shell is gone. A command that detaches a child
+ * (`setsid -f ...`) leaves it holding our stdout and stderr, so EOF may never come; what the kernel
+ * buffered arrives at once, and anything later belongs to a process this call no longer waits for.
+ */
+const PIPE_GRACE_MS = 500;
 
 /** What any shell needs to behave like a shell. Nothing here is a credential. */
 const BASE_ENV = [
@@ -60,6 +66,16 @@ export function setBashEnvPassthrough(names: string[] | undefined): void {
 export function memoryLabel(bytes: number): string {
   const gib = bytes / (1024 * 1024 * 1024);
   return `${gib % 1 === 0 ? gib : gib.toFixed(1)} GiB`;
+}
+
+/**
+ * A scope unit name unique to one call: `run-p<pid>-i<pid>` is what systemd-run generates, and two
+ * names must never collide or one call's kill reaches another's processes.
+ */
+let scopeSeq = 0;
+function uniqueScopeUnit(): string {
+  scopeSeq += 1;
+  return `my-claw-bash-${process.pid}-${scopeSeq}-${Math.floor(Math.random() * 1e6)}`;
 }
 
 /** The box one call runs in. Defaults chosen for this host: 8 GiB of 11 GiB for one command,
@@ -130,7 +146,7 @@ function probeScope(): boolean {
  * a global OOM finds no scope to blame. The command itself rides along as `$0`, never
  * interpolated, so quoting survives the round trip.
  */
-export function bashArgvFor(command: string, withScope: boolean, forLimits: BashLimits = limits): string[] {
+export function bashArgvFor(command: string, withScope: boolean, forLimits: BashLimits = limits, unit?: string): string[] {
   const bare = ["setsid", "bash", "-c", command];
   if (!forLimits.cgroup || !withScope) return bare;
   return [
@@ -140,6 +156,11 @@ export function bashArgvFor(command: string, withScope: boolean, forLimits: Bash
     "--scope",
     "--quiet",
     "--collect",
+    // Named so the call can be killed as the cgroup it is. `--scope` hands the command to systemd,
+    // which reparents it out of our process group: a negative-pid signal reaches the wrapper and
+    // leaves the command (and whatever it detached) alive. 2026-11-24, a `setsid -f` probe held a
+    // run for 14 hours that way.
+    ...(unit ? [`--unit=${unit}`] : []),
     "-p",
     `MemoryMax=${forLimits.memoryMaxBytes > 0 ? forLimits.memoryMaxBytes : "infinity"}`,
     "-p",
@@ -240,6 +261,28 @@ export function exitOneMeaning(command: string): "no-match" | "differ" | undefin
   return undefined;
 }
 
+/**
+ * Wait for the output to stop arriving, not for the pipe to close.
+ *
+ * Once the shell is gone, whatever the kernel still holds is what this call produced; a pipe that
+ * stays open belongs to a child the command detached, and waiting on it is waiting on that child.
+ */
+async function settlePipes(
+  pending: Promise<unknown>,
+  readers: { cancel: (reason?: unknown) => Promise<void> }[],
+  graceMs: number,
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const settled = await Promise.race([
+    pending.then(() => true, () => true),
+    new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), graceMs); }),
+  ]);
+  if (timer) clearTimeout(timer);
+  if (settled) return;
+  for (const reader of readers) void reader.cancel().catch(() => undefined);
+  await pending.catch(() => undefined);
+}
+
 export const bashTool: Tool = {
   name: "bash",
   description:
@@ -291,7 +334,8 @@ export const bashTool: Tool = {
       // Inside a systemd scope when the host has one: the memory ceiling is the whole point
       // (docs/bash-limits.md).
       const scoped = limits.cgroup && probeScope();
-      const proc = Bun.spawn(bashArgvFor(command, scoped), {
+      const scopeUnit = scoped ? uniqueScopeUnit() : undefined;
+      const proc = Bun.spawn(bashArgvFor(command, scoped, limits, scopeUnit), {
         stdout: "pipe",
         stderr: "pipe",
         cwd,
@@ -299,6 +343,18 @@ export const bashTool: Tool = {
       });
 
       const killGroup = (sig: "SIGTERM" | "SIGKILL") => {
+        // The scope first: it is the cgroup the command really lives in, detached children included.
+        if (scopeUnit) {
+          try {
+            // `--unit=` takes the name bare; systemd knows the unit as <name>.scope. Without the
+            // suffix systemctl resolves <name>.service, answers "not loaded", and nothing dies.
+            Bun.spawn(["systemctl", "--user", "kill", `--signal=${sig}`, `${scopeUnit}.scope`], { stdout: "ignore", stderr: "ignore" })
+              .exited.catch(() => undefined);
+          } catch {
+            // `killGroup` runs from a timer and from an abort listener: throwing here would be an
+            // uncaught exception, and the group kill below still covers the unscoped case.
+          }
+        }
         try { process.kill(-proc.pid, sig); } catch { try { proc.kill(); } catch {} }
       };
 
@@ -335,9 +391,10 @@ export const bashTool: Tool = {
           lastFlush = now;
         }
       };
-      const drain = async (stream: ReadableStream<Uint8Array> | null, buf: string[], which: "stdout" | "stderr"): Promise<void> => {
-        if (!stream) return;
-        const reader = stream.getReader();
+      const stdoutReader = proc.stdout?.getReader();
+      const stderrReader = proc.stderr?.getReader();
+      const drain = async (reader: typeof stdoutReader, buf: string[], which: "stdout" | "stderr"): Promise<void> => {
+        if (!reader) return;
         const decoder = new TextDecoder();
         try {
           for (;;) {
@@ -355,10 +412,12 @@ export const bashTool: Tool = {
           reader.releaseLock();
         }
       };
-      const stdoutP = drain(proc.stdout, stdoutBuf, "stdout");
-      const stderrP = drain(proc.stderr, stderrBuf, "stderr");
+      // Readers first, so the pipes can be closed on a command whose children outlive it.
+      const readers = [stdoutReader, stderrReader].filter((reader) => reader !== undefined);
+      const stdoutP = drain(stdoutReader, stdoutBuf, "stdout");
+      const stderrP = drain(stderrReader, stderrBuf, "stderr");
       const exitCode = await proc.exited;
-      await Promise.all([stdoutP, stderrP]);
+      await settlePipes(Promise.all([stdoutP, stderrP]), readers, PIPE_GRACE_MS);
       maybeFlush(true);
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);

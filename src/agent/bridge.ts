@@ -66,7 +66,7 @@ import { StagnationMeter } from "./stagnation.ts";
 import { NestedAgentsCollector, recordNestedInjection } from "./prompt/nested-agents.ts";
 import { recall } from "../memory/index.ts";
 import { hooks } from "../hooks/index.ts";
-import { AbortedError, isAbort, rethrowIfAborted, sleep } from "../core/aborted.ts";
+import { AbortedError, isAbort, rethrowIfAborted, sleep, untilSettledOrStopped } from "../core/aborted.ts";
 import { runRegistry } from "../core/run-registry.ts";
 import { recordRunStart, snapshotOfRuns } from "../snapshots/store.ts";
 import { currentRunId, newRunId } from "../utils/run-context.ts";
@@ -2271,9 +2271,12 @@ export class AgentBridge implements AgentBackend {
         // back to the tool-start card the streamer already opened.
         __toolCallId: params.toolCallId,
       };
-      const result = await tool.execute(enrichedArgs, (chunk) => {
-        hooks.emit("tool:execute:progress", { toolCallId: params.toolCallId, sessionId: params.session.id, chunk });
-      });
+      const result = await untilSettledOrStopped(
+        tool.execute(enrichedArgs, (chunk) => {
+          hooks.emit("tool:execute:progress", { toolCallId: params.toolCallId, sessionId: params.session.id, chunk });
+        }),
+        params.signal,
+      );
       if (params.signal?.aborted) throw new AbortedError();
       if (result.attachments?.length && !result.keepFromReply) {
         for (const att of result.attachments) {

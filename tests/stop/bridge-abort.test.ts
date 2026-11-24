@@ -131,3 +131,35 @@ test("bridge: abort mid-tool leaves the question on the branch and the call it c
     fetchMock.restore();
   }
 });
+
+test("bridge: a tool that never settles cannot keep a stopped run alive", async () => {
+  const registry = new ToolRegistry();
+  let toolStarted!: () => void;
+  const started = new Promise<void>((resolve) => { toolStarted = resolve; });
+  registry.register({
+    name: "stuck",
+    description: "never returns",
+    parameters: {},
+    async execute() {
+      toolStarted();
+      // The shape of the 14-hour freeze: a tool whose await never comes back. `bash` held it there
+      // through a detached child's pipes; the next tool to do it must not freeze the run again.
+      return await new Promise<never>(() => {});
+    },
+  });
+  const bridge = new AgentBridge(config, registry, new SkillRegistry());
+  const fetchMock = mockFetch(async () => new Response(
+    JSON.stringify({ choices: [{ message: { content: "", tool_calls: [{ id: "tc1", function: { name: "stuck", arguments: "{}" } }] } }] }),
+    { status: 200, headers: { "Content-Type": "application/json" } },
+  ) as never);
+
+  const c = new AbortController();
+  try {
+    const p = bridge.handleMessage(createMessage(), createSession(), c.signal);
+    await started;
+    c.abort();
+    await assert.rejects(() => p, AbortedError);
+  } finally {
+    fetchMock.restore();
+  }
+}, 30_000);

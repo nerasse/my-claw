@@ -18,10 +18,17 @@ Every `bash` call runs in a **systemd scope** with three ceilings (`tools.bash` 
 docs/below):
 
 ```
-setsid systemd-run --user --scope --quiet --collect \
+setsid systemd-run --user --scope --quiet --collect --unit=<call> \
   -p MemoryMax=<memoryMaxBytes> -p MemorySwapMax=<swapMaxBytes> -p TasksMax=<tasksMax> \
   bash -c 'echo 1000 > /proc/self/oom_score_adj 2>/dev/null; exec bash -c "$0"' <command>
 ```
+
+The unit is named per call because the scope is what a Stop and the wall kill: `--scope` hands the
+command to systemd, which reparents it out of our process group, so a negative-pid signal reaches
+the wrapper and leaves the command -- and anything it detached -- alive. `systemctl --user kill
+<call>.scope` reaches every process in the cgroup (the suffix is not optional: without it systemctl
+resolves `<call>.service` and answers "not loaded"). 2026-11-24: a `setsid -f` probe held a run for
+14 hours exactly like this.
 
 - the cgroup counts the command and **everything it spawns** (cargo, its rustc children, their
   children) and kills *them* at the ceiling: the server and the sibling sub-agents are outside
@@ -37,6 +44,14 @@ setsid systemd-run --user --scope --quiet --collect \
 
 The command itself travels as `$0` of the inner shell and is never interpolated: quoting survives
 whatever it contains.
+
+## How the call ends
+
+The call returns when the shell it spawned exits, then reads whatever the pipes still hold for up to
+`PIPE_GRACE_MS` (500 ms) before closing them. Waiting for EOF instead is waiting on the child a
+command detached: `setsid -f ...` leaves that child holding the call's stdout and stderr, the shell
+is long gone, and the tool never answers. That is the 2026-11-24 freeze, and the grace is what makes
+"the command finished" mean the call finished.
 
 ## What the owner sees
 

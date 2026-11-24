@@ -27,6 +27,55 @@ export function isAbort(err: unknown, signal?: AbortSignal): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
+/**
+ * How long a stopped run still waits for a tool that is in its own cleanup.
+ *
+ * A batch is waited for in full so nothing a run started writes after its `run_end`
+ * (docs/stop.md, measured 2026-09-21). That promise is only worth keeping while the tools answer,
+ * and on 2026-11-24 one did not: a `bash` call whose detached child held the call's stdout never
+ * returned, so the run never unwound, its controller was never dropped, and every Stop after it
+ * answered "stopping" for fourteen hours. The grace is the net: a tool that will not settle loses
+ * its claim on the run, and the run ends without it.
+ */
+export const STOP_GRACE_MS = 5_000;
+
+/**
+ * Wait for `work`, but never past a stop by more than the grace.
+ *
+ * A tool is expected to settle on the signal it is handed -- `bash` kills its cgroup, `fetch`
+ * cancels its request -- and when it does, its result is the result and the batch keeps its
+ * guarantee. What this adds is an end to the wait: a call that ignores the signal is abandoned
+ * after `graceMs`, its own listener still registered, its own cleanup still running.
+ */
+export function untilSettledOrStopped<T>(work: Promise<T>, signal: AbortSignal | undefined, graceMs = STOP_GRACE_MS): Promise<T> {
+  if (!signal) return work;
+  return new Promise<T>((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const arm = (): void => {
+      if (timer) return;
+      timer = setTimeout(() => {
+        void work.catch(() => undefined);
+        reject(new AbortedError());
+      }, graceMs);
+      timer.unref?.();
+    };
+    if (signal.aborted) arm();
+    else signal.addEventListener("abort", arm, { once: true });
+    work.then(
+      (value) => {
+        if (timer) clearTimeout(timer);
+        signal.removeEventListener("abort", arm);
+        resolve(value);
+      },
+      (err: unknown) => {
+        if (timer) clearTimeout(timer);
+        signal.removeEventListener("abort", arm);
+        reject(err);
+      },
+    );
+  });
+}
+
 /** Convert any abort-shaped failure into AbortedError so it bubbles up instead of becoming a tool result. */
 export function rethrowIfAborted(err: unknown, signal?: AbortSignal): void {
   if (isAbort(err, signal)) throw new AbortedError();
