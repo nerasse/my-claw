@@ -83,16 +83,23 @@ test("bash: a stop ends a call whose detached child holds our pipes", async () =
   const pidFile = join(dir, "pid");
   const c = new AbortController();
   const startedAt = Date.now();
-  const p = bashTool.execute({ command: detached("exec sleep 60", pidFile), __signal: c.signal });
+  // The shell stays alive, so the stop lands mid-call whatever the machine's speed: a call that
+  // returned before the abort would prove nothing.
+  const p = bashTool.execute({ command: `${detached("exec sleep 60", pidFile)}; sleep 30`, __signal: c.signal });
   const pid = await pidOf(pidFile);
   c.abort();
   try {
     await assert.rejects(() => p, AbortedError);
     assert.ok(Date.now() - startedAt < 10_000, `returned in ${Date.now() - startedAt} ms`);
     if (canScope()) {
-      // In a scope the whole cgroup goes: the child the command detached included.
-      await new Promise((r) => setTimeout(r, 500));
-      assert.throws(() => process.kill(pid!, 0), "the detached child is gone");
+      // In a scope the whole cgroup goes: the child the command detached included. Polled, because
+      // the kill is a signal travelling through systemd as well as through our own scan.
+      let alive = true;
+      for (let i = 0; i < 60 && alive; i++) {
+        await new Promise((r) => setTimeout(r, 50));
+        try { process.kill(pid!, 0); } catch { alive = false; }
+      }
+      assert.equal(alive, false, "the detached child is gone");
     }
   } finally {
     killQuietly(pid);

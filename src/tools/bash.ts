@@ -1,5 +1,5 @@
 import { isAbsolute, resolve } from "node:path";
-import { statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync } from "node:fs";
 import { type Tool, type ToolResult, type ToolProgress, str, strOpt, num } from "./types.ts";
 import { formatError } from "../utils/errors.ts";
 import { rethrowIfAborted } from "../core/aborted.ts";
@@ -66,6 +66,41 @@ export function setBashEnvPassthrough(names: string[] | undefined): void {
 export function memoryLabel(bytes: number): string {
   const gib = bytes / (1024 * 1024 * 1024);
   return `${gib % 1 === 0 ? gib : gib.toFixed(1)} GiB`;
+}
+
+/**
+ * Kill every process of a call's scope.
+ *
+ * `systemctl --user kill` is the direct route, and it is asked first. It is not the only one: a
+ * host whose user bus refuses the call would leave the command running, and the unit name is
+ * enough to find the processes without asking anybody -- every process of the scope names it in
+ * `/proc/<pid>/cgroup`. This is what reaches a command `setsid -f` detached, which no signal to
+ * our own process group can touch.
+ */
+function killScope(unit: string, sig: NodeJS.Signals): void {
+  try {
+    // `--unit=` takes the name bare; systemd knows the unit as <name>.scope. Without the suffix
+    // systemctl resolves <name>.service, answers "not loaded", and nothing dies.
+    Bun.spawn(["systemctl", "--user", "kill", `--signal=${sig}`, `${unit}.scope`], { stdout: "ignore", stderr: "ignore" })
+      .exited.catch(() => undefined);
+  } catch {
+    // no systemctl, or no bus: the scan below does the same work
+  }
+  const marker = `/${unit}.scope`;
+  let entries: string[];
+  try {
+    entries = readdirSync("/proc");
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!/^[0-9]+$/.test(entry)) continue;
+    try {
+      if (readFileSync(`/proc/${entry}/cgroup`, "utf8").includes(marker)) process.kill(Number(entry), sig);
+    } catch {
+      // gone already, or not ours to signal
+    }
+  }
 }
 
 /**
@@ -344,17 +379,9 @@ export const bashTool: Tool = {
 
       const killGroup = (sig: "SIGTERM" | "SIGKILL") => {
         // The scope first: it is the cgroup the command really lives in, detached children included.
-        if (scopeUnit) {
-          try {
-            // `--unit=` takes the name bare; systemd knows the unit as <name>.scope. Without the
-            // suffix systemctl resolves <name>.service, answers "not loaded", and nothing dies.
-            Bun.spawn(["systemctl", "--user", "kill", `--signal=${sig}`, `${scopeUnit}.scope`], { stdout: "ignore", stderr: "ignore" })
-              .exited.catch(() => undefined);
-          } catch {
-            // `killGroup` runs from a timer and from an abort listener: throwing here would be an
-            // uncaught exception, and the group kill below still covers the unscoped case.
-          }
-        }
+        // `killGroup` runs from a timer and from an abort listener: it must not throw, and the
+        // group kill below still covers the unscoped case.
+        if (scopeUnit) killScope(scopeUnit, sig);
         try { process.kill(-proc.pid, sig); } catch { try { proc.kill(); } catch {} }
       };
 
