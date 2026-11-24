@@ -465,7 +465,7 @@ const WALKER_BANNER = "[engine: local fallback (ripgrep unavailable): JavaScript
 
 async function runNodeQuery(query: SearchQuery, signal: AbortSignal): Promise<{ ok: boolean; text: string }> {
   const rgPath = await ripgrepForNode();
-  if (rgPath) return executeQuery(query, { rgPath });
+  if (rgPath) return executeQuery(query, { rgPath, signal });
   if (query.pattern) {
     try {
       new RegExp(query.pattern);

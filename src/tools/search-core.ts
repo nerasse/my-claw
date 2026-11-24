@@ -1,6 +1,8 @@
 import { statSync } from "node:fs";
 import { access } from "node:fs/promises";
 import { basename, dirname } from "node:path";
+import { AbortedError, rethrowIfAborted } from "../core/aborted.ts";
+import { requestWall } from "../utils/deadline.ts";
 
 /**
  * The search engine and its rendering, shared by the server tool (`search.ts`) and the
@@ -19,6 +21,19 @@ export const OUTPUT_LIMIT = 100_000;
 export const SEARCH_DEFAULT_LIMIT = 250;
 export const SEARCH_MAX_LIMIT = 2000;
 export const SEARCH_MAX_CONTEXT = 40;
+/**
+ * How long one engine call may run. A search of `/` ran for 16 hours inside a sub-agent whose
+ * owner pressed Stop: nothing bounded it and nothing killed it, so the stop waited on it for as
+ * long as it lived (2026-11-24). A call that needs more than this is a query to narrow.
+ */
+export const SEARCH_WALL_MS = 60_000;
+/**
+ * How many engine lines one call keeps. A pattern that matches half of a 20k-file tree produced
+ * 55 MB of stdout, a 562k-entry array and a 700 ms tool call to render 250 lines; reading the same
+ * query up to 20k lines and killing the engine takes 20 ms (measured 2026-11-24). Paging still
+ * reaches past any page (limit 2000) and the cap is always stated in the result, never silent.
+ */
+export const MAX_COLLECTED_LINES = 20_000;
 const MAX_LINE_CHARS = 500;
 const MAX_MATCHES_PER_FILE = 1000;
 const MAX_LIST_DEPTH = 10;
@@ -50,6 +65,12 @@ export interface SearchQuery {
 
 export interface QueryEnvironment {
   rgPath: string | null;
+  /** The run's own signal: a Stop kills the engine instead of waiting for it. */
+  signal?: AbortSignal;
+  /** Overrides `SEARCH_WALL_MS`, for a caller with a reason to wait less or more. */
+  wallMs?: number;
+  /** Overrides `MAX_COLLECTED_LINES`, for a caller with a reason to keep less. */
+  maxLines?: number;
 }
 
 // ── argument coercion ────────────────────────────────────────────────────────
@@ -274,14 +295,72 @@ export function buildGrepArgv(query: SearchQuery): { argv: string[] } | { error:
 
 // ── execution and rendering ─────────────────────────────────────────────────
 
-async function run(argv: string[], cwd: string): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+interface EngineRun {
+  lines: string[];
+  stderr: string;
+  exitCode: number;
+  /** The wall ended it, never a Stop: a Stop throws instead of answering. */
+  timedOut: boolean;
+  /** The collection cap ended it, so the engine's exit code says nothing. */
+  capped: boolean;
+}
+
+/**
+ * The engine's output is read as it arrives and the process is killed once `maxLines` is reached:
+ * a sorted engine emits its matches in path order, so the prefix kept is the same one a full run
+ * would have led with, without waiting for the rest of the tree.
+ */
+async function run(argv: string[], cwd: string, env: QueryEnvironment): Promise<EngineRun> {
+  const wall = requestWall(env.signal, env.wallMs ?? SEARCH_WALL_MS);
   const proc = Bun.spawn(argv, { stdout: "pipe", stderr: "pipe", cwd });
-  const [stdout, stderr, exitCode] = await Promise.all([
-    new Response(proc.stdout).text(),
-    new Response(proc.stderr).text(),
-    proc.exited,
-  ]);
-  return { stdout, stderr, exitCode };
+  const kill = (): void => {
+    try {
+      proc.kill("SIGKILL");
+    } catch {
+      // already gone
+    }
+  };
+  // `any` of an already aborted signal never fires its listener: a stop that landed before the
+  // spawn is handled here, not left to a call that would run to its natural end.
+  if (wall.signal.aborted) kill();
+  else wall.signal.addEventListener("abort", kill, { once: true });
+  const maxLines = env.maxLines ?? MAX_COLLECTED_LINES;
+  const reader = proc.stdout.getReader();
+  const decoder = new TextDecoder();
+  const lines: string[] = [];
+  let rest = "";
+  let capped = false;
+  const stderrText = new Response(proc.stderr).text();
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const chunk = rest + decoder.decode(value, { stream: true });
+      const parts = chunk.split("\n");
+      rest = parts.pop() ?? "";
+      for (const part of parts) if (part.length > 0) lines.push(part);
+      if (lines.length >= maxLines) {
+        capped = true;
+        kill();
+        break;
+      }
+    }
+    if (capped) await reader.cancel().catch(() => undefined);
+    else {
+      const tail = rest + decoder.decode();
+      if (tail.length > 0) lines.push(tail);
+    }
+    const [stderr, exitCode] = await Promise.all([stderrText, proc.exited]);
+    if (env.signal?.aborted) throw new AbortedError();
+    return { lines: lines.slice(0, maxLines), stderr, exitCode, timedOut: wall.expired(), capped };
+  } finally {
+    wall.clear();
+    wall.signal.removeEventListener("abort", kill);
+  }
+}
+
+function timedOutText(root: string, seconds: number): string {
+  return `Search timed out after ${seconds} s in ${root}. Narrow the path, add a glob, or search a deeper directory.`;
 }
 
 function cwdFor(root: string): string {
@@ -306,18 +385,24 @@ function clip(line: string): string {
  * "1 284 matches in 63 files" up front turns both into a decision. A page (offset set, or a
  * result cut by limit) is always labelled: an unlabelled short list reads as the whole answer.
  */
-function render(header: string, lines: string[], offset: number, limit: number, advice: string): string {
+function render(header: string, lines: string[], offset: number, limit: number, advice: string, capped = false): string {
   const start = Math.min(offset, lines.length);
   const shown = lines.slice(start, start + limit);
   const body = shown.join("\n");
-  const cut = lines.length > start + shown.length;
+  const cut = capped || lines.length > start + shown.length;
   if (offset === 0 && !cut) return capOutput(`${header}\n${body}`.trimEnd());
+  const total = capped ? `${lines.length}+` : `${lines.length}`;
   const range =
     shown.length === 0
-      ? `offset ${offset} is past the ${lines.length} results`
-      : `showing results ${start + 1}-${start + shown.length} of ${lines.length}`;
-  const next = cut ? ` Continue with offset ${start + shown.length}.` : "";
+      ? `offset ${offset} is past the ${total} results`
+      : `showing results ${start + 1}-${start + shown.length} of ${total}`;
+  const next = cut && shown.length > 0 ? ` Continue with offset ${start + shown.length}.` : "";
   return capOutput(`${header}\n${body}\n\n[${range}.${next} ${advice}]`);
+}
+
+/** A total that keeps its reputation: past the cap the engine was stopped, so the count is a floor. */
+function counted(count: number, capped: boolean, label: string): string {
+  return `${count}${capped ? "+" : ""} ${label}`;
 }
 
 function ignoredNote(query: SearchQuery): string {
@@ -356,77 +441,93 @@ interface EngineResult {
   ok: boolean;
   error?: string;
   lines: string[];
+  capped?: boolean;
 }
 
-async function collectRipgrep(root: string, query: SearchQuery, rgPath: string): Promise<EngineResult> {
+async function collectRipgrep(root: string, query: SearchQuery, rgPath: string, env: QueryEnvironment): Promise<EngineResult> {
   const single = { ...query, roots: [root] };
-  let result: { stdout: string; stderr: string; exitCode: number };
+  let result: EngineRun;
   try {
-    result = await run([rgPath, ...buildRipgrepArgv(single)], cwdFor(root));
+    result = await run([rgPath, ...buildRipgrepArgv(single)], cwdFor(root), env);
   } catch (error) {
+    rethrowIfAborted(error, env.signal);
     return { ok: false, error: `Failed to run ripgrep: ${error instanceof Error ? error.message : String(error)}`, lines: [] };
   }
-  if (result.exitCode >= 2) {
+  if (result.timedOut) return { ok: false, error: timedOutText(root, (env.wallMs ?? SEARCH_WALL_MS) / 1000), lines: [] };
+  // A killed engine exits 137: its code only means something when the run ended on its own.
+  if (!result.capped && result.exitCode >= 2) {
     return { ok: false, error: patternError(result.stderr, "rg", query.pattern), lines: [] };
   }
-  const lines = result.stdout
-    .split("\n")
-    .filter((line) => line.length > 0 && !/^binary file .* matches/.test(line));
-  return { ok: true, lines };
+  const lines = result.lines.filter((line) => !/^binary file .* matches/.test(line));
+  return { ok: true, lines, capped: result.capped };
 }
 
-async function collectGrep(root: string, query: SearchQuery): Promise<EngineResult> {
+async function collectGrep(root: string, query: SearchQuery, env: QueryEnvironment): Promise<EngineResult> {
   const single = { ...query, roots: [root] };
   const built = buildGrepArgv(single);
   if ("error" in built) return { ok: false, error: built.error, lines: [] };
-  let result: { stdout: string; stderr: string; exitCode: number };
+  let result: EngineRun;
   try {
-    result = await run(built.argv, cwdFor(root));
+    result = await run(built.argv, cwdFor(root), env);
   } catch (error) {
+    rethrowIfAborted(error, env.signal);
     return { ok: false, error: `Failed to run grep: ${error instanceof Error ? error.message : String(error)}`, lines: [] };
   }
-  if (result.exitCode >= 2) {
+  if (result.timedOut) return { ok: false, error: fallbackBanner() + timedOutText(root, (env.wallMs ?? SEARCH_WALL_MS) / 1000), lines: [] };
+  if (!result.capped && result.exitCode >= 2) {
     return { ok: false, error: fallbackBanner() + patternError(result.stderr, "grep", query.pattern), lines: [] };
   }
-  return { ok: true, lines: result.stdout.split("\n").filter((line) => line.length > 0) };
+  return { ok: true, lines: result.lines, capped: result.capped };
 }
 
 export async function executeQuery(query: SearchQuery, env: QueryEnvironment): Promise<{ ok: boolean; text: string }> {
   const fallback = env.rgPath === null;
   const banner = fallback ? fallbackBanner() : "";
   const collected: string[] = [];
+  // One wall for the whole call: five roots must not buy five minutes.
+  const deadline = Date.now() + (env.wallMs ?? SEARCH_WALL_MS);
+  const maxLines = env.maxLines ?? MAX_COLLECTED_LINES;
+  let capped = false;
   for (const root of query.roots) {
-    const result = fallback ? await collectGrep(root, query) : await collectRipgrep(root, query, env.rgPath!);
+    const rootEnv: QueryEnvironment = { ...env, wallMs: Math.max(deadline - Date.now(), 1), maxLines };
+    const result = fallback ? await collectGrep(root, query, rootEnv) : await collectRipgrep(root, query, env.rgPath!, rootEnv);
     if (!result.ok) {
       const where = query.roots.length > 1 ? ` (root ${root})` : "";
       return { ok: false, text: `${result.error ?? "search failed"}${where}` };
     }
     collected.push(...result.lines);
+    if (result.capped) capped = true;
+    if (collected.length >= maxLines) {
+      capped = true;
+      break;
+    }
   }
-  return { ok: true, text: banner + renderLines(query, collected) };
+  return { ok: true, text: banner + renderLines(query, collected.slice(0, maxLines), { capped, cap: maxLines }) };
 }
 
 /** Mode-aware rendering over already-collected engine lines, so a fallback engine answers in the same shape. */
-export function renderLines(query: SearchQuery, lines: string[]): string {
+export function renderLines(query: SearchQuery, lines: string[], opts: { capped?: boolean; cap?: number } = {}): string {
   if (lines.length === 0) return noMatchesText(query);
 
-  const adviceFiles = "narrow with glob or a deeper path";
-  const adviceContent = 'narrow the pattern, or re-run with mode "files" to see where the matches are first';
+  const capped = opts.capped === true;
+  const stopped = `the search stopped at ${opts.cap ?? MAX_COLLECTED_LINES} results: narrow the pattern, add a glob, or name a deeper path`;
+  const adviceFiles = capped ? stopped : "narrow with glob or a deeper path";
+  const adviceContent = capped ? stopped : 'narrow the pattern, or re-run with mode "files" to see where the matches are first';
 
   if (!query.pattern) {
-    return render(`${lines.length} file(s) match ${JSON.stringify(query.glob || "*")}`, lines, query.offset, query.limit, adviceFiles);
+    return render(`${counted(lines.length, capped, "file(s) match")} ${JSON.stringify(query.glob || "*")}`, lines, query.offset, query.limit, adviceFiles, capped);
   }
   if (query.mode === "files") {
-    return render(`${lines.length} file(s) contain ${JSON.stringify(query.pattern)}`, lines, query.offset, query.limit, adviceFiles);
+    return render(`${counted(lines.length, capped, "file(s) contain")} ${JSON.stringify(query.pattern)}`, lines, query.offset, query.limit, adviceFiles, capped);
   }
   if (query.mode === "count") {
     const hits = lines.filter((line) => !/:0$/.test(line));
     if (hits.length === 0) return noMatchesText(query);
     const total = hits.reduce((sum, line) => sum + (Number(line.slice(line.lastIndexOf(":") + 1)) || 0), 0);
-    return render(`${total} match(es) in ${hits.length} file(s)`, hits, query.offset, query.limit, adviceFiles);
+    return render(`${counted(total, capped, "match(es) in")} ${counted(hits.length, capped, "file(s)")}`, hits, query.offset, query.limit, adviceFiles, capped);
   }
   const label = query.extract ? "extracted match(es)" : "matching line(s)";
-  return render(`${lines.length} ${label}`, lines.map(clip), query.offset, query.limit, adviceContent);
+  return render(counted(lines.length, capped, label), lines.map(clip), query.offset, query.limit, adviceContent, capped);
 }
 
 /** One shared output budget across a batch: the last queries are named as cut, never silently dropped. */

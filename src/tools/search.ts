@@ -106,6 +106,7 @@ export const searchTool: Tool = {
   },
   async execute(args): Promise<ToolResult> {
     const wsDir = strOpt(args, "__workspaceDir");
+    const signal = args["__signal"] as AbortSignal | undefined;
     const defaultRoot = wsDir ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd();
     const resolveRoot = (input: string) => resolveWorkspacePath(input, wsDir);
 
@@ -134,7 +135,7 @@ export const searchTool: Tool = {
       const rgPath = await rgForThisCall();
       const parts: { header: string; text: string }[] = [];
       for (const [index, query] of queries.entries()) {
-        const outcome = await executeQuery(query, { rgPath });
+        const outcome = await executeQuery(query, { rgPath, ...(signal ? { signal } : {}) });
         parts.push({ header: `── [${index + 1}/${queries.length}] ${describeQuery(query)}`, text: outcome.text });
       }
       return { success: true, output: joinBatch(parts) };
@@ -148,7 +149,7 @@ export const searchTool: Tool = {
     if (missing) return { success: false, output: `Path not found: ${missing}. Check the path exists.` };
 
     const rgPath = await rgForThisCall();
-    const outcome = await executeQuery(query, { rgPath });
+    const outcome = await executeQuery(query, { rgPath, ...(signal ? { signal } : {}) });
     if (!outcome.ok) return { success: false, output: outcome.text };
     return { success: true, output: capOutput(outcome.text) };
   },

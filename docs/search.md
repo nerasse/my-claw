@@ -62,6 +62,28 @@ answer is never mistaken for an empty tree.
 The tool description carries the same story (the prompt repeats no tools, 2026-10-04 decision):
 what is skipped, how to reach it, and the standing invitation to prefer this over `bash grep`.
 
+## Bounded calls (2026-11-24)
+
+A `rg` over `/` held a sub-agent's run for 16 hours after its owner pressed Stop: nothing bounded
+the engine, and the Stop waited on it. Every engine call is now bounded on three sides.
+
+- **Wall.** `SEARCH_WALL_MS` (60 s) per call, one wall for the whole call and not one per root:
+  a five-root search buys five minutes otherwise. A wall answers `Search timed out after N s in
+  <root>` -- a result, because a narrowed query is the fix, not a retry.
+- **Stop.** The run's abort signal kills the engine (`SIGKILL`) and throws `AbortedError`, so a
+  Stop ends the call instead of waiting for it. Also when the Stop landed before the spawn.
+- **Collection cap.** `MAX_COLLECTED_LINES` (20 000) lines are read, then the engine is killed and
+  the result says `20000+`: past the cap the count is a floor, never a silent truncation. The cap
+  is what makes a broad pattern cheap -- the same query that produced 55 MB of stdout, a 562k-entry
+  array and a 700 ms call for a 250-line page answers in 22 ms (measured on a 20k-file, 102 MB
+  tree). A sorted engine emits its matches in path order, so the prefix kept is the one a full run
+  would have led with; `offset` still pages anywhere inside it, and the floor is stated.
+
+The rewrite is the reading, not the search: `--sort path` is what makes the prefix deterministic
+and costs about 2x traversal, which a 250-line page does not notice but a stable `offset` paging
+does need. Modes that must touch every file (`files`, `count`) gain nothing from the cap and are
+bounded by the wall alone.
+
 ## Measured baselines (2026-10-18)
 
 - Orchestrator: 73 search calls since 15/08 against ~19 000 file searches done with bash grep;

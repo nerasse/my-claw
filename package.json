@@ -1,6 +1,6 @@
 {
   "name": "my-claw",
-  "version": "0.7.207",
+  "version": "0.7.208",
   "description": "Self-hosted AI agent orchestrator: one agent, real tools, your own machine",
   "module": "src/index.ts",
   "type": "module",

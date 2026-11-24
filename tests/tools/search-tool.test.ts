@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { searchTool } from "../../src/tools/search.ts";
-import { expandBraces, joinBatch } from "../../src/tools/search-core.ts";
+import { expandBraces, joinBatch, executeQuery, MAX_COLLECTED_LINES, type SearchQuery } from "../../src/tools/search-core.ts";
+import { AbortedError } from "../../src/core/aborted.ts";
 
 // A fixed path under the shared /tmp is one directory for every process on the machine:
 // two concurrent runs (two CI jobs on one runner) delete each other's fixtures mid-test.
@@ -337,4 +338,113 @@ test("search-core: expandBraces handles nesting and commas", () => {
   assert.deepEqual(expandBraces("*.{ts,tsx}"), ["*.ts", "*.tsx"]);
   assert.deepEqual(expandBraces("src/*.{ts,{js,jsx}}"), ["src/*.ts", "src/*.js", "src/*.jsx"]);
   assert.deepEqual(expandBraces("plain"), ["plain"]);
+});
+
+// An engine that never answers: the shape of a ripgrep over `/` that held a sub-agent's run for
+// 16 hours after Stop. The stand-in is a script, so no real filesystem walk is involved.
+async function stuckEngine(seconds = 300): Promise<string> {
+  const path = join(TMP, `stuck-engine-${seconds}.sh`);
+  await mkdir(TMP, { recursive: true });
+  await writeFile(path, `#!/bin/sh\nexec sleep ${seconds}\n`, { mode: 0o755 });
+  return path;
+}
+
+/** An engine that answers, slowly: the shape of a real search over a tree that has to be walked. */
+async function slowEngine(seconds: number): Promise<string> {
+  const path = join(TMP, `slow-engine-${seconds}.sh`);
+  await mkdir(TMP, { recursive: true });
+  await writeFile(path, `#!/bin/sh\nsleep ${seconds}\nprintf 'hit\\n'\n`, { mode: 0o755 });
+  return path;
+}
+
+const stuckQuery = (): SearchQuery => ({
+  roots: [TMP],
+  pattern: "x",
+  glob: "",
+  mode: "files",
+  context: 0,
+  after: 0,
+  before: 0,
+  limit: 10,
+  offset: 0,
+  ignoreCase: false,
+  extract: false,
+  invert: false,
+  all: false,
+  exclude: [],
+  excludeDirs: [],
+});
+
+test("search: an engine that never answers is killed at the wall", async () => {
+  const rgPath = await stuckEngine();
+  const started = Date.now();
+  const outcome = await executeQuery(stuckQuery(), { rgPath, wallMs: 300 });
+  assert.equal(outcome.ok, false);
+  assert.match(outcome.text, /Search timed out after 0\.3 s/);
+  assert.ok(Date.now() - started < 5000, "the wall, not the engine, ended the call");
+});
+
+test("search: a Stop kills the engine and throws instead of answering", async () => {
+  const rgPath = await stuckEngine();
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 100);
+  const started = Date.now();
+  await assert.rejects(executeQuery(stuckQuery(), { rgPath, signal: controller.signal }), AbortedError);
+  assert.ok(Date.now() - started < 5000);
+});
+
+test("search: a Stop that landed before the spawn never runs the engine to its end", async () => {
+  const rgPath = await stuckEngine();
+  const controller = new AbortController();
+  controller.abort();
+  const started = Date.now();
+  await assert.rejects(executeQuery(stuckQuery(), { rgPath, signal: controller.signal }), AbortedError);
+  assert.ok(Date.now() - started < 5000);
+});
+
+test("search: a Stop reaches the batch path too", async () => {
+  const rgPath = await stuckEngine();
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 100);
+  await assert.rejects(
+    executeQuery({ ...stuckQuery(), roots: [TMP, TMP] }, { rgPath, signal: controller.signal }),
+    AbortedError,
+  );
+});
+
+test("search: a huge result set stops at the collection cap and says so", async () => {
+  const real = Bun.which("rg");
+  if (!real) return;
+  const dir = await fixture();
+  for (const name of ["a.txt", "b.txt", "c.txt"]) {
+    await writeFile(join(dir, name), Array.from({ length: 4 }, (_, i) => `beta ${i}`).join("\n") + "\n");
+  }
+  const outcome = await executeQuery({ ...stuckQuery(), pattern: "beta", mode: "content" }, { rgPath: real, maxLines: 4 });
+  assert.equal(outcome.ok, true);
+  assert.match(outcome.text, /^4\+ matching line\(s\)/);
+  assert.match(outcome.text, /of 4\+/);
+  assert.match(outcome.text, /stopped at 4 results/);
+});
+
+test("search: the cap applies to a file listing too", async () => {
+  const real = Bun.which("rg");
+  if (!real) return;
+  const dir = await fixture();
+  const outcome = await executeQuery({ ...stuckQuery(), mode: "files", pattern: "beta" }, { rgPath: real, maxLines: 2 });
+  assert.equal(outcome.ok, true);
+  assert.match(outcome.text, /^2\+ file\(s\) contain/);
+});
+
+test("search: the default cap is a page deep enough for offset paging", async () => {
+  assert.ok(MAX_COLLECTED_LINES >= 2000 * 2);
+});
+
+test("search: every root shares one wall, not one wall each", async () => {
+  const engine = await slowEngine(0.4);
+  const started = Date.now();
+  const outcome = await executeQuery({ ...stuckQuery(), roots: [TMP, TMP] }, { rgPath: engine, wallMs: 600 });
+  const elapsed = Date.now() - started;
+  assert.equal(outcome.ok, false);
+  assert.match(outcome.text, /Search timed out/);
+  assert.ok(elapsed < 950, `two roots took ${elapsed} ms, so the second one had its own wall`);
 });
