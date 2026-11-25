@@ -304,8 +304,8 @@ Example:
 }
 ```
 
-> **`MEMORY.md`** is an auto-generated file (a view of `memory.db`): do not edit it by hand
-> to delete it, the entries are managed by the memory tool. It is recreated on every boot.
+> **`MEMORY.md`** is an auto-generated file (a view of `memory.db`): do not hand-edit it
+> to remove anything, the entries are managed by the memory tool. It is recreated on every boot.
 
 ---
 
