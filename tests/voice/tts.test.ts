@@ -9,7 +9,7 @@ import { AbortedError } from "../../src/core/aborted.ts";
 import type { MyClawConfig } from "../../src/core/config.ts";
 import { mockFetch } from "../helpers/mock-fetch.ts";
 
-type Callback = (error: Error | null, stdout: string) => void;
+type Callback = (error: Error | null, stdout: string, stderr?: string) => void;
 interface ProcessCall {
   file: string;
   args: readonly string[];
@@ -296,4 +296,35 @@ test("Piper HTTP observes run cancellation", async () => {
   } finally {
     fetchMock.restore();
   }
+});
+
+describe("Edge TTS: a voice it cannot use, and a failure it explains", () => {
+  test("a Gemini voice id reads in the Edge default and says so", async () => {
+    const fake = fakeExec((call) => queueMicrotask(() => call.complete(null, "")));
+    // The configured voice is Gemini's; edge-tts would exit with "Invalid voice".
+    const tts = pipeline({ execFile: fake.execute }, { mode: "cloud", tts: { mode: "cloud", provider: "edge", voice: "fr-fr-podcaster-2" } });
+    const result = await tts.generate("hello");
+    const call = fake.calls[0]!;
+    expect(call.args[call.args.indexOf("--voice") + 1]).toBe("fr-FR-RemyMultilingualNeural");
+    expect(result.notice).toMatch(/fr-fr-podcaster-2 is not an Edge voice/);
+  });
+
+  test("an Edge voice id is sent as asked, with no notice", async () => {
+    const fake = fakeExec((call) => queueMicrotask(() => call.complete(null, "")));
+    const tts = pipeline({ execFile: fake.execute }, { mode: "cloud", tts: { mode: "cloud", provider: "edge", voice: "en-US-AriaNeural" } });
+    const result = await tts.generate("hello");
+    const call = fake.calls[0]!;
+    expect(call.args[call.args.indexOf("--voice") + 1]).toBe("en-US-AriaNeural");
+    expect(result.notice).toBeUndefined();
+  });
+
+  test("the engine's own last line names the failure, and the text is not repeated", async () => {
+    const fake = fakeExec((call) => queueMicrotask(() => call.complete(
+      new Error(`Command failed: edge-tts --text private spoken text --voice x`),
+      "",
+      "Traceback (most recent call last):\nValueError: Invalid voice 'x'.\n",
+    )));
+    await expect(pipeline({ execFile: fake.execute }).generate("private spoken text"))
+      .rejects.toMatchObject({ message: "TTS cloud failed: ValueError: Invalid voice 'x'." });
+  });
 });

@@ -21,6 +21,12 @@ const PIPER_TIMEOUT_MS = 30_000;
 const MAX_TEXT = 5_000;
 /** Edge's voice when it stands in for Gemini, whose voice ids it does not know. */
 const EDGE_FALLBACK_VOICE = "fr-FR-RemyMultilingualNeural";
+/**
+ * What an Edge voice looks like: `fr-FR-RemyMultilingualNeural`, `en-US-AriaNeural`. The two engines
+ * do not share a naming scheme, and a Gemini id sent to edge-tts exits with
+ * `ValueError: Invalid voice 'fr-fr-podcaster-2'` -- a failure that reads as a broken engine.
+ */
+const EDGE_VOICE = /^[a-z]{2,3}-[A-Z]{2}-[A-Za-z]+$/;
 const MAX_PROBE_OUTPUT_BYTES = 64 * 1024;
 
 type ExecFile = typeof execFile;
@@ -43,6 +49,14 @@ export interface TtsOverrides {
   speakers?: Speaker[];
   /** Gemini only: delivery for the whole reading ("calm, radio host"), never read aloud. */
   style?: string;
+}
+
+/** The engine failed and said why: its own last line is the only part worth repeating. */
+class EngineOutputError extends Error {
+  constructor(message: string, readonly detail?: string) {
+    super(message);
+    this.name = "EngineOutputError";
+  }
 }
 
 class BinaryNotFoundError extends Error {}
@@ -125,7 +139,7 @@ function runExecFile(
       : watchGrowth(limit.stall.path, limit.stall.afterMs, expire);
 
     const onAbort = (): void => killOnce();
-    const finish = (error: unknown, stdout: string): void => {
+    const finish = (error: unknown, stdout: string, stderr = ""): void => {
       if (finished) return;
       finished = true;
       stopWatch();
@@ -135,7 +149,14 @@ function runExecFile(
       } else if (timedOut) {
         reject("timeoutMs" in limit ? new ProcessDeadlineError(limit.timeoutMs) : new ProcessStallError(limit.stall.afterMs));
       } else if (error) {
-        reject(error);
+        // The engine's last word, with nothing it was asked to read: a traceback quotes the command
+        // line, and the text being read aloud is not something a failure message should repeat.
+        const detail = stderr
+          .split("\n")
+          .map((line) => line.trim())
+          .filter((line) => line.length > 0 && !line.includes("--text") && !line.includes(file))
+          .pop();
+        reject(detail ? new EngineOutputError(`${(error as Error).message ?? "failed"}`, detail.slice(0, 240)) : error);
       } else {
         resolve(stdout);
       }
@@ -147,7 +168,7 @@ function runExecFile(
         file,
         args,
         { timeout: "timeoutMs" in limit ? limit.timeoutMs : 0, killSignal: "SIGKILL", maxBuffer: MAX_PROBE_OUTPUT_BYTES },
-        (error, stdout) => finish(error, typeof stdout === "string" ? stdout : ""),
+        (error, stdout, stderr) => finish(error, typeof stdout === "string" ? stdout : "", typeof stderr === "string" ? stderr : ""),
       );
       if (signal?.aborted) onAbort();
     } catch (error) {
@@ -256,6 +277,7 @@ export class TtsPipeline {
     if (err instanceof ProcessStallError) return `TTS ${mode} stalled: no audio for ${timeoutLabel(err.stallMs)}.`;
     if (err instanceof ProcessDeadlineError) return `TTS ${mode} timed out after ${timeoutLabel(err.timeoutMs)}.`;
     if (err instanceof BinaryNotFoundError) return `TTS ${mode} failed: ${err.message}`;
+    if (err instanceof EngineOutputError && err.detail) return `TTS ${mode} failed: ${err.detail}`;
     if (mode === "cloud") return "TTS cloud failed: edge-tts did not produce audio.";
     if (err instanceof Error && err.name === "TimeoutError") {
       return `TTS local timed out after ${timeoutLabel(this.piperTimeoutMs)}.`;
@@ -294,7 +316,9 @@ export class TtsPipeline {
   private async generateEdgeTTS(text: string, voice: string | undefined, signal?: AbortSignal): Promise<TTSResult> {
     const tmpDir = await mkdtemp(join(tmpdir(), "tts-"));
     const outputPath = join(tmpDir, "output.mp3");
-    const voiceId = voice ?? this.voiceManager.getVoiceConfig()?.tts?.voice ?? "fr-FR-RemyMultilingualNeural";
+    const asked = voice ?? this.voiceManager.getVoiceConfig()?.tts?.voice;
+    // A voice this engine cannot know is not a failure: it reads in the default one and says so.
+    const voiceId = asked && EDGE_VOICE.test(asked) ? asked : EDGE_FALLBACK_VOICE;
 
     try {
       const bin = await this.resolveBinaryImpl("edge-tts", signal);
@@ -307,6 +331,7 @@ export class TtsPipeline {
       return {
         path: outputPath,
         mimeType: "audio/mpeg",
+        ...(asked && voiceId !== asked ? { notice: `${asked} is not an Edge voice: read with ${EDGE_FALLBACK_VOICE}` } : {}),
       };
     } catch (err) {
       await this.cleanup(outputPath);
