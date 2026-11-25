@@ -1,5 +1,5 @@
 import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
-import { resumeHint, SubAgentRunner, type SubAgentStream, type SubAgentExecution } from "../subagents/runner.ts";
+import { resumeHint, SubAgentRunner, WAIT_BUDGET_MS, type SubAgentStream, type SubAgentExecution } from "../subagents/runner.ts";
 import { SubAgentRegistry } from "../subagents/registry.ts";
 import { blockedReportOf, describeBlocked, handoffCallsIn } from "../subagents/blocked.ts";
 import { classifyProviderFailure } from "../llm/outage.ts";
@@ -120,7 +120,7 @@ export function createSendTool(
         // Carried for the same reason as in `spawn`: it is what ties the sub-agent's lifecycle to
         // the card this tool call painted, live and in replayed history.
         const toolCallId = typeof args["__toolCallId"] === "string" ? args["__toolCallId"] : undefined;
-        const result = await runner.send(id, message, attachments, parentMessage, registry, callerSessionId, signal, undefined, toolCallId, streamProvider, asked.execution, args["wait"] === true);
+        const result = await runner.send(id, message, attachments, parentMessage, registry, callerSessionId, signal, undefined, toolCallId, streamProvider, asked.execution, args["wait"] === true, WAIT_BUDGET_MS);
         return { success: !result.startsWith("Error:"), output: result, error: result.startsWith("Error:") ? result : undefined };
       } catch (e) {
         // A real Stop of the caller ends the caller's run. Anything else is this call's own

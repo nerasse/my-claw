@@ -89,6 +89,15 @@ runtime owns the completion. `wait: true` is the escape hatch for a caller that 
 without the answer (a cron job, one step of a browser chain); it blocks and returns the child's own
 words, and it is the only path that still appends `[sub-agent id: …]` for a `session` spawn.
 
+**A wait has a budget: two minutes.** Past it the child carries on and its answer arrives as the
+return, exactly as if it had been launched without one, and the caller is handed the launch line
+instead of the answer. The budget exists because a wait is an escape hatch the model chooses, and a
+browser task that took seven minutes held the conversation that asked for it for seven minutes with
+nothing on screen but a Stop button (owner, 2026-11-25). A bounded wait starts on the background
+footing (no caller signal, registered as background work) because it may become one: a child that
+would be cut by its caller's end is not a child that can carry on without it. The delivery is
+attached only once the budget is spent, so the caller is never told the same answer twice.
+
 - **The child outlives the run.** A background child is started without the caller's abort signal:
   the end of that run (the normal case, the model ends its turn while the child works) must not
   cut it. A Stop of the conversation is different: it names the children explicitly

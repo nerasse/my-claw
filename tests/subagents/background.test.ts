@@ -184,6 +184,89 @@ test("a Stop takes the conversation's background children with it, and they stay
   }
 });
 
+test("a wait with a budget answers inline when the child lands in time", async () => {
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const collected = collector();
+  runner.setReturnSink(collected.sink);
+  const registry = new SubAgentRegistry();
+  const mock = answers("quick enough");
+  let id: string | undefined;
+  try {
+    const launch = await runner.spawn({
+      displayName: "quick",
+      type: "research",
+      mode: "run",
+      task: "look",
+      parentMessage: parentMessage(),
+      existingIds: await registry.listExistingIds(),
+      generateId: (n, e) => registry.generateId(n, e),
+      parentSessionId: PARENT,
+      visibility: "private",
+      wait: true,
+      waitMs: 5_000,
+    });
+    id = launch.id;
+    // The answer is here, so nothing was launched for later and the conversation is not left busy.
+    assert.equal(launch.background, false);
+    assert.match(launch.result, /quick enough/);
+    assert.equal(runner.backgroundCountOf(PARENT), 0);
+    // Give a return the chance to arrive before saying there is none.
+    await Promise.race([collected.settled, new Promise((resolve) => setTimeout(resolve, 150))]);
+    assert.equal(collected.notices.length, 0);
+  } finally {
+    mock.restore();
+    if (id) await deleteSession(id);
+  }
+});
+
+test("a wait past its budget hands the child off, and its answer arrives once", async () => {
+  const runner = new SubAgentRunner(config, new ToolRegistry(), new SkillRegistry(), voiceManager, sttPipeline);
+  const collected = collector();
+  runner.setReturnSink(collected.sink);
+  const registry = new SubAgentRegistry();
+  // Slower than the budget, so the call has to let go of it.
+  const mock = mockFetch(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    return new Response(JSON.stringify({ choices: [{ message: { content: "slower than the budget" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }) as never;
+  });
+  let id: string | undefined;
+  try {
+    const launch = await runner.spawn({
+      displayName: "slow",
+      type: "research",
+      mode: "run",
+      task: "take your time",
+      parentMessage: parentMessage(),
+      existingIds: await registry.listExistingIds(),
+      generateId: (n, e) => registry.generateId(n, e),
+      parentSessionId: PARENT,
+      visibility: "private",
+      wait: true,
+      waitMs: 10,
+    });
+    id = launch.id;
+    // The caller is let go with the launch line, and the child is counted as still working.
+    assert.equal(launch.background, true);
+    assert.match(launch.result, /^Started slow/);
+    assert.equal(runner.backgroundCountOf(PARENT), 1);
+
+    await collected.settled;
+    assert.equal(collected.notices.length, 1);
+    assert.equal(collected.notices[0]!.status, "complete");
+    assert.match(collected.notices[0]!.text, /slower than the budget/);
+    assert.equal(runner.backgroundCountOf(PARENT), 0);
+    // Nothing else is delivered: the answer the caller did not wait for is the only report.
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(collected.notices.length, 1);
+  } finally {
+    mock.restore();
+    if (id) await deleteSession(id);
+  }
+});
+
 test("the return tells the model it is a report, not the owner speaking", () => {
   const text = returnText({
     subagentId: "subagent/eyes-1a2b",

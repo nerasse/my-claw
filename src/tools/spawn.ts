@@ -2,7 +2,7 @@ import { resolve } from "node:path";
 import { type Tool, type ToolResult, str, strOpt } from "./types.ts";
 import { EFFORT_LEVELS } from "../llm/resolver.ts";
 import { judgePins, refuseUnknownModel, tagsOf } from "./model-choice.ts";
-import { resumeHint, subagentIdOf, SubAgentRunner, type SubAgentStream } from "../subagents/runner.ts";
+import { resumeHint, subagentIdOf, SubAgentRunner, WAIT_BUDGET_MS, type SubAgentStream } from "../subagents/runner.ts";
 import { SubAgentRegistry } from "../subagents/registry.ts";
 import type { UnifiedMessage } from "../channels/types.ts";
 import { isAbort, rethrowIfAborted } from "../core/aborted.ts";
@@ -42,7 +42,9 @@ export function createSpawnTool(
       return "Spawn a sub-agent. It starts working immediately and this call returns its id at once: the" +
         " answer comes back later as a message tagged <subagent>, which wakes this conversation if it is" +
         " at rest. Do not poll it, and do not redo its work. Pass wait=true only when you need the answer" +
-        " in this very call. mode='run' = one-shot, answers once and is not meant to be driven again. " +
+        " in this very call, and expect at most two minutes: past that the child carries on in the" +
+        " background and its answer arrives as that same <subagent> message. mode='run' = one-shot," +
+        " answers once and is not meant to be driven again. " +
         "mode='session' = persistent on disk: the answer ends with the id to reuse with send(). " +
         types +
         "Provide workspaceDir to isolate the sub-agent's filesystem. " +
@@ -88,7 +90,7 @@ export function createSpawnTool(
           },
           wait: {
             type: "boolean",
-            description: "Block until the sub-agent answers and return its answer here, instead of launching it in the background. Use it only when this call cannot do anything without the result: a background launch costs nothing and reports back by itself.",
+            description: "Block up to two minutes for the sub-agent's answer and return it here, instead of launching it in the background. Past two minutes the child keeps working in the background and its answer arrives as a <subagent> message, so a wait never holds the conversation longer than that. Use it only when this call cannot do anything without the result: a background launch costs nothing and reports back by itself.",
           },
         },
         required: ["name", "type", "mode", "task"],
@@ -156,6 +158,7 @@ export function createSpawnTool(
           signal,
           model,
           wait: args["wait"] === true,
+          waitMs: WAIT_BUDGET_MS,
           ...(asked.pins.effort || asked.pins.contextCap !== undefined ? { pins: asked.pins } : {}),
           enqueue: <T,>(i: string, task2: () => Promise<T>) => registry.enqueue(i, task2),
           ...(toolCallId ? { toolCallId } : {}),

@@ -3,7 +3,7 @@ import type { MyClawConfig } from "../../core/config.ts";
 import type { UnifiedMessage } from "../../channels/types.ts";
 import { isAbort, rethrowIfAborted } from "../../core/aborted.ts";
 import type { SubAgentRegistry } from "../../subagents/registry.ts";
-import type { SubAgentRunner, SubAgentStream } from "../../subagents/runner.ts";
+import { WAIT_BUDGET_MS, type SubAgentRunner, type SubAgentStream } from "../../subagents/runner.ts";
 import { judgePins, refuseUnknownModel, tagsOf } from "../model-choice.ts";
 import { EFFORT_LEVELS } from "../../llm/resolver.ts";
 import { DEFAULT_NOVNC_URL, takeBrowserOutcome, type BrowserSession } from "./session.ts";
@@ -99,7 +99,7 @@ export function createDelegateBrowserTool(
           all: { type: "boolean", description: "kept=release: every window kept for this conversation" },
           wait: {
             type: "boolean",
-            description: "Block until the browsing task answers and return its outcome here, instead of launching it in the background. Omit unless this call cannot do anything without it.",
+            description: "Block up to two minutes for the browsing task's outcome and return it here, instead of launching it in the background. Past two minutes the task keeps running in the background and its outcome arrives as a <subagent> return, so a wait never holds the conversation longer than that. Omit unless this call cannot do anything without it.",
           },
         },
       };
@@ -151,6 +151,7 @@ export function createDelegateBrowserTool(
           ...(model ? { model } : {}),
           ...(asked.pins.effort || asked.pins.contextCap !== undefined ? { pins: asked.pins } : {}),
           wait: args["wait"] === true,
+          waitMs: WAIT_BUDGET_MS,
           // The run's last words are not the outcome: the kept window and the human hand-off live in
           // what the browser session recorded for this run, and they are the reason the task is
           // worth reporting at all.

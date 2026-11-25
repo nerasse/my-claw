@@ -265,6 +265,24 @@ export interface SubAgentLaunch {
   background: boolean;
 }
 
+/** What a launch says about itself, for the card it opens and for the return it may become. */
+interface LaunchMeta {
+  displayName: string;
+  type: SubAgentType;
+  action: "spawn" | "send" | "browser";
+  toolCallId?: string;
+  describeResult?: (id: string, result: string) => string;
+}
+
+/**
+ * How long a `wait` may hold its caller before the child becomes a background one.
+ *
+ * Two minutes is the longest a conversation should sit with nothing on screen but a Stop button
+ * while a child works; past it the answer arrives as the return every other launch already uses.
+ * A cron or CLI run has no conversation to wake, so it never budgets: it waits (docs/subagents.md).
+ */
+export const WAIT_BUDGET_MS = 120_000;
+
 /** What a launched call tells its caller instead of an answer. */
 export function startedText(displayName: string, type: string, id: string, action: "spawn" | "send" | "browser"): string {
   const verb = action === "send" ? "Sent" : "Started";
@@ -555,6 +573,17 @@ export class SubAgentRunner {
      */
     wait?: boolean;
     /**
+     * How long a `wait` may hold the caller, after which the child carries on in the background.
+     *
+     * A wait is an escape hatch, not a mode: a browser task that took seven minutes held the
+     * conversation that asked for its answer for seven minutes, with nothing on screen but a Stop
+     * button (owner, 2026-11-25). With a budget the caller stops being hostage at the same moment
+     * the child stops being its run's: the answer it did not wait for arrives as the return, which
+     * is the path every other launch already uses. Absent means wait as long as it takes, which is
+     * what a channel with no return sink (cron, CLI) still does, having nobody to wake.
+     */
+    waitMs?: number;
+    /**
      * What the return says, when the run's own last words are not the whole answer: a browser task
      * reports a kept window or a human hand-off that its final message cannot carry.
      */
@@ -589,15 +618,22 @@ export class SubAgentRunner {
     // A background child answers to the conversation, not to the run that launched it: holding the
     // caller's signal would cut it the instant that run ends, which is the one thing it must
     // outlive. Its Stop comes from `stopBackgroundOf` instead.
-    const background = opts.wait !== true && this.returnSink !== undefined;
+    //
+    // A bounded wait starts on the same footing as a background launch, because it may become one:
+    // the signal and the bookkeeping have to be decided before the run starts, and a child that
+    // would be cut by its caller's end is not one that can carry on without it.
+    const budgeted = opts.wait === true && opts.waitMs !== undefined && this.returnSink !== undefined;
+    const background = (opts.wait !== true || budgeted) && this.returnSink !== undefined;
     const runSignal = background ? undefined : signal;
     let announce!: (id: string) => void;
     const launched = new Promise<string>((resolve) => { announce = resolve; });
 
     if (mode === "run") {
       const work = this.runOneShot(displayName, type, task, resolved.dir, resolved.key, parentMessage, parentSessionId, runSignal, model, toolCallId, streamProvider, enqueue, pins, announce);
+      const meta = { displayName, type, action: "spawn" as const, ...(toolCallId ? { toolCallId } : {}), ...(opts.describeResult ? { describeResult: opts.describeResult } : {}) };
       if (!background) return { ...(await work), background: false };
-      return this.inBackground(parentSessionId, launched, work, { displayName, type, action: "spawn", ...(toolCallId ? { toolCallId } : {}), ...(opts.describeResult ? { describeResult: opts.describeResult } : {}) });
+      if (!budgeted) return this.inBackground(parentSessionId, launched, work, meta);
+      return this.waitedThenBackground(parentSessionId, launched, work, meta, opts.waitMs!);
     }
     const id = generateId(displayName, existingIds);
     announce(id);
@@ -648,8 +684,10 @@ export class SubAgentRunner {
       hooks.emit("subagent:complete", { id, resultLength: result.length, parentSessionId });
       return { id, result, attachments: this.takeAttachments(id) };
     });
+    const sessionMeta = { displayName, type, action: "spawn" as const, ...(toolCallId ? { toolCallId } : {}), ...(opts.describeResult ? { describeResult: opts.describeResult } : {}) };
     if (!background) return { ...(await work), background: false };
-    return this.inBackground(parentSessionId, launched, work, { displayName, type, action: "spawn", ...(toolCallId ? { toolCallId } : {}), ...(opts.describeResult ? { describeResult: opts.describeResult } : {}) });
+    if (!budgeted) return this.inBackground(parentSessionId, launched, work, sessionMeta);
+    return this.waitedThenBackground(parentSessionId, launched, work, sessionMeta, opts.waitMs!);
   }
 
   /**
@@ -663,20 +701,70 @@ export class SubAgentRunner {
     parentSessionId: string,
     launched: Promise<string>,
     work: Promise<{ id: string; result: string; attachments: Attachment[] }>,
-    meta: { displayName: string; type: SubAgentType; action: "spawn" | "send" | "browser"; toolCallId?: string; describeResult?: (id: string, result: string) => string },
+    meta: LaunchMeta,
   ): Promise<SubAgentLaunch> {
     const id = await launched;
+    const forget = this.trackBackground(parentSessionId, id);
+    this.deliverWhenSettled(parentSessionId, id, work, meta, forget);
+    return { id, result: startedText(meta.displayName, meta.type, id, meta.action), attachments: [], background: true };
+  }
+
+  /**
+   * A wait with a budget: the child's own answer when it lands in time, a launch when it does not.
+   *
+   * The delivery is attached only once the budget is spent, so the caller is never told the same
+   * answer twice: before that moment the return would have nobody to wake -- the caller is still
+   * holding the call -- and after it the caller has already been handed the line it would read.
+   * The child is registered as a background one from the start either way, so a Stop reaches it
+   * from the first second and its answer outlives the run that asked for it.
+   */
+  private async waitedThenBackground(
+    parentSessionId: string,
+    launched: Promise<string>,
+    work: Promise<{ id: string; result: string; attachments: Attachment[] }>,
+    meta: LaunchMeta,
+    waitMs: number,
+  ): Promise<SubAgentLaunch> {
+    const id = await launched;
+    const forget = this.trackBackground(parentSessionId, id);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<"budget">((resolve) => {
+      timer = setTimeout(() => resolve("budget"), Math.max(0, waitMs));
+    });
+    const raced = await Promise.race([work, budget]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+    if (raced === "budget") {
+      this.deliverWhenSettled(parentSessionId, id, work, meta, forget);
+      return { id, result: startedText(meta.displayName, meta.type, id, meta.action), attachments: [], background: true };
+    }
+    forget();
+    return { ...raced, background: false };
+  }
+
+  /** Registers a child as background work of a conversation; the returned function forgets it. */
+  private trackBackground(parentSessionId: string, id: string): () => void {
     let tracked = this.background.get(parentSessionId);
     if (!tracked) {
       tracked = new Set<string>();
       this.background.set(parentSessionId, tracked);
     }
     tracked.add(id);
-    const forget = (): void => {
+    return (): void => {
       const set = this.background.get(parentSessionId);
       set?.delete(id);
       if (set && set.size === 0) this.background.delete(parentSessionId);
     };
+  }
+
+  /** Hands a child's outcome to the conversation as a return, once the run has settled. */
+  private deliverWhenSettled(
+    parentSessionId: string,
+    id: string,
+    work: Promise<{ id: string; result: string; attachments: Attachment[] }>,
+    meta: LaunchMeta,
+    forget: () => void,
+  ): void {
     const settled = work.then(
       (done) => ({ status: "complete" as const, text: meta.describeResult ? meta.describeResult(done.id, done.result) : done.result, attachments: done.attachments }),
       (err: unknown) => (isAbort(err)
@@ -695,7 +783,6 @@ export class SubAgentRunner {
         ...outcome,
       });
     });
-    return { id, result: startedText(meta.displayName, meta.type, id, meta.action), attachments: [], background: true };
   }
 
   /**
@@ -805,9 +892,14 @@ export class SubAgentRunner {
      * default, like `spawn`: a driven child reports back when it settles (docs/subagents.md).
      */
     wait?: boolean,
+    /** Same budget as `spawn.waitMs`: past it the run carries on and reports back. */
+    waitMs?: number,
   ): Promise<string> {
     id = await this.canonicalId(id, callerSessionId);
-    const background = wait !== true && this.returnSink !== undefined;
+    // A bounded wait starts as a background run, like `spawn`'s: it may become one, and the signal
+    // and the bookkeeping cannot be decided after the child has started.
+    const budgeted = wait === true && waitMs !== undefined && this.returnSink !== undefined;
+    const background = (wait !== true || budgeted) && this.returnSink !== undefined;
     // A launch answers before the child has done anything, so the one thing it can still say now is
     // that it was pointed at nothing. Said here, where a caller can react to it.
     const launchedSession = background ? await loadSession(id) : undefined;
@@ -902,31 +994,42 @@ export class SubAgentRunner {
     if (!background) return work;
     const displayName = launchedSession?.meta?.displayName || id.slice("subagent/".length);
     const type = launchedSession?.meta?.type ?? "sub-agent";
-    let tracked = this.background.get(callerSessionId);
-    if (!tracked) {
-      tracked = new Set<string>();
-      this.background.set(callerSessionId, tracked);
+    const forget = this.trackBackground(callerSessionId, id);
+    const deliver = (): void => {
+      void work.then(
+        (result) => {
+          forget();
+          // A missing agent comes back as prose from the queue entry, not as a throw: a launch that
+          // found nothing has to report as the failure it is, not as an answer.
+          return this.reportReturn(result.startsWith("Error:")
+            ? { subagentId: id, parentSessionId: callerSessionId, displayName, agentType: type, action: "send", status: "error", text: result, attachments: [] }
+            : { subagentId: id, parentSessionId: callerSessionId, displayName, agentType: type, action: "send", status: "complete", text: result, attachments: [] });
+        },
+        (err: unknown) => {
+          forget();
+          return this.reportReturn(isAbort(err)
+            ? { subagentId: id, parentSessionId: callerSessionId, displayName, agentType: type, action: "send", status: "stopped", text: "The sub-agent was stopped before it answered.", attachments: [] }
+            : { subagentId: id, parentSessionId: callerSessionId, displayName, agentType: type, action: "send", status: "error", text: "", error: String(err), attachments: [] });
+        },
+      );
+    };
+    if (!budgeted) {
+      deliver();
+      return startedText(displayName, type, id, "send");
     }
-    tracked.add(id);
-    void work.then(
-      (result) => {
-        tracked.delete(id);
-        if (tracked.size === 0) this.background.delete(callerSessionId);
-        // A missing agent comes back as prose from the queue entry, not as a throw: a launch that
-        // found nothing has to report as the failure it is, not as an answer.
-        return this.reportReturn(result.startsWith("Error:")
-          ? { subagentId: id, parentSessionId: callerSessionId, displayName, agentType: type, action: "send", status: "error", text: result, attachments: [] }
-          : { subagentId: id, parentSessionId: callerSessionId, displayName, agentType: type, action: "send", status: "complete", text: result, attachments: [] });
-      },
-      (err: unknown) => {
-        tracked.delete(id);
-        if (tracked.size === 0) this.background.delete(callerSessionId);
-        return this.reportReturn(isAbort(err)
-          ? { subagentId: id, parentSessionId: callerSessionId, displayName, agentType: type, action: "send", status: "stopped", text: "The sub-agent was stopped before it answered.", attachments: [] }
-          : { subagentId: id, parentSessionId: callerSessionId, displayName, agentType: type, action: "send", status: "error", text: "", error: String(err), attachments: [] });
-      },
-    );
-    return startedText(displayName, type, id, "send");
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<"budget">((resolve) => {
+      timer = setTimeout(() => resolve("budget"), Math.max(0, waitMs!));
+    });
+    const raced = await Promise.race([work, budget]).finally(() => {
+      if (timer) clearTimeout(timer);
+    });
+    if (raced === "budget") {
+      deliver();
+      return startedText(displayName, type, id, "send");
+    }
+    forget();
+    return raced;
   }
 
   /**
