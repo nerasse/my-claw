@@ -87,17 +87,17 @@ l'accès VNC, le statut d'un run, les outils repliés en étapes, et les notes v
 
 ## Documentation
 
-Le README est la fiche produit ; le détail vit dans [`docs/`](docs/).
+Le README est la fiche produit ; le détail vit dans [la doc](https://nerasse.github.io/my-claw/), construite depuis [`docs/`](docs/).
 
 | Pour | Lire |
 |---|---|
-| installer sur un VPS ou une VM, pas à pas | [docs/setup-guide.md](docs/setup-guide.md) |
-| comprendre l'organisation du code | [docs/architecture.md](docs/architecture.md) |
-| déclarer fournisseurs, modèles et tags | [docs/config.md](docs/config.md), [docs/model-identity.md](docs/model-identity.md) |
-| lancer des sous-agents | [docs/subagents.md](docs/subagents.md) |
-| ajouter une autre machine comme node | [docs/remote-nodes.md](docs/remote-nodes.md) |
-| reprendre un run arrêté | [docs/continue.md](docs/continue.md) |
-| construire et publier | [docs/ci-cd.md](docs/ci-cd.md) |
+| installer sur un VPS ou une VM, pas à pas | [docs/setup-guide.md](https://nerasse.github.io/my-claw/setup-guide/) |
+| comprendre l'organisation du code | [docs/architecture.md](https://nerasse.github.io/my-claw/architecture/) |
+| déclarer fournisseurs, modèles et tags | [docs/config.md](https://nerasse.github.io/my-claw/config/), [docs/model-identity.md](https://nerasse.github.io/my-claw/model-identity/) |
+| lancer des sous-agents | [docs/subagents.md](https://nerasse.github.io/my-claw/subagents/) |
+| ajouter une autre machine comme node | [docs/remote-nodes.md](https://nerasse.github.io/my-claw/remote-nodes/) |
+| reprendre un run arrêté | [docs/continue.md](https://nerasse.github.io/my-claw/continue/) |
+| construire et publier | [docs/ci-cd.md](https://nerasse.github.io/my-claw/ci-cd/) |
 
 ## Développement
 
