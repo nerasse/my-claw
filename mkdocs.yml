@@ -1,5 +1,5 @@
 site_name: my-claw
-site_description: "Orchestrateur d'agent IA auto-hébergé : un agent, de vrais outils, votre machine."
+site_description: "Self-hosted AI agent orchestrator: one agent, real tools, your own machine."
 site_url: https://nerasse.github.io/my-claw/
 repo_url: https://github.com/nerasse/my-claw
 repo_name: nerasse/my-claw
@@ -7,9 +7,102 @@ edit_uri: edit/main/docs/
 docs_dir: docs
 strict: false
 
+exclude_docs: |
+  archive/**
+  captures/**
+  prompt/**
+  agent-model.md
+  agent-roles.md
+  agent-scoping.md
+  anthropic-backend.md
+  apns-relay.md
+  attachments.md
+  bash-limits.md
+  browser-autonomy.md
+  browser-live.md
+  browser-page.md
+  browser-windows.md
+  browser.md
+  bubble-identity.md
+  codex-backend.md
+  compaction.md
+  compose.md
+  config-backup.md
+  config-hot-reload.md
+  context-pruning.md
+  context-window.md
+  conversation-search.md
+  cron.md
+  dependency-security.md
+  draft-sync.md
+  file-agents.md
+  file-preview.md
+  files-page.md
+  filesystem-access.md
+  gallery.md
+  hooks.md
+  hot-reload-extensions.md
+  injection.md
+  install-layout.md
+  install-test.md
+  instructions-page.md
+  live-turn-replay.md
+  llm-request-repair.md
+  llm-timeout.md
+  location-sharing.md
+  mail-verification.md
+  memory.md
+  model-declarations.md
+  model-discovery.md
+  model-metadata.md
+  model-resolution.md
+  multi-workspace.md
+  my-claw-app-channel.md
+  nested-agents.md
+  notifications.md
+  on-demand-services.md
+  prompt-caching.md
+  prompt-immutable.md
+  provider-failures.md
+  providers-admin.md
+  quota-pin-plan.md
+  quota-retry.md
+  quota.md
+  reasoning-replay.md
+  reasoning-visibility.md
+  release-source.md
+  run-grouping.md
+  run-hydration.md
+  search.md
+  services.md
+  session-affinity.md
+  session-durability.md
+  session-folders.md
+  session-index.md
+  session-instructions.md
+  session-log.md
+  siphon.md
+  skill-suggestions.md
+  skills.md
+  stats-page.md
+  status-command.md
+  stop.md
+  subagent-navigation.md
+  subagent-visibility.md
+  subscription-accounts.md
+  system-prompt-research.md
+  tags.md
+  tool-images.md
+  tool-telemetry.md
+  tools-revamp.md
+  tools.md
+  untrusted-content.md
+  web-pairing.md
+  workspace-prompt-inheritance.md
+
 theme:
   name: material
-  language: fr
+  language: en
   features:
     - navigation.sections
     - navigation.top
@@ -25,20 +118,31 @@ theme:
       accent: custom
       toggle:
         icon: material/weather-night
-        name: Passage en mode sombre
+        name: Switch to dark mode
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
       primary: custom
       accent: custom
       toggle:
         icon: material/weather-sunny
-        name: Passage en mode clair
+        name: Switch to light mode
 
 extra_css: [assets/docs.css]
 
 plugins:
-  - search:
-      lang: fr
+  - search
+  - i18n:
+      docs_structure: suffix
+      fallback_to_default: true
+      reconfigure_material: true
+      reconfigure_search: true
+      languages:
+        - locale: en
+          default: true
+          name: English
+        - locale: fr
+          name: Français
+          build: true
 
 markdown_extensions:
   - admonition
@@ -55,40 +159,38 @@ markdown_extensions:
       custom_checkbox: true
 
 nav:
-  - Accueil: index.md
-  - Installation: setup-guide.md
+  - Home: index.md
+  - Install: setup-guide.md
   - Configuration: config.md
-  - Modèles:
-      - Identité et résolution: model-identity.md
-      - Déclarations: model-declarations.md
-      - Découverte: model-discovery.md
-      - Tags et routes: tags.md
-      - Quotas: quota-retry.md
+  - Models:
+      - Identity and resolution: model-identity.md
   - Agents:
-      - Rôles: agent-roles.md
-      - Périmètre: agent-scoping.md
-      - Modèle par agent: agent-model.md
-      - Sous-agents: subagents.md
-      - Agents fichiers: file-agents.md
-  - Outils:
-      - Vue d'ensemble: tools.md
-      - Navigateur: browser.md
-      - Recherche web: search.md
-      - Mémoire: memory.md
-      - Cron: cron.md
+      - Sub-agents: subagents.md
+  - Remote nodes: remote-nodes.md
   - Sessions:
-      - Journal et durabilité: session-log.md
-      - Compaction: compaction.md
-      - Continuer un run: continue.md
-      - Reprise et injection: injection.md
-      - Stop: stop.md
-  - Nodes distants: remote-nodes.md
-  - Canal app et web: my-claw-app-channel.md
-  - Sécurité:
-      - Approbations: tool-approvals.md
-      - Contenu non fiable: untrusted-content.md
-      - Accès fichiers: filesystem-access.md
-  - Exploitation:
-      - Mises à jour: auto-update.md
+      - Continue a run: continue.md
+  - Operations:
+      - Auto-update: auto-update.md
       - CI/CD: ci-cd.md
       - Architecture: architecture.md
+  - Security:
+      - Approvals: tool-approvals.md
+
+nav_translations:
+  fr:
+    Home: Accueil
+    Install: Installation
+    Configuration: Configuration
+    Models: Modèles
+    "Identity and resolution": Identité et résolution
+    Agents: Agents
+    "Sub-agents": Sous-agents
+    "Remote nodes": Nodes distants
+    Sessions: Sessions
+    "Continue a run": Continuer un run
+    Operations: Exploitation
+    "Auto-update": Mises à jour
+    CI/CD: CI/CD
+    Architecture: Architecture
+    Security: Sécurité
+    Approvals: Approbations

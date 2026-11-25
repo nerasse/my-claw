@@ -1,42 +1,42 @@
 # my-claw
 
-Orchestrateur d'agent IA auto-hébergé : un agent, de vrais outils, votre machine.
+Self-hosted AI agent orchestrator: one agent, real tools, your machine.
 
-Vous le joignez depuis le client web ou l'application Android, et il travaille avec le shell, les
-fichiers, un vrai Chromium et des sous-agents sur la machine que vous possédez. Chaque conversation
-est un journal sur disque, donc un redémarrage ne perd pas le fil.
+You reach it from the web client or the Android app, and it works with the shell, the files, a real
+Chromium and sub-agents on the machine you own. Every conversation is a log on disk, so a restart
+does not lose the thread.
 
-Le modèle est de la configuration : un endpoint compatible OpenAI, un abonnement ChatGPT ou Claude,
-Gemini, OpenRouter, ou un serveur local. Il n'y a pas d'offre hébergée.
+The model is configuration: an OpenAI-compatible endpoint, a ChatGPT or Claude subscription, Gemini,
+OpenRouter, or a local server. There is no hosted offering.
 
 <video controls muted loop playsinline src="assets/readme/demo.mp4"></video>
 
-## Commencer
+## Getting started
 
-- [Installer sur un VPS ou une VM](setup-guide.md), pas à pas, avec les vérifications.
-- [Configuration](config.md) : le fichier, les sections, les secrets.
-- [Modèles et fournisseurs](model-identity.md) : ce que déclare un modèle, et comment il est résolu.
+- [Install on a VPS or a VM](setup-guide.md), step by step, with the checks.
+- [Configuration](config.md): the file, the sections, the secrets.
+- [Models and providers](model-identity.md): what a model declares, and how it is resolved.
 
-## Comprendre
+## Understanding
 
-- [Architecture](architecture.md) : les modules, les flux, les décisions.
-- [Sessions](session-log.md) : le journal comme source unique de l'historique.
-- [Sous-agents](subagents.md) : sessions persistantes, file d'attente, visibilité.
-- [Nodes distants](remote-nodes.md) : une autre machine, ses outils dans le même agent.
+- [Architecture](architecture.md): the modules, the flows, the decisions.
+- [Sessions](https://github.com/nerasse/my-claw/blob/main/docs/session-log.md): the log as the single source of the history.
+- [Sub-agents](subagents.md): persistent sessions, queueing, visibility.
+- [Remote nodes](remote-nodes.md): another machine, its tools in the same agent.
 
-## Exploiter
+## Operating
 
-- [Mises à jour](auto-update.md) : la source de release, le timer, le retour arrière.
-- [CI/CD](ci-cd.md) : ce que construit un tag, et ce qu'il publie.
-- [Approbations](tool-approvals.md) : ce qui demande un accord, et où il se donne.
+- [Updates](auto-update.md): the release source, the timer, the rollback.
+- [CI/CD](ci-cd.md): what a tag builds, and what it publishes.
+- [Approvals](tool-approvals.md): what requires approval, and where it is given.
 
-## En images
+## In pictures
 
-![Un run replié en étapes, avec un sous-agent](assets/readme/agents.png)
+![A run folded into steps, with a sub-agent](assets/readme/agents.png)
 
-![Le picker de modèles, tous les fournisseurs](assets/readme/models.png)
+![The model picker, every provider](assets/readme/models.png)
 
-![La liste des sessions filtrée par workspace](assets/readme/workspaces.png)
+![The session list filtered by workspace](assets/readme/workspaces.png)
 
-La suite est dans [la galerie](https://github.com/nerasse/my-claw/blob/main/docs/gallery.md) : un
-markdown ouvert à côté du chat, les thèmes, le navigateur, le statut d'un run, les notes vocales.
+The rest is in [the gallery](https://github.com/nerasse/my-claw/blob/main/docs/gallery.md): a
+markdown file opened next to the chat, the themes, the browser, the status of a run, voice notes.
