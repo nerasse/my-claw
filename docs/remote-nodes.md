@@ -51,7 +51,7 @@ differs, and the node client only ever takes one URL.
 
 The wildcard certificate already in place covers a dedicated hostname; nothing new to issue.
 
-The two proxy blocks, for the operator's side. Four routes ever need to be reachable -- `/node`
+The two proxy blocks, for the operator's side. Four routes ever need to be reachable: `/node`
 (the socket), `/node/pair`, `/node/download` and `/node/install.sh` (how a machine joins):
 `myclaw node add` and `myclaw node rm` talk to the daemon on loopback directly, so
 `/node/ticket` and `/node/revoke` stay off the proxy. Each route carries its own credential
@@ -165,12 +165,12 @@ authenticate with a paired device, like `myclaw device add`.
 ## The Nodes screen
 
 Settings > Nodes, beside Devices: the same operations as the CLI, plus the ones only a screen
-makes usable. Each row is a node -- online dot, OS and arch, mode, user, version, the tools it
-announces, its agent file, when it was last seen -- and opens a page for it:
+makes usable. Each row is a node (online dot, OS and arch, mode, user, version, the tools it
+announces, its agent file, when it was last seen) and opens a page for it:
 
 - **Add a node**: a name, then a single-use code and one install command, generated for the
-  machine it will run on -- Linux/macOS or Windows, as a service (admin) or as the account
-  (user) -- and copied in one tap. The command names the address the app itself reaches the
+  machine it will run on: Linux/macOS or Windows, as a service (admin) or as the account
+  (user), and copied in one tap. The command names the address the app itself reaches the
   server at, the same rule as `myclaw node add`: whoever knows the address says it.
 - **Rename**: the record and its agent file move together, so `node-<name>` follows the roster.
   A name another node or another agent file already holds is refused rather than suffixed; the
@@ -179,13 +179,13 @@ announces, its agent file, when it was last seen -- and opens a page for it:
   shows the orchestrator. One line by construction; the prompt below it is the owner's. The
   guided fields (what it is for, what it reaches, what must never be touched) compose that line
   from three answers, and the result stays editable before it is saved.
-- **Enabled**: off means the node's agent does not run -- a spawn is refused with that reason, and
+- **Enabled**: off means the node's agent does not run: a spawn is refused with that reason, and
   the catalog reads `[disabled]`. The machine stays paired and connected: its version, its tools
   and its updates are all still visible, and nothing else changes.
 - **What it may run**: per tool, exposed or not, and one switch to ask before running anything
   there, on from pairing. A tool left out is absent from the agent's set, never added back.
 - **MCP servers**: add, edit or remove a server the machine runs (a name, and a command with its
-  arguments or a URL), with how each came up -- 3 tools, failed and why. A server the machine's
+  arguments or a URL), with how each came up: 3 tools, failed and why. A server the machine's
   own config declares is shown, marked as not managed here.
 - **Update now**: offered for a connected node behind the server's version. The client retries a
   version once per half hour; this asks it right away (`node.update { force: true }`), which is
@@ -202,7 +202,7 @@ logged too.
 ## Handshake
 
 The node announces facts nobody has to type: OS, arch, hostname, user, mode (`admin`/`user`),
-node version, and its tool manifest -- only the tools its config exposes -- plus how each MCP
+node version, and its tool manifest (only the tools its config exposes), plus how each MCP
 server it runs came up.
 
 ## Two locks on the tools
@@ -221,7 +221,7 @@ server it runs came up.
 Everything here is read again at each turn of a run, not frozen when it starts: the set is
 rebuilt before every request, so a tool added or taken away applies to the next turn of a run
 already in flight, and the approval flag is read at each call. Rebuilding changes the tool block of
-the prompt, which invalidates the provider's cached prefix for that turn -- the owner's call: a run
+the prompt, which invalidates the provider's cached prefix for that turn. The owner's call: a run
 never works from a stale set. A machine that goes away keeps its last set, so its calls answer
 "not connected" instead of the prompt emptying under the model.
 
@@ -233,8 +233,8 @@ switch writes `approval: false`; a record without the key, or with the `true` ol
 wrote, asks. Each call is a prompt unless the owner answers "allow for this session" (offered
 for every tool but the per-invocation ones, `bash` and `memory`) or "always allow this exact
 call".
-The node's agent is a sub-agent, so its sheet is drawn in the parent conversation -- the run carries
-the parent's thread and the runner injects the approval handler into every sub-agent bridge -- and a
+The node's agent is a sub-agent, so its sheet is drawn in the parent conversation (the run carries
+the parent's thread and the runner injects the approval handler into every sub-agent bridge), and a
 push goes out when the sheet has to reach a device that is not on that thread (docs/tool-approvals.md).
 A node's prompt is raised whatever `channels["my-claw-app"].approvals` says: that flag is the
 opt-in for this server's own blacklisted tools, and a machine that asks by default would
@@ -259,7 +259,7 @@ node hosts its own MCP clients, and the list is owned by the app.
   `config.json` before starting anything. A machine that was offline catches up at its next hello.
 - The node starts each server with the transport its entry names (`stdio` with a command and
   arguments, or `http`/`sse` with a URL), and their tools join its manifest as
-  `mcp__<server>__<tool>` -- the same namespace the server's own MCP uses, so an agent reads one
+  `mcp__<server>__<tool>`, the same namespace the server's own MCP uses, so an agent reads one
   shape wherever a tool comes from. A call is an ordinary `node.call`: the node dispatches it to
   the right client.
 - Everything the tools section says applies unchanged: the per-tool switches, the approval, the
@@ -274,7 +274,7 @@ Text only was the old rule, and it is not enough for the case nodes exist for: B
 picture the model has to see, and an asset the owner sends has to reach the machine.
 
 - **Node to server.** A media file the node's `read` opens (or an MCP tool returns as an image
-  block) is uploaded with `POST /node/upload` -- the node's own token, 32 MB ceiling -- and the
+  block) is uploaded with `POST /node/upload` (the node's own token, 32 MB ceiling), and the
   tool result names it under `attachments`. The bytes land in `$MY_CLAW_DIR/nodes/files/<nodeId>/`,
   and only a path inside that directory is accepted from a node's frame: a machine may claim any
   path, and a claim is not a file. The model sees the image and the app draws it like any other.
@@ -289,7 +289,7 @@ picture the model has to see, and an asset the owner sends has to reach the mach
 - One generated agent per node, `node-<name>`, with a new base `node`. Its tools are the node's
   tools, executed remotely; no local tool leaks in. Two exceptions, both running here and neither
   touching the machine: `send_file_to_node`, which moves a file of this server's over (the node
-  agent has no read access here), and `skills` in its read-only form. The second is not optional --
+  agent has no read access here), and `skills` in its read-only form. The second is not optional:
   layer 5 of the prompt lists the skill catalog for whatever scope the agent has and tells it to
   call `skills(name)`, so withholding the tool left every node agent told to call something it did
   not hold. A skill is knowledge: nothing in it executes through the socket. Both go through the
@@ -343,8 +343,8 @@ install time.
 The release carries the client beside the server tarball, so "aligned" has one answer: the version
 the server runs. On every connect the server compares the node's hello with its own version and,
 when they differ, offers the build (`node.update { version, target }`). The node fetches it through
-the same relay that installed it -- `/node/download` accepts a paired node's own token, so it needs
-no claim code -- proves the staged binary prints the expected version before it replaces the
+the same relay that installed it (`/node/download` accepts a paired node's own token, so it needs
+no claim code), proves the staged binary prints the expected version before it replaces the
 running one, swaps it in and exits. systemd and launchd restart it on the new build; the Windows
 Scheduled Task would not, so there the node hands the new binary its own detached process first.
 
@@ -365,7 +365,7 @@ curl -fsSL 'https://myclaw.example/node/install.sh' | sudo sh -s -- --pair ABCD1
 `sudo` for the admin install (system service, dedicated `myclaw-node` account, passwordless sudo
 for that account); without it, the user install (user service, the user's own rights). macOS uses
 the same script (LaunchDaemon or LaunchAgent); Windows has `install.ps1` (Scheduled Task as SYSTEM
-or at logon). The installer is idempotent -- re-run the same command to update.
+or at logon). The installer is idempotent: re-run the same command to update.
 
 The binary and the installer come from the my-claw being joined (`/node/download`,
 `/node/install.sh`), gated by the same claim code. The my-claw fetches the binary from its release
@@ -377,7 +377,7 @@ release assets next to the server tarball.
 
 1. Protocol, pairing, `/node` endpoint, `node` base, generated agent, journal. **Done.**
 2. Binary, installers (admin and user, three OS), GitHub release publication, client certificates. **Done**
-   (macOS and Windows installers written, not tested here -- no such machine).
+   (macOS and Windows installers written, not tested here: no such machine).
 3. App: list, add (code and the generated install command), rename, description, tool choice,
    approvals, revoke. **Done.**
 
@@ -387,7 +387,7 @@ What is left, and who owns it:
   install proves them.
 - **mTLS.** The server issues the certificate and reads the proxy's verdict; no deployment uses
   it yet. The operator's proxy blocks are above.
-- **A real install from the app.** The whole loop -- code from the screen, command pasted on a
-  machine, node online, agent spawning -- has only been exercised with a fake app socket.
+- **A real install from the app.** The whole loop (code from the screen, command pasted on a
+  machine, node online, agent spawning) has only been exercised with a fake app socket.
 - **A real MCP on a real machine.** The node's client is proven against fixture servers here;
   Godot's and Blender's bridges have never been run from this repo.

@@ -1,9 +1,9 @@
 # Model identity
 
-> **Note historique** : ce document a été écrit quand my-claw servait aussi Telegram et Matrix.
-> Ces deux canaux ont été supprimés (seul `my-claw-app` subsiste). Les mentions et chemins de
-> fichiers `channels/telegram/*` et `channels/matrix/*` ci-dessous sont conservés pour la trace
-> de la décision : ils ne décrivent plus le code.
+> **Historical note**: this document was written when my-claw also served Telegram and Matrix.
+> Both channels have been removed (only `my-claw-app` remains). The mentions and file paths
+> `channels/telegram/*` and `channels/matrix/*` below are kept as the trace of the decision:
+> they no longer describe the code.
 
 How a model is addressed, and why the address carries a provider and sometimes an endpoint.
 
