@@ -49,7 +49,13 @@ export function createBrowserEvalTool(
 ): Tool {
   return {
     name: "browser_eval",
-    description: "Run JavaScript inside the page and get a value back. Pass a statement BODY and use `return` (e.g. `return document.title`). Use it to read state the snapshot does not show, or to drive a widget that resists every normal action. Only for what the other tools cannot express.",
+    description:
+      "Run JavaScript inside the page and get a value back. Pass a statement BODY and use `return` " +
+      "(e.g. `return document.title`). The page may have changed since the snapshot: read what you " +
+      "need instead of assuming a node is still there. Never return a pending promise -- await it " +
+      "inside the body, and return a JSON-serialisable value. Use it to read state the snapshot " +
+      "does not show, or to drive a widget that resists every normal action. Only for what the " +
+      "other tools cannot express.",
     parameters: windowed({
       type: "object",
       properties: {
@@ -85,7 +91,11 @@ export function createBrowserCdpTool(
 ): Tool {
   return {
     name: "browser_cdp",
-    description: "Send a raw Chrome DevTools Protocol command to the current page (e.g. DOM.getDocument, Input.dispatchKeyEvent). Last resort when nothing else reaches the element. Methods are restricted to an allowlist, and anything touching the browser session (cookies, storage, other targets) is permanently refused.",
+    description:
+      "Send a raw Chrome DevTools Protocol command to the current page (e.g. DOM.getDocument, " +
+      `Input.dispatchKeyEvent). Allowed: ${DEFAULT_CDP_ALLOWLIST.join(", ")}. Anything touching the ` +
+      "browser session (cookies, storage, other targets) is permanently refused. Last resort when " +
+      "nothing else reaches the element.",
     parameters: windowed({
       type: "object",
       properties: {

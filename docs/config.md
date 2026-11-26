@@ -735,11 +735,12 @@ Artificial Analysis TTS arena, native dialogue. What `src/voice/gemini-tts.ts` d
   past which users report the voice fading (cookbook #1292); two 2m45 pieces measured on
   2026-10-08 held level and voice across the join.
 - **Dialogue and podcasts**: the `audio` tool's `speakers` (1 to 4 `{name, voice, style?}`) and a
-  text of `Name: line` turns. A request voices at most two speakers (`conversational` mode), so
-  the turns are cut greedily into pieces of at most two speakers and ~4000 characters: `A B A C A
-  B` is `[A B A] [C A] [B]`, three requests. A piece with two speakers is one `conversational`
-  request with a `speech_metadata` speaker annotation per turn; a piece where one speaks alone is
-  a plain reading in that voice. 350 ms of silence separate pieces, none between the turns of one
+  text of `Name: line` turns. A request voices at most two speakers, so the turns are cut greedily
+  into pieces of at most two speakers and ~4000 characters: `A B A C A B` is `[A B A] [C A] [B]`,
+  three requests. A piece with two speakers is one dialogue request -- `speech_config` is an object
+  with `speakers`, where a single voice is an array, and there is no `mode` field -- with a
+  `speech_metadata` speaker annotation per turn; a piece where one speaks alone is a plain reading
+  in that voice. 350 ms of silence separate pieces, none between the turns of one
   piece (Gemini paces them). `style` (global, or per speaker, which wins) goes in
   `speech_metadata.style`, never in the text, which Gemini reads verbatim.
 - **Quota**: the free tier is 10 requests per model per day (measured: the 11th answered

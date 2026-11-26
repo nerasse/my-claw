@@ -203,7 +203,16 @@ export function createWebSearchTool(config?: WebSearchConfig): Tool {
             };
           }
           // Enough engines responded: this is a genuine empty result, not an outage.
-          return { success: true, output: "No results found for this query." };
+          // An empty answer is where a model burns turns retyping the same words, so the text says
+          // what actually changes the next search (measured: 26 empty searches in one batch of
+          // three agents surveying vendor docs, 2026-11-24).
+          return {
+            success: true,
+            output:
+              "No results found for this query. Change the query rather than repeating it: fewer and " +
+              "more general words, no quotes, or a `site:` filter when you know the domain. If you " +
+              "already know the page, fetch it directly.",
+          };
         }
 
         return { success: true, output: formatResults(results) };

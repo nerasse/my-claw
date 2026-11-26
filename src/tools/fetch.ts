@@ -159,11 +159,48 @@ interface CachedFetch {
   at: number;
 }
 
+/**
+ * A URL that just said "not here".
+ *
+ * The success cache never held failures, so a model guessing paths at a vendor's documentation
+ * could ask the same dead URL five times in a row and pay five round-trips for the same answer --
+ * measured at 110 of the 136 fetch failures between 20 and 25 November, three agents walking a
+ * documentation tree by guessing names. Ten minutes is short enough that a page published since
+ * is not lost, and long enough to break the loop.
+ */
+interface FailedFetch {
+  status: number;
+  at: number;
+}
+
+const FAILURE_TTL_MS = 10 * 60_000;
 /** Every tool instance's cache, so a test run can blank them between files (tests/setup-globals.ts). */
 const caches = new Set<Map<string, CachedFetch>>();
+const failureCaches = new Set<Map<string, FailedFetch>>();
 
 export function resetFetchToolCaches(): void {
   for (const cache of caches) cache.clear();
+  for (const cache of failureCaches) cache.clear();
+}
+
+/**
+ * What a non-2xx answer means for the caller, in the words that change its next move.
+ *
+ * "Check the URL, method, and authentication" was true of every status and therefore useless for
+ * all of them: a 404 and a 403 want opposite next steps, and a model that reads one sentence for
+ * both retries the URL that cannot work. See docs/tool-errors.md.
+ */
+export function httpErrorText(status: number, url: string): string {
+  if (status === 404 || status === 410) {
+    return `HTTP ${status} from ${url}: nothing is at this URL. Find the page with web_search (or the site's own index) instead of guessing another path; a near-miss URL is almost always wrong too.`;
+  }
+  if (status === 401 || status === 403) {
+    return `HTTP ${status} from ${url}: the server refused access. That is not a retry and not a quieter request: it needs credentials, or the page is closed to this client.`;
+  }
+  if (status === 429) {
+    return `HTTP 429 from ${url}: the host is rate limiting. Wait or fetch another page; repeating it now answers 429 again.`;
+  }
+  return `HTTP ${status} from ${url}. The host answered; this is not a network failure. A 5xx may pass on another try, a 4xx will not.`;
 }
 
 /** `Retry-After` in either of its two spellings, capped: a host does not get to hold the run. */
@@ -182,6 +219,8 @@ export function createFetchTool(options: FetchToolOptions = {}): Tool {
   const cacheTtlMs = options.cacheTtlMs ?? CACHE_TTL_MS;
   const cache = new Map<string, CachedFetch>();
   caches.add(cache);
+  const failures = new Map<string, FailedFetch>();
+  failureCaches.add(failures);
   return {
   name: "fetch",
   description:
@@ -189,7 +228,8 @@ export function createFetchTool(options: FetchToolOptions = {}): Tool {
     `are returned in windows of up to ${MAX_FETCH_CHARS} characters; if content remains, the ` +
     "output ends with the exact `offset` to pass on a follow-up call to read the next window. " +
     "A GET that hits a transient 429/5xx is retried once (honoring Retry-After), and a successful " +
-    "GET answer is reusable for a few minutes, so re-reading the same URL costs nothing.",
+    "GET answer is reusable for a few minutes, so re-reading the same URL costs nothing. A URL that " +
+    "answered 404 or a refusal is remembered too: asking it again says so instead of paying the trip.",
   parameters: {
     type: "object",
     properties: {
@@ -229,6 +269,14 @@ export function createFetchTool(options: FetchToolOptions = {}): Tool {
         if (hit.shell) text += JS_SHELL_HINT;
         hooks.emit("tool:fetch:request", { url, method: currentMethod, status: 200, cached: true });
         return { success: true, output: text };
+      }
+      const failed = failures.get(url);
+      if (failed && Date.now() - failed.at < FAILURE_TTL_MS) {
+        return {
+          success: false,
+          output: "",
+          error: `${httpErrorText(failed.status, url)} This was already asked ${Math.max(1, Math.round((Date.now() - failed.at) / 60_000))} min ago; the answer has not changed.`,
+        };
       }
     }
 
@@ -295,10 +343,15 @@ export function createFetchTool(options: FetchToolOptions = {}): Tool {
           }
           return { success: true, output: text };
         }
+        // A refusal that cannot change on its own is remembered, so the next call is answered
+        // here instead of at the host: guessing paths at a documentation tree is the measured case.
+        if (response.status === 401 || response.status === 403 || response.status === 404 || response.status === 410) {
+          failures.set(currentUrl, { status: response.status, at: Date.now() });
+        }
         return {
           success: false,
           output: text,
-          error: `HTTP ${response.status} from ${currentUrl}. Check the URL, method, and authentication.`,
+          error: httpErrorText(response.status, currentUrl),
         };
       }
 

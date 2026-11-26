@@ -96,7 +96,16 @@ export const applyPatchTool: Tool = {
   },
   async execute(args): Promise<ToolResult> {
     const path = str(args, "path");
-    if (!path.trim()) return { success: false, output: "path is required and cannot be empty." };
+    if (!path.trim()) {
+      // The keys say what the model actually sent: the measured miss was five parallel calls tuned
+      // with `absolute`, which the error answered with "path is required" and no hint that the
+      // field is called path (2026-11-20, docs/tool-errors.md).
+      const sent = Object.keys(args).filter((key) => !key.startsWith("__"));
+      return {
+        success: false,
+        output: `path is required and cannot be empty. This tool takes \`path\` (an absolute file path) and \`edits\`; the call carried ${sent.length > 0 ? sent.join(", ") : "no arguments"}.`,
+      };
+    }
     const parsed = parseEdits(args["edits"]);
     if (parsed.error) return { success: false, output: parsed.error };
 

@@ -201,3 +201,12 @@ test("apply_patch: a path outside the workspace is edited as asked", async () =>
     await rm(outside, { force: true });
   }
 });
+
+test("apply_patch: a call with no `path` says what it carried", async () => {
+  // Five parallel calls on 2026-11-20 sent `absolute` instead of `path`, and "path is required"
+  // gave the model nothing to correct: the field it invented did not appear anywhere in the answer.
+  const result = await applyPatchTool.execute({ absolute: "/tmp/x.ts", edits: [{ old: "a", new: "b" }] });
+  assert.equal(result.success, false);
+  assert.match(result.output, /path is required/);
+  assert.match(result.output, /absolute, edits/);
+});

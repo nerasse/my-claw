@@ -401,3 +401,44 @@ test("fetch: a failed GET is never cached", async () => {
     mock.restore();
   }
 });
+
+test("fetch: a 404 says where to go next, and the dead URL is not paid twice", async () => {
+  let calls = 0;
+  const mock = mockFetch(async () => {
+    calls += 1;
+    return new Response("gone", { status: 404 });
+  });
+  try {
+    const tool = createFetchTool();
+    const first = await tool.execute({ url: "https://docs.example.com/guessed/path" });
+    assert.equal(first.success, false);
+    assert.match(first.error ?? "", /nothing is at this URL/);
+    assert.match(first.error ?? "", /web_search/);
+    // The second ask is answered from the memo: a model guessing paths at a doc tree used to pay
+    // the whole round trip again for the same dead address.
+    const second = await tool.execute({ url: "https://docs.example.com/guessed/path" });
+    assert.equal(second.success, false);
+    assert.match(second.error ?? "", /already asked/);
+    assert.equal(calls, 1);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("fetch: a refusal and a rate limit each name their own next move", async () => {
+  const forbidden = mockFetch(async () => new Response("no", { status: 403 }));
+  try {
+    const result = await fetchTool.execute({ url: "https://example.com/private" });
+    assert.match(result.error ?? "", /refused access/);
+    assert.doesNotMatch(result.error ?? "", /web_search/);
+  } finally {
+    forbidden.restore();
+  }
+  const limited = mockFetch(async () => new Response("slow down", { status: 429 }));
+  try {
+    const result = await fetchTool.execute({ url: "https://example.com/rate" });
+    assert.match(result.error ?? "", /rate limiting/);
+  } finally {
+    limited.restore();
+  }
+});

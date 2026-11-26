@@ -143,8 +143,9 @@ describe("GeminiTts", () => {
     });
 
     expect(sent).toHaveLength(1);
+    // No `mode`: the API answers `Unknown parameter 'mode' at 'generation_config.speech_config'`.
+    // An object with `speakers` is what makes a request a dialogue.
     expect(sent[0]!.body.generation_config.speech_config).toEqual({
-      mode: "conversational",
       speakers: [{ speaker: "Léa", voice: "v1" }, { speaker: "Marc", voice: "v2" }],
     });
     const items: unknown[] = sent[0]!.body.input[0]!.content.map((c) => [c.text, c.annotations?.[0]]);
@@ -173,9 +174,9 @@ describe("GeminiTts", () => {
     });
 
     expect(sent.map((r) => r.body.generation_config.speech_config)).toEqual([
-      { mode: "conversational", speakers: [{ speaker: "Léa", voice: "v1" }, { speaker: "Marc", voice: "v2" }] },
-      { mode: "conversational", speakers: [{ speaker: "Inès", voice: "v3" }, { speaker: "Léa", voice: "v1" }] },
-      { mode: "conversational", speakers: [{ speaker: "Marc", voice: "v2" }, { speaker: "Tom", voice: "v4" }] },
+      { speakers: [{ speaker: "Léa", voice: "v1" }, { speaker: "Marc", voice: "v2" }] },
+      { speakers: [{ speaker: "Inès", voice: "v3" }, { speaker: "Léa", voice: "v1" }] },
+      { speakers: [{ speaker: "Marc", voice: "v2" }, { speaker: "Tom", voice: "v4" }] },
     ]);
     // The speaker's own style wins over the reading's.
     expect(sent[0]!.body.input[0]!.content.map((c) => c.annotations?.[0]?.style)).toEqual(["radio", "amusé", "radio"]);
@@ -310,7 +311,6 @@ describe("GeminiTts", () => {
     } as unknown as Sent["body"]);
     expect(sent[1]!.body.input[0]!.content).toEqual([{ type: "text", text: "Léa: un\nMarc: deux" }]);
     expect(sent[1]!.body.generation_config.speech_config).toEqual({
-      mode: "conversational",
       speakers: [{ speaker: "Léa", voice: "Charon" }, { speaker: "Marc", voice: "Kore" }],
     });
     expect(sent[2]!.body.generation_config.speech_config).toEqual([{ voice: "Puck" }]);

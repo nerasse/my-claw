@@ -1,6 +1,6 @@
 import { test } from "bun:test";
 import assert from "node:assert/strict";
-import { writeFile, mkdir, rm } from "node:fs/promises";
+import { chmod, writeFile, mkdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -447,4 +447,18 @@ test("search: every root shares one wall, not one wall each", async () => {
   assert.equal(outcome.ok, false);
   assert.match(outcome.text, /Search timed out/);
   assert.ok(elapsed < 950, `two roots took ${elapsed} ms, so the second one had its own wall`);
+});
+
+test("search: an rg that will not start hands the query to grep instead of failing it", async () => {
+  const root = await fixture();
+  // A path that exists but cannot be executed is exactly the 0.7.207 release: the engine resolved,
+  // and every search died at the spawn with EACCES instead of using the grep beside it.
+  const broken = join(root, "rg-not-executable");
+  await writeFile(broken, "#!/bin/sh\n", { mode: 0o644 });
+  await chmod(broken, 0o644);
+  const query: SearchQuery = { ...stuckQuery(), pattern: "beta", roots: [root], mode: "content" };
+  const result = await executeQuery(query, { rgPath: broken, wallMs: 10_000 });
+  assert.equal(result.ok, true);
+  assert.match(result.text, /engine: grep fallback/);
+  assert.match(result.text, /beta/);
 });

@@ -53,7 +53,7 @@ export const GEMINI_DEFAULT_MODELS: readonly GeminiModel[] = [
 ];
 
 const LEGACY_VOICES = ["Charon", "Kore", "Puck", "Aoede", "Fenrir"];
-/** One request voices at most two speakers ("conversational" mode). */
+/** One request voices at most two speakers: `speech_config` is an object with `speakers` then. */
 const SPEAKERS_PER_REQUEST = 2;
 /** Between two requests only: Gemini paces the turns inside one itself. 16-bit mono, so an even count. */
 const SEGMENT_GAP = Buffer.alloc(Math.round(SAMPLE_RATE * 0.35) * 2);
@@ -185,8 +185,13 @@ function requestBody(chunk: Turn[], speech: GeminiSpeech, entry: GeminiModel): u
       model: entry.model,
       input: [{ type: "user_input", content: [{ type: "text", text }] }],
       generation_config: {
+        // The JSON type of `speech_config` is the discriminator: an array is one voice, an object
+        // with `speakers` is a dialogue. There is no `mode` field, and sending one is answered
+        // `Unknown parameter 'mode' at 'generation_config.speech_config'` -- which is what broke
+        // every dialogue on 2026-11-23 while the tests asserted the same wrong shape
+        // (docs/tool-errors.md, verified against the Interactions API reference 2026-11-25).
         speech_config: conversational
-          ? { mode: "conversational", speakers: present.map((s) => ({ speaker: s.name, voice: voiceOf(s) })) }
+          ? { speakers: present.map((s) => ({ speaker: s.name, voice: voiceOf(s) })) }
           : [{ voice: present[0] ? voiceOf(present[0]) : entry.voice }],
       },
     };
@@ -211,7 +216,7 @@ function requestBody(chunk: Turn[], speech: GeminiSpeech, entry: GeminiModel): u
     response_format: { type: "audio", mime_type: "audio/l16", sample_rate: SAMPLE_RATE },
     generation_config: {
       speech_config: conversational
-        ? { mode: "conversational", speakers: present.map((s) => ({ speaker: s.name, voice: s.voice })) }
+        ? { speakers: present.map((s) => ({ speaker: s.name, voice: s.voice })) }
         : [{ voice: present[0]?.voice ?? speech.voice }],
     },
   };

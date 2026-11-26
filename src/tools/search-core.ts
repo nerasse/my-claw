@@ -442,6 +442,8 @@ interface EngineResult {
   error?: string;
   lines: string[];
   capped?: boolean;
+  /** The engine could not be started at all: another one may still answer, where an error cannot. */
+  unusable?: boolean;
 }
 
 async function collectRipgrep(root: string, query: SearchQuery, rgPath: string, env: QueryEnvironment): Promise<EngineResult> {
@@ -451,7 +453,10 @@ async function collectRipgrep(root: string, query: SearchQuery, rgPath: string, 
     result = await run([rgPath, ...buildRipgrepArgv(single)], cwdFor(root), env);
   } catch (error) {
     rethrowIfAborted(error, env.signal);
-    return { ok: false, error: `Failed to run ripgrep: ${error instanceof Error ? error.message : String(error)}`, lines: [] };
+    // A binary that will not start is not a failed search: the same query answered by grep is the
+    // honest result (EACCES on a release whose rg lost its bit, 2026-11-23), where an error "Failed
+    // to run ripgrep" ended the call for a machine that had a perfectly good grep.
+    return { ok: false, error: `Failed to run ripgrep: ${error instanceof Error ? error.message : String(error)}`, lines: [], unusable: true };
   }
   if (result.timedOut) return { ok: false, error: timedOutText(root, (env.wallMs ?? SEARCH_WALL_MS) / 1000), lines: [] };
   // A killed engine exits 137: its code only means something when the run ended on its own.
@@ -481,8 +486,7 @@ async function collectGrep(root: string, query: SearchQuery, env: QueryEnvironme
 }
 
 export async function executeQuery(query: SearchQuery, env: QueryEnvironment): Promise<{ ok: boolean; text: string }> {
-  const fallback = env.rgPath === null;
-  const banner = fallback ? fallbackBanner() : "";
+  let fellBack = env.rgPath === null;
   const collected: string[] = [];
   // One wall for the whole call: five roots must not buy five minutes.
   const deadline = Date.now() + (env.wallMs ?? SEARCH_WALL_MS);
@@ -490,7 +494,13 @@ export async function executeQuery(query: SearchQuery, env: QueryEnvironment): P
   let capped = false;
   for (const root of query.roots) {
     const rootEnv: QueryEnvironment = { ...env, wallMs: Math.max(deadline - Date.now(), 1), maxLines };
-    const result = fallback ? await collectGrep(root, query, rootEnv) : await collectRipgrep(root, query, env.rgPath!, rootEnv);
+    let result = fellBack ? await collectGrep(root, query, rootEnv) : await collectRipgrep(root, query, env.rgPath!, rootEnv);
+    if (!result.ok && result.unusable) {
+      // The engine would not start: the same query through grep, and the result says which engine
+      // answered so a reader knows hidden files and .gitignore behaved differently.
+      fellBack = true;
+      result = await collectGrep(root, query, rootEnv);
+    }
     if (!result.ok) {
       const where = query.roots.length > 1 ? ` (root ${root})` : "";
       return { ok: false, text: `${result.error ?? "search failed"}${where}` };
@@ -502,6 +512,7 @@ export async function executeQuery(query: SearchQuery, env: QueryEnvironment): P
       break;
     }
   }
+  const banner = fellBack ? fallbackBanner() : "";
   return { ok: true, text: banner + renderLines(query, collected.slice(0, maxLines), { capped, cap: maxLines }) };
 }
 

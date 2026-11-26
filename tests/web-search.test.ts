@@ -180,6 +180,10 @@ describe("web_search tool", () => {
       const result = await tool.execute({ query: "test" });
       assert.equal(result.success, true);
       assert.match(result.output, /No results found/i);
+      // An empty answer has to say what actually changes the next one: retyping the same words is
+      // what 26 empty searches in one batch of research agents looked like (2026-11-24).
+      assert.match(result.output, /Change the query rather than repeating it/);
+      assert.match(result.output, /site:/);
     } finally {
       restore();
     }

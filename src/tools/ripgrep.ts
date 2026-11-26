@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { accessSync, chmodSync, constants, existsSync, statSync } from "node:fs";
 import { chmod, copyFile, mkdir, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -66,6 +66,30 @@ export function ripgrepExeName(platform = process.platform): string {
 /** One attempt per process: a machine that just failed a download is not asked again on every call. */
 let downloadAttempted = false;
 
+/**
+ * A path that can actually be executed, not merely present.
+ *
+ * `existsSync` was the whole check, so a release whose `rg` lost its mode bits resolved as the
+ * engine to use and every `search` then died at the spawn with `EACCES: permission denied`
+ * (measured twice on 0.7.207, 2026-11-23, docs/tool-errors.md). One chmod repairs the bit a
+ * tar/copy strips; a genuinely unreadable path still answers no, and the caller falls back to grep.
+ */
+function executable(path: string): boolean {
+  try {
+    if (!statSync(path).isFile()) return false;
+    accessSync(path, constants.X_OK);
+    return true;
+  } catch {
+    try {
+      chmodSync(path, 0o755);
+      accessSync(path, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
 export function resetRipgrepDownloadForTests(): void {
   downloadAttempted = false;
 }
@@ -78,16 +102,16 @@ export async function resolveRipgrep(options: {
   const exe = ripgrepExeName();
 
   const env = process.env.MY_CLAW_RG_PATH;
-  if (env && existsSync(env)) return { path: env, source: "env" };
+  if (env && executable(env)) return { path: env, source: "env" };
 
   if (options.vendorDir) {
     const bundled = join(options.vendorDir, exe);
-    if (existsSync(bundled)) return { path: bundled, source: "vendor" };
+    if (executable(bundled)) return { path: bundled, source: "vendor" };
   }
 
   if (options.cacheDir) {
     const cached = join(options.cacheDir, RIPGREP_VERSION, exe);
-    if (existsSync(cached)) return { path: cached, source: "cache" };
+    if (executable(cached)) return { path: cached, source: "cache" };
   }
 
   const onPath = Bun.which("rg");

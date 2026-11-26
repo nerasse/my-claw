@@ -642,7 +642,11 @@ export class MyClawAppAdapter implements ChannelAdapter {
       });
     }
     questionManager.setHandler(undefined);
-    setApprovalSurface(undefined);
+    // The approval surface is deliberately left installed. It used to be cleared here, and a config
+    // reload (stop then start) then left a run in flight with no surface at all: the `approval`
+    // tool answered "No channel surface to ask for approval on", blaming the channel for what was
+    // a reload (three times on 2026-11-22, docs/tool-errors.md). Its `reachable` is answered off
+    // the live sockets, so a stopped adapter says "no device connected" by itself, which is true.
     this.server?.stop(true);
     this.server = undefined;
     // Before the exit and after the sockets are gone, so nothing can append behind the write. The
