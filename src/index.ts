@@ -110,6 +110,8 @@ import type { ApprovalDecision, ToolApprovalHandler, UnifiedMessage } from "./ch
 import { BackendDispatcher } from "./agent/dispatcher.ts";
 import { ToolRegistry, mcpServerOf, baselineToolNames } from "./tools/registry.ts";
 import { bashTool, setBashEnvPassthrough, setBashLimits } from "./tools/bash.ts";
+import { jobTool } from "./tools/job.ts";
+import { jobNoticeStatus, jobNoticeText, jobs } from "./core/jobs.ts";
 import { readTool } from "./tools/read.ts";
 import { writeTool } from "./tools/write.ts";
 import { fetchTool } from "./tools/fetch.ts";
@@ -314,6 +316,9 @@ async function main() {
   setLogLevelSource(() => config.logging?.level);
   void pruneOldLogs();
   void pruneOldSessions();
+  // A job that was running when the server stopped is not running now: its process went with the
+  // one that spawned it. Said before any surface can read a stale record (docs/jobs.md).
+  void jobs.reconcile();
   const workspacePath = config.workspace!;
   process.env["MY_CLAW_WORKSPACE"] = workspacePath;
   await snapshotProtected(workspacePath, { origin: "boot" });
@@ -2556,13 +2561,47 @@ async function main() {
       // A background child does not hold this conversation's signal, so a Stop that stopped its
       // run would leave the children the owner launched running with nobody left to read them.
       void subAgentRunner.stopBackgroundOf(sessionId);
+      // A job is the same promise at a lower level: "stop this conversation" that left a build
+      // running would be a Stop the owner cannot trust. Its output is kept either way.
+      void jobs.killSession(sessionId);
       if (root !== "idle") return root;
       return subAgentRunner.stopSession(sessionId);
     });
     myClawApp.onRunActive((sessionId) => runRegistry.isRunning(sessionId) || subAgentRunner.isRunningSession(sessionId));
     // A conversation whose children are still working is not answering, but it is not idle either.
     // The listing marks it apart so the owner can see a launch still in flight (docs/subagents.md).
-    myClawApp.onSubagentsActive((sessionId) => subAgentRunner.backgroundCountOf(sessionId));
+    // A running job is the same fact: something of this conversation is still working.
+    myClawApp.onSubagentsActive((sessionId) => subAgentRunner.backgroundCountOf(sessionId) + jobs.runningCount(sessionId));
+
+    // A job's end is pushed into the conversation that started it, never polled
+    // (docs/jobs.md). Same door as a sub-agent's return: a text the model reads, and a card the
+    // owner sees, which wakes the conversation when it is at rest.
+    jobs.setSink((record) => {
+      const owner = ownerOfAppSession(record.sessionId);
+      const thread = appThreadOfSession(record.sessionId);
+      if (!owner || !thread) {
+        void log("warn", "job notice has no conversation to reach", { jobId: record.id, sessionId: record.sessionId });
+        return;
+      }
+      void (async () => {
+        const tail = await jobs.tail(record.sessionId, record.id);
+        await myClawApp.deliverSubAgentReturn(
+          owner,
+          thread,
+          jobNoticeText(record, tail),
+          tail.trim() || "(no output)",
+          {
+            sessionId: record.id,
+            label: record.label,
+            kind: "job",
+            status: jobNoticeStatus(record),
+          },
+          [],
+        );
+      })().catch((err) => {
+        void log("error", "job notice failed", { jobId: record.id, error: String(err) });
+      });
+    });
 
     // A background child's answer reaches the conversation that launched it, never the caller that
     // happens to be talking to it now: it is one turn of that conversation, and it wakes it when it
@@ -3440,7 +3479,7 @@ function registerCoreTools(registry: ToolRegistry, config: MyClawConfig): void {
   // provider key and the model writes the commands.
   setBashEnvPassthrough(config.tools?.bashEnvPassthrough);
   setBashLimits(config.tools?.bash);
-  for (const tool of [bashTool, readTool, writeTool, applyPatchTool, fetchTool, searchTool, lsTool, createMemoryTool(config), createConversationSearchTool(), createQuestionTool(), createApprovalTool(config)]) {
+  for (const tool of [bashTool, jobTool, readTool, writeTool, applyPatchTool, fetchTool, searchTool, lsTool, createMemoryTool(config), createConversationSearchTool(), createQuestionTool(), createApprovalTool(config)]) {
     registry.register(tool);
   }
 }

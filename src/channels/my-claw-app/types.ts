@@ -1672,7 +1672,7 @@ export type MyClawAppHistoryEntry =
       from?: {
         sessionId?: string;
         label: string;
-        kind?: "send" | "return" | "cron";
+        kind?: "send" | "return" | "cron" | "job";
         status?: string;
         /** A cron delivery's schedule, as the job declares it: the card's second fact. */
         cadence?: string;
@@ -1788,6 +1788,8 @@ export interface MyClawAppSubAgentReturn {
   subagentId: string;
   label: string;
   status: "complete" | "error" | "stopped";
+  /** A job's notice rides the same row; absent is a sub-agent's return. */
+  kind?: "return" | "job";
 }
 
 /**

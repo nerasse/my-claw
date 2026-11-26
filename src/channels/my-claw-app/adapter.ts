@@ -2970,7 +2970,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
     threadId: string,
     text: string,
     display: string,
-    from: { sessionId: string; label: string; kind: "send" | "return"; status?: string },
+    from: { sessionId: string; label: string; kind: "send" | "return" | "job"; status?: string },
     attachments: Attachment[],
   ): Promise<boolean> {
     const safe = sanitizeThreadId(threadId);
@@ -2986,6 +2986,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
       subagentId: from.sessionId,
       label: from.label,
       status: from.status === "error" || from.status === "stopped" ? from.status : "complete",
+      ...(from.kind === "job" ? { kind: "job" as const } : {}),
     });
     void this.messageHandler({
       id,

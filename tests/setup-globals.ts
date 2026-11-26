@@ -15,6 +15,7 @@ import { resetSkillVectorCache } from "../src/skills/retrieval.ts";
 import { clearRecallCache } from "../src/memory/cache.ts";
 import { resetEmbeddingState } from "../src/memory/embedding.ts";
 import { runRegistry } from "../src/core/run-registry.ts";
+import { jobs } from "../src/core/jobs.ts";
 import { resetBinaryCache } from "../src/voice/tts.ts";
 import { resetSkillLastGood } from "../src/skills/loader.ts";
 import { resetAgentLastGood } from "../src/agents/loader.ts";
@@ -77,6 +78,9 @@ beforeEach(async () => {
   // Session ids are reused across files ("s1", "sess-A"), so a leaked controller makes
   // isRunning() true and leaves a mailbox accepting injections.
   runRegistry.clear();
+  // A leaked job keeps its record and its sink: a later file would see another file's job as its
+  // own, and its notice would fire into a sink nobody is watching.
+  jobs.clear();
   // Session ids are reused across files ("s1", "sess-A"): a leaked pending question would
   // block the same session's next ask or be answered by a later file's reply.
   questionManager.clear();

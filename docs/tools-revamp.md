@@ -80,7 +80,8 @@ Measured on 1 416 sessions (103 521 tool calls):
    ("re-run with timeout: N", "setsid for jobs that must outlive the call"), description
    enriched. Reference check: opencode = 120 s default and killed; pi = no default; codex =
    10 s yield then resume (no kill); we keep a wall (unattended cron must not hang) but stop
-   punishing ordinary builds.
+   punishing ordinary builds. Superseded on 2026-11-25: a call that runs past its yield becomes
+   a job the conversation owns, and the wall belongs to the job (docs/jobs.md).
 9. **python-in-bash edits** (assert+replace, 4 776 commands) are a supported flow: documented,
    not blocked, not instrumented for now.
 10. **SearXNG** degradation (51 messages in October) is an infra task for the owner.

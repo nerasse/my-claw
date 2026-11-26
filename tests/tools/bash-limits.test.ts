@@ -77,7 +77,7 @@ describe("what a killed call says", () => {
     const result = await bashTool.execute({ command: "sleep 5", timeout: 400 });
     expect(result.success).toBe(false);
     expect(result.error).toContain("Command timed out after 1 s");
-    expect(result.error).toContain("setsid");
+    expect(result.error).toContain("background: true");
     expect(result.error).not.toContain("memory limit");
   });
 });

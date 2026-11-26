@@ -93,7 +93,7 @@ export interface UserEntry extends EntryBase {
    * hand-back, or a background sub-agent's return. `kind` tells the last one apart, so the display
    * draws a card where it would otherwise show the owner's own words.
    */
-  from?: { sessionId: string; label: string; kind?: "send" | "return"; status?: string };
+  from?: { sessionId: string; label: string; kind?: "send" | "return" | "job"; status?: string };
 }
 
 export interface PhaseEntry extends EntryBase {

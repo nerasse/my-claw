@@ -30,7 +30,7 @@ export interface UnifiedMessage {
    * return, or a report a sub-agent handed back. Stamped on the log entry, so a reopened thread
    * still knows this was not the owner speaking (docs/subagents.md).
    */
-  from?: { sessionId: string; label: string; kind: "send" | "return"; status?: string };
+  from?: { sessionId: string; label: string; kind: "send" | "return" | "job"; status?: string };
   raw: unknown;
 }
 

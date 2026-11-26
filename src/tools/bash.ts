@@ -1,17 +1,28 @@
 import { isAbsolute, resolve } from "node:path";
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { type Tool, type ToolResult, type ToolProgress, str, strOpt, num } from "./types.ts";
+import { type Tool, type ToolResult, type ToolProgress, str, strOpt, num, numOpt, bool } from "./types.ts";
+import { jobs, type JobRecord } from "../core/jobs.ts";
 import { formatError } from "../utils/errors.ts";
 import { rethrowIfAborted } from "../core/aborted.ts";
 import { hooks } from "../hooks/index.ts";
+import { log } from "../utils/logger.ts";
 import type { BashConfig } from "../core/config.ts";
 
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_TIMEOUT_MS = 3_600_000;
+/** Where a call hands its command over to the conversation -- docs/jobs.md. */
+export const DEFAULT_YIELD_MS = 120_000;
+const MAX_YIELD_MS = 600_000;
+/** How long a handed-off command may run. A build is not a command that hung. */
+const DEFAULT_JOB_WALL_MS = 6 * 3_600_000;
 
 /** A tiny timeout is a 'kill fast' probe; one below a second races the spawn itself. */
 function clampTimeout(value: number): number {
   return Math.min(Math.max(Math.floor(value), 1_000), MAX_TIMEOUT_MS);
+}
+
+function clampYield(value: number): number {
+  return Math.min(Math.max(Math.floor(value), 0), MAX_YIELD_MS);
 }
 const MAX_OUTPUT_BYTES = 1_048_576;
 const KILL_GRACE_MS = 2_000;
@@ -318,13 +329,33 @@ async function settlePipes(
   await pending.catch(() => undefined);
 }
 
+/**
+ * What the caller reads when its command kept running past the yield.
+ *
+ * Deliberately the same three sentences the three harnesses settled on: the id, where the output
+ * goes, and do not poll. A model that polls a running job spends a turn proving nothing, and a
+ * conversation whose agent sleeps in `while` loops is the freeze this replaced.
+ */
+function jobStartedText(record: JobRecord): string {
+  const pid = record.pid === undefined ? "" : ` (pid ${record.pid})`;
+  return [
+    `Started as job ${record.id}${pid} in the background.`,
+    `Its output goes to ${record.outputPath}, and you will get a <job> message when it finishes.`,
+    "Do not sleep, poll or duplicate its work: continue with something else, or end your turn and let the notice wake you.",
+    "",
+    `[job id: ${record.id}]`,
+  ].join("\n");
+}
+
 export const bashTool: Tool = {
   name: "bash",
   description:
-    "Execute a shell command. The call is killed after a wall (default 5 minutes): pass " +
-    "`timeout` in milliseconds (up to 3600000) for long builds and test runs, and detach with " +
-    "setsid for a job that must outlive the call. A search (grep, rg, git grep) that finds nothing, " +
-    "or a diff that finds differences, exits 1: that is reported as a success, with the exit noted.",
+    "Execute a shell command. A command still running after 2 minutes becomes a background job of " +
+    "this conversation (or at once with `background: true`): it keeps running, its output goes to a " +
+    "file, and you get a <job> message when it finishes. `timeout` is the command's own wall in " +
+    "milliseconds (up to 3600000): a shorter one kills it, a longer one is how far the job may run. " +
+    "A search (grep, rg, git grep) that finds nothing, or a diff that finds differences, exits 1: " +
+    "that is reported as a success, with the exit noted.",
   parameters: {
     type: "object",
     properties: {
@@ -336,7 +367,15 @@ export const bashTool: Tool = {
           "instead of prefixing the command with 'cd'. Relative paths resolve against the workspace; " +
           "absolute paths are used as-is. Defaults to the workspace root.",
       },
-      timeout: { type: "number", description: "Timeout in milliseconds (default 300000)" },
+      timeout: { type: "number", description: "Wall for the command in milliseconds (max 3600000). Without one, a handed-off job may run 6 hours." },
+      background: {
+        type: "boolean",
+        description: "Start it as a background job and return at once, for a server or a long build.",
+      },
+      yieldMs: {
+        type: "number",
+        description: "How long this call waits before handing the command to a job (default 120000).",
+      },
     },
     required: ["command"],
   },
@@ -347,7 +386,18 @@ export const bashTool: Tool = {
     }
     const signal = args["__signal"] as AbortSignal | undefined;
     rethrowIfAborted(undefined, signal);
-    const timeoutMs = clampTimeout(num(args, "timeout", limits.timeoutMs));
+    const sessionId = strOpt(args, "__sessionId") ?? "";
+    const background = bool(args, "background", false);
+    if (background && !sessionId) {
+      return { success: false, output: "", error: "background needs a conversation to own the job." };
+    }
+    const declaredTimeout = numOpt(args, "timeout");
+    // No declared wall is the case a build hits: the call yields and the job gets room. A declared
+    // one is the command's own budget, yield or not -- `timeout: 30000` still means "kill at 30 s".
+    const wallMs = declaredTimeout !== undefined
+      ? clampTimeout(declaredTimeout)
+      : sessionId ? DEFAULT_JOB_WALL_MS : clampTimeout(limits.timeoutMs);
+    const yieldMs = background ? 0 : clampYield(num(args, "yieldMs", DEFAULT_YIELD_MS));
     const workspaceDir = strOpt(args, "__workspaceDir") ?? process.env["MY_CLAW_WORKSPACE"] ?? process.cwd();
     const workdirArg = strOpt(args, "workdir");
     let cwd = workspaceDir;
@@ -388,13 +438,20 @@ export const bashTool: Tool = {
       // SIGTERM alone hangs forever on a command that traps it (trap '' TERM) or is stuck in D
       // state; escalate to SIGKILL after a grace period, same as the abort path.
       let wallHit = false;
+      let stopHit = false;
       const killWithEscalation = () => {
-        wallHit = true;
         killGroup("SIGTERM");
         setTimeout(() => killGroup("SIGKILL"), KILL_GRACE_MS).unref?.();
       };
-      const timer = setTimeout(killWithEscalation, timeoutMs);
-      const onAbort = killWithEscalation;
+      const timer = setTimeout(() => {
+        wallHit = true;
+        killWithEscalation();
+      }, wallMs);
+      timer.unref?.();
+      const onAbort = () => {
+        stopHit = true;
+        killWithEscalation();
+      };
       signal?.addEventListener("abort", onAbort, { once: true });
 
       // Drain stdout and stderr concurrently: reading stdout to EOF first can deadlock a child
@@ -406,9 +463,13 @@ export const bashTool: Tool = {
       let stdoutFlush = "";
       let stderrFlush = "";
       let lastFlush = 0;
+      // Set at the handoff: from then on every chunk also lands in the job's file. Before it, the
+      // buffers are the only place the output lives.
+      let appendToJob: ((text: string) => void) | undefined;
+      let progressOn = true;
       const FLUSH_MS = 200;
       const maybeFlush = (force: boolean): void => {
-        if (!onProgress) return;
+        if (!onProgress || !progressOn) return;
         const now = Date.now();
         if (!force && now - lastFlush < FLUSH_MS) return;
         if (stdoutFlush || stderrFlush) {
@@ -429,6 +490,7 @@ export const bashTool: Tool = {
             if (done) break;
             const text = decoder.decode(value, { stream: true });
             buf.push(text);
+            appendToJob?.(text);
             if (onProgress) {
               if (which === "stdout") stdoutFlush += text;
               else stderrFlush += text;
@@ -443,9 +505,75 @@ export const bashTool: Tool = {
       const readers = [stdoutReader, stderrReader].filter((reader) => reader !== undefined);
       const stdoutP = drain(stdoutReader, stdoutBuf, "stdout");
       const stderrP = drain(stderrReader, stderrBuf, "stderr");
-      const exitCode = await proc.exited;
-      await settlePipes(Promise.all([stdoutP, stderrP]), readers, PIPE_GRACE_MS);
-      maybeFlush(true);
+      const exited = (async (): Promise<number> => {
+        const code = await proc.exited;
+        await settlePipes(Promise.all([stdoutP, stderrP]), readers, PIPE_GRACE_MS);
+        maybeFlush(true);
+        return code;
+      })();
+
+      /**
+       * Past the yield the command stops being this call's: the job takes it, the call answers.
+       *
+       * Everything the command writes from now on goes to the job's file, and the exit is watched
+       * by a promise that outlives this function. The wall timer and the Stop listener stay armed
+       * for the same reason: the command is still ours to stop, long after the call returned.
+       */
+      const handOff = async (): Promise<ToolResult> => {
+        let job: Awaited<ReturnType<typeof jobs.start>>;
+        try {
+          job = await jobs.start({
+            sessionId,
+            tool: "bash",
+            label: command,
+            pid: proc.pid,
+            kill: killWithEscalation,
+          });
+        } catch (err) {
+          // No record means no reader and no stop: better to kill what we started than to leave a
+          // build nobody can find.
+          killWithEscalation();
+          return { success: false, output: "", error: formatError("Could not start the job", err) };
+        }
+        // One turn of the loop, so nothing can append between the buffers being read and the sink
+        // taking over: every chunk after this line is written once, to the file.
+        const already = stdoutBuf.join("");
+        const alreadyErr = stderrBuf.join("");
+        appendToJob = (text) => job.append(text);
+        progressOn = false;
+        if (already) job.append(already);
+        if (alreadyErr) job.append(`\nSTDERR: ${alreadyErr}`);
+        void exited.then(async (code: number) => {
+          clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
+          const killedByStop = stopHit;
+          job.settle({
+            status: killedByStop ? "killed" : wallHit || code !== 0 ? "failed" : "done",
+            exitCode: code,
+            signal: proc.signalCode ?? null,
+            ...(wallHit && !killedByStop ? { note: `killed at its wall of ${Math.round(wallMs / 60_000)} min` } : {}),
+          });
+          await jobs.finish(job);
+        }).catch((err: unknown) => {
+          void log("error", "job: its end could not be recorded", { error: String(err) });
+        });
+        return { success: true, outcome: "background", output: jobStartedText(job.record) };
+      };
+
+      if (yieldMs >= 0 && yieldMs < wallMs && sessionId) {
+        let yieldTimer: ReturnType<typeof setTimeout> | undefined;
+        const yielded = await Promise.race([
+          exited.then(() => false, () => false),
+          new Promise<boolean>((resolve) => {
+            yieldTimer = setTimeout(() => resolve(true), yieldMs);
+            yieldTimer.unref?.();
+          }),
+        ]);
+        if (yieldTimer) clearTimeout(yieldTimer);
+        if (yielded && proc.exitCode === null) return await handOff();
+      }
+
+      const exitCode = await exited;
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
       rethrowIfAborted(undefined, signal);
@@ -468,13 +596,13 @@ export const bashTool: Tool = {
       // A wall, a memory ceiling and an external kill all end in SIGKILL; only the first two are
       // ours to explain, and saying "memory limit" for a 45-minute timeout would be a lie.
       if (wallHit) {
-        const waited = timeoutMs < 60_000 ? `${Math.round(timeoutMs / 1000)} s` : `${Math.round(timeoutMs / 60_000)} min`;
+        const waited = wallMs < 60_000 ? `${Math.round(wallMs / 1000)} s` : `${Math.round(wallMs / 60_000)} min`;
         return {
           success: false,
           output,
           error:
-            `Command timed out after ${waited} and was killed. Long commands: re-run with a larger ` +
-            `timeout (up to ${MAX_TIMEOUT_MS} ms), or detach the job (setsid) and poll its log.`,
+            `Command timed out after ${waited} and was killed. Long commands: leave the command ` +
+            "running as a background job (`background: true`), or pass a larger `timeout`.",
         };
       }
       if (proc.signalCode === "SIGKILL" || exitCode === 137) {
