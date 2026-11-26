@@ -1318,6 +1318,19 @@ same way, from the moment its streamer is created to the moment it settles, and
 the roots it opened, and asking it alone read a child in flight as idle. Stop
 on a child thread aborts the child through the runner.
 
+That lifecycle belongs to the child's run, never to the turn that launched it
+(`src/channels/my-claw-app/subagent-live.ts`, wired to the `subagent:*` hooks at
+boot): a launch answers in milliseconds and the child carries on by design, so
+the stream, the journal and the run outlive the turn that spawned them, at any
+depth. `chat.run.end` is the **last** frame of a run -- anything settling after
+it (an interrupted tool card, a bubble's abort) would make the client open a run
+nothing ends, which is a Stop button that never stops.
+
+`activeRun` on `session.history` / `session.sync.result` is "the engine has
+work **and** this thread's journal is still open": the journal closes exactly
+when `chat.run.end` goes out, so a page can never contradict the last lifecycle
+frame a window received and reopen the run it just closed.
+
 A send parked while a compaction rewrote the history becomes the trigger of
 the next run: it is acked (`chat.send.acked`) when that run starts, since no
 turn boundary ever drains it.

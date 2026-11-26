@@ -1506,6 +1506,12 @@ describe("MyClawAppAdapter", () => {
       assert.equal(stopping["threadId"], "default");
       // Named like its siblings: the run `chat.run.start` announced, held by the journal.
       assert.equal(stopping["run"], "run-live");
+      // The typed half of the answer: `stopped` is what keeps the composer's spinner until the
+      // end below follows, and the app reads it to tell it apart from the "nothing running" case
+      // that has no end coming at all.
+      const typed = await nextFrame(client);
+      assert.equal(typed["type"], "chat.stop.result");
+      assert.equal(typed["outcome"], "stopped");
       assert.equal((await nextFrame(client))["type"], "chat.command.result");
 
       // A second press while the abort travels draws nothing: one stop, one frame.
@@ -1549,6 +1555,7 @@ describe("MyClawAppAdapter", () => {
       const stopping = await nextFrame(client);
       assert.equal(stopping["type"], "chat.run.stopping");
       assert.equal(stopping["run"], undefined, "a hold has no run to name");
+      assert.equal((await nextFrame(client))["type"], "chat.stop.result");
       assert.equal((await nextFrame(client))["type"], "chat.command.result");
 
       const reloaded = await connectClient(adapter.port);
@@ -2713,7 +2720,11 @@ describe("MyClawAppAdapter", () => {
     assert.equal(frame.type, "chat.history");
     assert.equal(frame.activeRun, false);
 
+    // A run in flight: the engine has work AND the app has been told it has begun (the journal
+    // the end travels through). Both halves, because either alone can lie for a few milliseconds.
     live.add(store.resolveSessionId(DEVICE_ID, "a"));
+    adapter.notifyRun(DEVICE_ID, "a", true);
+    assert.equal((await nextFrame(client))["type"], "chat.run.start");
     client.ws.send(JSON.stringify({ type: "session.history", threadId: "a" }));
     frame = (await nextFrame(client)) as { type: string; activeRun?: boolean };
     assert.equal(frame.type, "chat.history");
@@ -2722,6 +2733,17 @@ describe("MyClawAppAdapter", () => {
     // `running` are live only if this says so.
     assert.equal(store.runActive?.(store.resolveSessionId(DEVICE_ID, "a")), true);
     assert.equal(store.runActive?.("subagent/elsewhere"), false);
+
+    // The end went out, and the engine's own wind-down still holds the run: the page must not
+    // contradict the last frame the app received, or it reopens the run it just closed -- with no
+    // end left to come, which is a Stop button that never stops (measured 2026-11-26).
+    adapter.notifyRun(DEVICE_ID, "a", false, "aborted");
+    assert.equal((await nextFrame(client))["type"], "chat.run.end");
+    assert.equal(live.has(store.resolveSessionId(DEVICE_ID, "a")), true, "the engine still reports it");
+    client.ws.send(JSON.stringify({ type: "session.history", threadId: "a" }));
+    frame = (await nextFrame(client)) as { type: string; activeRun?: boolean };
+    assert.equal(frame.type, "chat.history");
+    assert.equal(frame.activeRun, false);
   });
 
   test("session.sync hands on the store's reading of the last run", async () => {
@@ -5432,6 +5454,9 @@ describe("command frames", () => {
     const stopping = await nextFrame(client);
     assert.equal(stopping["type"], "chat.run.stopping");
     assert.equal(stopping["threadId"], "t9");
+    const typed = await nextFrame(client);
+    assert.equal(typed["type"], "chat.stop.result");
+    assert.equal(typed["outcome"], "stopped");
     const frame = await nextFrame(client);
     assert.equal(frame["type"], "chat.command.result");
   });
@@ -5451,6 +5476,7 @@ describe("command frames", () => {
       const first = await nextFrame(client);
       assert.equal(first["type"], "chat.run.stopping");
       assert.equal(first["threadId"], "t-one-stop");
+      assert.equal((await nextFrame(client))["type"], "chat.stop.result");
       const answer = await nextFrame(client);
       assert.equal(answer["type"], "chat.command.result");
       assert.equal(answer["text"], "Stopped.");
@@ -5462,12 +5488,18 @@ describe("command frames", () => {
       // The cycle over, the next press finds nothing -- and says so, once, in its own words.
       end();
       client.ws.send(JSON.stringify({ type: "chat.stop", threadId: "t-one-stop" }));
+      // `idle` is typed before the words: it is what lifts a composer's spinner when no run end
+      // is ever coming (a page that still showed a run the server had already finished).
+      const idleTyped = await nextFrame(client);
+      assert.equal(idleTyped["type"], "chat.stop.result");
+      assert.equal(idleTyped["outcome"], "idle");
       const idle = await nextFrame(client);
       assert.equal(idle["type"], "chat.command.result");
       assert.equal(idle["text"], "Nothing running.");
-      // And an idle stop says nothing about a stop: no frame, nothing held for a reload.
+      // An idle stop announces nothing beyond that answer: the cycle it would have described was
+      // never opened, so there is no "stopping" to hold and nothing else to draw.
       await new Promise((r) => setTimeout(r, 150));
-      assert.equal(client.frames.length, 0, "an idle stop must not announce one");
+      assert.equal(client.frames.length, 0, "an idle stop must announce no stop");
     } finally {
       end();
       runRegistry.clear();
@@ -5492,6 +5524,7 @@ describe("command frames", () => {
       const stopping = await nextFrame(client);
       assert.equal(stopping["type"], "chat.run.stopping");
       assert.equal(stopping["threadId"], childThread);
+      assert.equal((await nextFrame(client))["type"], "chat.stop.result");
       const answer = await nextFrame(client);
       assert.equal(answer["type"], "chat.command.result");
       assert.equal(answer["text"], "Stopped.");

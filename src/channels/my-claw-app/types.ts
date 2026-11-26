@@ -803,6 +803,23 @@ export interface MyClawAppModelSiphonSet {
   model?: string;
 }
 
+/**
+ * What a stop claim found, typed rather than only spoken.
+ *
+ * A Stop is the one press whose answer decides whether the composer keeps its "stopping" state:
+ * the text the chat draws ("Stopped.", "Nothing running.") says it to the reader, and this says
+ * it to the one surface that has to act on it. `idle` is the case that used to hang -- a window
+ * whose page still marked a run active sent its stop, nothing was running, and no `chat.run.end`
+ * was ever coming to lift the spinner, so the button span for good over a chat that said
+ * "Nothing running." (owner, 2026-11-26).
+ */
+export interface MyClawAppChatStopResult {
+  type: "chat.stop.result";
+  threadId: string;
+  /** `stopped`: the abort travels and its end follows. `stopping`: one is already in flight. */
+  outcome: "stopped" | "stopping" | "idle";
+}
+
 /** Stops the run on this thread, whatever backend is driving it (the `/stop` of the app). */
 export interface MyClawAppChatStop {
   type: "chat.stop";
@@ -4849,6 +4866,7 @@ export type MyClawAppServerFrame =
   | MyClawAppModelResult
   | MyClawAppCommandPending
   | MyClawAppCommandResult
+  | MyClawAppChatStopResult
   | MyClawAppChatQueued
   | MyClawAppChatSendReceived
   | MyClawAppChatAcked

@@ -1156,7 +1156,16 @@ export class MyClawAppAdapter implements ChannelAdapter {
    */
   claimStop(sessionId: string, owner: string, threadId: string): StopOutcome {
     const outcome = this.stopRun ? this.stopRun(sessionId) : "idle";
-    if (outcome !== "stopped") return outcome;
+    // A second press of a cycle already in flight draws nothing: one stop, one answer, which is
+    // what the app's own one-per-cycle rule is built on.
+    if (outcome === "stopping") return outcome;
+    if (outcome !== "stopped") {
+      // Nothing was running: the composer that pressed has a mark to lift, and no run end is
+      // coming to lift it. Not journalled -- it answers a press, and a window that reloads reads
+      // the run's own frames instead.
+      this.broadcast(owner, { type: "chat.stop.result", threadId, outcome });
+      return outcome;
+    }
     const run = this.live.currentRun(owner, threadId);
     // A stopped run with no journal here: a background sub-agent outlives the turn that launched
     // it, and that turn's end closed the journal it opened. The abort is still travelling and the
@@ -1171,7 +1180,28 @@ export class MyClawAppAdapter implements ChannelAdapter {
     };
     this.live.markStopping(owner, threadId, frame);
     this.broadcast(owner, frame);
+    // The typed half of the same answer: `stopped` keeps the composer's spinner until the end
+    // follows, and `idle` above is the one that lifts it. See `MyClawAppChatStopResult`.
+    this.broadcast(owner, { type: "chat.stop.result", threadId, outcome });
     return outcome;
+  }
+
+  /**
+   * Whether this thread has a run the app has not been told the end of.
+   *
+   * `runActive` alone answers "the engine still has work on this session", which can stay true for
+   * a few milliseconds after the end frame went out -- the wind-down between the abort being
+   * reported and the run's own entry leaving the registry. A window that syncs in that window is
+   * told "a run is answering" and reopens the very run it just closed, with no end left to come:
+   * the Stop button came back and stayed, over a chat that read "stopped" (measured 2026-11-26,
+   * 17 ms of disagreement after a child's abort). The live journal is opened by the run's start
+   * and closed by its end, so it is the one witness that cannot contradict the last frame the app
+   * was handed.
+   */
+  private runOnThread(owner: string, threadId: string): boolean {
+    if (!this.runActive) return false;
+    if (!this.runActive(this.store.resolveSessionId(owner, threadId))) return false;
+    return this.live.isOpen(owner, threadId);
   }
 
   /** Whether a session has a run in flight; injected because the adapter never reaches into core. */
@@ -3947,7 +3977,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
         ...(frame.beforeId ? { beforeId: frame.beforeId } : {}),
         // Always sent, both ways: the app makes this page authoritative over its own run flag, so
         // an omitted false would leave a stale one standing after a run ended during a disconnect.
-        ...(this.runActive ? { activeRun: this.runActive(this.store.resolveSessionId(ws.data.owner, threadId)) } : {}),
+        ...(this.runActive ? { activeRun: this.runOnThread(ws.data.owner, threadId) } : {}),
         ...this.subagentsOf(ws.data.owner, threadId),
       };
       this.sendFrame(ws, result);
@@ -3990,7 +4020,7 @@ export class MyClawAppAdapter implements ChannelAdapter {
         // dropped here, so a window that opened after the setting was turned on -- or that turned
         // it on from the chat menu, which holds no listing row -- had no way to learn it.
         ...(page.quotaRetry ? { quotaRetry: page.quotaRetry } : {}),
-        ...(this.runActive ? { activeRun: this.runActive(this.store.resolveSessionId(ws.data.owner, threadId)) } : {}),
+        ...(this.runActive ? { activeRun: this.runOnThread(ws.data.owner, threadId) } : {}),
         ...this.subagentsOf(ws.data.owner, threadId),
         ...(page.lastRun ? { lastRun: page.lastRun } : {}),
       };

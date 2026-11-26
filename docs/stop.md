@@ -143,11 +143,20 @@ dependency `index.ts` wires to that same method), so a stop taken by one surface
 the other.
 
 A claim answered `stopped` emits **one** `chat.run.stopping` frame
-(`{ type, threadId, run? }`), broadcast to every socket of the owner; `stopping` and `idle` emit
-nothing. The frame is recorded in the live turn journal (`LiveTurnJournal`, docs/live-turn-replay.md)
+(`{ type, threadId, run? }`), broadcast to every socket of the owner; `stopping` emits nothing.
+The frame is recorded in the live turn journal (`LiveTurnJournal`, docs/live-turn-replay.md)
 and replayed to a window that syncs while the abort travels -- including a stop against a
 compaction, which open no journal at all, so the slot lives beside the journal and not inside it.
 The run it names is the one `chat.run.start` announced, kept on the journal when that run opened.
+
+Every claim that is not `stopping` also answers with **one** `chat.stop.result` frame
+(`{ type, threadId, outcome }`), broadcast to the owner: `stopped` right after its
+`chat.run.stopping`, `idle` on its own. The chat draws the spoken answer as a command result
+("Stopped.", "Nothing running."), and this frame is the button's: `idle` is the one that lifts a
+composer's `Stopping…` when no run end is ever coming, because the page it pressed from still
+showed a run the server had already finished (owner, 2026-11-26: a sub-agent chat read "stopped"
+while its Stop button turned forever). It is not journalled: it answers a press, and a window that
+reloads reads the run's own frames instead.
 
 It is dropped where the cycle it described ends: the journal's `close` (the run's end) or
 `clearCompacting` (the compaction held and settled). Same rule as the derivation: it is over when
@@ -157,25 +166,30 @@ the work is over, never when someone remembers to clear it.
 
 A background child outlives the turn that launched it: the launch answers in milliseconds and the
 child keeps working, so the subscriptions registered inside that turn are gone by the time it
-settles. Two consequences, both of them a state that never resolved on the child's own thread:
+settles.
 
-- the end that says the run is over was announced from that turn's closure, so it never reached
-the app once the parent had ended;
-- the journal the end travels through was opened by the same turn and closed by its own end, so
-the `chat.run.stopping` frame a fresh Stop claimed had nowhere to be recorded.
+That used to end the child's life with the parent's turn -- its stream, its journal and its run
+were all torn down in the launching turn's `finally`, which is the opposite of what a background
+child is. The chat went silent the instant the launch was answered, the run was announced
+`aborted` while it kept working, and a Stop pressed afterwards claimed a cycle whose end had
+nowhere to travel: the composer read `Stopping…` for good, and leaving the thread -- which
+refetches its page -- was the only thing that showed the run had stopped (owner, 2026-11-16, then
+again on 2026-11-26). Where it lives now:
 
-Measured 2026-11-16: stopping a sub-agent from its own chat left the composer reading
-`Stopping…` for good, while leaving the thread -- which refetches its page -- showed the run
-stopped. Where it lives now:
+- the whole child lifecycle is one module (`src/channels/my-claw-app/subagent-live.ts`), fed by
+  `subagent:spawn|complete|error|aborted|killed|reset` at boot level -- `src/index.ts`, beside the
+  roster push. The stream opens with the child's run, the end closes it, at any depth: a child of
+  a child inherits its owner from the level above, which is the only thing that can name it;
+- `chat.run.start` is broadcast for the child's thread when its run opens and `chat.run.end` when
+  it settles, both resolved through `ownerOfAppSession` + `subagentSessionToThread`, so a thread
+  whose launcher is long gone still gets its lifecycle;
+- the live journal therefore spans the child's whole run, and a window that reloads mid-run is
+  replayed the turn in flight instead of a hole.
 
-- `subagent:complete|error|aborted|killed|reset` end the child's run at boot level (`src/index.ts`,
-  beside the roster push), resolved through the same `ownerOfAppSession` + `subagentSessionToThread`
-  pair, so a thread whose launcher is long gone still gets its `chat.run.end`;
-- `claimStop` opens the journal for a stopped run that has none (`live-turn.ts` `isOpen`), so the
-  abort it names is replayed to a window that reloads and closed by the end that reports it.
-
-A child of a sub-agent (a browser task inside one) keeps the older path: its thread belongs to the
-app conversation its grandparent turn carries, which is still alive while it runs.
+`claimStop` still opens the journal for a stopped run that has none (`live-turn.ts` `isOpen`): a
+child whose journal predates this (or was lost with a restart) still gets its abort replayed and
+closed by the end that reports it, and an `idle` claim lifts the composer's mark with
+`chat.stop.result`.
 
 ### A stopped compaction leaves a trace
 
