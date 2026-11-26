@@ -38,6 +38,15 @@ The Responses API only keeps the chain of thought server-side when `store: true`
 - `buildInput` emits `{ type: "reasoning", id, summary: [], encrypted_content }` **ahead of** the
   `function_call` items of the same assistant turn. The order is load-bearing — the API rejects a
   reasoning item that does not precede the call it produced.
+- The assistant item's `phase` (`commentary` / `final_answer`) is captured beside the reasoning and
+  replayed on the message, to the backend and model that wrote it. OpenAI's guide is explicit that
+  dropping it makes a sol model read its old preambles as finished answers and stop early; the
+  transport records it on the turn and sends it back (`providerMeta.phase`, docs/codex-backend.md).
+  A turn that called tools is `commentary`; a prose-only turn takes the phase the backend gave its
+  last non-empty item, and nothing when the backend labelled none.
+- `input_transformations` from the terminal response is logged when the backend removed replayed
+  items, with the ids and the reasons. A history that silently shrinks is a run reasoning on less
+  than it was sent.
 
 ### Anthropic (`anthropic.ts`) — on by default
 

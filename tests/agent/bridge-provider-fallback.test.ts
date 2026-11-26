@@ -1049,3 +1049,30 @@ test("a model that talks about the markup is answering, and its words are kept",
     mock.restore();
   }
 });
+
+test("an empty final answer moves the route instead of dying on the same account", async () => {
+  // Measured 2026-11-26: gpt-6.1-sol closed three turns with nothing and the route that had a
+  // second account right behind it never asked it. One retry, then the next target answers.
+  const models: string[] = [];
+  const mock = mockFetch(async (_input, init) => {
+    const model = modelOf(init);
+    models.push(model);
+    if (model === "alpha-1") return jsonAnswer("");
+    return jsonAnswer("answered by the next one");
+  });
+  const bridge = new AgentBridge(config(), new ToolRegistry(), new SkillRegistry());
+  const { signal, end } = runRegistry.startRoot(SESSION_ID);
+  const session = createSession("alpha-1");
+
+  try {
+    const text = await run(bridge, session, signal);
+    assert.match(text, /answered by the next one/, text);
+    assert.match(notices.join("\n"), /\[fallback\] alpha-1/, notices.join("\n"));
+    assert.doesNotMatch(notices.join("\n"), /\[retry\]/, "an empty answer is not waited for");
+    // One retry on the account that said nothing, then the next target.
+    assert.deepEqual(models, ["alpha-1", "alpha-1", "beta-1"]);
+  } finally {
+    end();
+    mock.restore();
+  }
+});

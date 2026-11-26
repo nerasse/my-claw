@@ -359,3 +359,65 @@ test("a stream that keeps dying stops after its own budget", async () => {
   await assert.rejects(() => codexResponse(config, [{ role: "user", content: "go" }], undefined), /rate limit/);
   assert.equal(requests, 5, "five attempts, then the caller's fallback owns the decision");
 });
+
+test("an empty final_answer is flagged, so the route can move instead of dying", async () => {
+  writeAuth();
+  mock = mockFetch(async () =>
+    sseResponse([
+      { type: "response.output_item.done", output_index: 0, item: { type: "reasoning", id: "rs_9" } },
+      { type: "response.output_item.done", output_index: 1, item: { type: "message", id: "msg_9", phase: "final_answer", content: [] } },
+      { type: "response.completed", response: { status: "completed", usage: { input_tokens: 147243, output_tokens: 70, total_tokens: 147313, output_tokens_details: { reasoning_tokens: 60 } } } },
+    ]));
+  const res = await codexResponse(config, [{ role: "user", content: "hi" }], undefined);
+  assert.equal(res.content, "");
+  assert.equal(res.toolCalls, undefined);
+  assert.equal(res.emptyFinalAnswer, true);
+  assert.equal(res.providerMeta?.phase, undefined, "an item with no text carries no phase back");
+});
+
+test("a completed turn with text is not read as an empty final answer", async () => {
+  writeAuth();
+  mock = mockFetch(async () =>
+    sseResponse([
+      { type: "response.output_text.delta", output_index: 0, item_id: "msg_1", delta: "ok" },
+      { type: "response.output_item.done", output_index: 0, item: { type: "message", id: "msg_1", phase: "final_answer", content: [{ type: "output_text", text: "ok" }] } },
+      { type: "response.completed", response: { status: "completed" } },
+    ]));
+  const res = await codexResponse(config, [{ role: "user", content: "hi" }], undefined);
+  assert.equal(res.content, "ok");
+  assert.equal(res.emptyFinalAnswer, undefined);
+  assert.equal(res.providerMeta?.phase, "final_answer");
+});
+
+test("the phase the backend labelled is replayed on the assistant item", async () => {
+  writeAuth();
+  let body: Record<string, any> = {};
+  mock = mockFetch(async (_url?: string | URL | Request, init?: RequestInit) => {
+    body = JSON.parse(String(init?.body));
+    return sseResponse([{ type: "response.completed", response: { status: "completed" } }]);
+  });
+  const messages: ChatMessage[] = [
+    { role: "user", content: "hi" },
+    {
+      role: "assistant",
+      content: "my answer",
+      providerMeta: { backend: "codex", model: config.model, phase: "final_answer" },
+    },
+    { role: "user", content: "again" },
+  ];
+  await codexResponse(config, messages, undefined);
+  assert.deepEqual(body.input[1], { role: "assistant", content: "my answer", phase: "final_answer" });
+});
+
+test("a turn that called tools is labelled commentary for the replay", async () => {
+  writeAuth();
+  mock = mockFetch(async () =>
+    sseResponse([
+      { type: "response.output_text.delta", output_index: 0, item_id: "msg_1", delta: "Checking." },
+      { type: "response.output_item.done", output_index: 0, item: { type: "message", id: "msg_1", phase: "commentary", content: [{ type: "output_text", text: "Checking." }] } },
+      { type: "response.output_item.done", output_index: 1, item: { type: "function_call", call_id: "call_2", name: "bash", arguments: "{}" } },
+      { type: "response.completed", response: { status: "completed" } },
+    ]));
+  const res = await codexResponse(config, [{ role: "user", content: "hi" }], undefined);
+  assert.equal(res.providerMeta?.phase, "commentary");
+});

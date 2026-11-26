@@ -197,8 +197,8 @@ describe("AgentBridge error handling", () => {
     try {
       const session = createSession();
       await expect(bridge.handleMessage(createMessage(), session, signal)).rejects.toThrow("empty final turn");
-      // 1 initial call + MAX_EMPTY_TURN_RETRIES(2) retries.
-      expect(callCount).toBe(3);
+      // 1 initial call + MAX_EMPTY_TURN_RETRIES(1) retry.
+      expect(callCount).toBe(2);
     } finally {
       mock.restore();
       end();
@@ -213,7 +213,7 @@ describe("AgentBridge error handling", () => {
     let callCount = 0;
     const mock = mockFetch(async () => {
       callCount++;
-      if (callCount <= 2) {
+      if (callCount === 1) {
         return new Response(
           JSON.stringify({ choices: [{ message: { content: "" } }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -226,7 +226,7 @@ describe("AgentBridge error handling", () => {
       const session = createSession();
       const result = await bridge.handleMessage(createMessage(), session, signal);
       expect(result).toBe("recovered");
-      expect(callCount).toBe(3);
+      expect(callCount).toBe(2);
     } finally {
       mock.restore();
       end();

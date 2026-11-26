@@ -71,7 +71,7 @@ export function isOutageClass(err: unknown): boolean {
     return false;
   }
   if (STREAM_FAULT.test(message)) return true;
-  return /LLM circuit breaker open|circuit breaker is open|timeout|timed out|stalled|stream.*closed|empty (?:response|completion)|no (?:content|output)|auth|unauthori[sz]ed|credential|api[- ]?key|no endpoints|model.*not found/i.test(message) || OUTAGE_TEXT.test(message);
+  return /LLM circuit breaker open|circuit breaker is open|timeout|timed out|stalled|stream.*closed|empty (?:final )?(?:answer|turn|response|completion)|no (?:content|output)|auth|unauthori[sz]ed|credential|api[- ]?key|no endpoints|model.*not found/i.test(message) || OUTAGE_TEXT.test(message);
 }
 
 /**
@@ -96,6 +96,17 @@ export function isOutageClass(err: unknown): boolean {
  * for. The distinction is the noun -- a **limit** of the plan, not a **rate**.
  */
 const QUOTA_SPENT = /quota (?:exhausted|exceeded)|insufficient[_ ]quota|exceeded your current quota|insufficient (?:credits|balance|funds)|out of credits|credit balance is too low|can only afford|usage_limit_reached|usage limit (?:has been |was )?(?:exceeded|reached)|exceeded your subscription (?:rate )?limits?/i;
+
+/**
+ * A model that declared its closing message and sent it empty.
+ *
+ * Not a wait: the account is fine and the request was fine, so waiting on the same model is the
+ * prompt paid again. Not a breaker failure either: the breaker is keyed on the endpoint every
+ * subscription shares, and one model flaking on one history must not darken the others.
+ */
+export function isEmptyTurn(err: unknown): boolean {
+  return /empty (?:final )?(?:answer|turn)/i.test(String((err as Error | undefined)?.message ?? err ?? ""));
+}
 
 export function isQuotaSpent(err: unknown): boolean {
   const status = (err as { status?: number } | undefined)?.status;

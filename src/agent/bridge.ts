@@ -24,7 +24,7 @@ import { selectRelevantSkills } from "../skills/retrieval.ts";
 import type { ChatMessage, LlmResponse, LlmUsage, ProviderMeta } from "../llm/provider.ts";
 import { llmComplete, llmCompleteStream } from "../llm/transport.ts";
 import { resolveRunModel, type RunModel, type RunModelOverride } from "../llm/run-model.ts";
-import { MalformedReplyError, classifyProviderFailure, isCapabilityRefusal, isMalformedReply, isProviderOutage, isQuotaSpent } from "../llm/outage.ts";
+import { MalformedReplyError, classifyProviderFailure, isCapabilityRefusal, isEmptyTurn, isMalformedReply, isProviderOutage, isQuotaSpent } from "../llm/outage.ts";
 import { promptEchoIn } from "../llm/prompt-echo.ts";
 import { needsQuotaOracle, spentWindowOf, kindOfWindow, labelOfKind } from "../llm/quota/retry.ts";
 import { quotaFor, quotaSourceOf } from "../llm/quota/index.ts";
@@ -222,6 +222,18 @@ const MAX_HISTORY_TOOL_IMAGES = 4;
 // nothing (a history too short to split, a refused summary, a provider error). Without it a run
 // sitting over the threshold would pay for one summarization attempt per iteration and never move.
 const MID_RUN_COMPACT_RETRY_TURNS = 10;
+
+/**
+ * How many times an empty answer is asked again on the same account before it becomes the far
+ * side's failure.
+ *
+ * One, not two: a second draw is worth the prompt it costs (measured 2026-11-26, the same 147k
+ * history answered three times out of three minutes later), but a model that closes empty twice is
+ * stuck on this history, and every further attempt is the whole prompt again on the same account.
+ * The error thrown then is reroutable, so the route moves to its next candidate -- and its own
+ * call is where the retry lives, so the fallback sees it (docs/provider-failures.md).
+ */
+const MAX_EMPTY_TURN_RETRIES = 1;
 
 /** Images the channel resolved for this turn, in the shape the session keeps. */
 function imageAttachmentsOf(message: UnifiedMessage): SessionAttachment[] {
@@ -517,7 +529,9 @@ export class AgentBridge implements AgentBackend {
         // plus 30 s, 60 s and 120 s on a bar that does not move (measured 2026-10-31).
         const wall = capability || malformed ? undefined : await this.quotaWallOf(err, config.provider);
         // A spent quota is never waited for: nothing refills it within the run.
-        const wait = capability || malformed || wall || isQuotaSpent(err) ? undefined : params.waits.shift();
+        // An empty turn is not a wall that reopens: waiting on the same model is the same prompt
+        // bought again, and the route has another account to ask right now.
+        const wait = capability || malformed || wall || isQuotaSpent(err) || isEmptyTurn(err) ? undefined : params.waits.shift();
         if (wait !== undefined) {
           this.recordFailedCall({ ...params, config, durationMs: Date.now() - startedAt, error: err });
           this.noteFallback(
@@ -660,7 +674,10 @@ export class AgentBridge implements AgentBackend {
     iteration: number;
     durationMs: number;
     error: unknown;
+    /** A call that was billed and then thrown away (an empty turn): its tokens are real money. */
+    usage?: LlmUsage;
   }): void {
+    const usage = params.usage ?? (params.error as { usage?: LlmUsage } | undefined)?.usage;
     recordApiCall({
       sessionId: params.session.id,
       parentSessionId: attributionParent(params.session),
@@ -672,9 +689,11 @@ export class AgentBridge implements AgentBackend {
       caller: this.depth === 0 ? "orchestrator" : "subagent",
       workspace: usageWorkspaceOf(this.config, params.session),
       folderId: usageFolderOf(params.session),
-      promptTokens: 0,
-      completionTokens: 0,
-      totalTokens: 0,
+      promptTokens: usage?.promptTokens ?? 0,
+      completionTokens: usage?.completionTokens ?? 0,
+      totalTokens: usage?.totalTokens ?? 0,
+      ...(usage?.cacheReadTokens ? { cacheReadTokens: usage.cacheReadTokens } : {}),
+      ...(usage?.cacheWriteTokens ? { cacheWriteTokens: usage.cacheWriteTokens } : {}),
       toolCalls: 0,
       iteration: params.iteration,
       durationMs: params.durationMs,
@@ -1183,12 +1202,6 @@ export class AgentBridge implements AgentBackend {
       };
 
       let iteration = 0;
-      // Some OpenAI-compatible gateways can terminate after emitting reasoning (or after a tool
-      // round) without a final text or tool call. That is not a successful assistant turn. Keep a
-      // small retry budget here; otherwise the old `no tool calls => finished` rule silently ended
-      // the run with responseChars=0 and left the user with no bubble at all.
-      let emptyTurnRetries = 0;
-      const MAX_EMPTY_TURN_RETRIES = 2;
       // History length the mid-run gate is allowed to try again at, moved forward only by an attempt
       // that changed nothing: the summarizer needs new turns to have anything new to say.
       let midRunCompactRetryAt = 0;
@@ -1382,25 +1395,83 @@ export class AgentBridge implements AgentBackend {
                 : {}),
             }
           : undefined;
+        /**
+         * One answer, with the empty-turn correction inside the same call.
+         *
+         * Some OpenAI-compatible gateways, and the Codex backend on a sol model with a long
+         * history, can end a turn after emitting reasoning without a final text or tool call. That
+         * is not a successful assistant turn, and it used to be retried from the iteration loop,
+         * *outside* `callModel` -- so the error the retries finally threw never reached the route,
+         * and an account that had a second one behind it was the only one ever asked (measured
+         * 2026-11-26, 3 x 147k tokens on one flake, `chatgpt-4` unused at 76 %).
+         *
+         * Retried here, the correction costs no iteration, the discarded attempt is still billed
+         * to analytics, and an exhausted budget throws where the fallback can read it.
+         */
+        const callAnswer = async (config: ResolvedLlmConfig): Promise<LlmResponse> => {
+          for (let attempt = 1; ; attempt++) {
+            const startedAt = Date.now();
+            const answer = tokenSink
+              ? await completeStream(
+                  config,
+                  chatMessages,
+                  tokenSink,
+                  openaiTools.length > 0 ? openaiTools : undefined,
+                  signal,
+                  reasoningGuard,
+                )
+              : await complete(config, chatMessages, openaiTools.length > 0 ? openaiTools : undefined, signal);
+            if (answer.toolCalls?.length || answer.content.trim().length > 0) return answer;
+
+            void log("warn", "LLM ended an empty turn; asking again instead of finishing silently", {
+              ...runLogData(message, session),
+              model: config.model,
+              iteration,
+              attempt,
+              maxEmptyTurnRetries: MAX_EMPTY_TURN_RETRIES,
+              finishReason: answer.finishReason,
+              incomplete: answer.incomplete,
+              emptyFinalAnswer: answer.emptyFinalAnswer ?? false,
+              reasoningChars: answer.reasoning?.length ?? 0,
+            });
+            const kind = answer.emptyFinalAnswer ? "empty final answer" : "empty final turn";
+            const retries = MAX_EMPTY_TURN_RETRIES === 1 ? "1 retry" : `${MAX_EMPTY_TURN_RETRIES} retries`;
+            // The error carries the usage of the call it describes: `callModel` records the
+            // failure, and a billed empty answer is still 147k tokens of real money.
+            const refuse = (): never => {
+              const err = new Error(`LLM returned an ${kind} after ${retries} (finish=${answer.finishReason ?? "unknown"})`) as Error & { usage?: LlmUsage };
+              err.usage = answer.usage;
+              throw err;
+            };
+            if (attempt > MAX_EMPTY_TURN_RETRIES) refuse();
+            // Asking again writes into the same bubble, so whatever this attempt painted has to
+            // leave first. A channel that cannot erase has no way to show one answer, and what is
+            // on screen is the only one the run can give.
+            const restart = reasoningGuard?.onRestart;
+            if (callEmitted && !restart) refuse();
+            // The attempt that is about to be replaced is still a call, and still cost tokens:
+            // it leaves a row, named for what it was, instead of vanishing from the stats.
+            this.recordFailedCall({
+              config,
+              session,
+              message,
+              streaming,
+              iteration,
+              durationMs: Date.now() - startedAt,
+              error: answer.emptyFinalAnswer ? "empty final answer" : "empty final turn",
+              usage: answer.usage,
+            });
+            if (restart) {
+              await restart();
+              callEmitted = false;
+            }
+          }
+        };
+
         try {
           const attempt = await this.callModel({
             config: llmConfig,
-            call: (config) =>
-              tokenSink
-                ? completeStream(
-                    config,
-                    chatMessages,
-                    tokenSink,
-                    openaiTools.length > 0 ? openaiTools : undefined,
-                    signal,
-                    reasoningGuard,
-                  )
-                : complete(
-                    config,
-                    chatMessages,
-                    openaiTools.length > 0 ? openaiTools : undefined,
-                    signal,
-                  ),
+            call: callAnswer,
             emitted: () => callEmitted,
             // The same take-back a transport replay uses: the words and the thinking leave the
             // bubble, and the gate stops believing the call said anything. Only a channel that can
@@ -1519,28 +1590,6 @@ export class AgentBridge implements AgentBackend {
 
         hooks.emit("agent:turn:end", { sessionId: session.id, model: llmConfig.model, iteration, hasToolCalls: Boolean(response.toolCalls?.length), finishReason: response.finishReason, incomplete: response.incomplete });
 
-        if (!response.toolCalls?.length && response.content.trim().length === 0) {
-          emptyTurnRetries++;
-          void log("warn", "LLM ended an empty turn; retrying instead of finishing silently", {
-            ...runLogData(message, session),
-            model: llmConfig.model,
-            iteration,
-            emptyTurnRetries,
-            maxEmptyTurnRetries: MAX_EMPTY_TURN_RETRIES,
-            finishReason: response.finishReason,
-            incomplete: response.incomplete,
-            reasoningChars: response.reasoning?.length ?? 0,
-          });
-          if (emptyTurnRetries <= MAX_EMPTY_TURN_RETRIES) {
-            // A retry is correction, not work: give the iteration back so a run with a small
-            // maxIterations cannot exhaust its budget on retries and fall through to the
-            // max-iterations summary path (which would mask this very failure mode).
-            budget.grant(1);
-            continue;
-          }
-          throw new Error(`LLM returned an empty final turn after ${MAX_EMPTY_TURN_RETRIES} retries (finish=${response.finishReason ?? "unknown"})`);
-        }
-        emptyTurnRetries = 0;
 
         // The wait this call made the reader sit through, reported before anything else so the line
         // can carry it from the moment the answer starts. A call that wrote nothing at all reports

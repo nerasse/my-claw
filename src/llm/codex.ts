@@ -163,7 +163,8 @@ interface ResponsesImagePart {
 type ResponsesUserPart = ResponsesTextPart | ResponsesImagePart;
 
 type ResponsesInputItem =
-  | { role: "user" | "assistant"; content: string | ResponsesUserPart[] }
+  | { role: "user"; content: string | ResponsesUserPart[] }
+  | { role: "assistant"; content: string; phase?: "commentary" | "final_answer" }
   | { type: "reasoning"; id: string; encrypted_content?: string; summary: [] }
   | { type: "function_call"; call_id: string; name: string; arguments: string }
   | { type: "function_call_output"; call_id: string; output: string | ResponsesUserPart[] };
@@ -238,12 +239,18 @@ function buildInput(
          * than failing the call.
          */
         const meta = msg.providerMeta;
-        if (self?.replay && meta && meta.backend === self.backend && meta.model === self.model) {
+        const replayable = self?.replay && meta && meta.backend === self.backend && meta.model === self.model;
+        if (replayable) {
           for (const item of meta.reasoning ?? []) {
             input.push({ type: "reasoning", id: item.id, summary: [], ...(item.encrypted ? { encrypted_content: item.encrypted } : {}) });
           }
         }
-        if (msg.content) input.push({ role: "assistant", content: msg.content });
+        // Only to the backend that labelled it: another protocol has no such field, and another
+        // model's phase is a claim about a turn this model never wrote.
+        if (msg.content) {
+          const phase = replayable ? meta.phase : undefined;
+          input.push({ role: "assistant", content: msg.content, ...(phase ? { phase } : {}) });
+        }
         for (const tc of msg.tool_calls ?? []) {
           input.push({
             type: "function_call",
@@ -385,6 +392,21 @@ async function processStream(
    */
   const itemSpans: number[] = [];
   const itemOpenedAt = new Map<string, number>();
+  /**
+   * The assistant message items as the backend closed them, with the `phase` it gave each one.
+   * The text is read off the item and not off the deltas: what is replayed and what the reader saw
+   * have to be the same thing, and the item is the backend's own account of it.
+   */
+  const messageItems: Array<{ id?: string; phase?: "commentary" | "final_answer"; text: string }> = [];
+  /**
+   * The backend declared a closing message and that closing message carried nothing.
+   *
+   * Measured 2026-11-26 on `gpt-6.1-sol`, effort max, a 147k-token conversation: three calls in a
+   * row completed with `phase: "final_answer"` on a message item whose content was empty, 49 to
+   * 72 output tokens billed as reasoning. The call happened and the model said nothing, so the
+   * turn is the far side's failure, not a run with an empty answer to show.
+   */
+  let emptyFinalAnswerItem = false;
   const slots = new Map<number, FunctionCallSlot>();
   const order: number[] = [];
 
@@ -490,6 +512,13 @@ async function processStream(
           if (item.name) slot.name = item.name;
           if (typeof item.arguments === "string" && item.arguments.length > 0) slot.args = item.arguments;
         }
+        if (item?.type === "message") {
+          const parts = (item as { content?: Array<{ type?: string; text?: string }> }).content ?? [];
+          const text = parts.filter((part) => part.type === "output_text").map((part) => part.text ?? "").join("");
+          const phase = (item as { phase?: string }).phase;
+          messageItems.push({ ...(item.id ? { id: item.id } : {}), text, ...(phase === "commentary" || phase === "final_answer" ? { phase } : {}) });
+          if (phase === "final_answer" && text.trim().length === 0) emptyFinalAnswerItem = true;
+        }
         break;
       }
       case "response.completed":
@@ -499,8 +528,34 @@ async function processStream(
           usage?: ResponsesUsage;
           status?: string;
           incomplete_details?: unknown;
-          output?: Array<{ type?: string; id?: string; encrypted_content?: string }>;
+          input_transformations?: Array<{ type?: string; id?: string; action?: string; reason?: string }>;
+          output?: Array<{ type?: string; id?: string; encrypted_content?: string; phase?: string; content?: Array<{ type?: string; text?: string }> }>;
         } | undefined;
+        /**
+         * Every replayed item the backend threw away, and why. Silent until now: the model then runs
+         * on a history shorter than the one we sent, and nothing on either side said so. Reasons
+         * are `prefix_mismatch`, `turn_boundary`, `organization_mismatch`, `model_mismatch`.
+         */
+        const dropped = (response?.input_transformations ?? []).filter((entry) => entry.action === "removed");
+        if (dropped.length > 0) {
+          void log("warn", "codex dropped replayed items", {
+            model: self.model,
+            count: dropped.length,
+            reasons: [...new Set(dropped.map((entry) => entry.reason ?? "unknown"))],
+            ids: dropped.map((entry) => entry.id ?? "").slice(0, 10),
+          });
+        }
+        // Same reading as `output_item.done`, for a backend that only fills the terminal response.
+        for (const item of response?.output ?? []) {
+          if (item.type !== "message") continue;
+          const text = (item.content ?? []).filter((part) => part.type === "output_text").map((part) => part.text ?? "").join("");
+          if (item.phase === "final_answer" && text.trim().length === 0) emptyFinalAnswerItem = true;
+          const known = item.id ? messageItems.some((entry) => entry.id === item.id) : messageItems.some((entry) => entry.text === text);
+          if (known) continue;
+          if (item.phase === "commentary" || item.phase === "final_answer") {
+            messageItems.push({ ...(item.id ? { id: item.id } : {}), phase: item.phase, text });
+          }
+        }
         /**
          * Backfill the encrypted state from the terminal response.
          *
@@ -571,9 +626,34 @@ async function processStream(
       : {}),
   })) : segments;
   const reasoningMs = itemSpans.length > 0 ? itemSpans[itemSpans.length - 1] : segmenter.thinkingMs();
+  /**
+   * The label to hand back with this assistant item, when the backend gave one.
+   *
+   * A turn that called tools wrote a preamble, whatever the model called it: Codex labels that item
+   * `commentary`. A turn with only prose carries the phase of its last message item, and nothing
+   * when the backend labelled none (older models have no such field, and inventing one would be a
+   * claim about a turn this model never wrote).
+   */
+  const lastTextPhase = messageItems.filter((item) => item.text.trim().length > 0).at(-1)?.phase;
+  const phase: "commentary" | "final_answer" | undefined = !content.trim()
+    ? undefined
+    : toolCalls.length > 0
+      ? "commentary"
+      : lastTextPhase;
+  const emptyFinalAnswer = finishReason === "completed" && emptyFinalAnswerItem && !content.trim() && toolCalls.length === 0;
   return {
     content,
-    ...(reasoningItems.length > 0 ? { providerMeta: { backend: self.backend, model: self.model, reasoning: reasoningItems } } : {}),
+    ...(emptyFinalAnswer ? { emptyFinalAnswer: true } : {}),
+    ...(reasoningItems.length > 0 || phase
+      ? {
+          providerMeta: {
+            backend: self.backend,
+            model: self.model,
+            ...(phase ? { phase } : {}),
+            ...(reasoningItems.length > 0 ? { reasoning: reasoningItems } : {}),
+          },
+        }
+      : {}),
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
     finishReason,
     incomplete: !content && toolCalls.length === 0 && finishReason !== "completed",

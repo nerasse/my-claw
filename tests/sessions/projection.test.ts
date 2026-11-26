@@ -419,3 +419,19 @@ describe("a call id that is not an identifier", () => {
     expect(assistant).toBeUndefined();
   });
 });
+
+describe("promptOf: the codex phase", () => {
+  test("the phase recorded on a turn travels back to the assistant item", () => {
+    // The backend asks for it back on every replayed assistant item; a prompt that drops it makes
+    // a sol model read its old commentary as a finished answer (docs/codex-backend.md).
+    const { entries, leaf } = chain([
+      user("q"),
+      phase("je regarde", "r1", { providerMeta: { backend: "codex", model: "gpt-6.1-sol", phase: "commentary" } }),
+      tool("c1"),
+      phase("voila", "r2", { providerMeta: { backend: "codex", model: "gpt-6.1-sol", phase: "final_answer" } }),
+    ]);
+    const out = promptOf(entries, leaf) as Array<{ role: string; content: string; providerMeta?: { phase?: string } }>;
+    expect(out[1]!.providerMeta?.phase).toBe("commentary");
+    expect(out[3]!.providerMeta?.phase).toBe("final_answer");
+  });
+});

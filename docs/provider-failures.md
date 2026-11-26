@@ -293,6 +293,31 @@ A stream failure does not count toward the circuit breaker (`isStreamFault`): th
 `baseUrl`, and every subscription in this install shares one, so five dead streams on one account
 would darken the other two.
 
+## An empty final answer is the far side's failure
+
+An agent turn that ends with no prose and no tool call is not an answer, and the loop retried it
+in place: `MAX_EMPTY_TURN_RETRIES` was two, so a model that closed empty three times in a row cost
+three full prompts against one account before the run died with
+`LLM returned an empty final turn after 2 retries (finish=completed)`. Measured 2026-11-26 on
+`gpt-6.1-sol`, effort max, a 147k-token conversation: three empty turns at iterations 6 to 8, then
+the Continue button paid the same 147k three more times, and a `tag:Quota` route that had
+`chatgpt-4` at 76 % sitting right behind never asked it once.
+
+Two things were wrong with the old rule:
+
+- **The error was not reroutable.** `isOutageClass` read `empty response` and `empty completion`,
+  and the sentence said `empty final turn`, so the route ended where it stood. A model that says
+  nothing after being asked is the far side's failure as much as a 503 is; another account is
+  worth exactly as much.
+- **The retry was spent on the same account.** A second draw is worth its prompt -- the same
+  prompt answered three times out of three minutes later -- but a third is the same history bought
+  again, and one retry is enough to tell a flake from a back end that will not answer this turn.
+
+So: one retry, then an outage-class `empty final answer` / `empty final turn`, no wait (a 30 s pause
+refills nothing), no breaker failure, and the next candidate of the route answers. The transport
+flags the precise shape it sees (`emptyFinalAnswer`, docs/codex-backend.md) so the log names the
+provider's doing rather than a silent turn.
+
 ## A spent quota never counts toward the circuit breaker
 
 `countsTowardBreaker` (`src/llm/provider.ts`) refuses a quota for the same reason it refuses a

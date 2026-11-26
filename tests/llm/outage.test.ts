@@ -126,3 +126,11 @@ test("a stream that died is the wire's fault, not the request's", () => {
   // An overflow is recovered by compacting, never by another provider.
   assert.equal(isOutageClass(new Error("Codex context_length_exceeded: too long")), false);
 });
+
+test("an empty final answer is the far side's failure, so the route moves", () => {
+  // Measured 2026-11-26: gpt-6.1-sol closed three turns with `phase: "final_answer"` and no text,
+  // 147k of prompt each. The sentence the run loop throws has to be readable as an outage, or the
+  // whole route sits unused while the same dead account is asked again.
+  assert.equal(isOutageClass(new Error("LLM returned an empty final answer after 1 retry (finish=completed)")), true);
+  assert.equal(isOutageClass(new Error("LLM returned an empty final turn after 1 retry (finish=completed)")), true);
+});

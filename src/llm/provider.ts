@@ -2,7 +2,7 @@ import type { ReasoningField, ResolvedLlmConfig } from "../core/config.ts";
 import type { ReasoningSink } from "../agent/backend.ts";
 import { AbortedError, sleep } from "../core/aborted.ts";
 import { isRetryableStatus, retryDelayMs, parseRetryAfterMs, wallAhead } from "./retry.ts";
-import { MalformedReplyError, StreamCutError, isMalformedReply, isQuotaSpent, isStreamFault } from "./outage.ts";
+import { MalformedReplyError, StreamCutError, isEmptyTurn, isMalformedReply, isQuotaSpent, isStreamFault } from "./outage.ts";
 import { replyAccountingMismatch } from "./answer-accounting.ts";
 import { claimSseCapture } from "./sse-capture.ts";
 import {
@@ -90,6 +90,9 @@ export function resetCircuitBreaker(): void {
 // `chatgpt-3` answered perfectly at 22:46:36. The plan is out of money; the endpoint is fine.
 export function countsTowardBreaker(err: unknown): boolean {
   if (isQuotaSpent(err)) return false;
+  // An empty turn is one model on one history, and the breaker is keyed on a base URL every
+  // subscription shares: five of them would darken all the accounts at once.
+  if (isEmptyTurn(err)) return false;
   // A suspect reply is scoped to one model, not every model sharing this base URL.
   if (isMalformedReply(err)) return false;
   // A stream that died is a connection, not an endpoint that is down. The breaker is keyed on the
@@ -198,6 +201,13 @@ export interface ThinkingBlock {
 export interface ProviderMeta {
   backend: string;
   model: string;
+  /**
+   * The Responses `phase` this assistant item carried: `commentary` for a preamble before work,
+   * `final_answer` for the closing message. The Codex backend asks for it back on every replayed
+   * assistant item; dropped, a sol model reads its old preambles as finished answers and can stop
+   * with nothing to say (docs/codex-backend.md, "The phase the backend labels").
+   */
+  phase?: "commentary" | "final_answer";
   /** OpenAI Responses reasoning items. */
   reasoning?: ReasoningItem[];
   /** Anthropic thinking blocks, in the order the model emitted them. */
@@ -251,6 +261,12 @@ export interface LlmUsage {
 export interface LlmResponse {
   content: string;
   toolCalls?: ToolCall[];
+  /**
+   * The provider declared its closing message and sent it empty: a `phase: "final_answer"` item
+   * with no text, no tool call, on a completed response. Billed, so the call happened; there is
+   * simply nothing in it. The run loop reads it as the far side's failure and moves the route.
+   */
+  emptyFinalAnswer?: boolean;
   /** Provider terminal state, when the wire protocol exposes one (stop, length, incomplete...). */
   finishReason?: string;
   /** The provider ended the turn before producing a final answer. */

@@ -62,19 +62,52 @@ model/context/message types); only the OAuth flow shape is reused.
   (`{type:"function",name,description,parameters,strict:false}`).
 - Body: `store:false`, `stream:true`, `tool_choice:"auto"`,
   `parallel_tool_calls:true`. Reasoning effort is native: when set it is sent as
-  `reasoning:{ effort, summary:"auto" }`. Reasoning items are **not** replayed
-  across turns (stateless `store:false`); function_call/output replay is enough
-  for the tool loop.
+  `reasoning:{ effort, summary:"auto" }`. Reasoning is replayed across the calls of one run
+  (docs/reasoning-replay.md): `include: ["reasoning.encrypted_content"]` makes the backend hand its
+  encrypted state back, and the transport replays it ahead of the calls it produced. The assistant
+  item's `phase` rides with it ("The phase the backend labels", below).
 
 ### SSE handled
 
 `response.output_item.added`, `response.output_text.delta`,
 `response.function_call_arguments.delta/.done`, `response.output_item.done`
-(function_call finalize; a reasoning item's lifetime times a thought that came back without a
-summary), `response.completed`/`.incomplete` (usage, `reasoning_tokens` included --
-docs/reasoning-visibility.md, "A thought with no words"), `error` /
-`response.failed`. Non-streaming callers run the same stream with a no-op token
-sink.
+(function_call finalize; a message item's `phase` and text; a reasoning item's lifetime times a
+thought that came back without a summary), `response.completed`/`.incomplete` (usage,
+`reasoning_tokens` included -- docs/reasoning-visibility.md, "A thought with no words"), `error` /
+`response.failed`. Non-streaming callers run the same stream with a no-op token sink.
+
+### The phase the backend labels
+
+Assistant message items carry a `phase`: `commentary` for a preamble, `final_answer` for the
+closing message. OpenAI's guide is explicit that it must be **persisted and replayed**; without it
+the model treats an old preamble as a finished answer and can stop with nothing to say. This
+install dropped it for a year and did not read `input_transformations` either, so a backend that
+threw away replayed reasoning said so and nobody saw it.
+
+The transport now records the phase on the turn (`providerMeta.phase`, docs/reasoning-replay.md)
+and sends it back on the assistant item, to the same backend and model only. A turn that called
+tools is replayed as `commentary` whatever the model laboured it; a turn with only prose takes the
+phase the backend gave its last non-empty item, and nothing when the backend labelled none (older
+models have no such field, and inventing one would be a claim about a turn this model never
+wrote).
+
+`input_transformations` is logged as `codex dropped replayed items` with the ids and the reasons
+(`prefix_mismatch`, `turn_boundary`, `organization_mismatch`, `model_mismatch`) whenever the
+backend removed something. Silent until 2026-11-26, when a replayed history kept shrinking without
+a trace.
+
+### An empty final answer
+
+Measured 2026-11-26 on `gpt-6.1-sol`, effort max, a 147k-token conversation: three calls in a row
+completed with a `message` item whose `phase` was `final_answer` and whose content was empty, 49 to
+72 output tokens billed as reasoning. Nothing was cut, no error was announced, the account was
+answering a fresh prompt fine. The model simply closed the turn with nothing in it.
+
+The transport flags it (`emptyFinalAnswer`) only when all of these hold: the response completed,
+a `final_answer` item with no text was closed, and the turn carried no prose and no tool call. The
+run loop then treats it as the far side's failure -- see docs/provider-failures.md, "An empty final
+answer is the far side's failure" -- so the route moves to its next account instead of asking the
+same one again.
 
 ### Auth: device-code only, stored under my-claw's roof
 
