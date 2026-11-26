@@ -462,3 +462,19 @@ test("search: an rg that will not start hands the query to grep instead of faili
   assert.match(result.text, /engine: grep fallback/);
   assert.match(result.text, /beta/);
 });
+
+test("search: an unusable rg keeps every root on grep, not just the first", async () => {
+  const first = await fixture();
+  const second = join(first, "sub");
+  const broken = join(first, "rg-broken");
+  await writeFile(broken, "#!/bin/sh\n", { mode: 0o644 });
+  await chmod(broken, 0o644);
+  const query: SearchQuery = { ...stuckQuery(), pattern: "beta", roots: [first, second], mode: "files" };
+  const result = await executeQuery(query, { rgPath: broken, wallMs: 10_000 });
+  assert.equal(result.ok, true);
+  assert.match(result.text, /engine: grep fallback/);
+  // One banner for the call, and a match from each root: a fallback that only covered the root that
+  // hit the failure would report the second root as an rg search it never was.
+  assert.equal((result.text.match(/engine: grep fallback/g) ?? []).length, 1);
+  assert.match(result.text, /data\.txt|notes\.md/);
+});

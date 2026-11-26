@@ -210,3 +210,10 @@ test("apply_patch: a call with no `path` says what it carried", async () => {
   assert.match(result.output, /path is required/);
   assert.match(result.output, /absolute, edits/);
 });
+
+test("apply_patch: the internal args are not named as the caller's mistake", async () => {
+  const result = await applyPatchTool.execute({ __signal: undefined, __workspaceDir: "/tmp" });
+  assert.equal(result.success, false);
+  assert.match(result.output, /carried no arguments/);
+  assert.doesNotMatch(result.output, /__signal/);
+});

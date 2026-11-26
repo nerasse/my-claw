@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -211,4 +212,22 @@ describe("what the conversation reads", () => {
     expect(text).toContain("job action=output id=job-0a1b2c3d");
     expect(text).toContain("not a message from the owner");
   });
+});
+
+test("a command with quotes still reads as one attribute in the notice", () => {
+  const record: JobRecord = {
+    id: "job-0a1b2c3d",
+    sessionId: "s",
+    tool: "bash",
+    label: `echo "hello" && printf 'x'`,
+    startedAt: Date.now(),
+    lastOutputAt: Date.now(),
+    status: "done",
+    exitCode: 0,
+    outputPath: "/tmp/x.log",
+    chars: 0,
+  };
+  const text = jobNoticeText(record, "hello");
+  assert.equal(/command="[^"]*"/.test(text), true, "one attribute, closed");
+  assert.match(text, /command="echo 'hello' && printf 'x'"/);
 });

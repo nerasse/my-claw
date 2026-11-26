@@ -442,3 +442,39 @@ test("fetch: a refusal and a rate limit each name their own next move", async ()
     limited.restore();
   }
 });
+
+test("fetch: the dead-URL memo is a GET's memory, and a 5xx is not a dead end", async () => {
+  let postCalls = 0;
+  const notFound = mockFetch(async () => {
+    postCalls += 1;
+    return new Response("gone", { status: 404 });
+  });
+  try {
+    const tool = createFetchTool();
+    await tool.execute({ url: "https://docs.example.com/maybe" });
+    // A body changes the request: the memo must not answer for it.
+    const post = await tool.execute({ url: "https://docs.example.com/maybe", method: "POST", body: "x" });
+    assert.equal(post.success, false);
+    assert.equal(postCalls, 2, "the POST reached the host");
+  } finally {
+    notFound.restore();
+  }
+
+  let hits = 0;
+  const flaky = mockFetch(async () => {
+    hits += 1;
+    return new Response("boom", { status: 500 });
+  });
+  try {
+    const tool = createFetchTool({ retryDelayMs: 0 });
+    const first = await tool.execute({ url: "https://example.com/flaky" });
+    assert.equal(first.success, false);
+    assert.match(first.error ?? "", /5xx may pass on another try/);
+    assert.equal(hits, 2, "one retry, as documented");
+    // A 5xx is exactly the answer that may change: asking again must reach the host.
+    await tool.execute({ url: "https://example.com/flaky" });
+    assert.equal(hits, 4);
+  } finally {
+    flaky.restore();
+  }
+});
