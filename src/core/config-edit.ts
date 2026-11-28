@@ -959,19 +959,20 @@ export const PROVIDER_KEY_RE = /^[a-z0-9][a-z0-9_-]*$/;
  * headers stay owner-only, and the env key has its own page (providers.env.*).
  */
 export interface ProviderPatch {
-  type?: "openai" | "codex" | "anthropic";
+  type?: "openai" | "codex" | "anthropic" | "mistral-vibe";
   baseUrl?: string;
   apiKeyEnv?: string;
   group?: string;
   discover?: boolean;
   promptCache?: boolean;
   reasoningReplay?: boolean;
+  vibeTool?: boolean;
   pricingProvider?: string;
   fallbackModel?: string;
   disabled?: boolean;
 }
 
-const PROVIDER_TYPES = ["openai", "codex", "anthropic"] as const;
+const PROVIDER_TYPES = ["openai", "codex", "anthropic", "mistral-vibe"] as const;
 const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
@@ -1068,6 +1069,11 @@ export function upsertProvider(key: string, patch: ProviderPatch): Promise<Confi
       else spec["promptCache"] = false;
     }
     if (patch.reasoningReplay !== undefined) spec["reasoningReplay"] = patch.reasoningReplay;
+    if (patch.vibeTool !== undefined) {
+      // On is the default: only the refusal is written, same rule as promptCache and disabled.
+      if (patch.vibeTool) delete spec["vibeTool"];
+      else spec["vibeTool"] = false;
+    }
     if (patch.disabled !== undefined) {
       // Off is the default state, so re-enabling drops the field instead of writing `false`:
       // the file carries settings, not affirmations.
@@ -1477,7 +1483,7 @@ function modelDeclarationError(entry: ModelDeclaration, providers: Record<string
       return "thinkingTypes needs both adaptive and enabled";
     }
   }
-  if (entry.reasoningField !== undefined && entry.reasoningField !== "reasoning_content" && entry.reasoningField !== "reasoning_details") {
+  if (entry.reasoningField !== undefined && entry.reasoningField !== "reasoning_content" && entry.reasoningField !== "reasoning_details" && entry.reasoningField !== "mistral_content") {
     return `Unknown reasoning field: ${String(entry.reasoningField)}`;
   }
   return null;

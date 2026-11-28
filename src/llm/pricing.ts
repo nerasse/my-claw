@@ -157,6 +157,8 @@ const ENGINE_PROVIDER: Record<string, string> = {
   // A plan, not a metered API: its weekly credits pay for every model, so a call is priced at the
   // published tariff as a reference and never as money owed.
   "api.synthetic.new": "synthetic",
+  // The Vibe plan's Vibe Code allowance pays for the same models at the same published tariff.
+  "api.mistral.ai": "mistral",
   // The subscription SDK transport. Without it the Claude rows written through the SDK fell to the
   // cross-market median while the same model on the native host, one line below, was priced at the
   // vendor's tarif -- two answers for one model on one page.

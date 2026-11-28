@@ -49,7 +49,8 @@ decides whether a tool stands alone:
 - **Rare actions of one shape share a tool.** `agents` (list, kill, reset) replaced three tools;
   `audio` (transcribe, speak, mode) replaced `stt`, `tts`, `voice_mode`; the kept browser windows
   moved onto `delegate_browser_task` as `kept` (list, release, extend) instead of
-  `held_browser_windows`.
+  `held_browser_windows`; `vibe` (image, ocr, speak, transcribe, account, models) gathers the
+  Mistral Vibe plan's services that would otherwise be six tools on every request.
 - **A tool that repeats the prompt goes.** `list_skills` returned the catalog layer 5 already
   lists; a refused read now names what the caller may read, which was the one case it covered.
 - **The prompt does not repeat the tools.** A layer "Available tools" listed every tool's name and
@@ -71,9 +72,14 @@ each action checks its own instead.
 `ToolRegistry.getForAgent(agentType, disabled)` builds each agent's tool set: per-agent exclusion lists
 (research is read-only; sub-agents and cron drop orchestration tools), then the config denylist
 `tools.disabled` (hot-reloadable), applied last. `setDynamicProvider` injects runtime tools -- external
-MCP servers (`config.mcp`) -- surfaced to acting agents only and namespaced `mcp__<server>__<tool>`. Both
-backends build from `getForAgent`, so the denylist and MCP tools apply uniformly to the home loop and the
-Claude SDK. See `docs/config.md` and `docs/hot-reload-extensions.md`.
+MCP servers (`config.mcp`) -- surfaced to acting agents only and namespaced `mcp__<server>__<tool>`.
+`setConditionalProvider` is the same idea for a **built-in** whose existence depends on the live
+config: the `vibe` tool is only listed while a `mistral-vibe` provider has its key
+(docs/mistral-backend.md), and a hot reload adds or removes it without a restart. Conditional tools
+keep the built-in rules: research and the browser never see them, the orchestrator and general
+agents do. Both backends build from `getForAgent`, so the denylist, MCP tools and the conditional
+set apply uniformly to the home loop and the Claude SDK. See `docs/config.md` and
+`docs/hot-reload-extensions.md`.
 
 ### An MCP server is never on the critical path
 

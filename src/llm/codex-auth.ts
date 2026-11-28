@@ -171,7 +171,7 @@ export async function getCodexAccessToken(
 ): Promise<{ accessToken: string; accountId: string }> {
   const cred = await readCredential(provider);
   if (!cred) {
-    throw new Error(`Provider "${provider}" is not signed in to ChatGPT. Sign in from Settings → Models.`);
+    throw new Error(`Provider "${provider}" is not signed in to ChatGPT. Sign in from the provider's Account row (Settings → Models).`);
   }
   if (Date.now() < cred.expires - REFRESH_SKEW_MS) {
     return { accessToken: cred.access, accountId: cred.accountId };

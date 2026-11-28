@@ -119,20 +119,38 @@ export function producesRemoteContent(toolName: string): boolean {
 export class ToolRegistry {
   private tools = new Map<string, Tool>();
   private dynamicProvider?: () => Tool[];
+  private conditionalProvider?: () => Tool[];
 
   register(tool: Tool): void {
     this.tools.set(tool.name, tool);
   }
 
+  /**
+   * Built-in tools whose existence depends on the live config (the Vibe plan's tool). Read on
+   * every list, so a provider added or removed by hot reload appears or disappears without a
+   * restart, and without pretending to be a plugin or an MCP server.
+   */
+  setConditionalProvider(fn: () => Tool[]): void {
+    this.conditionalProvider = fn;
+  }
+
+  /** The registered built-ins plus the conditional ones, registered names winning on a clash. */
+  private staticTools(): Tool[] {
+    const conditional = this.conditionalProvider?.() ?? [];
+    if (conditional.length === 0) return [...this.tools.values()];
+    return [...this.tools.values(), ...conditional.filter((tool) => !this.tools.has(tool.name))];
+  }
+
   get(name: string): Tool | undefined {
     // Fall through to dynamic tools (MCP, plugins) so the home loop can execute a tool call by
     // name; built-ins win on a clash (MCP is namespaced mcp__*, plugins are collision-checked).
-    return this.tools.get(name) ?? this.dynamicProvider?.().find((t) => t.name === name);
+    return this.staticTools().find((tool) => tool.name === name)
+      ?? this.dynamicProvider?.().find((t) => t.name === name);
   }
 
   /** Names of the statically-registered (built-in) tools, for plugin collision checks. */
   staticNames(): string[] {
-    return [...this.tools.keys()];
+    return this.staticTools().map((tool) => tool.name);
   }
 
   // Live source of extra tools discovered at runtime (external MCP servers). Read on every
@@ -167,9 +185,9 @@ export class ToolRegistry {
       // A closed set: the browser tools and nothing else, dynamic tools included. The browser
       // agent reads untrusted pages all day; an MCP server or a plugin reached from there would
       // be one prompt injection away from the rest of the machine.
-      set = [...this.tools.values()].filter((t) => isBrowserTool(t.name) || BROWSER_SKILL_TOOLS.includes(t.name));
+      set = this.staticTools().filter((t) => isBrowserTool(t.name) || BROWSER_SKILL_TOOLS.includes(t.name));
     } else if (agentType === "main") {
-      set = [...this.tools.values(), ...dynamic].filter((t) => !isBrowserTool(t.name));
+      set = [...this.staticTools(), ...dynamic].filter((t) => !isBrowserTool(t.name));
     } else if (agentType === "research") {
       // The read-only built-in allowlist still applies. MCP used to be denied here unconditionally;
       // it now comes from the scope, which resolves to none for research unless explicitly granted.
@@ -180,14 +198,14 @@ export class ToolRegistry {
       // model loop. Nothing here can answer it, so nothing here pretends to. docs/remote-nodes.md.
       set = [];
     } else if (agentType === "cron") {
-      set = [...this.tools.values(), ...dynamic].filter((t) => !CRON_ALWAYS_EXCLUDED.includes(t.name) && !isBrowserTool(t.name));
+      set = [...this.staticTools(), ...dynamic].filter((t) => !CRON_ALWAYS_EXCLUDED.includes(t.name) && !isBrowserTool(t.name));
     } else {
       // `general` and anything unrecognised. The orchestrator is the only agent granted the whole
       // registry, and it is named explicitly above: a name this chain does not know must land on a
       // sub-agent set, never on the full one. Before file-defined agents the union was closed and
       // the fallthrough was `main`, so a typo in an agent name would have handed out `spawn`,
       // `memory` and skill writes. See docs/file-agents.md.
-      set = [...this.tools.values(), ...dynamic].filter((t) => !SUBAGENT_EXCLUDED_TOOLS.includes(t.name) && !isBrowserTool(t.name));
+      set = [...this.staticTools(), ...dynamic].filter((t) => !SUBAGENT_EXCLUDED_TOOLS.includes(t.name) && !isBrowserTool(t.name));
     }
     // A tool some of whose actions are the orchestrator's alone reaches everyone else read-only.
     if (agentType !== "main") set = set.map((t) => t.readOnly ?? t);
@@ -200,7 +218,7 @@ export class ToolRegistry {
 
   private getByNames(names: string[]): Tool[] {
     return names
-      .map((name) => this.tools.get(name))
+      .map((name) => this.get(name))
       .filter((tool): tool is Tool => tool !== undefined);
   }
 }

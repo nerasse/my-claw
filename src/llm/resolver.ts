@@ -10,6 +10,9 @@ import { CODEX_BASE_URL } from "./codex-auth.ts";
 /** Native Messages endpoint of the Claude subscription backend. */
 export const ANTHROPIC_BASE_URL = "https://api.anthropic.com";
 
+/** Where the Vibe client points: the same API host every Mistral SDK uses. */
+export const MISTRAL_BASE_URL = "https://api.mistral.ai/v1";
+
 /**
  * The endpoint a provider actually talks to, which is not always the one it declares: the two
  * subscription backends (codex, anthropic) default theirs.
@@ -26,6 +29,8 @@ export function providerBaseUrl(provider: LlmProviderConfig | undefined): string
       return ANTHROPIC_BASE_URL;
     case "codex":
       return CODEX_BASE_URL;
+    case "mistral-vibe":
+      return MISTRAL_BASE_URL;
     default:
       return "";
   }
@@ -247,6 +252,33 @@ function resolveFromMerged(
       effortLevels: model?.supportedEffortLevels,
       fallbackModel: provider.fallbackModel,
       effort: computeEffort(merged, model, true, effortOverride, scopeEffort, tagEffort),
+      ...resolveTimeout(merged, model),
+    };
+  }
+
+  if (provider.type === "mistral-vibe") {
+    return {
+      // The OpenAI-compatible chat/completions wire, wearing Vibe's client. The transport adds the
+      // fingerprint; everything else is the generic path. See docs/mistral-backend.md.
+      baseUrl: providerBaseUrl(provider),
+      model: rawModelId,
+      ...apiModel,
+      provider: providerName,
+      // Never the generic Fireworks/OpenAI fallback: a Mistral provider without its own key must
+      // fail authentication, not send another vendor's secret to api.mistral.ai.
+      apiKey: process.env[provider.apiKeyEnv ?? "MISTRAL_API_KEY"] || undefined,
+      headers: provider.headers,
+      vision: model?.vision ?? merged.vision,
+      limit: mergedLimit(model?.limit, merged.limit),
+      // `reasoning_effort` is mandatory on Vibe's models, whose own ladders differ: GLM takes
+      // low/high/max, Large 4 low/medium/high, and a rung one model does not publish is a 400.
+      effort: computeEffort(merged, model, true, effortOverride, scopeEffort, tagEffort),
+      // Anthropic-style cache breakpoints are a 422 here (`content` must be a string), and the
+      // 1M-context models cache implicitly anyway.
+      promptCache: false,
+      reasoningReplay: provider.reasoningReplay ?? true,
+      reasoningField: model?.reasoningField ?? "mistral_content",
+      mistralVibe: true,
       ...resolveTimeout(merged, model),
     };
   }

@@ -13,6 +13,7 @@ import { codexQuota, consumeCodexReset } from "./codex.ts";
 import { opencodeGoQuota } from "./opencode-go.ts";
 import { openrouterQuota } from "./openrouter.ts";
 import { syntheticQuota } from "./synthetic.ts";
+import { mistralQuota } from "./mistral.ts";
 import { spentWindowOf } from "./retry.ts";
 import type { QuotaFailure, QuotaOutcome, QuotaProbe, QuotaRedemption, QuotaSource } from "./types.ts";
 
@@ -25,6 +26,7 @@ export const QUOTA_TTL_MS: Record<QuotaSource, number> = {
   "opencode-go": 120_000,
   openrouter: 120_000,
   synthetic: 120_000,
+  mistral: 120_000,
 };
 
 const BACKOFF_BASE_MS = 30_000;
@@ -69,6 +71,7 @@ export function quotaSourceOf(provider: LlmProviderConfig | undefined): QuotaSou
   if (!provider) return undefined;
   if (provider.type === "anthropic") return "claude";
   if (provider.type === "codex") return "codex";
+  if (provider.type === "mistral-vibe") return "mistral";
   const host = hostOf(provider.baseUrl);
   if (host === "opencode.ai" && provider.baseUrl?.includes("/zen/go")) return "opencode-go";
   if (host === "openrouter.ai") return "openrouter";
@@ -109,6 +112,7 @@ async function probe(provider: string, config: LlmProviderConfig, source: QuotaS
   }
   if (source === "opencode-go") return opencodeGoQuota(provider, key);
   if (source === "synthetic") return syntheticQuota(provider, key);
+  if (source === "mistral") return mistralQuota(provider, key);
   return openrouterQuota(provider, key, config.baseUrl);
 }
 

@@ -17,6 +17,7 @@ import { hooks } from "../hooks/index.ts";
 import { openRouterEndpoints, openRouterEndpointLimits } from "./openrouter-endpoints.ts";
 import { cacheDialectOf } from "./cache-policy.ts";
 import { sessionAffinityHeaders, userAgent } from "./session-headers.ts";
+import { vibeHeaders, vibeMetadata, vibeSessionId } from "./mistral-vibe.ts";
 import { OPENAI_TIMEOUT_MS, llmFetchInit, requestTimeoutMs, timeoutSourceOf } from "./request-timeout.ts";
 
 const LLM_RETRY_ATTEMPTS = 3;
@@ -413,6 +414,65 @@ export function readReasoning(source: Record<string, unknown> | undefined): stri
 }
 
 /**
+ * One part of a Mistral assistant `content`: the visible text, or a thinking block.
+ *
+ * Mistral does not put reasoning on a side field. A reasoning model answers with
+ * `content: [{type:"thinking", thinking:[{type:"text", text:"..."}], closed:true},
+ * {type:"text", text:"OK"}]`, streamed as fragments of either kind, and it expects that same
+ * list back on the next turn. Replayed as `reasoning_content`, the API answers `422
+ * extra_forbidden`.
+ */
+type MistralPart =
+  | { type: "thinking"; thinking: Array<{ type: "text"; text: string }> }
+  | { type: "text"; text: string };
+
+/** Appends a fragment to the part list, merging it into the previous part of the same kind. */
+function appendMistralPart(parts: MistralPart[], kind: "thinking" | "text", text: string): void {
+  if (!text) return;
+  const last = parts[parts.length - 1];
+  if (last?.type === kind) {
+    if (last.type === "thinking") last.thinking[0]!.text += text;
+    else last.text += text;
+    return;
+  }
+  if (kind === "thinking") parts.push({ type: "thinking", thinking: [{ type: "text", text }] });
+  else parts.push({ type: "text", text });
+}
+
+/**
+ * Reads a content value that is either the OpenAI string or Mistral's part list.
+ *
+ * `parts` is only produced for the part-list form: a string has nothing to replay as a list, and
+ * the caller's own `text`/`reasoning` already carry it.
+ */
+function thinkingTextOf(part: Record<string, unknown>): string {
+  if (!Array.isArray(part["thinking"])) return "";
+  return part["thinking"]
+    .flatMap((block) => (typeof block === "object" && block !== null && typeof (block as Record<string, unknown>)["text"] === "string" ? [(block as Record<string, unknown>)["text"] as string] : []))
+    .join("");
+}
+
+function readContentValue(value: unknown): { text: string; reasoning: string; parts?: MistralPart[] } {
+  if (typeof value === "string") return { text: value, reasoning: "" };
+  if (!Array.isArray(value)) return { text: "", reasoning: "" };
+  const parts: MistralPart[] = [];
+  for (const raw of value) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const part = raw as Record<string, unknown>;
+    if (part["type"] === "thinking") {
+      appendMistralPart(parts, "thinking", thinkingTextOf(part));
+    } else if (part["type"] === "text" && typeof part["text"] === "string") {
+      appendMistralPart(parts, "text", part["text"]);
+    }
+  }
+  return {
+    text: parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(""),
+    reasoning: parts.flatMap((part) => (part.type === "thinking" ? [part.thinking[0]!.text] : [])).join(""),
+    parts,
+  };
+}
+
+/**
  * A fault of the provider's, in the shape the failure classifier files as an outage: the run takes
  * back what the call painted, then asks again or moves to the next model of its route.
  */
@@ -463,11 +523,18 @@ function chatProviderMeta(
   config: ResolvedLlmConfig,
   message: Record<string, unknown> | undefined,
   text: string,
+  parts?: MistralPart[],
 ): ProviderMeta | undefined {
   if (config.reasoningReplay === false) return undefined;
   const field = config.reasoningField;
   if (!field) return undefined;
   const model = config.apiModel ?? config.model;
+  // Vibe's reasoning is not a side field: it is the assistant's own `content`, a list of thinking
+  // and text parts replayed verbatim. Only captured when the turn actually reasoned, like the two
+  // string forms -- a text-only turn needs no parts.
+  if (field === "mistral_content") {
+    return text.length > 0 && parts && parts.length > 0 ? { backend: "openai", model, chat: { field, details: parts } } : undefined;
+  }
   if (field === "reasoning_details") {
     const details = message?.["reasoning_details"];
     // No string fallback: `reasoning` and `reasoning_content` are aliases of each other, but a
@@ -568,7 +635,13 @@ function toWireMessage(
     // thinking mode demands the reasoning of the turn it is being shown, whoever produced it.
     const same = meta && self && meta.backend === self.backend && meta.model === self.model;
     const chat = (same || forceReasoning) && meta ? meta.chat : undefined;
-    if (chat?.field === "reasoning_details" && chat.details) w["reasoning_details"] = chat.details;
+    if (chat?.field === "mistral_content" && Array.isArray(chat.details) && chat.details.length > 0) {
+      // Vibe replays the assistant's content as thinking + text parts, never as a string, and
+      // marks it `prefix: false`. Mistral rejects `reasoning_content` outright (`422
+      // extra_forbidden`), so this is the only shape that carries reasoning back.
+      w["content"] = chat.details;
+      w["prefix"] = false;
+    } else if (chat?.field === "reasoning_details" && chat.details) w["reasoning_details"] = chat.details;
     else if (chat?.field === "reasoning_content" && chat.text !== undefined) w["reasoning_content"] = chat.text;
     // A model that reads `reasoning_content` reads it on every assistant turn, and a turn without
     // the field is a turn its template renders as never having closed its thinking. The turns it
@@ -659,6 +732,7 @@ function buildRequestBody(
   tools?: unknown[],
   stream?: boolean,
   options: RepairOptions = optionsFor(config),
+  vibeSession?: string,
 ): Record<string, unknown> {
   const sent = liftToolImages(messages);
   const body: Record<string, unknown> = {
@@ -701,6 +775,12 @@ function buildRequestBody(
   // silent reroute to another would defeat both. Only ever set for OpenRouter.
   if (config.providerRoute) {
     body["provider"] = { order: [config.providerRoute], allow_fallbacks: false };
+  }
+  if (config.mistralVibe && vibeSession) {
+    // What bills the call to the Vibe Code allowance instead of the API key's own pool, which is
+    // refused `402 billing_spend_limit_api_key` without it. Measured 2026-11-28.
+    body["metadata"] = vibeMetadata(vibeSession);
+    body["parallel_tool_calls"] = true;
   }
 
   // Last, so it can name any field this builder sets: a parameter an endpoint refused by name is
@@ -976,16 +1056,17 @@ export async function chatCompletion(
 ): Promise<LlmResponse> {
   checkCircuitBreaker(config.baseUrl);
 
+  const vibeSession = config.mistralVibe ? vibeSessionId(config.cacheKey) : undefined;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
     // The conversation this call belongs to, and who we are. The config comes last on purpose:
     // an owner overriding either of them has a reason we do not know -- docs/session-affinity.md.
-    ...sessionAffinityHeaders(config.baseUrl, config.cacheKey, await userAgent()),
+    ...(vibeSession ? vibeHeaders(vibeSession) : sessionAffinityHeaders(config.baseUrl, config.cacheKey, await userAgent())),
     ...config.headers,
   };
   const options = optionsFor(config);
-  let bodyObject = buildRequestBody(config, messages, tools, false, options);
+  let bodyObject = buildRequestBody(config, messages, tools, false, options, vibeSession);
   await clampOutputToPinnedEndpoint(config, bodyObject);
   let body = JSON.stringify(bodyObject);
   const url = `${config.baseUrl}/chat/completions`;
@@ -1033,7 +1114,7 @@ export async function chatCompletion(
             if (repair.apply(options, detail)) {
               repaired = true;
               rememberRepair(cacheKeyOf(config), repair, detail);
-              bodyObject = buildRequestBody(config, messages, tools, false, options);
+              bodyObject = buildRequestBody(config, messages, tools, false, options, vibeSession);
               body = JSON.stringify(bodyObject);
               void log("warn", "LLM request repaired", {
                 repair: repair.id,
@@ -1068,13 +1149,14 @@ export async function chatCompletion(
       const choice = data.choices?.[0];
       if (!choice?.message) throw new Error("No response from LLM");
 
-      const content = choice.message.content ?? "";
+      const parsedContent = readContentValue(choice.message.content);
+      const content = parsedContent.text;
       const finishReason = choice.finish_reason ?? undefined;
-      const reasoning = readReasoning(choice.message as Record<string, unknown>);
+      const reasoning = parsedContent.reasoning || readReasoning(choice.message as Record<string, unknown>);
       const usage = normalizeUsage(data.usage);
       assertAnswered(config, finishReason, content, reasoning, usage);
       recordCircuitSuccess(config.baseUrl);
-      const providerMeta = chatProviderMeta(config, choice.message as Record<string, unknown>, reasoning);
+      const providerMeta = chatProviderMeta(config, choice.message as Record<string, unknown>, reasoning, parsedContent.parts);
       return {
         content,
         toolCalls: parseToolCalls(choice.message.tool_calls),
@@ -1130,16 +1212,17 @@ export async function chatCompletionStream(
 ): Promise<LlmResponse> {
   checkCircuitBreaker(config.baseUrl);
 
+  const vibeSession = config.mistralVibe ? vibeSessionId(config.cacheKey) : undefined;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(config.apiKey ? { Authorization: `Bearer ${config.apiKey}` } : {}),
     // The conversation this call belongs to, and who we are. The config comes last on purpose:
     // an owner overriding either of them has a reason we do not know -- docs/session-affinity.md.
-    ...sessionAffinityHeaders(config.baseUrl, config.cacheKey, await userAgent()),
+    ...(vibeSession ? vibeHeaders(vibeSession) : sessionAffinityHeaders(config.baseUrl, config.cacheKey, await userAgent())),
     ...config.headers,
   };
   const options = optionsFor(config);
-  let bodyObject = buildRequestBody(config, messages, tools, true, options);
+  let bodyObject = buildRequestBody(config, messages, tools, true, options, vibeSession);
   await clampOutputToPinnedEndpoint(config, bodyObject);
   let body = JSON.stringify(bodyObject);
   const url = `${config.baseUrl}/chat/completions`;
@@ -1190,7 +1273,7 @@ export async function chatCompletionStream(
           if (repair.apply(options, detail)) {
             repaired = true;
             rememberRepair(cacheKeyOf(config), repair, detail);
-            bodyObject = buildRequestBody(config, messages, tools, true, options);
+            bodyObject = buildRequestBody(config, messages, tools, true, options, vibeSession);
             body = JSON.stringify(bodyObject);
             void log("warn", "LLM request repaired", {
               repair: repair.id,
@@ -1221,6 +1304,8 @@ export async function chatCompletionStream(
 
       let content = "";
       let reasoning = "";
+      // The assistant content as Vibe replays it: thinking and text parts, in emission order.
+      const mistralParts: MistralPart[] = [];
       /**
        * `reasoning_details` accumulated off the stream. Streamed as whole blocks on a delta rather
        * than as text fragments, so they are concatenated, not stitched -- the array is opaque and
@@ -1261,13 +1346,38 @@ export async function chatCompletionStream(
         if (reasoningDelta) {
           reasoning += reasoningDelta;
           segmenter.reasoning(reasoningDelta);
+          appendMistralPart(mistralParts, "thinking", reasoningDelta);
           if (reasoningSink?.onText) await reasoningSink.onText(reasoningDelta);
         }
 
-        if (typeof delta.content === "string" && delta.content.length > 0) {
+        // Mistral streams the assistant's content as a list of parts, a reasoning model thinking
+        // and answering through it instead of through `reasoning_content`. A plain string is the
+        // OpenAI shape and still works here -- the local llama.cpp provider sends one.
+        const rawContent = (delta as Record<string, unknown>)["content"];
+        if (Array.isArray(rawContent)) {
+          for (const raw of rawContent) {
+            if (typeof raw !== "object" || raw === null) continue;
+            const part = raw as Record<string, unknown>;
+            if (part["type"] === "thinking") {
+              const thought = thinkingTextOf(part);
+              if (!thought) continue;
+              reasoning += thought;
+              segmenter.reasoning(thought);
+              appendMistralPart(mistralParts, "thinking", thought);
+              if (reasoningSink?.onText) await reasoningSink.onText(thought);
+            } else if (part["type"] === "text" && typeof part["text"] === "string" && part["text"].length > 0) {
+              content += part["text"];
+              segmenter.text(part["text"]);
+              tokensDelivered = true;
+              appendMistralPart(mistralParts, "text", part["text"]);
+              await onToken(part["text"]);
+            }
+          }
+        } else if (typeof delta.content === "string" && delta.content.length > 0) {
           content += delta.content;
           segmenter.text(delta.content);
           tokensDelivered = true;
+          appendMistralPart(mistralParts, "text", delta.content);
           await onToken(delta.content);
         }
 
@@ -1319,7 +1429,7 @@ export async function chatCompletionStream(
 
       const segments = segmenter.list();
       const reasoningMs = segmenter.thinkingMs();
-      const providerMeta = chatProviderMeta(config, streamedReasoningDetails, reasoning);
+      const providerMeta = chatProviderMeta(config, streamedReasoningDetails, reasoning, mistralParts);
       // A provider that never said why it stopped did not answer, and silence read as a valid
       // empty turn is how a dead endpoint froze a conversation for half an hour without one error
       // (2026-09-14, deepseek-flash behind opencode zen: HTTP 200, event-stream, zero bytes). The

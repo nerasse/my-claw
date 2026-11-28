@@ -126,6 +126,7 @@ import { createAgentsTool } from "./tools/agents.ts";
 import { createQuotaTool } from "./tools/quota.ts";
 import { createSkillsTool } from "./tools/skills.ts";
 import { createAudioTool } from "./tools/audio.ts";
+import { vibeTools } from "./tools/vibe.ts";
 import { createWebSearchTool } from "./tools/web-search.ts";
 import { BrowserSession, createDelegateBrowserTool, registerBrowserTools } from "./tools/browser/index.ts";
 import { runReasoningSink } from "./channels/my-claw-app/run-sink.ts";
@@ -628,6 +629,10 @@ async function main() {
   // Optional owner-authored tool plugins (tools.d/), created after registration below.
   let pluginLoader: PluginLoader | undefined;
   toolRegistry.setDynamicProvider(() => [...mcpManager.getTools(), ...(pluginLoader?.getTools() ?? [])]);
+  // The Vibe plan's tool exists only while a `mistral-vibe` provider is configured with its key;
+  // the provider is read from the live config object, so a hot-reloaded provider adds it without
+  // a restart. See docs/mistral-backend.md.
+  toolRegistry.setConditionalProvider(() => vibeTools(config));
   // Not awaited: the provider above is read per call, so a server that connects a second late is
   // simply in the next tool list. Awaiting it put every external server on the critical path of
   // the boot -- an unreachable host meant no channels at all until it gave up.
@@ -1584,6 +1589,7 @@ async function main() {
             ...(provider.group ? { group: provider.group } : {}),
             ...(provider.baseUrl ? { baseUrl: provider.baseUrl } : {}),
             ...(provider.promptCache !== undefined ? { promptCache: provider.promptCache } : {}),
+            ...(provider.vibeTool !== undefined ? { vibeTool: provider.vibeTool } : {}),
             ...(provider.reasoningReplay !== undefined ? { reasoningReplay: provider.reasoningReplay } : {}),
             ...(provider.pricingProvider ? { pricingProvider: provider.pricingProvider } : {}),
             ...(provider.fallbackModel ? { fallbackModel: provider.fallbackModel } : {}),
@@ -1915,8 +1921,8 @@ async function main() {
     };
     myClawApp.onProvidersController({
       upsert: async (patch) => {
-        const { key, providerType, baseUrl, apiKeyEnv, group, discover, promptCache, reasoningReplay, pricingProvider, fallbackModel, disabled } = patch;
-        const result = await upsertProvider(key, { type: providerType, baseUrl, apiKeyEnv, group, discover, promptCache, reasoningReplay, pricingProvider, fallbackModel, disabled });
+        const { key, providerType, baseUrl, apiKeyEnv, group, discover, promptCache, reasoningReplay, vibeTool, pricingProvider, fallbackModel, disabled } = patch;
+        const result = await upsertProvider(key, { type: providerType, baseUrl, apiKeyEnv, group, discover, promptCache, reasoningReplay, vibeTool, pricingProvider, fallbackModel, disabled });
         if (!result.ok) throw new Error(result.error);
         return writeProvidersConfig(`provider ${patch.key}`);
       },

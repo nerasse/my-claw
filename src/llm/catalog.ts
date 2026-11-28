@@ -435,12 +435,20 @@ function rowOf(model: Record<string, unknown>): OpenAiModelRow | undefined {
   if (display && display !== id) row.label = display;
   else if (typeof model.alias_of === "string" && model.alias_of.trim()) row.label = `${model.alias_of.trim()} (${id})`;
   else if (display) row.label = display;
-  const context = positiveInt(model.context_length) ?? positiveInt(model.max_input_tokens);
+  const context = positiveInt(model.context_length) ?? positiveInt(model.max_input_tokens) ?? positiveInt(model.max_context_length);
   if (context !== undefined) row.context = context;
   const output =
     positiveInt(model.max_output_length) ?? positiveInt(model.max_completion_tokens) ?? positiveInt(model.max_output_tokens);
   if (output !== undefined) row.output = output;
   if (Array.isArray(model.input_modalities)) row.vision = model.input_modalities.includes("image");
+  // Mistral publishes vision as a capability flag rather than a modality list.
+  const capabilities = typeof model.capabilities === "object" && model.capabilities !== null && !Array.isArray(model.capabilities)
+    ? (model.capabilities as Record<string, unknown>)
+    : undefined;
+  if (row.vision === undefined && typeof capabilities?.["vision"] === "boolean") row.vision = capabilities["vision"];
+  // A provider that says a model cannot chat is not guessing: Mistral lists its embeddings, OCR
+  // and audio models in the same `/models` answer, and they are not something to offer a run.
+  if (capabilities?.["completion_chat"] === false) return undefined;
   const reasoning = model.reasoning_parameters as { efforts?: unknown } | undefined;
   const efforts = effortLevelsOf(reasoning?.efforts);
   if (efforts) row.efforts = efforts;
@@ -743,22 +751,24 @@ export class ModelCatalog {
           // `TypeError [ERR_INVALID_URL]: fetch() URL is invalid` and says nothing about the
           // provider. It happens for real: a config naming a provider type the running build does
           // not know falls through to this branch, which is how an `anthropic` entry looked like a
-          // network fault on the build before the one that understood it.
-          if (!provider.baseUrl) {
+          // network fault on the build before the one that understood it. A type that owns its
+          // endpoint (mistral-vibe) declares none in config and still has one here.
+          const baseUrl = providerBaseUrl(provider);
+          if (!baseUrl) {
             throw new Error(`provider "${name}" has type "${provider.type ?? "openai"}" and no baseUrl to discover from`);
           }
           const apiKey = provider.apiKeyEnv ? process.env[provider.apiKeyEnv] : undefined;
-          const rows = await fetchOpenAiModels(provider.baseUrl, apiKey);
+          const rows = await fetchOpenAiModels(baseUrl, apiKey);
           // A provider that has a separate embeddings catalogue answers on `/embeddings/models`
           // and keeps those rows out of `/models`: OpenRouter lists 467 chat models and 35
           // embeddings, and without this call the second half simply does not exist (measured
           // 2026-10-25). Best-effort: a provider without such a route must not fail discovery.
-          const embeddings = isOpenRouterBaseUrl(provider.baseUrl)
-            ? await fetchOpenRouterEmbeddings(provider.baseUrl, apiKey).catch(() => [])
+          const embeddings = isOpenRouterBaseUrl(baseUrl)
+            ? await fetchOpenRouterEmbeddings(baseUrl, apiKey).catch(() => [])
             : [];
           // Then the ones an API serves without ever listing (Synthetic's nomic): a fact about
           // the listing, proven on the endpoint, never a guess.
-          const unlisted = unlistedEmbeddings(provider.baseUrl).filter(
+          const unlisted = unlistedEmbeddings(baseUrl).filter(
             (row) => !rows.some((listed) => listed.id === row.id),
           );
           for (const row of [...rows, ...embeddings, ...unlisted]) {

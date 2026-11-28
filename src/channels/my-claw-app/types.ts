@@ -1054,13 +1054,14 @@ export interface MyClawAppWorkspacesSetPath {
 export interface MyClawAppProviderUpsert {
   type: "providers.upsert";
   key: string;
-  providerType?: "openai" | "codex" | "anthropic";
+  providerType?: "openai" | "codex" | "anthropic" | "mistral-vibe";
   baseUrl?: string;
   apiKeyEnv?: string;
   group?: string;
   discover?: boolean;
   promptCache?: boolean;
   reasoningReplay?: boolean;
+  vibeTool?: boolean;
   pricingProvider?: string;
   fallbackModel?: string;
   /** true switches the provider off, false (or absent) leaves it on. */
@@ -2583,7 +2584,7 @@ export interface MyClawAppModelOption {
    * The message field this model reads its own prior reasoning back from, resolved the same way.
    * Absent means nothing is replayed for it (docs/reasoning-replay.md).
    */
-  reasoningField?: "reasoning_content" | "reasoning_details";
+  reasoningField?: "reasoning_content" | "reasoning_details" | "mistral_content";
   /**
    * The request budget this model declares, in milliseconds, absent when it declares none (the
    * transport default then applies). Carried so the declaration form shows what is stored instead
@@ -3007,6 +3008,7 @@ export interface MyClawAppProviderInfo {
   group?: string;
   baseUrl?: string;
   promptCache?: boolean;
+  vibeTool?: boolean;
   reasoningReplay?: boolean;
   pricingProvider?: string;
   fallbackModel?: string;

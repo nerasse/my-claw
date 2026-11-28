@@ -165,6 +165,36 @@ transport; no `baseUrl` or `apiKeyEnv` needed (auth is the stored OAuth token).
   ChatGPT-account model slugs are e.g. `gpt-5.6-sol`, `gpt-5.5`, `gpt-5.4` (not the
   API-only `gpt-5-codex`). Curated `models[]` entries work without discovery.
 
+### Mistral Vibe provider (Vibe plan allowance)
+
+A provider with `"type": "mistral-vibe"` talks the ordinary OpenAI-compatible
+`chat/completions` wire to `api.mistral.ai/v1`, wearing the client fingerprint the Vibe CLI
+sends. That fingerprint, not the key, is what bills a call to the plan's Vibe Code allowance
+instead of the API key's own pool: measured 2026-11-28, the same key answers
+`402 billing_spend_limit_api_key` on a plain API call and 200 with
+`metadata.call_source: "vibe_code"`. Full design: `docs/mistral-backend.md`.
+
+```json
+"mistral_vibe": {
+  "type": "mistral-vibe",
+  "apiKeyEnv": "MISTRAL_VIBE_API_KEY",
+  "discover": true,
+  "group": "Mistral Vibe"
+}
+```
+
+- `apiKeyEnv` defaults to `MISTRAL_API_KEY`. The app's service row writes
+  `MISTRAL_VIBE_API_KEY`, so the Vibe key does not share the variable of an ordinary Mistral
+  API provider.
+- Reasoning models answer with content parts (a thinking block, then text); the transport
+  reads them and replays them verbatim as `content` with `prefix: false`. `reasoning_content`
+  is a 422 there, and Anthropic-style cache breakpoints too, so `promptCache` is off.
+- `GET /v1/billing/budget` reports the Vibe allowance and the API credit separately; the
+  `/quota` card shows both. The API pool needs the key's own spending limit raised in the
+  Mistral console before a plain API call can use it.
+- `vibeTool: false` on the provider switches the `vibe` tool off without touching chat. It is on
+  when absent, and the provider page has the switch (docs/mistral-backend.md).
+
 ### Legacy format (auto-migrated on boot)
 
 ```json

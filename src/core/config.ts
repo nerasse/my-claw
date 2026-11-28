@@ -204,7 +204,11 @@ export interface LlmProviderConfig {
   // with its own default: `baseUrl` (api.anthropic.com) says where the request goes, `apiKeyEnv`
   // (the Claude subscription token) says what signs it, so the type also serves an
   // Anthropic-compatible backend. See docs/anthropic-backend.md and docs/codex-backend.md.
-  type?: "openai" | "codex" | "anthropic";
+  // "mistral-vibe" = the Mistral Vibe client on the OpenAI-compatible chat/completions wire. The
+  // fingerprint (user-agent, x-affinity, metadata.call_source: vibe_code) is what bills the call
+  // to the Vibe Code allowance rather than the API key's own budget, and the content parts of a
+  // reasoning model are read back as thinking. See docs/mistral-backend.md.
+  type?: "openai" | "codex" | "anthropic" | "mistral-vibe";
   baseUrl?: string;
   apiKeyEnv?: string;
   headers?: Record<string, string>;
@@ -228,6 +232,10 @@ export interface LlmProviderConfig {
   // out for an engine known to charge for cache writes it never reads back.
   // Ignored on the codex (subscription) backend. See docs/prompt-caching.md.
   promptCache?: boolean;
+  // Mistral Vibe providers only: expose the `vibe` tool (image, OCR, speech, transcription) to
+  // agents. On unless switched off, like promptCache: only the refusal is written to the file.
+  // See docs/mistral-backend.md.
+  vibeTool?: boolean;
   // Hand the model's own reasoning back to it on the next call of a tool loop. Default on: the
   // providers that document the behaviour require it (DeepSeek answers 400 without it when tools
   // are present, GLM and Kimi degrade), and it is self-gating -- an endpoint that returns no
@@ -256,7 +264,7 @@ export type EffortLevel = "none" | "minimal" | "low" | "medium" | "high" | "xhig
  * Declared here rather than in pricing.ts because that module imports from this one.
  * See docs/reasoning-replay.md.
  */
-export type ReasoningField = "reasoning_content" | "reasoning_details";
+export type ReasoningField = "reasoning_content" | "reasoning_details" | "mistral_content";
 
 /**
  * What a model is for. The vocabulary is models.dev's own `type` field, kept verbatim so nothing is
@@ -521,6 +529,9 @@ export interface ResolvedLlmConfig {
   reasoningReplay?: boolean;
   // The message field this model wants its reasoning handed back in, from the model row.
   reasoningField?: ReasoningField;
+  // The OpenAI-compatible transport, wearing the Mistral Vibe client: user-agent, x-affinity and
+  // the metadata block that bills a call to the Vibe allowance. See docs/mistral-backend.md.
+  mistralVibe?: true;
   // Milliseconds allowed with no byte received, resolved from the model row then the global
   // fallback. Absent means the transport's own default applies; `0` means no timer at all.
   // See docs/llm-timeout.md.

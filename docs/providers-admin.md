@@ -22,13 +22,14 @@ Fields the app can write (`providers.upsert`, one payload for create and edit):
 
 | field | meaning |
 |---|---|
-| `providerType` | `"openai"` (default), `"anthropic"`, `"codex"`. The frame's own `type` discriminates the message, so the engine field is renamed on the wire. |
+| `providerType` | `"openai"` (default), `"anthropic"`, `"codex"`, `"mistral-vibe"`. The frame's own `type` discriminates the message, so the engine field is renamed on the wire. |
 | `baseUrl` | openai (required) and anthropic (optional, defaults to api.anthropic.com). |
 | `apiKeyEnv` | openai and anthropic: the *name* of the env var, never the value. On anthropic, absent means the Claude subscription (docs/anthropic-backend.md). |
 | `group` | picker group label (docs/model-discovery.md). |
 | `disabled` | switched off: discovery skips it, the picker hides its models, tags route past its candidates and session pins fall through the chain. The sign-in stays -- disabling is not a sign-out. Refused when the provider carries the global default (see below). |
 | `discover` | auto-discover this provider's models. |
 | `promptCache` | openai only (docs/prompt-caching.md). |
+| `vibeTool` | mistral-vibe only: expose the `vibe` tool (image, OCR, speech, transcription) to agents. Absent means **on**; `false` opts out and is the only value written (docs/mistral-backend.md). |
 | `reasoningReplay` | all engines. Hand the model its own reasoning back across tool iterations. Absent means **on**; set it false only for an endpoint that emits reasoning and rejects it on input (docs/reasoning-replay.md). |
 | `pricingProvider` | openai only (docs/status-command.md). |
 | `fallbackModel` | claude-sdk only. |

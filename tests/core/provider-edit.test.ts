@@ -373,6 +373,18 @@ describe("a provider switched off", () => {
     expect(file.llm.providers.litellm.disabled).toBeUndefined();
   });
 
+  test("vibeTool is written as a refusal and defaults on", async () => {
+    await writeConfigFile();
+    const created = await upsertProvider("mistral_vibe", { type: "mistral-vibe", apiKeyEnv: "VIBE_KEY", vibeTool: false });
+    expect(created.ok).toBe(true);
+    let file = await readConfigFile();
+    expect(file.llm.providers.mistral_vibe.vibeTool).toBe(false);
+    await upsertProvider("mistral_vibe", { vibeTool: true });
+    file = await readConfigFile();
+    // On is the default, so re-enabling drops the field instead of writing `true`.
+    expect(file.llm.providers.mistral_vibe.vibeTool).toBeUndefined();
+  });
+
   test("refuses the provider that carries the default: as the role, a qualified model, or a declared bare one", async () => {
     await writeConfigFile();
     const asProvider = await upsertProvider("litellm", { disabled: true });

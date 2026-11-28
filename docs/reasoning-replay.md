@@ -146,6 +146,17 @@ not think. A turn without the field is one its template renders as never having 
 pi-ai and opencode send DeepSeek the same, and both lanes of this install accept it
 (docs/provider-failures.md, "The wire DeepSeek reads").
 
+### The third shape: the assistant's own content (`mistral_content`)
+
+Mistral's reasoning models do not use a side field at all. They answer with an assistant `content`
+that is a **part list** (a `thinking` block, then text), streamed as fragments of either kind, and
+they expect that same list back on the next turn with `prefix: false`. Measured 2026-11-28: sending
+`reasoning_content` to `mistral-large-4-0` answers `422 extra_forbidden`, and replaying the parts
+verbatim answers 200. The field is declared as `mistral_content` and the parts are captured in
+`ProviderMeta.chat.details`; the `mistral-vibe` provider is the only writer, and a mixed history
+(another model's turn) replays as the plain string Mistral also accepts. See
+[docs/mistral-backend.md](mistral-backend.md).
+
 ## Configuration
 
 `llm.providers.<key>.reasoningReplay`, a tri-state boolean: absent means on.
